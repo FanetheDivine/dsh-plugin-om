@@ -11,6 +11,9 @@
     "harness",
     "plugin"
   ],
+  "repository": {
+    "url": "https://github.com/FanetheDivine/dsh-plugin-om"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
