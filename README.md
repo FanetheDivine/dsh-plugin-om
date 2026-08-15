@@ -1,5 +1,7 @@
 # dsh-plugin-om
 
+[![npm version](https://img.shields.io/npm/v/dsh-plugin-om.svg)](https://www.npmjs.com/package/dsh-plugin-om)
+
 在 DSH 里应用 [Observational Memory](https://mastra.ai/research/observational-memory) 风格的上下文管理策略
 
 ## 工作原理
