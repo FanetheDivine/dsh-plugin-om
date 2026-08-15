@@ -40,6 +40,13 @@ export function assertNumber(
   if (integer && !Number.isInteger(value)) fail(`config ${name} must be an integer`);
 }
 
+/** 校验配置字符串：必须是非空（含非空白）字符串，否则抛出带插件前缀的错误。 */
+export function assertNonEmptyString(name: string, value: unknown): void {
+  if (typeof value !== 'string' || value.trim() === '') {
+    fail(`config ${name} must be a non-empty string`);
+  }
+}
+
 /** 生成 uuid：优先 crypto.randomUUID，回退为时间戳+随机串拼接（保证唯一性）。 */
 export function uuid(): string {
   /** 全局 crypto 对象（提供 randomUUID 的现代环境才存在）。 */

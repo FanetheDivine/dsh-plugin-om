@@ -2,7 +2,8 @@
  * 插件配置：默认值、键校验与合并（preset 行 config 可覆盖全部键）。
  * 手写校验，保持零运行时外部依赖。
  */
-import { assertNumber, fail, isRecord } from './utils.ts';
+import { BUNDLED_MODEL_DIR } from './embedding.ts';
+import { assertNonEmptyString, assertNumber, fail, isRecord } from './utils.ts';
 
 /** 插件配置项（全部可选覆盖，未给出或留空的键用默认值）。 */
 export type PluginConfig = {
@@ -14,6 +15,8 @@ export type PluginConfig = {
   compressMaxTokens: number;
   /** 压缩边界：其后不压缩消息数下限（正整数）。 */
   tailMessageCount: number;
+  /** 语义召回嵌入模型目录（默认插件打包的本地模型；可指向自定义模型目录）。 */
+  modelDir: string;
 };
 
 /** 默认配置（冻结对象，resolveConfig 合并的基底）。 */
@@ -22,6 +25,7 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   historyMergeRatio: 0.2,
   compressMaxTokens: 4096,
   tailMessageCount: 10,
+  modelDir: BUNDLED_MODEL_DIR,
 });
 
 /** 合法配置键集合（未知键直接拒绝）。 */
@@ -30,6 +34,7 @@ const CONFIG_KEYS = new Set<string>([
   'historyMergeRatio',
   'compressMaxTokens',
   'tailMessageCount',
+  'modelDir',
 ]);
 
 /** 数值配置键（用于逐键校验其取值区间）。 */
@@ -52,7 +57,7 @@ function normalizeConfigInput(raw: unknown): Record<string, unknown> {
 }
 
 /**
- * 解析合并配置：校验未知键与数值类型，返回冻结的完整配置。
+ * 解析合并配置：校验未知键与数值/字符串类型，返回冻结的完整配置。
  * 允许所有配置留空——缺省 / null / 空串的键回退默认值，未给出的键亦取默认值。
  */
 export function resolveConfig(raw?: unknown): Readonly<PluginConfig> {
@@ -70,6 +75,15 @@ export function resolveConfig(raw?: unknown): Readonly<PluginConfig> {
     if (typeof value === 'string' && value.trim() === '') continue;
     assertNumber(key, value, { min, max, integer });
     config[key] = value as number;
+  }
+  /** modelDir 原始值（留空回退默认；非空串必须为字符串）。 */
+  const modelDir = input.modelDir;
+  if (modelDir !== undefined && modelDir !== null) {
+    if (typeof modelDir === 'string' && modelDir.trim() !== '') {
+      config.modelDir = modelDir;
+    } else {
+      assertNonEmptyString('modelDir', modelDir);
+    }
   }
   return Object.freeze(config);
 }
