@@ -8,7 +8,8 @@
  *    反思（摘要 ≥ 窗口 × historyMergeRatio 时 fork 精简合并 <om-history>）、
  *    观察（未压缩消息 ≥ 窗口 × thresholdRatio 时 fork 压缩为观察日志并追加）
  *
- * 约束：不引入自定义会话事件类型——压缩复用宿主已知的 'compaction/prune' 影子价格事件。
+ * 约束：不引入自定义会话事件类型——压缩复用宿主已知的 compaction/* 生命周期事件
+ * （start/summary/end）与 checkpoint 标记，结果写入消息记录与轨迹。
  * 仅主会话生效（subagent 不压缩、recall 拒绝）。
  */
 

@@ -6,13 +6,19 @@
  *    替换单个 <om-history> 节点。
  * 两级检查在 pre-step 阻塞串行执行（先反思后观察），避免压缩失败或重复压缩。
  *
+ * 压缩结果写入宿主 compaction/* 生命周期事件（compaction/start → compaction/summary →
+ * 替换 <om-history> 消息 → compaction/end），使消息记录（聊天视图压缩卡片）与轨迹视图
+ * 可见；compaction/summary 同时承担影子价格认领（shadowedTokenCount），不再单独发
+ * compaction/prune。替换消息的 source 使用宿主 checkpoint 标记（plugin: 'compact' +
+ * compactionId），UI 据此关联 summary 与替换消息。生命周期事件在 fork 摘要成功后才写入
+ * （失败不产生任何日志变更）。
+ *
  * 观察区间：尾部保留 config.tailMessageCount（默认 10）条消息不压缩；
  * 其余全部未压缩消息一次压缩。fork seed 截断于最后一个 turn/end，
  * 故区间表层节点封顶在最后一个已结束 turn 的表层节点（当前 turn 消息留待下次）。
  * 仅主会话生效。
  */
-import type { UserMessage } from '@deepseek-ai/dsh-llm';
-import { CLAIM_EVENT, HISTORY_TAG, PLUGIN_LABEL } from './constants.ts';
+import { COMPACT_CHECKPOINT_PLUGIN, HISTORY_TAG } from './constants.ts';
 import { messageIdOfEvent, surfaceIndexOf } from './log-index.ts';
 import {
   buildObservePrompt,
@@ -21,8 +27,17 @@ import {
   REFLECTOR_PERSONA,
   runSummarySubagent,
 } from './summarize.ts';
-import type { Agent, Context, PluginConfig, Session, SessionEvent } from './types.ts';
-import { blocksToText, routedTarget, uuid } from './utils.ts';
+import type {
+  Agent,
+  CompactionId,
+  Context,
+  PluginConfig,
+  Session,
+  SessionEvent,
+  TokenUsage,
+  UserMessage,
+} from './types.ts';
+import { blocksToText, type RoutedTarget, routedTarget, uuid } from './utils.ts';
 
 /** 历史文本 token 估算：4 字符 ≈ 1 token（与宿主 dsh-token-meter 启发式一致）。 */
 export function estimateTextTokens(text: string): number {
@@ -189,30 +204,86 @@ export function buildMessageIdTable(session: Session, shadowedSeqs: readonly num
   return rows;
 }
 
-// 'compaction/prune' 为宿主已知影子价格事件，未列入 SessionEventMap，按运行事实放宽类型。
-/** 追加影子价格认领事件（遮蔽范围 + 遮蔽 seq 列表 + 遮蔽 token 数），返回事件 seq。 */
-function appendClaim(
+/** 当前打开中的 turn 号（最近 turn/start 且未被 turn/end 关闭）；无则 null（跨轮次场景）。 */
+function openTurnOf(session: Session): number | null {
+  /** 折叠结果（turn/start 打开、turn/end 关闭）。 */
+  let turn: number | null = null;
+  for (const event of session.events) {
+    if (event.type === 'turn/start') turn = event.data.turn;
+    else if (event.type === 'turn/end') turn = null;
+  }
+  return turn;
+}
+
+/** 生成宿主 compaction 生命周期 id（uuid 按宿主品牌类型 CompactionId 标注）。 */
+function newCompactionId(): CompactionId {
+  return uuid() as unknown as CompactionId;
+}
+
+/** compaction 生命周期共享数据（start/summary/end 以 compactionId 关联，turn 标记所属轮次）。 */
+type CompactionLifecycle = {
+  compactionId: CompactionId;
+  turn: number | null;
+};
+
+/** 追加 compaction/start（log-only：仅标记生命周期开始，不进入表层），返回事件 seq。 */
+function appendCompactionStart(session: Session, lifecycle: CompactionLifecycle): number {
+  return session.append('compaction/start', lifecycle).seq;
+}
+
+/**
+ * 追加 compaction/summary（log-only，承担影子价格认领：紧随其后的替换消息消费 claim）。
+ * summary 为完整合并后的 <om-history> 内文；usage 由 fork 子会话提取（无则省略）。
+ */
+function appendCompactionSummary(
   session: Session,
   data: {
+    lifecycle: CompactionLifecycle;
+    summary: string;
     shadowedRange: { start: number; end: number };
     shadowedSeqs: number[];
     shadowedTokenCount: number;
+    provider: string;
+    model: string;
+    maxTokens: number;
+    usage?: TokenUsage;
   },
 ): number {
-  return (session.append as unknown as (type: string, data: unknown) => { seq: number })(
-    CLAIM_EVENT,
-    data,
-  ).seq;
+  return session.append('compaction/summary', {
+    compactionId: data.lifecycle.compactionId,
+    summary: [{ type: 'text', text: data.summary }],
+    shadowedRange: data.shadowedRange,
+    shadowedSeqs: data.shadowedSeqs,
+    shadowedTokenCount: data.shadowedTokenCount,
+    provider: data.provider,
+    model: data.model,
+    maxTokens: data.maxTokens,
+    ...(data.usage === undefined ? {} : { usage: data.usage }),
+  }).seq;
 }
 
-/** 追加 <om-history> 压缩日志消息（surfaceOp 替换遮蔽区间，source 标记插件来源）。 */
+/** 追加 compaction/end（log-only，结束生命周期；error 记录失败原因）。 */
+function appendCompactionEnd(
+  session: Session,
+  lifecycle: CompactionLifecycle,
+  error?: string,
+): number {
+  return session.append('compaction/end', {
+    compactionId: lifecycle.compactionId,
+    turn: lifecycle.turn,
+    ...(error === undefined ? {} : { error }),
+  }).seq;
+}
+
+/** 追加 <om-history> 压缩日志消息（surfaceOp 替换遮蔽区间，source 为宿主 checkpoint 标记）。 */
 function appendHistoryMessage(
   session: Session,
   content: string,
   sourceEventSeqs: number[],
   surfaceOp: { op: 'replace'; start: number; end: number },
+  compactionId: CompactionId,
 ): void {
-  /** 压缩替换消息（<om-history> 包裹摘要，source 标记插件来源）。 */
+  /** 压缩替换消息（<om-history> 包裹摘要，source 标记宿主 checkpoint 供 UI 关联）。 */
   const message = {
     id: uuid(),
     role: 'user',
@@ -228,7 +299,7 @@ function appendHistoryMessage(
         ].join('\n'),
       },
     ],
-    source: { kind: 'plugin', plugin: PLUGIN_LABEL },
+    source: { kind: 'plugin', plugin: COMPACT_CHECKPOINT_PLUGIN, compactionId },
   } as unknown as UserMessage; // id 为品牌类型 MessageId，插件自产消息由 session.append 运行时校验
   session.append('user/message', message, { surfaceOp, sourceEventSeqs });
 }
@@ -242,6 +313,7 @@ export async function reflectPass(
   agent: Agent,
   config: Readonly<PluginConfig>,
   window: number,
+  target: RoutedTarget,
   signal?: AbortSignal,
 ): Promise<void> {
   /** 当前会话。 */
@@ -266,29 +338,48 @@ export async function reflectPass(
     signal,
   );
   if (report === null || report.trim().length === 0) return;
+  /** 本次压缩生命周期（compactionId + 当前轮次；fork 成功后才写入日志）。 */
+  const lifecycle: CompactionLifecycle = {
+    compactionId: newCompactionId(),
+    turn: openTurnOf(session),
+  };
   try {
-    /** 影子价格认领事件 seq。 */
-    const pruneSeq = appendClaim(session, {
+    appendCompactionStart(session, lifecycle);
+    /** compaction/summary 事件 seq（承担影子价格认领，紧随其后的替换消息消费）。 */
+    const summarySeq = appendCompactionSummary(session, {
+      lifecycle,
+      summary: report,
       shadowedRange: { start: history.seq, end: history.seq },
       shadowedSeqs: [history.seq],
       shadowedTokenCount: tokens,
+      provider: target.provider,
+      model: target.model,
+      maxTokens: config.compressMaxTokens,
     });
-    appendHistoryMessage(session, report, [pruneSeq, history.seq], {
-      op: 'replace',
-      start: history.seq,
-      end: history.seq,
-    });
+    appendHistoryMessage(
+      session,
+      report,
+      [summarySeq, history.seq],
+      {
+        op: 'replace',
+        start: history.seq,
+        end: history.seq,
+      },
+      lifecycle.compactionId,
+    );
+    appendCompactionEnd(session, lifecycle);
     ctx.logger.info(
-      'dsh-plugin-om: 反思完成（摘要 ' +
-        tokens +
-        ' tokens ≥ 阈值 ' +
-        threshold +
-        '，替换摘要节点）',
+      `dsh-plugin-om: 反思完成（摘要 ${tokens} tokens ≥ 阈值 ${threshold}，替换摘要节点）`,
     );
   } catch (error) {
-    ctx.logger.warn(
-      'dsh-plugin-om: 反思提交失败: ' + (error instanceof Error ? error.message : String(error)),
-    );
+    /** 提交失败信息（统一字符串）。 */
+    const message = error instanceof Error ? error.message : String(error);
+    ctx.logger.warn(`dsh-plugin-om: 反思提交失败: ${message}`);
+    try {
+      appendCompactionEnd(session, lifecycle, message);
+    } catch {
+      /* end 追加失败忽略（start 已记录，日志仍可诊断） */
+    }
   }
 }
 
@@ -302,6 +393,7 @@ export async function observePass(
   config: Readonly<PluginConfig>,
   window: number,
   tailCount: number,
+  target: RoutedTarget,
   signal?: AbortSignal,
 ): Promise<void> {
   /** 当前会话。 */
@@ -352,34 +444,48 @@ export async function observePass(
     const message = event ? session.deriveEventMessage(event) : null;
     return total + (message ? ctx.tokenMeter.estimateMessage(message) : 0);
   }, 0);
+  /** 本次压缩生命周期（compactionId + 当前轮次；fork 成功后才写入日志）。 */
+  const lifecycle: CompactionLifecycle = {
+    compactionId: newCompactionId(),
+    turn: openTurnOf(session),
+  };
   try {
-    /** 影子价格认领事件 seq。 */
-    const pruneSeq = appendClaim(session, {
+    appendCompactionStart(session, lifecycle);
+    /** compaction/summary 事件 seq（承担影子价格认领，紧随其后的替换消息消费）。 */
+    const summarySeq = appendCompactionSummary(session, {
+      lifecycle,
+      summary: combined,
       shadowedRange: { start: range.start, end: range.end },
       shadowedSeqs: range.shadowedSeqs,
       shadowedTokenCount,
+      provider: target.provider,
+      model: target.model,
+      maxTokens: config.compressMaxTokens,
     });
-    appendHistoryMessage(session, combined, [pruneSeq, ...range.shadowedSeqs], {
-      op: 'replace',
-      start: range.start,
-      end: range.end,
-    });
+    appendHistoryMessage(
+      session,
+      combined,
+      [summarySeq, ...range.shadowedSeqs],
+      {
+        op: 'replace',
+        start: range.start,
+        end: range.end,
+      },
+      lifecycle.compactionId,
+    );
+    appendCompactionEnd(session, lifecycle);
     ctx.logger.info(
-      'dsh-plugin-om: 观察压缩完成（未压缩 ' +
-        uncompressedTokens +
-        ' tokens ≥ 阈值 ' +
-        threshold +
-        '，遮蔽 ' +
-        range.shadowedSeqs.length +
-        ' 个表层节点，约 ' +
-        shadowedTokenCount +
-        ' tokens）',
+      `dsh-plugin-om: 观察压缩完成（未压缩 ${uncompressedTokens} tokens ≥ 阈值 ${threshold}，遮蔽 ${range.shadowedSeqs.length} 个表层节点，约 ${shadowedTokenCount} tokens）`,
     );
   } catch (error) {
-    ctx.logger.warn(
-      'dsh-plugin-om: 观察压缩提交失败: ' +
-        (error instanceof Error ? error.message : String(error)),
-    );
+    /** 提交失败信息（统一字符串）。 */
+    const message = error instanceof Error ? error.message : String(error);
+    ctx.logger.warn(`dsh-plugin-om: 观察压缩提交失败: ${message}`);
+    try {
+      appendCompactionEnd(session, lifecycle, message);
+    } catch {
+      /* end 追加失败忽略（start 已记录，日志仍可诊断） */
+    }
   }
 }
 
@@ -415,6 +521,6 @@ export async function maybeCompress(
   /** 尾部保留条数（config.tailMessageCount，缺省 10）。 */
   const tailCount = config.tailMessageCount;
   // 先反思（压缩过往摘要），后观察（压缩新消息，有必要才做）
-  await reflectPass(ctx, agent, config, window, signal);
-  await observePass(ctx, agent, config, window, tailCount, signal);
+  await reflectPass(ctx, agent, config, window, target, signal);
+  await observePass(ctx, agent, config, window, tailCount, target, signal);
 }

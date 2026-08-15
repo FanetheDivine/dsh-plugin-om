@@ -51,6 +51,29 @@ function latestHistoryText(session: Session): string {
   return text.replace(new RegExp(`</?${HISTORY_TAG}>`, 'g'), '').trim();
 }
 
+/** 定位一次压缩的 compaction 生命周期事件下标（start/summary/替换消息/end；缺省 -1）。 */
+function compactionLifecycle(session: Session) {
+  const events = session.events;
+  return {
+    start: events.findIndex((e) => e.type === 'compaction/start'),
+    summary: events.findIndex((e) => e.type === 'compaction/summary'),
+    end: events.findIndex((e) => e.type === 'compaction/end'),
+    replace: events.findIndex(
+      (e) =>
+        e.type === 'user/message' &&
+        typeof e.surfaceOp === 'object' &&
+        e.surfaceOp !== null &&
+        (e.surfaceOp as { op?: string }).op === 'replace',
+    ),
+  };
+}
+
+/** 提取 <om-history> 替换消息的 source（checkpoint 标记断言用）。 */
+function checkpointSourceOf(event: SessionEvent | undefined) {
+  if (event?.type !== 'user/message') return undefined;
+  return event.data.source as { kind?: string; plugin?: string; compactionId?: string } | undefined;
+}
+
 /** 构造 <om-history> 压缩日志消息（插件自产 user/message，seq 从 0 起）。 */
 function historyMessage(inner: string, id = 'history-msg'): SessionEvent {
   return {
@@ -522,18 +545,37 @@ describe('apply 接线（OM 观察压缩）', () => {
     );
     // 遮蔽后表层 = <om-history> + 尾部 1 条
     expect(session.surface.nodes.length).toBe(2);
-    const claimIdx = session.events.findIndex(
-      (e) => (e as { type?: string }).type === 'compaction/prune',
+    // compaction 生命周期：start → summary → 替换消息 → end（同 compactionId）
+    const { start, summary, end, replace } = compactionLifecycle(session);
+    expect(start).not.toBe(-1);
+    expect(summary).toBe(start + 1);
+    expect(replace).toBe(summary + 1);
+    expect(end).toBe(replace + 1);
+    // 不再单独发 compaction/prune（summary 承担影子价格认领）
+    expect(session.events.some((e) => e.type === 'compaction/prune')).toBe(false);
+    const startEvent = session.events[start];
+    const summaryEvent = session.events[summary];
+    const endEvent = session.events[end];
+    const replaceEvent = session.events[replace];
+    if (startEvent?.type !== 'compaction/start') throw new Error('缺 start');
+    if (summaryEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
+    if (endEvent?.type !== 'compaction/end') throw new Error('缺 end');
+    const compactionId = startEvent.data.compactionId;
+    expect(summaryEvent.data.compactionId).toBe(compactionId);
+    expect(endEvent.data.compactionId).toBe(compactionId);
+    // summary 内容 = 完整合并后的 <om-history> 内文（聊天卡片所见即所得）
+    const summaryText = summaryEvent.data.summary
+      .map((block) => (block.type === 'text' ? block.text : ''))
+      .join('');
+    expect(summaryText).toContain('user_message message_id:user-c-eval text:请帮我完成一个任务');
+    expect(summaryText).toContain(
+      'toolcall message_id:result-c-eval purpose:跑一下 summary:产物符合预期；下一步提交',
     );
-    const replaceIdx = session.events.findIndex(
-      (e) =>
-        e.type === 'user/message' &&
-        typeof e.surfaceOp === 'object' &&
-        e.surfaceOp !== null &&
-        (e.surfaceOp as { op?: string }).op === 'replace',
-    );
-    expect(claimIdx).not.toBe(-1);
-    expect(replaceIdx).toBe(claimIdx + 1);
+    // 替换消息 source = 宿主 checkpoint 标记（plugin: 'compact' + compactionId）
+    const source = checkpointSourceOf(replaceEvent);
+    expect(source?.kind).toBe('plugin');
+    expect(source?.plugin).toBe('compact');
+    expect(source?.compactionId).toBe(compactionId);
     expect(session.surface.replaceGeneration).toBeGreaterThanOrEqual(1);
   });
 
@@ -601,9 +643,10 @@ describe('apply 接线（OM 观察压缩）', () => {
     apply(ctx, { tailMessageCount: 1 });
     await runPreStep(ctx, session);
     expect(ctx._subagentCalls).toHaveLength(1); // fork 被调用
-    expect(session.events.some((e) => (e as { type?: string }).type === 'compaction/prune')).toBe(
-      false,
-    );
+    // fork 无输出：不写任何 compaction 生命周期事件，也无部分替换
+    expect(session.events.some((e) => e.type === 'compaction/start')).toBe(false);
+    expect(session.events.some((e) => e.type === 'compaction/summary')).toBe(false);
+    expect(session.events.some((e) => e.type === 'compaction/end')).toBe(false);
     expect(latestHistoryText(session)).toBe(''); // 无部分替换
   });
 
@@ -770,6 +813,110 @@ describe('apply 接线（OM 反思压缩）', () => {
     const text = latestHistoryText(session);
     expect(text.indexOf('REFLECTED')).toBeGreaterThan(-1);
     expect(text.indexOf('OBSERVED')).toBeGreaterThan(text.indexOf('REFLECTED'));
+  });
+});
+
+describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () => {
+  async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
+    const preStepListeners = ctx._onCallbacks.get('agent/pre-step');
+    let nextCalled = false;
+    const next = () => {
+      nextCalled = true;
+    };
+    await preStepListeners?.[0]?.(
+      { agent: { session }, signal: new AbortController().signal },
+      next,
+    );
+    return nextCalled;
+  }
+
+  it('反思压缩：单节点替换也写完整 compaction 生命周期（summary/遮蔽/provider/model）', async () => {
+    // 摘要 40 字符 ≈ 10 tokens；window 16 × 0.2 = 3.2 → 触发反思；观察不触发
+    const session = makeSession({
+      events: [
+        historyMessage('X'.repeat(40)),
+        ...buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+          withTurnEnd: true,
+        }),
+      ],
+    });
+    const ctx = makeCtx({
+      resolveModelInfo: async () => ({ context: { contextWindow: 16 } }),
+      subagentStart: async () => ({
+        result: Promise.resolve({ output: [textBlock('REFLECTED')], stopReason: 'completed' }),
+        dispose: async () => {},
+      }),
+    });
+    apply(ctx, {});
+    await runPreStep(ctx, session);
+    const { start, summary, end, replace } = compactionLifecycle(session);
+    expect(start).not.toBe(-1);
+    expect(summary).toBe(start + 1);
+    expect(replace).toBe(summary + 1);
+    expect(end).toBe(replace + 1);
+    const startEvent = session.events[start];
+    const summaryEvent = session.events[summary];
+    const endEvent = session.events[end];
+    const replaceEvent = session.events[replace];
+    if (startEvent?.type !== 'compaction/start') throw new Error('缺 start');
+    if (summaryEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
+    if (endEvent?.type !== 'compaction/end') throw new Error('缺 end');
+    expect(summaryEvent.data.compactionId).toBe(startEvent.data.compactionId);
+    expect(endEvent.data.compactionId).toBe(startEvent.data.compactionId);
+    // 单节点替换：遮蔽区间为旧 <om-history> 节点
+    expect(summaryEvent.data.shadowedRange).toEqual({ start: 0, end: 0 });
+    expect(summaryEvent.data.shadowedSeqs).toEqual([0]);
+    expect(summaryEvent.data.provider).toBe('test');
+    expect(summaryEvent.data.model).toBe('test-model');
+    expect(summaryEvent.data.maxTokens).toBe(4096); // compressMaxTokens 默认
+    // summary 内容 = 合并后摘要
+    const summaryText = summaryEvent.data.summary
+      .map((block) => (block.type === 'text' ? block.text : ''))
+      .join('');
+    expect(summaryText).toContain('REFLECTED');
+    // 替换消息 source = 宿主 checkpoint 标记
+    const source = checkpointSourceOf(replaceEvent);
+    expect(source?.plugin).toBe('compact');
+    expect(source?.compactionId).toBe(startEvent.data.compactionId);
+  });
+
+  it('观察增量追加：compaction/summary 内容 = 旧摘要原文 + 新观察日志（完整内文）', async () => {
+    const flowEvents = buildToolCallFlow({
+      code: 'a()',
+      description: '任务A',
+      callId: 'c1',
+      resultText: 'r1',
+      withTurnEnd: true,
+    });
+    const session = makeSession({
+      events: [historyMessage('user_message message_id:old-u text:旧任务'), ...flowEvents],
+    });
+    const ctx = makeCtx({
+      resolveModelInfo: async () => ({ context: { contextWindow: 11 } }),
+      subagentStart: async () => ({
+        result: Promise.resolve({
+          output: [textBlock('toolcall message_id:result-c1 summary:新内容')],
+          stopReason: 'completed',
+        }),
+        dispose: async () => {},
+      }),
+    });
+    apply(ctx, { tailMessageCount: 1, historyMergeRatio: 1 });
+    await runPreStep(ctx, session);
+    const { start, summary } = compactionLifecycle(session);
+    expect(start).not.toBe(-1);
+    const summaryEvent = session.events[summary];
+    if (summaryEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
+    const summaryText = summaryEvent.data.summary
+      .map((block) => (block.type === 'text' ? block.text : ''))
+      .join('');
+    expect(summaryText).toContain('旧任务'); // 旧摘要原文保留
+    expect(summaryText).toContain('新内容'); // 新观察日志追加
+    expect(summaryText.indexOf('旧任务')).toBeLessThan(summaryText.indexOf('新内容'));
   });
 });
 
