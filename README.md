@@ -34,7 +34,7 @@
 dsh plugin --profile <profile> add dsh-plugin-om
 ```
 
-无需重启
+需要重启
 
 可以通过`dsh --profile <profile> --dump-config`审查配置是否正确
 
@@ -58,10 +58,13 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 而`web-profile`里定义了多个"预设agent"`preset-agent` 这里主要说的是`preset-agent`的问题
 
-`preset-agent`配置里自带一个`compaction-basic`。由于配置注入的顺序是层级低的覆盖层级高的，所以`cordis.patch.yml`对`compaction-basic`的禁用不会生效
+`preset-agent`配置里自带一个`compaction-basic`。由于配置注入的顺序是层级低的覆盖层级高的，所以`cordis.patch.yml`对`compaction-basic`的禁用不会生效。
+
+此外，这个插件位于`preset-agent`的定义而非额外的安装，也无法通过`dsh plugin`卸载。
 
 解决方案：
 
+- 直接改`preset-agent`的定义(不推荐)
 - 定义不含`compaction-basic`的`preset-agent`
 - `compaction-basic`压缩阈值是80%上下文窗口，而只需要确保OM的配置中，`thresholdRatio`+`historyMergeRatio`<0.8，理论上没到强制摘要就会被OM压缩了(默认值满足这一条件)
 
