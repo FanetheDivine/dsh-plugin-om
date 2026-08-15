@@ -1,0 +1,4 @@
+# 用于 dsh add
+- insert:
+    - id: dsh-plugin-om
+      name: dsh-plugin-om
