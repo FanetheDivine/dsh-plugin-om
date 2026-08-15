@@ -22,6 +22,7 @@
   },
   "files": [
     "dist",
+    "models",
     "cordis.patch.yml",
     "README.md"
   ],
@@ -48,7 +49,6 @@
     "format": "biome format --write ."
   },
   "devDependencies": {
-    "zod": "4.4.3",
     "@biomejs/biome": "^2.5.8",
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
@@ -67,6 +67,10 @@
     "@types/node": "^22.20.0",
     "tsdown": "^0.22.14",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "zod": "4.4.3"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "4.2.0"
   }
 }
