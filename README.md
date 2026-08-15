@@ -115,6 +115,7 @@ src/
 └── compress.ts               # 两级自动压缩（测量 / 区间计算 / 中断扫描 / 对照表 / 替换 + 影子价格认领）
 scripts/                      # release-archive.mjs（CHANGELOG 归档）
 tests/                        # vitest 单元测试（52 例）
+.dsh/skills/                  # 项目级 skill（feature-defect-workflow：需求/缺陷完成工作流）
 ```
 
 ## 开发计划
