@@ -111,3 +111,8 @@ src/
 scripts/                      # release-archive.mjs（CHANGELOG 归档）
 tests/                        # vitest 单元测试（52 例）
 ```
+
+## 开发计划
+
+- 在消息记录/轨迹中添加OM结果
+- 将OM会话的token加入主会话中
