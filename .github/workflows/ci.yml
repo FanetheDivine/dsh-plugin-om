@@ -24,11 +24,7 @@ jobs:
       - name: Run check
         run: pnpm run check
 
-  # 打 tag 后发布到 npm：使用 npm 的 trusted publishing（OIDC），
-  # 无需 NPM_TOKEN 密钥，产包附带 provenance（来源证明）。
-  # 前置条件（在 npm 官网配置一次）：
-  #  - 包 dsh-plugin-om 已在 registry 存在（首次发布需用带 token 的 npm publish 引导）
-  #  - 包的 Trusted Publishing 绑定本仓库的 refs/tags/*（或允许全部来源）
+  # 打 tag 后自动发布至 npm，使用 trusted publishing
   publish:
     name: Publish to npm (trusted publishing)
     needs: check
@@ -52,4 +48,4 @@ jobs:
       - name: Build
         run: pnpm build
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        run: npm publish
