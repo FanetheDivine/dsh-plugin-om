@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  check:
+    name: Check (typecheck + lint + test + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run check
+        run: pnpm run check
+
+  # 打 tag 后发布到 npm：使用 npm 的 trusted publishing（OIDC），
+  # 无需 NPM_TOKEN 密钥，产包附带 provenance（来源证明）。
+  # 前置条件（在 npm 官网配置一次）：
+  #  - 包 dsh-plugin-om 已在 registry 存在（首次发布需用带 token 的 npm publish 引导）
+  #  - 包的 Trusted Publishing 绑定本仓库的 refs/tags/*（或允许全部来源）
+  publish:
+    name: Publish to npm (trusted publishing)
+    needs: check
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      id-token: write   # npm OIDC 换取发布令牌 / 生成 provenance
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm build
+      - name: Publish to npm
+        run: npm publish --provenance --access public
