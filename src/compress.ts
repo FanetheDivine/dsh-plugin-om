@@ -328,8 +328,8 @@ export async function reflectPass(
   if (tokens < threshold) return;
   /** 摘要节点须仍在表层才可替换。 */
   if (surfaceIndexOf([...session.surface.nodes], history.seq) === -1) return;
-  /** 反思子会话输出（null 表示失败/跳过）。 */
-  const report = await runSummarySubagent(
+  /** 反思子会话结果（null 表示失败/跳过）。 */
+  const summaryResult = await runSummarySubagent(
     ctx,
     agent,
     REFLECTOR_PERSONA,
@@ -337,7 +337,9 @@ export async function reflectPass(
     config.compressMaxTokens,
     signal,
   );
-  if (report === null || report.trim().length === 0) return;
+  if (summaryResult === null || summaryResult.text.trim().length === 0) return;
+  /** 反思摘要文本。 */
+  const report = summaryResult.text;
   /** 本次压缩生命周期（compactionId + 当前轮次；fork 成功后才写入日志）。 */
   const lifecycle: CompactionLifecycle = {
     compactionId: newCompactionId(),
@@ -355,6 +357,7 @@ export async function reflectPass(
       provider: target.provider,
       model: target.model,
       maxTokens: config.compressMaxTokens,
+      ...(summaryResult.usage === undefined ? {} : { usage: summaryResult.usage }),
     });
     appendHistoryMessage(
       session,
@@ -424,8 +427,8 @@ export async function observePass(
     interruptions,
     hasOldHistory: history !== undefined,
   });
-  /** 观察子会话输出（null 表示失败/跳过）。 */
-  const report = await runSummarySubagent(
+  /** 观察子会话结果（null 表示失败/跳过）。 */
+  const summaryResult = await runSummarySubagent(
     ctx,
     agent,
     OBSERVER_PERSONA,
@@ -433,7 +436,9 @@ export async function observePass(
     config.compressMaxTokens,
     signal,
   );
-  if (report === null || report.trim().length === 0) return;
+  if (summaryResult === null || summaryResult.text.trim().length === 0) return;
+  /** 观察摘要文本。 */
+  const report = summaryResult.text;
   /** 合并后的摘要（旧摘要原文保留，新观察日志追加在末尾）。 */
   const combined = [history?.text, report].filter(Boolean).join('\n');
   /** 被遮蔽表层节点的 token 估算合计。 */
@@ -461,6 +466,7 @@ export async function observePass(
       provider: target.provider,
       model: target.model,
       maxTokens: config.compressMaxTokens,
+      ...(summaryResult.usage === undefined ? {} : { usage: summaryResult.usage }),
     });
     appendHistoryMessage(
       session,

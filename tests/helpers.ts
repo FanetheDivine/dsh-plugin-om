@@ -343,3 +343,31 @@ export function buildToolCallFlow({
   }
   return events;
 }
+
+/** 构造 fork 子会话（模拟 run.localAgent.session）：seed 前缀 + 子会话自身 usage 消息。 */
+export function makeForkChildSession(usage?: unknown, seedCount = 1): Session {
+  const events: SessionEvent[] = [];
+  for (let i = 0; i < seedCount; i += 1) {
+    events.push({
+      type: 'user/message',
+      data: makeMessage({ content: [textBlock(`seed-${i}`)], id: `seed-${i}` }),
+    } as SessionEvent);
+  }
+  if (usage !== undefined) {
+    events.push({
+      type: 'assistant/message',
+      data: {
+        turn: 1,
+        step: 1,
+        message: makeMessage({
+          role: 'assistant',
+          content: [textBlock('摘要')],
+          id: 'child-summary',
+        }),
+        usage,
+      },
+    } as unknown as SessionEvent);
+  }
+  const session = makeSession({ events });
+  return { ...session, firstLiveSeq: seedCount } as unknown as Session;
+}

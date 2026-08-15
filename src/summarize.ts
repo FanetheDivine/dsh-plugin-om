@@ -11,7 +11,7 @@
  * 仅主会话生效（index.ts 守卫）。
  */
 import { HISTORY_TAG } from './constants.ts';
-import type { Agent, Context, SubagentRun, SubagentStartRequest } from './types.ts';
+import type { Agent, Context, SubagentRun, SubagentStartRequest, TokenUsage } from './types.ts';
 import { blocksToText } from './utils.ts';
 
 /** 观察者 persona：只针对未压缩消息产出观察日志，不用工具、不展示思考。 */
@@ -85,8 +85,54 @@ export function buildReflectPrompt(): string {
 }
 
 /**
- * Fork 子会话执行一次摘要（观察或反思），返回文本；失败或无法 fork 返回 null。
- * 工具被 toolFilter 禁用，输出长度受 maxTokens 限制。
+ * 摘要子会话结果：文本 + 可选 token usage（fork 子会话自身消耗，随 compaction/summary
+ * 归入主会话记录）。
+ */
+export type SummarySubagentResult = {
+  text: string;
+  usage?: TokenUsage;
+};
+
+/**
+ * 提取 fork 子会话（run.localAgent.session）的 token usage：仅统计子会话自身事件
+ * （firstLiveSeq 之后，不含继承的父会话 seed 前缀），按 turn/step 去重（同 step 的
+ * usage chunk 与 assistant/message 后写覆盖）后累加四桶；无 usage 返回 undefined。
+ */
+function extractSubagentUsage(agent: Agent | undefined): TokenUsage | undefined {
+  if (!agent) return undefined;
+  /** 子会话自身事件的起点（构造 seed 长度；缺省回退 0）。 */
+  const start = Number.isFinite(agent.session.firstLiveSeq) ? agent.session.firstLiveSeq : 0;
+  /** 子会话自身事件（跳过继承的父会话前缀）。 */
+  const ownEvents = agent.session.events.slice(start);
+  /** turn/step → usage（同 step 后写覆盖，与宿主投影语义一致）。 */
+  const perStep = new Map<string, TokenUsage>();
+  for (const event of ownEvents) {
+    if (event.type === 'assistant/message' && event.data.usage !== undefined) {
+      perStep.set(`${event.data.turn}:${event.data.step}`, event.data.usage);
+    } else if (event.type === 'assistant/chunk' && event.data.chunk.type === 'usage') {
+      perStep.set(`${event.data.turn}:${event.data.step}`, event.data.chunk.usage);
+    }
+  }
+  if (perStep.size === 0) return undefined;
+  /** 累加结果（四桶互斥，不重复累加推理 token）。 */
+  const total: TokenUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  };
+  for (const usage of perStep.values()) {
+    total.inputTokens += usage.inputTokens;
+    total.outputTokens += usage.outputTokens;
+    total.cacheReadTokens = (total.cacheReadTokens ?? 0) + (usage.cacheReadTokens ?? 0);
+    total.cacheWriteTokens = (total.cacheWriteTokens ?? 0) + (usage.cacheWriteTokens ?? 0);
+  }
+  return total;
+}
+
+/**
+ * Fork 子会话执行一次摘要（观察或反思），返回文本与可选 token usage；
+ * 失败或无法 fork 返回 null。工具被 toolFilter 禁用，输出长度受 maxTokens 限制。
  */
 export async function runSummarySubagent(
   ctx: Context,
@@ -95,7 +141,7 @@ export async function runSummarySubagent(
   prompt: string,
   maxTokens: number,
   signal?: AbortSignal,
-): Promise<string | null> {
+): Promise<SummarySubagentResult | null> {
   /** subagents 服务（缺失则无法分叉摘要）。 */
   const subagents = ctx.get('subagents');
   if (!subagents) {
@@ -135,7 +181,9 @@ export async function runSummarySubagent(
       );
       return null;
     }
-    return text;
+    /** fork 子会话的 token usage（归入主会话记录；无则省略）。 */
+    const usage = extractSubagentUsage(run.localAgent);
+    return { text, ...(usage === undefined ? {} : { usage }) };
   } catch (error) {
     /** 错误信息（统一为字符串）。 */
     const message = error instanceof Error ? error.message : String(error);

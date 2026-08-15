@@ -25,6 +25,7 @@ import type { Session, SessionEvent } from '../src/types.ts';
 import {
   buildToolCallFlow,
   makeCtx,
+  makeForkChildSession,
   makeMessage,
   makeMeter,
   makeSession,
@@ -917,6 +918,86 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
     expect(summaryText).toContain('旧任务'); // 旧摘要原文保留
     expect(summaryText).toContain('新内容'); // 新观察日志追加
     expect(summaryText.indexOf('旧任务')).toBeLessThan(summaryText.indexOf('新内容'));
+  });
+});
+
+describe('OM 会话 token 归入主会话（compaction/summary.usage）', () => {
+  async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
+    const preStepListeners = ctx._onCallbacks.get('agent/pre-step');
+    await preStepListeners?.[0]?.(
+      { agent: { session }, signal: new AbortController().signal },
+      () => {},
+    );
+  }
+
+  /** 触发观察压缩的固定夹具（window 8：观察阈值 4 tokens 必触发）。 */
+  function sessionAndCtx(extra: Parameters<typeof makeCtx>[0] = {}) {
+    const session = makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
+    });
+    const ctx = makeCtx({
+      resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
+      ...extra,
+    });
+    apply(ctx, { tailMessageCount: 1 });
+    return { session, ctx };
+  }
+
+  it('fork 子会话报告 usage：写入主会话 compaction/summary.usage', async () => {
+    const childUsage = {
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadTokens: 10,
+      cacheWriteTokens: 5,
+    };
+    const { session, ctx } = sessionAndCtx({
+      subagentStart: async () => ({
+        result: Promise.resolve({
+          output: [textBlock('user_message message_id:user-c1 text:请帮我完成一个任务')],
+          stopReason: 'completed',
+        }),
+        dispose: async () => {},
+        localAgent: { session: makeForkChildSession(childUsage) },
+      }),
+    });
+    await runPreStep(ctx, session);
+    const summaryIdx = session.events.findIndex((e) => e.type === 'compaction/summary');
+    const summaryEvent = session.events[summaryIdx];
+    if (summaryEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
+    expect(summaryEvent.data.usage).toEqual(childUsage);
+  });
+
+  it('fork 无 usage（无 localAgent / 无 usage 事件）时省略 usage 字段', async () => {
+    const { session, ctx } = sessionAndCtx(); // 默认 mock：run 无 localAgent
+    await runPreStep(ctx, session);
+    const summaryIdx = session.events.findIndex((e) => e.type === 'compaction/summary');
+    const summaryEvent = session.events[summaryIdx];
+    if (summaryEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
+    expect(summaryEvent.data.usage).toBeUndefined();
+  });
+
+  it('localAgent 存在但子会话无 usage 事件时省略 usage 字段', async () => {
+    const { session, ctx } = sessionAndCtx({
+      subagentStart: async () => ({
+        result: Promise.resolve({
+          output: [textBlock('user_message message_id:user-c1 text:请帮我完成一个任务')],
+          stopReason: 'completed',
+        }),
+        dispose: async () => {},
+        localAgent: { session: makeForkChildSession(undefined) },
+      }),
+    });
+    await runPreStep(ctx, session);
+    const summaryIdx = session.events.findIndex((e) => e.type === 'compaction/summary');
+    const summaryEvent = session.events[summaryIdx];
+    if (summaryEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
+    expect(summaryEvent.data.usage).toBeUndefined();
   });
 });
 
