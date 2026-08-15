@@ -24,7 +24,9 @@ jobs:
       - name: Run check
         run: pnpm run check
 
-  # 打 tag 后自动发布至 npm，使用 trusted publishing
+  # 打 tag 后自动发布至 npm，使用 npm trusted publishing（OIDC，无需 NPM_TOKEN）
+  # 前置条件：npm 官网包设置里的 Trusted Publisher 需绑定本仓库
+  #   （Organization: FanetheDivine / Repository: dsh-plugin-om / Workflow: ci.yml，注意大小写）
   publish:
     name: Publish to npm (trusted publishing)
     needs: check
@@ -40,9 +42,12 @@ jobs:
           version: 11.7.0
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
           cache: pnpm
+      # trusted publishing（OIDC）要求 npm >= 11.5.1；node 24 自带的 npm 可能仍偏旧，显式升级到最新
+      - name: Update npm (>= 11.5.1 required for OIDC)
+        run: npm install -g npm@latest
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Build

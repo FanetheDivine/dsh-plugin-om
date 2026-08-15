@@ -19,10 +19,13 @@
   },
   "files": [
     "dist",
-    "cordis.patch.yml",
     "README.md"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FanetheDivine/dsh-plugin-om.git"
+  },
   "packageManager": "pnpm@11.7.0",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
