@@ -104,15 +104,16 @@ src/
 │   └─ ③ 事件接线（仅主会话生效）
 │        └─ ctx.on('agent/pre-step') → compress.ts  # maybeCompress：两级压缩阻塞串行（先反思后观察）
 │              ├─ reflectPass → summarize.ts        # 摘要 ≥ 窗口 × historyMergeRatio：fork 精简合并 <om-history>
-│              └─ observePass  → summarize.ts       # 未压缩消息 ≥ 窗口 × thresholdRatio：fork 观察日志 → 追加 + 替换
-├── constants.ts              # 共享常量（PLUGIN_LABEL / HISTORY_TAG / CLAIM_EVENT）
+│              ├─ observePass  → summarize.ts       # 未压缩消息 ≥ 窗口 × thresholdRatio：fork 观察日志 → 追加 + 替换
+│              └─ 提交          → compress.ts        # compaction/start → summary → 替换消息(checkpoint) → end；usage 归入主会话
+├── constants.ts              # 共享常量（PLUGIN_LABEL / HISTORY_TAG / COMPACT_CHECKPOINT_PLUGIN）
 ├── types.ts                  # type-only：宿主类型再导出 + 领域类型（MessageNode / MessageIndex）
 ├── config.ts                 # 配置默认值 / 校验（缺省、null、空串回退默认值）
 ├── utils.ts                  # 零依赖工具函数（配置校验 / 文本渲染 / 主会话判定 / 路由解析）
 ├── log-index.ts              # 消息索引（message_id → 消息事件；recall 消费）
-├── summarize.ts              # 观察/反思 persona + 提示词 + fork 摘要子会话
+├── summarize.ts              # 观察/反思 persona + 提示词 + fork 摘要子会话（提取子会话 token usage 归入主会话）
 ├── recall.ts                 # recall 工具
-└── compress.ts               # 两级自动压缩（测量 / 区间计算 / 中断扫描 / 对照表 / 替换 + 影子价格认领）
+└── compress.ts               # 两级自动压缩（测量 / 区间计算 / 中断扫描 / 对照表 / compaction/* 生命周期事件 + checkpoint 替换）
 scripts/                      # release-archive.mjs（CHANGELOG 归档）
 tests/                        # vitest 单元测试（52 例）
 .dsh/skills/                  # 项目级 skill（feature-defect-workflow：需求/缺陷完成工作流）

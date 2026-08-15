@@ -8,5 +8,5 @@ export const PLUGIN_LABEL = 'dsh-plugin-om';
 /** 压缩日志标签名：<om-history>...</om-history> 包裹观察/反思日志块。 */
 export const HISTORY_TAG = 'om-history';
 
-/** 影子价格认领事件类型：token-meter 据此识别被替换（遮蔽）的表层节点。 */
-export const CLAIM_EVENT = 'compaction/prune';
+/** 宿主压缩 checkpoint 标记的 plugin 名（dsh-compaction-basic 的 COMPACT_CHECKPOINT_MARKER.plugin）。 */
+export const COMPACT_CHECKPOINT_PLUGIN = 'compact';

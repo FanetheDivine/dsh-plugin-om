@@ -5,10 +5,12 @@
  * 使 ctx.tools / ctx.tokenMeter / ctx.sessions 等获得与真实宿主一致的类型；
  * ctx.on / ctx.get 等 mixin 方法由 cordis 自身声明，无需本地补充。
  */
+
 import type { Context, EventOptions, Events } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
+import type { CompactionId } from '@deepseek-ai/dsh-compaction';
 import type { ToolResultPruner } from '@deepseek-ai/dsh-compaction-tool-result-pruner';
-import type { Message, UserMessage } from '@deepseek-ai/dsh-llm';
+import type { Message, TokenUsage, UserMessage } from '@deepseek-ai/dsh-llm';
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session';
 import type { SubagentResult, SubagentRun, SubagentStartRequest } from '@deepseek-ai/dsh-subagent';
 import type { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
@@ -24,6 +26,7 @@ export type { PluginConfig } from './config.ts';
  */
 export type {
   Agent,
+  CompactionId,
   Context,
   EventOptions,
   Events,
@@ -35,6 +38,7 @@ export type {
   SubagentStartRequest,
   SystemPrompt,
   TokenMeter,
+  TokenUsage,
   ToolDefinition,
   ToolResultPruner,
   ToolRunContext,
