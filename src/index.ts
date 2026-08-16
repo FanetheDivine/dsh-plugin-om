@@ -20,6 +20,7 @@ import { maybeCompress } from './compress.ts';
 import { resolveConfig } from './config.ts';
 import { RECALL_ENABLED_ENV, SEMANTIC_RECALL_ENABLED_ENV } from './constants.ts';
 import { ensureModelReady, getEmbedder } from './embedding.ts';
+import { makeLogger } from './logger.ts';
 import { buildRecallTool } from './recall.ts';
 import { buildSemanticRecallTool } from './semantic-recall.ts';
 import type { Context } from './types.ts';
@@ -36,8 +37,13 @@ export const inject = ['tools', 'llm', 'tokenMeter', 'sessions'];
  * 两级自动压缩（先反思后观察）。仅主会话生效。
  */
 export function apply(ctx: Context, config?: unknown): void {
+  /** 插件日志门面（step=debug 仅 dev 输出；info/warn 始终输出）。 */
+  const logger = makeLogger(ctx);
   /** 解析后的插件配置（默认值合并 + 校验）。 */
   const resolved = resolveConfig(config);
+  logger.step(
+    `apply 启动：thresholdRatio=${String(resolved.thresholdRatio)} historyMergeRatio=${String(resolved.historyMergeRatio)} compressMaxTokens=${String(resolved.compressMaxTokens)} tailMessageCount=${String(resolved.tailMessageCount)} summaryMode=${resolved.summaryMode}`,
+  );
 
   // recall 工具（code 呈现下即 SDK 绑定 tools.recall(...)）；输出 token 由
   // tool-result-pruner 控制（recall 渲染超大的工具结果时调用其 pruneContent）。
@@ -67,14 +73,16 @@ export function apply(ctx: Context, config?: unknown): void {
   // 失败不影响主流程；仅主会话（subagent 不压缩）。
   ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
     try {
-      if (!signal.aborted && isMainSession(agent.session)) {
+      if (signal.aborted) {
+        logger.step('pre-step 已中止（signal aborted），跳过压缩');
+      } else if (!isMainSession(agent.session)) {
+        logger.step('subagent 会话，跳过压缩（仅主会话生效）');
+      } else {
+        logger.step(`pre-step 触发压缩（会话 ${agent.session.id}）`);
         await maybeCompress(ctx, agent, resolved, signal);
       }
     } catch (error) {
-      ctx.logger.warn(
-        'dsh-plugin-om: pre-step 处理失败: ' +
-          (error instanceof Error ? error.message : String(error)),
-      );
+      logger.warn(`pre-step 处理失败: ${error instanceof Error ? error.message : String(error)}`);
     }
     return next();
   });
