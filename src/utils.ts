@@ -15,27 +15,23 @@ export function fail(message: string): never {
   throw new Error(`dsh-plugin-om: ${message}`);
 }
 
-/** 数值配置项的取值约束（assertNumber 的可选参数）。 */
+/** 数值配置项的取值约束（assertNumber 的可选参数）。不做区间限制——用户提供的值按原样接受。 */
 export type NumberConstraints = {
-  /** 允许的最小值（含），默认 0。 */
-  min?: number;
-  /** 允许的最大值（含），默认 Infinity。 */
-  max?: number;
   /** 是否必须为整数，默认 false。 */
   integer?: boolean;
 };
 
 /**
- * 校验配置数值：必须是有限数且在 [min, max] 内（可选整数约束），
+ * 校验配置数值：必须是有限数（可选整数约束），不限制取值区间；
  * 不满足时抛出带插件前缀的错误。
  */
 export function assertNumber(
   name: string,
   value: unknown,
-  { min = 0, max = Infinity, integer = false }: NumberConstraints = {},
+  { integer = false }: NumberConstraints = {},
 ): void {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
-    fail(`config ${name} must be a finite number in [${min}, ${max}]`);
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    fail(`config ${name} must be a finite number`);
   }
   if (integer && !Number.isInteger(value)) fail(`config ${name} must be an integer`);
 }

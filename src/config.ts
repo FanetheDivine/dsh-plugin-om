@@ -46,15 +46,15 @@ const CONFIG_KEYS = new Set<string>([
   'modelDir',
 ]);
 
-/** 数值配置键（用于逐键校验其取值区间）。 */
+/** 数值配置键（仅校验有限数；整数键另校验整数性，不做取值区间限制）。 */
 type NumberKey = 'thresholdRatio' | 'historyMergeRatio' | 'compressMaxTokens' | 'tailMessageCount';
 
-/** 数值键校验参数表：键名 + [min, max, integer]。 */
-const NUMBER_KEYS: Array<[NumberKey, number, number, boolean]> = [
-  ['thresholdRatio', 0.01, 1, false],
-  ['historyMergeRatio', 0.01, 1, false],
-  ['compressMaxTokens', 1, Infinity, true],
-  ['tailMessageCount', 1, Infinity, true],
+/** 数值键校验参数表：键名 + [integer]。不限制取值区间——用户提供的值按原样接受（便于调试）。 */
+const NUMBER_KEYS: Array<[NumberKey, boolean]> = [
+  ['thresholdRatio', false],
+  ['historyMergeRatio', false],
+  ['compressMaxTokens', true],
+  ['tailMessageCount', true],
 ];
 
 /** 归一化原始配置输入：缺省 / null / 空串（含空白串）视为空对象（全部用默认值）。 */
@@ -90,12 +90,12 @@ export function resolveConfig(raw?: unknown): Readonly<PluginConfig> {
   }
   /** 合并结果（以默认值为基底）。 */
   const config: PluginConfig = { ...DEFAULT_CONFIG };
-  for (const [key, min, max, integer] of NUMBER_KEYS) {
+  for (const [key, integer] of NUMBER_KEYS) {
     /** 该键的原始值（留空则跳过，保持默认值）。 */
     const value = input[key];
     if (value === undefined || value === null) continue;
     if (typeof value === 'string' && value.trim() === '') continue;
-    assertNumber(key, value, { min, max, integer });
+    assertNumber(key, value, { integer });
     config[key] = value as number;
   }
   /** 摘要模式（环境变量覆盖默认值）。 */
