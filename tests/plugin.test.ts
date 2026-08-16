@@ -1,6 +1,16 @@
 // dsh-plugin-om 单元测试（vitest）：配置校验 / 消息索引 /
 // OM 两级压缩（观察/反思 fork 摘要）/ recall（范围+拒绝+参数校验）/ apply 接线。
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// 隔离 apply 的模型下载编排：ensureModelReady 打桩为"就绪"，避免单测触发真实下载/网络
+vi.mock('../src/embedding.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/embedding.ts')>();
+  return {
+    ...actual,
+    ensureModelReady: vi.fn(async () => 'ready' as const),
+  };
+});
+
 import {
   buildMessageIdTable,
   computeCompressRange,
@@ -17,7 +27,7 @@ import {
   RECALL_ENABLED_ENV,
   SEMANTIC_RECALL_ENABLED_ENV,
 } from '../src/constants.ts';
-import { cosineSimilarity } from '../src/embedding.ts';
+import { cosineSimilarity, ensureModelReady } from '../src/embedding.ts';
 import { apply, inject, name } from '../src/index.ts';
 import { indexMessages, messageIdOfEvent } from '../src/log-index.ts';
 import { buildRecallTool, parseRecallArgs } from '../src/recall.ts';
@@ -1576,6 +1586,34 @@ describe('recall-semantic 工具', () => {
     const span = await tool.execute({ query: '数据库' }, exec as never);
     expect(String(span)).toContain('没有可检索的消息');
   });
+
+  it('模型未就绪：返回告知文案（不报错、不触发嵌入）', async () => {
+    const session = textSession([['m-db', '数据库配置']]);
+    let embedded = false;
+    const tool = buildSemanticRecallTool({
+      embedder: async (texts) => {
+        embedded = true;
+        return fakeEmbedder()(texts);
+      },
+      modelStatus: async () => 'downloading' as const,
+    });
+    const result = await tool.execute({ query: '数据库' }, { agent: { session } } as never);
+    const out = String(result);
+    expect(out).toContain('尚未就绪');
+    expect(out).toContain('recall');
+    expect(embedded).toBe(false);
+  });
+
+  it('模型就绪（ready）时正常执行检索', async () => {
+    const session = textSession([['m-db', '数据库配置']]);
+    const tool = buildSemanticRecallTool({
+      embedder: fakeEmbedder(),
+      modelStatus: async () => 'ready' as const,
+    });
+    const out = String(await tool.execute({ query: '数据库' }, { agent: { session } } as never));
+    expect(out).toContain('数据库配置');
+    expect(out).toContain('message_id=m-db');
+  });
 });
 
 // 环境变量开关判定：OM_RECALL_ENABLED / OM_SEMANTIC_RECALL_ENABLED
@@ -1676,6 +1714,25 @@ describe('apply 接线（环境变量开关）', () => {
       apply(ctx, {});
       expect(registeredNames(ctx)).toEqual(expect.arrayContaining(['recall', 'recall-semantic']));
     }
+  });
+
+  it('env 启用：apply 触发模型后台预热下载（ensureModelReady 被调用）', () => {
+    const mockEnsure = ensureModelReady as unknown as ReturnType<typeof vi.fn>;
+    mockEnsure.mockClear();
+    for (const key of envKeys) delete process.env[key];
+    const ctx = makeCtx();
+    apply(ctx, {});
+    expect(mockEnsure).toHaveBeenCalled();
+  });
+
+  it('OM_SEMANTIC_RECALL_ENABLED=false：不触发模型下载', () => {
+    const mockEnsure = ensureModelReady as unknown as ReturnType<typeof vi.fn>;
+    mockEnsure.mockClear();
+    for (const key of envKeys) delete process.env[key];
+    process.env[SEMANTIC_RECALL_ENABLED_ENV] = 'false';
+    const ctx = makeCtx();
+    apply(ctx, {});
+    expect(mockEnsure).not.toHaveBeenCalled();
   });
 });
 

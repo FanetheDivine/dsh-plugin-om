@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { ensureModelReady, resetModelDownloads } from '../src/embedding.ts';
 import {
   downloadModel,
   EMBEDDING_MODEL_ID,
@@ -147,5 +148,69 @@ describe('downloadModel', () => {
     await expect(downloadModel(modelDir, { fetchImpl: impl })).rejects.toThrow(/HTTP 404/);
     expect(existsSync(modelTargetPath(modelDir))).toBe(false);
     expect(existsSync(`${modelTargetPath(modelDir)}.tmp`)).toBe(false);
+  });
+});
+
+describe('ensureModelReady（运行时下载编排）', () => {
+  afterEach(() => {
+    resetModelDownloads();
+  });
+
+  /** 等待宏任务让后台下载任务结算（fetch 替身为立即 resolve）。 */
+  async function settle() {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  it('模型已存在：返回 ready，不发起下载', async () => {
+    const modelDir = path.join(tempRoot(), 'models', EMBEDDING_MODEL_ID);
+    writeExisting(modelTargetPath(modelDir), 'x');
+    const { impl, calls } = fakeFetch(200);
+    await expect(ensureModelReady(modelDir, () => {}, impl)).resolves.toBe('ready');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('模型缺失：返回 downloading 并触发后台下载（不阻塞），完成后落盘', async () => {
+    const modelDir = path.join(tempRoot(), 'models', EMBEDDING_MODEL_ID);
+    const { impl, calls } = fakeFetch(200, 'bytes');
+    const status = await ensureModelReady(modelDir, () => {}, impl);
+    expect(status).toBe('downloading');
+    expect(calls).toHaveLength(1);
+    await settle();
+    expect(existsSync(modelTargetPath(modelDir))).toBe(true);
+  });
+
+  it('单飞：并发多次调用只发起一次下载', async () => {
+    const modelDir = path.join(tempRoot(), 'models', EMBEDDING_MODEL_ID);
+    const { impl, calls } = fakeFetch(200, 'bytes');
+    const statuses = await Promise.all([
+      ensureModelReady(modelDir, () => {}, impl),
+      ensureModelReady(modelDir, () => {}, impl),
+      ensureModelReady(modelDir, () => {}, impl),
+    ]);
+    expect(statuses).toEqual(['downloading', 'downloading', 'downloading']);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('下载完成后再次调用返回 ready（无需另行通知）', async () => {
+    const modelDir = path.join(tempRoot(), 'models', EMBEDDING_MODEL_ID);
+    const { impl } = fakeFetch(200, 'bytes');
+    await ensureModelReady(modelDir, () => {}, impl);
+    await settle();
+    await expect(ensureModelReady(modelDir, () => {}, impl)).resolves.toBe('ready');
+  });
+
+  it('下载失败：仅记日志，下次调用自动重试', async () => {
+    const modelDir = path.join(tempRoot(), 'models', EMBEDDING_MODEL_ID);
+    const { impl, calls } = fakeFetch(500);
+    const warns: string[] = [];
+    await ensureModelReady(modelDir, (m) => warns.push(m), impl);
+    expect(calls).toHaveLength(1);
+    await settle();
+    expect(warns.length).toBe(1);
+    expect(warns[0]).toContain('下载失败');
+    // 下次调用重新触发下载（自动重试）
+    await ensureModelReady(modelDir, () => {}, impl);
+    expect(calls).toHaveLength(2);
   });
 });

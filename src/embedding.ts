@@ -2,7 +2,9 @@
  * 本地语义嵌入（recall-semantic 的向量引擎）。
  *
  * - 模型：Xenova/paraphrase-multilingual-MiniLM-L12-v2（量化 ONNX，多语言，
- *   中英 + 代码均可处理），随插件打包在 models/ 下，完全离线、零下载。
+ *   中英 + 代码均可处理），模型文件在 models/ 下，完全离线、零下载。
+ * - 运行时下载：模型 onnx 缺失时由 ensureModelReady 后台下载（不阻塞、单飞、
+ *   失败自动重试），下载逻辑见 model-download.ts；就绪前工具告知模型。
  * - 懒加载：首次调用才 `import('@huggingface/transformers')` 并加载 pipeline，
  *   插件启动不阻塞；加载结果单例缓存（resetEmbedder 供测试重置）。
  * - 批处理：一次推理多条文本（mean pooling + L2 归一化），输出每条的向量。
@@ -14,7 +16,13 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EMBEDDING_MODEL_ID } from './model-download.ts';
+import {
+  downloadModel,
+  EMBEDDING_MODEL_ID,
+  type ModelFetch,
+  modelTargetPath,
+  needsDownload,
+} from './model-download.ts';
 
 /** 当前模块所在路径（dist/ 或 src/，models 在其上一级）。 */
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -76,6 +84,50 @@ export function getEmbedder(modelDir: string = BUNDLED_MODEL_DIR): Promise<Embed
 /** 重置模型单例（测试用：卸载已加载的 pipeline）。 */
 export function resetEmbedder(): void {
   pipelinePromise = null;
+}
+
+/** 模型就绪状态：ready=本地已就绪可直接加载；downloading=缺失，后台下载中/将自动重试。 */
+export type ModelStatus = 'ready' | 'downloading';
+
+/** 每个 modelDir 的在途下载任务（单飞：并发查询只发起一次下载）。 */
+const inflightDownloads = new Map<string, Promise<void>>();
+
+/**
+ * 确保模型就绪（运行时按需下载编排）。
+ * - 本地 onnx 已存在 → 'ready'（不触发下载）。
+ * - 缺失 → 启动后台下载（不阻塞，单飞）并返回 'downloading'；下载失败仅调用
+ *   warn 记录日志并结束本次尝试，下次调用会重新触发下载（自动重试）。
+ * - warn 可选：下载失败时的日志回调（默认静默；apply 注入 ctx.logger.warn）。
+ * - fetchImpl 可注入（测试传替身，默认全局 fetch）。
+ */
+export function ensureModelReady(
+  modelDir: string = BUNDLED_MODEL_DIR,
+  warn: (message: string) => void = () => {},
+  fetchImpl?: ModelFetch,
+): Promise<ModelStatus> {
+  const target = modelTargetPath(modelDir);
+  if (!needsDownload(target)) return Promise.resolve('ready');
+  if (!inflightDownloads.has(modelDir)) {
+    // fetchImpl 可选注入（测试传替身）；缺省时不下传，保持 exactOptionalPropertyTypes 满足
+    const task: Promise<void> = downloadModel(
+      modelDir,
+      fetchImpl === undefined ? { log: () => {} } : { fetchImpl, log: () => {} },
+    )
+      .then(() => {})
+      .catch((err: unknown) => {
+        warn('[download-model] 下载失败：' + (err instanceof Error ? err.message : String(err)));
+      })
+      .finally(() => {
+        inflightDownloads.delete(modelDir);
+      });
+    inflightDownloads.set(modelDir, task);
+  }
+  return Promise.resolve('downloading');
+}
+
+/** 重置下载状态（测试用：清空在途下载任务记录）。 */
+export function resetModelDownloads(): void {
+  inflightDownloads.clear();
 }
 
 /**
