@@ -1,0 +1,28 @@
+# Changelog
+
+## [0.0.6] - 2026-08-16
+
+- feat: 环境变量改为 config 配置键——DSH_OM_SUMMARY_MODE → summaryMode、DSH_OM_DEBUG → debug、OM_RECALL_ENABLED → recallEnabled、OM_SEMANTIC_RECALL_ENABLED → semanticRecallEnabled（缺省语义不变：summaryMode 缺省 fork、debug 缺省按 NODE_ENV、recall 开关缺省启用）；移除环境变量读取与 envFlagEnabled；README 环境变量章节改为配置项表述，示例改为 cordis.patch.yml 配置
+- docs: 删除 README 中「recall 工具」「recall-semantic 工具」两节文档（工具注册与实现保留，配置开关见插件配置项）
+- feat: 移除 summaryMode 旧值 prefix/system 兼容（仅接受 fork/new/disable，非法值在插件加载时报错）
+- feat: fork 模式输入从尾部之前实际截断（tailMessageCount 尾部不注入请求，提示词不再含尾部范围规则）
+- feat: 摘要模式改名 fork/new 并新增 disable（DSH_OM_SUMMARY_MODE=fork|new|disable，兼容旧值 prefix/system；disable 关闭自动压缩，recall 工具仍独立开关）
+- feat: 摘要提示词重构——fork 声明停止任务/禁止工具、new 仅说明总结日志；总结范围 = 上一个 <om-history> 之后到现在，用户消息完整保留原文，AI 消息模块化压缩（目的相同、关联度高的连续行为聚合）；倾向于新消息、旧消息一句话带过、新旧冲突强调新消息不动旧条目；尾部不压缩、不进日志
+- feat: 摘要输出为合法 XML 日志（<om-history> 内 <user_message id> 完整原文 + <assistant last_id> 聚合模块），多块按序拼接存储（appendHistoryMessage 不再额外包裹标签）；不信任 AI 输出——取首个 <om-history> 到最后一个 </om-history>（含首尾）切为日志，找不到或中间内容 <10 视为不合法并按失败重试，产出后插入格式说明注释
+- feat: new 模式输入构造——被压缩消息 XML 包裹（不含旧压缩日志、不含尾部），「被压缩消息」提示并入指令；摘要消息判定改为 source 标记（plugin ∈ compact/dsh-plugin-om），不再用文本含 <om-history> 判断
+- docs: README 同步摘要模式（fork/new/disable）、XML 日志格式、输入构造与尾部语义（不压缩/不被替换/不进日志）
+- test: 摘要提取校验（extractSummaryLog）/ source 标记判定 / disable 模式 / XML 渲染与多块拼接用例
+- feat: recall-semantic 模型改为运行时按需下载（下载核心迁入 src/model-download.ts，移除 prepack；apply 后台预热，未就绪时工具告知模型；README 同步依赖策略/配置/环境变量/文件地图）
+- chore: recall-semantic 模型二进制不进入 git 仓库（构建/发布时下载，规避 GitHub 单文件 >100MB 限制）
+- feat: 增加环境变量限制 recall 能力（OM_RECALL_ENABLED / OM_SEMANTIC_RECALL_ENABLED，值恰为 false 时禁用对应工具）
+- docs: README 同步 recall-semantic（工作原理/配置/工具说明/文件地图）
+- test: recall-semantic 用例（schema/区间/排序/遮蔽/回退/pruner/守卫）
+- feat: 接线 recall-semantic（apply 注册 + modelDir 配置）
+- feat: recall-semantic 工具（query 语义检索 + 区间限定 + 回退全量 + 匹配说明）
+- feat: 本地 ONNX 嵌入引擎（懒加载单例 + 批量 embed + cosine 相似度）
+- feat: 引入本地多语言嵌入模型（recall-semantic 依赖，同步 pnpm-workspace 依赖白名单）
+- 优化skill
+- feat: 压缩时机支持 turn 中间触发——`computeCompressRange` 去掉 turn/end 封顶，pre-step 时日志 call-result 完备即可压缩当前 turn 消息；区间终点回退到 tool-call/result 配对平衡点（不切段）
+- feat: 摘要改直连 `ctx.llm.stream()`（不再 fork 子会话），新增环境变量 `DSH_OM_SUMMARY_MODE` 双模式：`prefix`（缺省）复用主会话 `requestHeader()` 的 system/tools 与完整派生历史 + 末尾指令 user 消息（充分利用 provider 前缀缓存）；`system` 模式指令作为 system、被压缩消息与参考尾部作为 user 输入；usage 从流式 usage chunk 提取归入主会话
+- feat: `tailMessageCount` 语义改为「不压缩的消息」（尾部保留、不参与替换），同时作为摘要模型的参考尾部（摘要须准确反映最近上下文进度/下一步）
+- docs: 同步 README（工作原理 / 配置项与环境变量 / 调用链文件地图）与 CHANGELOG
