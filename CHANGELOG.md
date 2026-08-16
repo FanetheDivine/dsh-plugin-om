@@ -1,5 +1,11 @@
 # Changelog
 
+- feat: 摘要模式改名 fork/new 并新增 disable（DSH_OM_SUMMARY_MODE=fork|new|disable，兼容旧值 prefix/system；disable 关闭自动压缩，recall 工具仍独立开关）
+- feat: 摘要提示词重构——fork 声明停止任务/禁止工具、new 仅说明总结日志；总结范围 = 上一个 <om-history> 之后到现在，用户消息完整保留原文，AI 消息模块化压缩（目的相同、关联度高的连续行为聚合）；倾向于新消息、旧消息一句话带过、新旧冲突强调新消息不动旧条目；尾部不压缩、不进日志
+- feat: 摘要输出为合法 XML 日志（<om-history> 内 <user_message id> 完整原文 + <assistant last_id> 聚合模块），多块按序拼接存储（appendHistoryMessage 不再额外包裹标签）；不信任 AI 输出——取首个 <om-history> 到最后一个 </om-history>（含首尾）切为日志，找不到或中间内容 <10 视为不合法并按失败重试，产出后插入格式说明注释
+- feat: new 模式输入构造——被压缩消息 XML 包裹（不含旧压缩日志、不含尾部），「被压缩消息」提示并入指令；摘要消息判定改为 source 标记（plugin ∈ compact/dsh-plugin-om），不再用文本含 <om-history> 判断
+- docs: README 同步摘要模式（fork/new/disable）、XML 日志格式、输入构造与尾部语义（不压缩/不被替换/不进日志）
+- test: 摘要提取校验（extractSummaryLog）/ source 标记判定 / disable 模式 / XML 渲染与多块拼接用例
 - feat: recall-semantic 模型改为运行时按需下载（下载核心迁入 src/model-download.ts，移除 prepack；apply 后台预热，未就绪时工具告知模型；README 同步依赖策略/配置/环境变量/文件地图）
 - chore: recall-semantic 模型二进制不进入 git 仓库（构建/发布时下载，规避 GitHub 单文件 >100MB 限制）
 - feat: 增加环境变量限制 recall 能力（OM_RECALL_ENABLED / OM_SEMANTIC_RECALL_ENABLED，值恰为 false 时禁用对应工具）

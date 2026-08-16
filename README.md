@@ -6,12 +6,13 @@
 
 ## 工作原理
 
-1. 在未压缩消息超过阈值后摘要
-2. 摘要会替换原始消息，并追加至现有摘要
-3. 在摘要超过阈值后，重新摘要
-4. 摘要过程中保留关键的message_id，允许模型精确recall
-5. 压缩在 `agent/pre-step` 触发（**turn 中间即可**，无需等待轮次结束）：摘要直连 LLM，默认（`prefix` 模式）复用主会话请求前缀（系统提示词 + 完整消息 + 末尾指令），充分利用 provider 前缀缓存
-6. 提供语义召回（recall-semantic）：按自然语言在全部消息日志中检索，被压缩/遮蔽的消息也可按语义找回
+1. 在未压缩消息超过阈值后摘要：压缩**尾部之前**的消息并用摘要替换（尾部 `tailMessageCount` 条不压缩、不被替换、不进日志）
+2. 摘要替换原始消息，并以**多个 `<om-history>` 块按序拼接**的方式追加至现有摘要（旧块原样保留，新块追加在末尾）
+3. 摘要超过阈值后重新摘要（反思：精简合并现有日志块）
+4. 摘要输出为**合法 XML 日志**（`<om-history>` 内 `<user_message id>` 完整保留用户原文、`<assistant last_id>` 聚合 AI 模块）；插件不信任 AI 输出，取首个 `<om-history>` 到最后一个 `</om-history>`（含首尾）切为日志，找不到或中间内容过短视为不合法并按失败重试；产出后插入格式说明注释
+5. 摘要过程中保留 message_id（`<user_message id>` / `<assistant last_id>`），允许模型精确 recall
+6. 压缩在 `agent/pre-step` 触发（**turn 中间即可**，无需等待轮次结束）：摘要直连 LLM，模式见[摘要模式](#摘要模式环境变量)——`fork`（缺省）复用主会话请求前缀（系统提示词 + 完整消息 + 末尾指令），充分利用 provider 前缀缓存；`new` 只注入被压缩消息（XML 包裹）；`disable` 关闭自动压缩
+7. 提供语义召回（recall-semantic）：按自然语言在全部消息日志中检索，被压缩/遮蔽的消息也可按语义找回
 
 ### 注意
 
@@ -189,14 +190,14 @@ src/
 ├── log-index.ts              # 消息索引（message_id → 消息事件；recall 消费）
 ├── embedding.ts              # 本地 ONNX 嵌入（@huggingface/transformers + 本地模型；运行时按需下载编排 / 懒加载 / 批量 / cosine）
 ├── model-download.ts          # 模型下载原语（modelSourceUrl / needsDownload / 原子落盘；运行时与 dev CLI 共用）
-├── summarize.ts              # 观察/反思 persona + 提示词 + 直连 ctx.llm.stream() 摘要（prefix/system 双模式；流式 usage 归入主会话）
+├── summarize.ts              # 观察/反思 persona + 提示词 + 直连 ctx.llm.stream() 摘要（fork/new 双模式；extractSummaryLog 提取校验；流式 usage 归入主会话）
 ├── recall.ts                 # recall 工具
 ├── semantic-recall.ts        # recall-semantic 工具（query 语义检索 + 区间限定 + 回退全量 + 匹配说明）
-└── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / 中断扫描 / 对照表 / compaction/* 生命周期事件 + checkpoint 替换）
+└── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / 中断扫描 / 对照表 / source 标记判定摘要消息 / compaction/* 生命周期事件 + checkpoint 替换）
 models/
 └── paraphrase-multilingual-MiniLM-L12-v2/   # 嵌入模型目录（小文件随包分发；onnx 二进制由运行时按需下载到此处，不进 git）
 scripts/                      # release-archive.mjs（CHANGELOG 归档）/ download-model.mjs（开发手动预下载 CLI）
-tests/                        # vitest 单元测试（121 例）
+tests/                        # vitest 单元测试（136 例）
 .dsh/skills/                  # 项目级 skill（feature-defect-workflow：需求/缺陷完成工作流）
 ```
 
