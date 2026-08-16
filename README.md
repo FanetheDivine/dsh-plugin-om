@@ -4,28 +4,6 @@
 
 在 DSH 里应用 [Observational Memory](https://mastra.ai/research/observational-memory) 风格的上下文管理策略
 
-## 工作原理
-
-1. 在未压缩消息超过阈值后摘要：压缩**尾部之前**的消息并用摘要替换（尾部 `tailMessageCount` 条不压缩、不被替换、不进日志）
-2. 摘要替换原始消息，并以**多个 `<om-history>` 块按序拼接**的方式追加至现有摘要（旧块原样保留，新块追加在末尾）
-3. 摘要超过阈值后重新摘要（反思：精简合并现有日志块）
-4. 摘要输出为**合法 XML 日志**（`<om-history>` 内 `<user_message id>` 完整保留用户原文、`<assistant last_id>` 聚合 AI 模块）；插件不信任 AI 输出，取首个 `<om-history>` 到最后一个 `</om-history>`（含首尾）切为日志，找不到或中间内容过短视为不合法并按失败重试；产出后插入格式说明注释
-5. 摘要过程中保留 message_id（`<user_message id>` / `<assistant last_id>`），允许模型精确 recall
-6. 压缩在 `agent/pre-step` 触发（**turn 中间即可**，无需等待轮次结束）：摘要直连 LLM，模式见[摘要模式](#摘要模式)——`fork`（缺省）复用主会话请求前缀（系统提示词 + 截至尾部前的消息 + 末尾指令），充分利用 provider 前缀缓存；`new` 只注入被压缩消息（XML 包裹）；`disable` 关闭自动压缩
-7. 提供语义召回（recall-semantic）：按自然语言在全部消息日志中检索，被压缩/遮蔽的消息也可按语义找回
-
-### 注意
-
-- recall 不截断，建议保留 `tool-result-pruner`
-- 默认上下文压缩插件 `compaction-basic` 到达阈值后会自动摘要，不建议和此插件一起使用
-- recall-semantic 使用本地多语言嵌入模型（paraphrase-multilingual-MiniLM-L12-v2，量化 ONNX），完全离线；首次调用时加载模型，之后复用。模型二进制（~113MB）不进入 git 仓库，改为**运行时按需下载**：启用 recall-semantic 且模型缺失时，插件启动即后台自动下载（不阻塞），未就绪时工具会告知模型（见[依赖策略](#依赖策略)）
-
-### 依赖策略
-
-- 复用dsh宿主提供的依赖，如 cordis / dsh-tools / zod 等
-- 例外：recall-semantic 的本地嵌入需要运行时依赖 `@huggingface/transformers`（transformers.js v4 + onnxruntime-node），模型小文件（config/tokenizer 等）随 npm 包分发（`models/`），onnx 二进制不做构建/发布时下载
-- 模型二进制：量化 ONNX 约 113MB，超过 GitHub 单文件 100MB 限制，**不进入 git 仓库**。改为**运行时按需下载**：仅当配置键 `semanticRecallEnabled` 启用且 `models/<id>/onnx/model_quantized.onnx` 缺失时，插件 apply 后台自动从 HuggingFace（[Xenova 转换仓库](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2)）下载到 `models/`（不阻塞；下载失败仅记日志，下次调用自动重试；未就绪时 `recall-semantic` 工具返回文案告知模型）；本地开发也可用 `pnpm run download:model` 手动预下载（已存在则跳过，`--force` 强制重下）；直连 `huggingface.co` 受限时设置环境变量 `HF_ENDPOINT=https://hf-mirror.com` 走镜像
-
 ## 安装与启用
 
 ### 说明
@@ -76,7 +54,9 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 而`web-profile`里定义了多个"预设agent"`preset-agent` 这里主要说的是`preset-agent`的问题
 
-`preset-agent`配置里自带一个`compaction-basic`。由于配置注入的顺序是层级低的覆盖层级高的，所以`cordis.patch.yml`对`compaction-basic`的禁用不会生效。
+`preset-agent`配置里自带一个`compaction-basic`，会在到达阈值后做简单的摘要，与此插件冲突。
+
+由于配置注入的顺序是层级低的覆盖层级高的，所以`cordis.patch.yml`对`compaction-basic`的禁用不会生效。
 
 此外，这个插件位于`preset-agent`的定义而非额外的安装，也无法通过`dsh plugin`卸载。
 
@@ -86,19 +66,37 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 - 定义不含`compaction-basic`的`preset-agent`
 - `compaction-basic`压缩阈值是80%上下文窗口，而只需要确保OM的配置中，`thresholdRatio`+`historyMergeRatio`<0.8，理论上没到强制摘要就会被OM压缩了(默认值满足这一条件)
 
+## 工作原理
+
+1. 在未压缩的消息到达观察阈值后，进行摘要
+2. 将新生成摘要追加到已有摘要后
+3. 如果摘要总长到达反思阈值，对其本身进行摘要
+4. 提供recall/recall-semantic两个tool进行检索
+
+### 注意
+
+- recall 不截断，建议保留 `tool-result-pruner`
+- recall-semantic 使用本地多语言嵌入模型（paraphrase-multilingual-MiniLM-L12-v2），
+
+### 依赖策略
+
+- 复用dsh宿主提供的依赖，如 cordis / dsh-tools / zod 等
+- 例外：recall-semantic 的本地嵌入需要运行时依赖 `@huggingface/transformers`（transformers.js v4 + onnxruntime-node），模型小文件（config/tokenizer 等）随 npm 包分发（`models/`），onnx 二进制不做构建/发布时下载
+- 模型二进制：量化 ONNX 约 113MB，超过 GitHub 单文件 100MB 限制，**不进入 git 仓库**。改为**运行时按需下载**：仅当配置键 `semanticRecallEnabled` 启用且 `models/<id>/onnx/model_quantized.onnx` 缺失时，插件 apply 后台自动从 HuggingFace（[Xenova 转换仓库](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2)）下载到 `models/`（不阻塞；下载失败仅记日志，下次调用自动重试；未就绪时 `recall-semantic` 工具返回文案告知模型）；本地开发也可用 `pnpm run download:model` 手动预下载（已存在则跳过，`--force` 强制重下）；直连 `huggingface.co` 受限时设置环境变量 `HF_ENDPOINT=https://hf-mirror.com` 走镜像
+
 ## 插件配置项
 
-| 键                  | 默认     | 含义                                                                                                          |
-| ------------------- | -------- | ------------------------------------------------------------------------------------------------------------- |
-| `thresholdRatio`    | `0.5`    | 观察阈值：未压缩消息 ≥ 窗口 × 该比例触发压缩                                                                  |
-| `historyMergeRatio` | `0.2`    | 反思阈值：摘要 ≥ 窗口 × 该比例触发精简合并                                                                    |
-| `compressMaxTokens` | `4096`   | 单次摘要（观察/反思调用）生成上限                                                                             |
-| `tailMessageCount`  | `10`     | 尾部保留的不压缩消息条数（不压缩、不被替换、不进摘要日志）                                                    |
-| `modelDir`          | 打包模型 | recall-semantic 嵌入模型目录（默认插件内打包的本地模型；可指向自定义目录）。onnx 缺失时运行时自动下载到该目录 |
-| `summaryMode`       | `fork`  | 摘要模式：`fork`（缺省）/ `new` / `disable`（关闭自动压缩）；非法值在插件加载时报错（见[摘要模式](#摘要模式)） |
-| `debug`             | dev      | 压缩流程步骤级（debug）日志开关：`true` 强制开启、`false` 强制关闭；缺省按 `NODE_ENV !== 'production'` 判定（dev/test 输出，生产隐藏）。**失败日志不受此开关影响，始终输出** |
-| `recallEnabled`     | `true`  | 是否注册 `recall` 工具（`false` 时禁用，不注册）                                                                               |
-| `semanticRecallEnabled` | `true`  | 是否注册 `recall-semantic` 工具（`false` 时禁用，不注册、不触发模型下载）                                                |
+| 键                      | 默认     | 含义                                                                                                                                                                         |
+| ----------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `thresholdRatio`        | `0.5`    | 观察阈值：未压缩消息 ≥ 窗口 × 该比例触发压缩                                                                                                                                 |
+| `historyMergeRatio`     | `0.2`    | 反思阈值：摘要 ≥ 窗口 × 该比例触发精简合并                                                                                                                                   |
+| `compressMaxTokens`     | `4096`   | 单次摘要（观察/反思调用）生成上限                                                                                                                                            |
+| `tailMessageCount`      | `10`     | 尾部保留的不压缩消息条数（不压缩、不被替换、不进摘要日志）                                                                                                                   |
+| `modelDir`              | 打包模型 | recall-semantic 嵌入模型目录（默认插件内打包的本地模型；可指向自定义目录）。onnx 缺失时运行时自动下载到该目录                                                                |
+| `summaryMode`           | `fork`   | 摘要模式：`fork`（缺省）/ `new` / `disable`（关闭自动压缩）；非法值在插件加载时报错（见[摘要模式](#摘要模式)）                                                               |
+| `debug`                 | dev      | 压缩流程步骤级（debug）日志开关：`true` 强制开启、`false` 强制关闭；缺省按 `NODE_ENV !== 'production'` 判定（dev/test 输出，生产隐藏）。**失败日志不受此开关影响，始终输出** |
+| `recallEnabled`         | `true`   | 是否注册 `recall` 工具（`false` 时禁用，不注册）                                                                                                                             |
+| `semanticRecallEnabled` | `true`   | 是否注册 `recall-semantic` 工具（`false` 时禁用，不注册、不触发模型下载）                                                                                                    |
 
 > 数值键（`thresholdRatio` / `historyMergeRatio` / `compressMaxTokens` / `tailMessageCount`）**不做取值区间限制**（如阈值不再限定 0.01–1）：用户提供的值按原样接受（仅校验为有限数，整数键另校验整数性），便于调试时设置任意值。
 
