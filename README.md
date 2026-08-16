@@ -200,6 +200,4 @@ tests/                        # vitest 单元测试（136 例）
 .dsh/skills/                  # 项目级 skill（feature-defect-workflow：需求/缺陷完成工作流）
 ```
 
-## 开发计划
-
-- 将OM和recall分为两个包
+## TODO
