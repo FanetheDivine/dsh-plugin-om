@@ -18,11 +18,12 @@
 
 import { maybeCompress } from './compress.ts';
 import { resolveConfig } from './config.ts';
+import { RECALL_ENABLED_ENV, SEMANTIC_RECALL_ENABLED_ENV } from './constants.ts';
 import { getEmbedder } from './embedding.ts';
 import { buildRecallTool } from './recall.ts';
 import { buildSemanticRecallTool } from './semantic-recall.ts';
 import type { Context } from './types.ts';
-import { isMainSession } from './utils.ts';
+import { envFlagEnabled, isMainSession } from './utils.ts';
 
 /** 插件名（Loader 识别入口的稳定标识）。 */
 export const name = 'dsh-plugin-om';
@@ -39,17 +40,23 @@ export function apply(ctx: Context, config?: unknown): void {
   const resolved = resolveConfig(config);
 
   // recall 工具（code 呈现下即 SDK 绑定 tools.recall(...)）；输出 token 由
-  // tool-result-pruner 控制（recall 渲染超大的工具结果时调用其 pruneContent）
-  ctx.tools.register(buildRecallTool(() => ctx.get('toolResultPruner')));
+  // tool-result-pruner 控制（recall 渲染超大的工具结果时调用其 pruneContent）。
+  // 环境变量 OM_RECALL_ENABLED=false 时禁用（不注册该工具）。
+  if (envFlagEnabled(RECALL_ENABLED_ENV)) {
+    ctx.tools.register(buildRecallTool(() => ctx.get('toolResultPruner')));
+  }
 
   // recall-semantic 工具：本地 ONNX embedding（懒加载，首次调用才加载模型），
-  // 输出同样由 tool-result-pruner 裁剪
-  ctx.tools.register(
-    buildSemanticRecallTool({
-      getPruner: () => ctx.get('toolResultPruner'),
-      embedder: (texts) => getEmbedder(resolved.modelDir).then((embed) => embed(texts)),
-    }),
-  );
+  // 输出同样由 tool-result-pruner 裁剪。
+  // 环境变量 OM_SEMANTIC_RECALL_ENABLED=false 时禁用（不注册，嵌入模型也不会被加载）。
+  if (envFlagEnabled(SEMANTIC_RECALL_ENABLED_ENV)) {
+    ctx.tools.register(
+      buildSemanticRecallTool({
+        getPruner: () => ctx.get('toolResultPruner'),
+        embedder: (texts) => getEmbedder(resolved.modelDir).then((embed) => embed(texts)),
+      }),
+    );
+  }
 
   // 两级自动压缩：pre-step 阻塞串行（先反思压缩过往摘要，后观察压缩新消息），
   // 失败不影响主流程；仅主会话（subagent 不压缩）。

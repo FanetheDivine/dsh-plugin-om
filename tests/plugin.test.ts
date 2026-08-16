@@ -1,6 +1,6 @@
 // dsh-plugin-om 单元测试（vitest）：配置校验 / 消息索引 /
 // OM 两级压缩（观察/反思 fork 摘要）/ recall（范围+拒绝+参数校验）/ apply 接线。
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   buildMessageIdTable,
   computeCompressRange,
@@ -11,7 +11,12 @@ import {
   scanInterruptions,
 } from '../src/compress.ts';
 import { resolveConfig } from '../src/config.ts';
-import { HISTORY_TAG, PLUGIN_LABEL } from '../src/constants.ts';
+import {
+  HISTORY_TAG,
+  PLUGIN_LABEL,
+  RECALL_ENABLED_ENV,
+  SEMANTIC_RECALL_ENABLED_ENV,
+} from '../src/constants.ts';
 import { cosineSimilarity } from '../src/embedding.ts';
 import { apply, inject, name } from '../src/index.ts';
 import { indexMessages, messageIdOfEvent } from '../src/log-index.ts';
@@ -29,6 +34,7 @@ import {
   REFLECTOR_PERSONA,
 } from '../src/summarize.ts';
 import type { Session, SessionEvent } from '../src/types.ts';
+import { envFlagEnabled } from '../src/utils.ts';
 import {
   buildToolCallFlow,
   makeCtx,
@@ -1569,6 +1575,107 @@ describe('recall-semantic 工具', () => {
     const exec = { agent: { session } };
     const span = await tool.execute({ query: '数据库' }, exec as never);
     expect(String(span)).toContain('没有可检索的消息');
+  });
+});
+
+// 环境变量开关判定：OM_RECALL_ENABLED / OM_SEMANTIC_RECALL_ENABLED
+// 控制 recall / recall-semantic 工具是否注册（=false 禁用，其余取值启用；缺省启用）。
+describe('envFlagEnabled', () => {
+  it("值 === 'false' 时禁用，其余取值（未设置/空串/true/1/FALSE）启用", () => {
+    const key = 'OM_TEST_FLAG';
+    try {
+      delete process.env[key];
+      expect(envFlagEnabled(key)).toBe(true);
+      process.env[key] = 'false';
+      expect(envFlagEnabled(key)).toBe(false);
+      process.env[key] = 'true';
+      expect(envFlagEnabled(key)).toBe(true);
+      process.env[key] = '1';
+      expect(envFlagEnabled(key)).toBe(true);
+      process.env[key] = '';
+      expect(envFlagEnabled(key)).toBe(true);
+      process.env[key] = 'FALSE';
+      expect(envFlagEnabled(key)).toBe(true);
+    } finally {
+      delete process.env[key];
+    }
+  });
+});
+
+// apply 接线（环境变量开关）：两个环境变量独立控制 recall / recall-semantic 工具注册，
+// 缺省启用；=false 禁用；不影响压缩接线。
+describe('apply 接线（环境变量开关）', () => {
+  /** 涉及的两个环境变量名。 */
+  const envKeys = [RECALL_ENABLED_ENV, SEMANTIC_RECALL_ENABLED_ENV];
+  /** 原始环境变量快照（afterEach 恢复，避免污染其他用例）。 */
+  const saved = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    saved.clear();
+    for (const key of envKeys) saved.set(key, process.env[key]);
+  });
+
+  afterEach(() => {
+    for (const key of envKeys) {
+      const value = saved.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  /** 已注册工具名集合。 */
+  function registeredNames(ctx: ReturnType<typeof makeCtx>): string[] {
+    return ctx._registeredTools.map((t) => t.name).filter((n): n is string => n !== undefined);
+  }
+
+  it('缺省（未设置）两个工具都注册', () => {
+    for (const key of envKeys) delete process.env[key];
+    const ctx = makeCtx();
+    apply(ctx, {});
+    expect(registeredNames(ctx)).toEqual(expect.arrayContaining(['recall', 'recall-semantic']));
+  });
+
+  it('OM_RECALL_ENABLED=false 仅禁用 recall，recall-semantic 仍注册', () => {
+    for (const key of envKeys) delete process.env[key];
+    process.env[RECALL_ENABLED_ENV] = 'false';
+    const ctx = makeCtx();
+    apply(ctx, {});
+    const names = registeredNames(ctx);
+    expect(names).not.toContain('recall');
+    expect(names).toContain('recall-semantic');
+  });
+
+  it('OM_SEMANTIC_RECALL_ENABLED=false 仅禁用 recall-semantic，recall 仍注册', () => {
+    for (const key of envKeys) delete process.env[key];
+    process.env[SEMANTIC_RECALL_ENABLED_ENV] = 'false';
+    const ctx = makeCtx();
+    apply(ctx, {});
+    const names = registeredNames(ctx);
+    expect(names).toContain('recall');
+    expect(names).not.toContain('recall-semantic');
+  });
+
+  it('两个开关都=false 时两个工具都不注册，压缩接线不受影响', () => {
+    for (const key of envKeys) delete process.env[key];
+    process.env[RECALL_ENABLED_ENV] = 'false';
+    process.env[SEMANTIC_RECALL_ENABLED_ENV] = 'false';
+    const ctx = makeCtx();
+    apply(ctx, {});
+    const names = registeredNames(ctx);
+    expect(names).not.toContain('recall');
+    expect(names).not.toContain('recall-semantic');
+    // env 开关只控制 recall 工具注册，agent/pre-step 压缩监听始终注册
+    expect(ctx._onCallbacks.has('agent/pre-step')).toBe(true);
+  });
+
+  it('非 false 取值（true/1/空串）均视为启用', () => {
+    for (const value of ['true', '1', '']) {
+      for (const key of envKeys) delete process.env[key];
+      for (const key of envKeys) process.env[key] = value;
+      const ctx = makeCtx();
+      apply(ctx, {});
+      expect(registeredNames(ctx)).toEqual(expect.arrayContaining(['recall', 'recall-semantic']));
+    }
   });
 });
 

@@ -83,6 +83,21 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 | `tailMessageCount`  | `10`   | 压缩后保留的未压缩消息条数                   |
 | `modelDir`          | 打包模型 | recall-semantic 嵌入模型目录（默认插件内打包的本地模型；可指向自定义目录） |
 
+## 环境变量
+
+| 变量                          | 默认 | 含义                                                        |
+| ----------------------------- | ---- | ----------------------------------------------------------- |
+| `OM_RECALL_ENABLED`           | 启用 | 是否注册 `recall` 工具（值恰为 `false` 时禁用）             |
+| `OM_SEMANTIC_RECALL_ENABLED`  | 启用 | 是否注册 `recall-semantic` 工具（值恰为 `false` 时禁用）    |
+
+取值规则：值**恰为** `false` 时禁用对应工具（不注册；`recall-semantic` 禁用时嵌入模型也不会加载），其余取值（含未设置 / 空串 / `true` / `1` 等）均启用。两个开关相互独立，只影响工具注册，不影响压缩接线。
+
+示例（禁用 recall-semantic，保留 recall）：
+
+```sh
+OM_SEMANTIC_RECALL_ENABLED=false dsh web
+```
+
 ## recall 工具
 
 | 参数       | 必填 | 含义                                       |
