@@ -19,7 +19,7 @@
 import { maybeCompress } from './compress.ts';
 import { resolveConfig } from './config.ts';
 import { RECALL_ENABLED_ENV, SEMANTIC_RECALL_ENABLED_ENV } from './constants.ts';
-import { getEmbedder } from './embedding.ts';
+import { ensureModelReady, getEmbedder } from './embedding.ts';
 import { buildRecallTool } from './recall.ts';
 import { buildSemanticRecallTool } from './semantic-recall.ts';
 import type { Context } from './types.ts';
@@ -48,11 +48,16 @@ export function apply(ctx: Context, config?: unknown): void {
 
   // recall-semantic 工具：本地 ONNX embedding（懒加载，首次调用才加载模型），
   // 输出同样由 tool-result-pruner 裁剪。
-  // 环境变量 OM_SEMANTIC_RECALL_ENABLED=false 时禁用（不注册，嵌入模型也不会被加载）。
+  // 环境变量 OM_SEMANTIC_RECALL_ENABLED=false 时禁用（不注册，也不触发模型下载）。
+  // 运行时按需下载：仅当 env 启用且模型 onnx 缺失时后台预热（不阻塞）；下载失败
+  // 仅记日志，查询时未就绪由工具告知模型，下次查询自动重试。
   if (envFlagEnabled(SEMANTIC_RECALL_ENABLED_ENV)) {
+    const warnModel = (message: string) => ctx.logger.warn('dsh-plugin-om: ' + message);
+    void ensureModelReady(resolved.modelDir, warnModel);
     ctx.tools.register(
       buildSemanticRecallTool({
         getPruner: () => ctx.get('toolResultPruner'),
+        modelStatus: () => ensureModelReady(resolved.modelDir, warnModel),
         embedder: (texts) => getEmbedder(resolved.modelDir).then((embed) => embed(texts)),
       }),
     );

@@ -13,7 +13,7 @@
  */
 
 import { z } from 'zod';
-import { cosineSimilarity, type EmbedFn, getEmbedder } from './embedding.ts';
+import { cosineSimilarity, type EmbedFn, getEmbedder, type ModelStatus } from './embedding.ts';
 import { indexMessages, messageIdOfEvent } from './log-index.ts';
 import type { Message, MessageIndex, ToolDefinition, ToolRunContext } from './types.ts';
 import { isMainSession, renderMessageText } from './utils.ts';
@@ -117,10 +117,16 @@ export function matchExplanation(query: string, text: string, score: number): st
   return `相似度 ${score.toFixed(3)}${keywords}`;
 }
 
-/** 构建 recall-semantic 工具定义（embedder 可注入，测试传替身；缺省用本地模型）。 */
+/** 模型未就绪时返回给模型的文案（告知即可；下载完成后无需另行通知，直接再次调用）。 */
+export const SEMANTIC_MODEL_NOT_READY_MESSAGE =
+  '语义检索暂不可用：本地嵌入模型尚未就绪（正在后台下载约 113MB；下载完成后无需提示，直接再次调用本工具即可。若下载失败，下次调用会自动重试）。可稍后重试，或先用 recall 工具按 message_id 精确检索。';
+
+/** 构建 recall-semantic 工具定义（embedder/modelStatus 可注入，测试传替身；缺省用本地模型）。 */
 export function buildSemanticRecallTool(options?: {
   getPruner?: () => unknown;
   embedder?: EmbedFn;
+  /** 模型就绪检查（缺省视为已就绪；未就绪时返回告知文案而非报错）。 */
+  modelStatus?: () => ModelStatus | Promise<ModelStatus>;
 }): ToolDefinition {
   /** pruner 获取器（可选，裁剪超大工具结果）。 */
   const getPruner = options?.getPruner ?? (() => undefined);
@@ -168,6 +174,9 @@ export function buildSemanticRecallTool(options?: {
       const session = exec.agent?.session;
       if (!session) return '会话异常';
       if (!isMainSession(session)) return 'recall-semantic 仅主会话可用';
+      /** 模型就绪检查（缺省视为就绪，向后兼容；未就绪时告知模型，不阻塞等待下载）。 */
+      const status = (await options?.modelStatus?.()) ?? 'ready';
+      if (status !== 'ready') return SEMANTIC_MODEL_NOT_READY_MESSAGE;
       /** 会话消息索引（全部消息事件，含被压缩/遮蔽）。 */
       const index = indexMessages(session);
       if (index.messages.length === 0) return '会话中没有可检索的消息';
