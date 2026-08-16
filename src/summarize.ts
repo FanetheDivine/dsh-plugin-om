@@ -17,6 +17,7 @@ import type { FinishReason, GenerateOptions, StreamChunk } from '@deepseek-ai/ds
 import type { SummaryMode } from './config.ts';
 import { HISTORY_TAG, PLUGIN_LABEL } from './constants.ts';
 import { messageIdOfEvent } from './log-index.ts';
+import { makeLogger } from './logger.ts';
 import type { Agent, Context, Session, TokenUsage, UserMessage } from './types.ts';
 import { type RoutedTarget, renderMessageText, uuid } from './utils.ts';
 
@@ -244,9 +245,17 @@ function buildSummaryOptions(
   };
 }
 
+/** 单次摘要最多尝试次数（首次 + 失败重试，总上限；失败/未完成均重试）。 */
+export const SUMMARY_MAX_ATTEMPTS = 3;
+
+/** 尝试失败的简短原因（供重试日志与最终失败日志使用）。 */
+type AttemptFailure = { error?: string; finish?: string };
+
 /**
- * 直连 LLM 执行一次摘要（观察或反思），返回文本与可选 token usage；
- * 失败或摘要未完成返回 null。输出长度受 maxTokens 限制。
+ * 直连 LLM 执行一次摘要（观察或反思），返回文本与可选 token usage。
+ * 失败（抛异常 / 空输出 / 非 stop 结束）均记录日志并重试，总共最多尝试
+ * SUMMARY_MAX_ATTEMPTS 次；全部尝试失败返回 null（不产生任何日志变更）。
+ * 输出长度受 maxTokens 限制。
  */
 export async function runSummarySubagent(
   ctx: Context,
@@ -260,42 +269,77 @@ export async function runSummarySubagent(
 ): Promise<SummarySubagentResult | null> {
   /** 当前会话。 */
   const session = agent.session;
-  try {
-    /** 摘要请求选项（按模式组装）。 */
-    const options = buildSummaryOptions(
-      session,
-      instruction,
-      contextText,
-      maxTokens,
-      mode,
-      target,
-      signal,
-    );
-    /** 流收集器（文本/usage/finish）。 */
-    const collector = new StreamCollector();
-    for await (const chunk of ctx.llm.stream(options)) collector.push(chunk);
-    /** 拼接、去标签、去首尾空白的摘要文本。 */
-    const text = collector.text
-      .trim()
-      .replace(new RegExp(`</?${HISTORY_TAG}>`, 'g'), '')
-      .trim();
-    /** 终止原因（仅 stop 视为完成）。 */
-    const finish = collector.finish;
-    if (finish.kind !== 'stop' || text.length === 0) {
-      ctx.logger.warn(
-        'dsh-plugin-om: 摘要未完成（' +
-          (finish.kind === 'stop' ? '无输出' : String(finish.kind)) +
-          '），忽略本次摘要',
+  /** 插件日志门面（失败日志始终输出）。 */
+  const logger = makeLogger(ctx);
+  /** 最后一次失败的原因（error=调用异常 / finish=未完成原因；最终失败日志使用）。 */
+  let lastFailure: AttemptFailure = {};
+  for (let attempt = 1; attempt <= SUMMARY_MAX_ATTEMPTS; attempt += 1) {
+    if (signal?.aborted) {
+      logger.warn(
+        `摘要调用中止（第 ${attempt}/${SUMMARY_MAX_ATTEMPTS} 次尝试前 signal 已中止），放弃本次摘要`,
       );
       return null;
     }
-    /** 摘要请求的 token usage（归入主会话记录；无则省略）。 */
-    const usage = collector.usage;
-    return { text, ...(usage === undefined ? {} : { usage }) };
-  } catch (error) {
-    /** 错误信息（统一为字符串）。 */
-    const message = error instanceof Error ? error.message : String(error);
-    ctx.logger.warn(`dsh-plugin-om: 摘要调用失败: ${message}，忽略`);
-    return null;
+    logger.step(
+      `摘要调用开始（第 ${attempt}/${SUMMARY_MAX_ATTEMPTS} 次，模式 ${mode}，provider ${target.provider}，model ${target.model}，maxTokens ${maxTokens}）`,
+    );
+    try {
+      /** 摘要请求选项（按模式组装）。 */
+      const options = buildSummaryOptions(
+        session,
+        instruction,
+        contextText,
+        maxTokens,
+        mode,
+        target,
+        signal,
+      );
+      /** 流收集器（文本/usage/finish）。 */
+      const collector = new StreamCollector();
+      for await (const chunk of ctx.llm.stream(options)) collector.push(chunk);
+      /** 拼接、去标签、去首尾空白的摘要文本。 */
+      const text = collector.text
+        .trim()
+        .replace(new RegExp(`</?${HISTORY_TAG}>`, 'g'), '')
+        .trim();
+      /** 终止原因（仅 stop 视为完成）。 */
+      const finish = collector.finish;
+      if (finish.kind !== 'stop' || text.length === 0) {
+        /** 未完成原因（空输出 / 非 stop 终止原因）。 */
+        const reason = finish.kind === 'stop' ? '无输出' : String(finish.kind);
+        lastFailure = { finish: reason };
+        logger.warn(
+          `摘要未完成（第 ${attempt}/${SUMMARY_MAX_ATTEMPTS} 次，${reason}）` +
+            (attempt < SUMMARY_MAX_ATTEMPTS ? '，将重试' : '，重试耗尽，忽略本次摘要'),
+        );
+        continue;
+      }
+      /** 摘要请求的 token usage（归入主会话记录；无则省略）。 */
+      const usage = collector.usage;
+      logger.step(
+        `摘要调用成功（第 ${attempt}/${SUMMARY_MAX_ATTEMPTS} 次，输出 ${text.length} 字符` +
+          (usage === undefined
+            ? ''
+            : `，input ${String(usage.inputTokens ?? '?')} / output ${String(usage.outputTokens ?? '?')} tokens`) +
+          '）',
+      );
+      return { text, ...(usage === undefined ? {} : { usage }) };
+    } catch (error) {
+      /** 错误信息（统一为字符串）。 */
+      const message = error instanceof Error ? error.message : String(error);
+      lastFailure = { error: message };
+      logger.warn(
+        `摘要调用失败（第 ${attempt}/${SUMMARY_MAX_ATTEMPTS} 次，${message}）` +
+          (attempt < SUMMARY_MAX_ATTEMPTS ? '，将重试' : '，重试耗尽，忽略本次摘要'),
+      );
+    }
   }
+  /** 全部尝试失败：记录最终失败日志（含最后原因，便于诊断）。 */
+  logger.warn(
+    `摘要调用最终失败（已尝试 ${SUMMARY_MAX_ATTEMPTS} 次` +
+      (lastFailure.error !== undefined ? `，最后错误：${lastFailure.error}` : '') +
+      (lastFailure.finish !== undefined ? `，最后结果：${lastFailure.finish}` : '') +
+      '），忽略本次摘要',
+  );
+  return null;
 }
