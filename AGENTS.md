@@ -7,3 +7,4 @@
 - **CHANGELOG**：仅在 `main` 分支上，任何 commit 都必须为 [CHANGELOG.md](./CHANGELOG.md) 增加新条目；在非 `main` 分支（如 feat 分支）上，**不随 commit** 逐条添加 CHANGELOG，而是在分支提交完成后，按提交的 commit **分模块**整理添加 CHANGELOG 条目
 - 任何**代码变更**都必须同步`tests/`的测试用例
 - 任何影响用户可见行为的变化必须同步更新 [README.md](./README.md)
+- 文档和注释应当描述"现状"，而不是"变化"。陈述静态情况即可，不需要和之前对比

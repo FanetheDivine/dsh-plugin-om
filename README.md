@@ -22,7 +22,6 @@
 
 ### 依赖策略
 
-- 以type-only的方式引用第三方库（编译期类型，运行时零依赖）
 - 复用dsh宿主提供的依赖，如 cordis / dsh-tools / zod 等
 - 例外：recall-semantic 的本地嵌入需要运行时依赖 `@huggingface/transformers`（transformers.js v4 + onnxruntime-node），模型小文件（config/tokenizer 等）随 npm 包分发（`models/`），onnx 二进制不做构建/发布时下载
 - 模型二进制：量化 ONNX 约 113MB，超过 GitHub 单文件 100MB 限制，**不进入 git 仓库**。改为**运行时按需下载**：仅当 `OM_SEMANTIC_RECALL_ENABLED` 启用且 `models/<id>/onnx/model_quantized.onnx` 缺失时，插件 apply 后台自动从 HuggingFace（[Xenova 转换仓库](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2)）下载到 `models/`（不阻塞；下载失败仅记日志，下次调用自动重试；未就绪时 `recall-semantic` 工具返回文案告知模型）；本地开发也可用 `pnpm run download:model` 手动预下载（已存在则跳过，`--force` 强制重下）；直连 `huggingface.co` 受限时设置环境变量 `HF_ENDPOINT=https://hf-mirror.com` 走镜像
@@ -89,12 +88,12 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 ## 插件配置项
 
-| 键                  | 默认     | 含义                                                                       |
-| ------------------- | -------- | -------------------------------------------------------------------------- |
-| `thresholdRatio`    | `0.5`    | 观察阈值：未压缩消息 ≥ 窗口 × 该比例触发压缩                               |
-| `historyMergeRatio` | `0.2`    | 反思阈值：摘要 ≥ 窗口 × 该比例触发精简合并                                 |
-| `compressMaxTokens` | `4096`   | 单次摘要（观察/反思调用）生成上限                                          |
-| `tailMessageCount`  | `10`     | 尾部保留的不压缩消息条数（不压缩、不被替换、不进摘要日志）                 |
+| 键                  | 默认     | 含义                                                                                                          |
+| ------------------- | -------- | ------------------------------------------------------------------------------------------------------------- |
+| `thresholdRatio`    | `0.5`    | 观察阈值：未压缩消息 ≥ 窗口 × 该比例触发压缩                                                                  |
+| `historyMergeRatio` | `0.2`    | 反思阈值：摘要 ≥ 窗口 × 该比例触发精简合并                                                                    |
+| `compressMaxTokens` | `4096`   | 单次摘要（观察/反思调用）生成上限                                                                             |
+| `tailMessageCount`  | `10`     | 尾部保留的不压缩消息条数（不压缩、不被替换、不进摘要日志）                                                    |
 | `modelDir`          | 打包模型 | recall-semantic 嵌入模型目录（默认插件内打包的本地模型；可指向自定义目录）。onnx 缺失时运行时自动下载到该目录 |
 
 > 数值键（`thresholdRatio` / `historyMergeRatio` / `compressMaxTokens` / `tailMessageCount`）**不做取值区间限制**（如阈值不再限定 0.01–1）：用户提供的值按原样接受（仅校验为有限数，整数键另校验整数性），便于调试时设置任意值。
@@ -109,10 +108,10 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 ## 环境变量
 
-| 变量                         | 默认 | 含义                                                     |
-| ---------------------------- | ---- | -------------------------------------------------------- |
-| `OM_RECALL_ENABLED`          | 启用 | 是否注册 `recall` 工具（值恰为 `false` 时禁用）          |
-| `OM_SEMANTIC_RECALL_ENABLED` | 启用 | 是否注册 `recall-semantic` 工具（值恰为 `false` 时禁用；启用且模型缺失时才触发后台模型下载） |
+| 变量                         | 默认 | 含义                                                                                                                                                                                |
+| ---------------------------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OM_RECALL_ENABLED`          | 启用 | 是否注册 `recall` 工具（值恰为 `false` 时禁用）                                                                                                                                     |
+| `OM_SEMANTIC_RECALL_ENABLED` | 启用 | 是否注册 `recall-semantic` 工具（值恰为 `false` 时禁用；启用且模型缺失时才触发后台模型下载）                                                                                        |
 | `DSH_OM_DEBUG`               | dev  | 压缩流程步骤级（debug）日志开关：值恰为 `true` 强制开启、`false` 强制关闭；缺省按 `NODE_ENV !== 'production'` 判定（dev/test 输出，生产隐藏）。**失败日志不受此开关影响，始终输出** |
 
 取值规则：`OM_RECALL_ENABLED` / `OM_SEMANTIC_RECALL_ENABLED` 值**恰为** `false` 时禁用对应工具（不注册；`recall-semantic` 禁用时嵌入模型不会加载、也不会触发模型下载），其余取值（含未设置 / 空串 / `true` / `1` 等）均启用。两个开关相互独立，只影响工具注册，不影响压缩接线。
@@ -153,16 +152,16 @@ DSH_OM_DEBUG=true dsh web
 
 ## npm 命令
 
-| 命令                        | 作用                                                |
-| --------------------------- | --------------------------------------------------- |
-| `pnpm check`                | typecheck + lint + test + build                     |
-| `pnpm typecheck`            | TypeScript 类型检查                                 |
-| `pnpm lint` / `pnpm format` | 代码检查 / 格式化                                   |
-| `pnpm test`                 | vitest 单元测试                                     |
+| 命令                        | 作用                                                                              |
+| --------------------------- | --------------------------------------------------------------------------------- |
+| `pnpm check`                | typecheck + lint + test + build                                                   |
+| `pnpm typecheck`            | TypeScript 类型检查                                                               |
+| `pnpm lint` / `pnpm format` | 代码检查 / 格式化                                                                 |
+| `pnpm test`                 | vitest 单元测试                                                                   |
 | `pnpm run download:model`   | 手动预下载本地嵌入模型 ONNX（已存在跳过，`--force` 重下；运行时也会按需自动下载） |
-| `pnpm build`                |                                                     |
-| `pnpm dev`                  | 自动打包                                            |
-| `pnpm run release`          | CHANGELOG 归档 + 版本号更新 + 打 tag 推送           |
+| `pnpm build`                |                                                                                   |
+| `pnpm dev`                  | 自动打包                                                                          |
+| `pnpm run release`          | CHANGELOG 归档 + 版本号更新 + 打 tag 推送                                         |
 
 ## 调用链和文件地图
 
