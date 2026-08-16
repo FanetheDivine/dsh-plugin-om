@@ -1324,7 +1324,7 @@ describe('摘要请求形态（prefix / system 双模式）', () => {
     expect(String(last?.content?.[0]?.text ?? '')).toContain(OBSERVER_PERSONA);
   });
 
-  it('system 模式（DSH_OM_SUMMARY_MODE=system）：指令作为 system，被压缩消息 + 参考尾部作为输入', async () => {
+  it('new 模式（DSH_OM_SUMMARY_MODE=new）：指令作为 system，输入 = 被压缩消息（XML 包裹，不含尾部）', async () => {
     const session = sessionWithHeader();
     const ctx = makeCtx({
       resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
@@ -1345,16 +1345,18 @@ describe('摘要请求形态（prefix / system 双模式）', () => {
     };
     expect(options?.system?.startsWith(OBSERVER_PERSONA)).toBe(true);
     const input = String(options?.messages?.[0]?.content?.[0]?.text ?? '');
-    expect(input).toContain('【被压缩消息】');
-    expect(input).toContain('【参考尾部】');
-    expect(input).toContain('message_id=user-c1');
-    // 被压缩消息 = 区间 [0]（tailCount=1，配对回退）；参考尾部 = assistant + result
-    expect(session.surface.nodes.length).toBe(3);
+    // 输入 = 被压缩区间 [0]（tailCount=1 配对回退）的 XML 渲染，不含分段标签与尾部
+    expect(input).toContain('<user_message id="user-c1">');
+    expect(input).toContain('请帮我完成一个任务');
+    expect(input).not.toContain('【被压缩消息】');
+    expect(input).not.toContain('【参考尾部】');
+    expect(input).not.toContain('message_id=user-c1'); // id 走 XML 属性
+    expect(session.surface.nodes.length).toBe(3); // <om-history> + 尾部 assistant + result
   });
 });
 
 describe('消息渲染 renderMessages', () => {
-  it('按表层顺序输出 role 头 + message_id + 文本', () => {
+  it('XML 分组：<user_message id> + <assistant last_id>（连续 AI 消息聚合）', () => {
     const flow = buildToolCallFlow({
       code: 'a()',
       description: '任务A',
@@ -1366,12 +1368,37 @@ describe('消息渲染 renderMessages', () => {
     });
     const session = makeSession({ events: flow }); // 表层 [0,1,3]
     const text = renderMessages(session, [0, 1, 3]);
-    expect(text).toContain('--- user message_id=u1 ---');
+    // 用户消息 → <user_message id>（原文完整保留）
+    expect(text).toContain('<user_message id="u1">');
+    expect(text).toContain('请帮我完成一个任务');
+    expect(text).toContain('</user_message>');
+    // assistant + tool/result 聚合为一个 <assistant> 块，last_id = 组内最后一条消息 id
+    expect(text).toContain('<assistant last_id="r1m">');
     expect(text).toContain('--- assistant message_id=a1 ---');
     expect(text).toContain('--- tool/result message_id=r1m ---');
-    expect(text).toContain('请帮我完成一个任务');
     expect(text).toContain('run_code'); // tool-call 展开参数
     expect(text).toContain('r1');
+    expect(text).toContain('</assistant>');
+  });
+
+  it('相邻用户消息各自成块；缺 id 时省略属性', () => {
+    const session = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({ content: [textBlock('你好')], id: 'u1' }),
+        } as unknown as SessionEvent,
+        {
+          type: 'user/message',
+          data: makeMessage({ content: [textBlock('再见')], id: '' }), // 空 id
+        } as unknown as SessionEvent,
+      ],
+    });
+    const text = renderMessages(session, [0, 1]);
+    expect(text).toContain('<user_message id="u1">');
+    expect(text).toContain('<user_message>'); // 无 id 属性
+    expect(text).toContain('你好');
+    expect(text).toContain('再见');
   });
 });
 

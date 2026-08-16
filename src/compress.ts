@@ -485,11 +485,11 @@ export async function observePass(
   );
   /** message_id 对照表行。 */
   const table = buildMessageIdTable(session, range.shadowedSeqs);
-  /** 实际保留的参考尾部条数（配对回退可能多于 tailCount）。 */
+  /** 实际保留的参考尾部条数（配对回退可能多于 tailCount；fork 提示词范围据此排除尾部）。 */
   const surface = [...session.surface.nodes];
   const actualTailCount = surface.length - range.shadowedSeqs.length;
   logger.step(
-    `观察：实际保留参考尾部 ${actualTailCount} 条，中断标记 ${interruptions.length} 条，message_id 对照表 ${table.length} 行`,
+    `观察：实际保留尾部 ${actualTailCount} 条（不压缩、不进日志），中断标记 ${interruptions.length} 条，message_id 对照表 ${table.length} 行`,
   );
   /** 观察指令（persona + 规则主体）。 */
   const prompt = buildObservePrompt({
@@ -500,16 +500,13 @@ export async function observePass(
     mode: config.summaryMode,
   });
   const instruction = `${OBSERVER_PERSONA}\n\n${prompt}`;
-  /** new 模式的渲染输入（被压缩消息，不含旧日志与参考尾部）。 */
+  /** new 模式的渲染输入：本次要压缩的消息（过滤旧 <om-history> 日志消息；不含尾部）。 */
   const contextText =
     config.summaryMode === 'new'
-      ? [
-          '【被压缩消息】',
-          renderMessages(session, range.shadowedSeqs),
-          '',
-          `【参考尾部】（最后 ${actualTailCount} 条消息）`,
-          renderMessages(session, surface.slice(range.shadowedSeqs.length)),
-        ].join('\n')
+      ? renderMessages(
+          session,
+          range.shadowedSeqs.filter((seq) => historyTextOf(session.events[seq]) === undefined),
+        )
       : undefined;
   /** 观察摘要结果（null 表示失败/跳过）。 */
   const summaryResult = await runSummarySubagent(

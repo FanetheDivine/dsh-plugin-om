@@ -204,29 +204,47 @@ class StreamCollector {
 }
 
 /**
- * 渲染表层消息记录（system 模式输入）：按表层顺序输出 role 头 + message_id + 文本
- * （tool-call 展开参数、tool-result 取文本）。
+ * 渲染表层消息记录（new 模式输入）：按表层顺序分组为合法 XML——
+ *  - 用户消息 → <user_message id="(message_id)">(原文)</user_message>；
+ *  - 连续 AI 消息（assistant/message 与其后的 tool/result）聚合为一个
+ *    <assistant last_id="(组内最后一条消息的 message_id)">(各消息文本)</assistant>。
+ * 组内文本沿用 role 头 + message_id + 文本（tool-call 展开参数、tool-result 取文本）。
  */
 export function renderMessages(session: Session, seqs: readonly number[]): string {
   /** 渲染段缓冲区。 */
   const parts: string[] = [];
+  /** 当前 assistant 组（组内消息文本行 + 最后一条消息 id）。 */
+  let group: { lines: string[]; lastId: string | undefined } | undefined;
+  /** 结束当前 assistant 组并输出 <assistant> 块。 */
+  const flush = () => {
+    if (!group || group.lines.length === 0) return;
+    /** last_id 属性（组内最后一条消息 id；缺失/空串则省略）。 */
+    const lastAttr = group.lastId ? ` last_id="${group.lastId}"` : '';
+    parts.push(`<assistant${lastAttr}>\n${group.lines.join('\n')}\n</assistant>`);
+    group = undefined;
+  };
   for (const seq of seqs) {
     /** 当前待渲染事件。 */
     const event = session.events[seq];
     if (!event) continue;
     /** 消息 id（缺失则省略）。 */
     const id = messageIdOfEvent(event);
-    /** role 标签（tool/result 属 user 角色但标注为工具结果）。 */
-    const role =
-      event.type === 'user/message'
-        ? 'user'
-        : event.type === 'assistant/message'
-          ? 'assistant'
-          : 'tool/result';
     /** 消息文本呈现。 */
     const text = renderMessageText(session.deriveEventMessage(event));
-    parts.push(`--- ${role}${id ? ` message_id=${id}` : ''} ---\n${text}`);
+    if (event.type === 'user/message') {
+      flush();
+      /** id 属性（缺失/空串则省略）。 */
+      const idAttr = id ? ` id="${id}"` : '';
+      parts.push(`<user_message${idAttr}>\n${text}\n</user_message>`);
+    } else if (event.type === 'assistant/message' || event.type === 'tool/result') {
+      if (!group) group = { lines: [], lastId: undefined };
+      /** role 标签（tool/result 属 user 角色但标注为工具结果）。 */
+      const role = event.type === 'assistant/message' ? 'assistant' : 'tool/result';
+      group.lines.push(`--- ${role}${id ? ` message_id=${id}` : ''} ---\n${text}`);
+      if (id) group.lastId = id;
+    }
   }
+  flush();
   return parts.join('\n\n');
 }
 
