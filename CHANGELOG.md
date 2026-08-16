@@ -1,5 +1,6 @@
 # Changelog
 
+- feat: fork 模式输入从尾部之前实际截断（tailMessageCount 尾部不注入请求，提示词不再含尾部范围规则）
 - feat: 摘要模式改名 fork/new 并新增 disable（DSH_OM_SUMMARY_MODE=fork|new|disable，兼容旧值 prefix/system；disable 关闭自动压缩，recall 工具仍独立开关）
 - feat: 摘要提示词重构——fork 声明停止任务/禁止工具、new 仅说明总结日志；总结范围 = 上一个 <om-history> 之后到现在，用户消息完整保留原文，AI 消息模块化压缩（目的相同、关联度高的连续行为聚合）；倾向于新消息、旧消息一句话带过、新旧冲突强调新消息不动旧条目；尾部不压缩、不进日志
 - feat: 摘要输出为合法 XML 日志（<om-history> 内 <user_message id> 完整原文 + <assistant last_id> 聚合模块），多块按序拼接存储（appendHistoryMessage 不再额外包裹标签）；不信任 AI 输出——取首个 <om-history> 到最后一个 </om-history>（含首尾）切为日志，找不到或中间内容 <10 视为不合法并按失败重试，产出后插入格式说明注释

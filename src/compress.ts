@@ -386,6 +386,7 @@ export async function reflectPass(
     contextText,
     config.compressMaxTokens,
     config.summaryMode,
+    0, // 反思注入完整历史（尾部不裁剪；只精简合并日志本身）
     target,
     signal,
   );
@@ -493,7 +494,7 @@ export async function observePass(
   );
   /** message_id 对照表行。 */
   const table = buildMessageIdTable(session, range.shadowedSeqs);
-  /** 实际保留的参考尾部条数（配对回退可能多于 tailCount；fork 提示词范围据此排除尾部）。 */
+  /** 实际保留的参考尾部条数（配对回退可能多于 tailCount；fork 输入从尾部之前实际截断）。 */
   const surface = [...session.surface.nodes];
   const actualTailCount = surface.length - range.shadowedSeqs.length;
   logger.step(
@@ -504,7 +505,6 @@ export async function observePass(
     table,
     interruptions,
     hasOldHistory: history !== undefined,
-    tailCount: actualTailCount,
     mode: config.summaryMode,
   });
   const instruction = `${OBSERVER_PERSONA}\n\n${prompt}`;
@@ -524,6 +524,7 @@ export async function observePass(
     contextText,
     config.compressMaxTokens,
     config.summaryMode,
+    actualTailCount, // fork 输入从尾部之前实际截断（new 模式输入本身不含尾部）
     target,
     signal,
   );

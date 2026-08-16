@@ -11,7 +11,7 @@
 3. 摘要超过阈值后重新摘要（反思：精简合并现有日志块）
 4. 摘要输出为**合法 XML 日志**（`<om-history>` 内 `<user_message id>` 完整保留用户原文、`<assistant last_id>` 聚合 AI 模块）；插件不信任 AI 输出，取首个 `<om-history>` 到最后一个 `</om-history>`（含首尾）切为日志，找不到或中间内容过短视为不合法并按失败重试；产出后插入格式说明注释
 5. 摘要过程中保留 message_id（`<user_message id>` / `<assistant last_id>`），允许模型精确 recall
-6. 压缩在 `agent/pre-step` 触发（**turn 中间即可**，无需等待轮次结束）：摘要直连 LLM，模式见[摘要模式](#摘要模式环境变量)——`fork`（缺省）复用主会话请求前缀（系统提示词 + 完整消息 + 末尾指令），充分利用 provider 前缀缓存；`new` 只注入被压缩消息（XML 包裹）；`disable` 关闭自动压缩
+6. 压缩在 `agent/pre-step` 触发（**turn 中间即可**，无需等待轮次结束）：摘要直连 LLM，模式见[摘要模式](#摘要模式环境变量)——`fork`（缺省）复用主会话请求前缀（系统提示词 + 截至尾部前的消息 + 末尾指令），充分利用 provider 前缀缓存；`new` 只注入被压缩消息（XML 包裹）；`disable` 关闭自动压缩
 7. 提供语义召回（recall-semantic）：按自然语言在全部消息日志中检索，被压缩/遮蔽的消息也可按语义找回
 
 ### 注意
@@ -102,7 +102,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 摘要调用由环境变量 `DSH_OM_SUMMARY_MODE` 控制（缺省 `fork`；非法值在插件加载时报错；旧值 `prefix` / `system` 仍兼容，分别视为 `fork` / `new`）：
 
-- `fork`（缺省）：fork 会话风格——复用主会话请求前缀——`system`/`tools` 取自主会话上次请求，`messages` = 完整派生历史 + 末尾追加指令 user 消息，本次摘要请求是主会话请求的**真前缀**，充分利用 provider 前缀缓存（与宿主 `compaction-basic` 同款策略）。
+- `fork`（缺省）：fork 会话风格——复用主会话请求前缀——`system`/`tools` 取自主会话上次请求，`messages` = 完整派生历史**从尾部之前实际截断**（尾部 `tailMessageCount` 条不注入、不进日志）+ 末尾追加指令 user 消息，充分利用 provider 前缀缓存（与宿主 `compaction-basic` 同款策略）。
 - `new`：新开会话风格——指令（persona + 规则）作为 system 提示词，只注入本次要压缩的消息作为 user 消息输入模型压缩（不注入旧压缩日志、不注入尾部）。
 - `disable`：关闭自动压缩（观察/反思均不触发；recall 工具仍由 `OM_RECALL_ENABLED` / `OM_SEMANTIC_RECALL_ENABLED` 独立控制）。
 

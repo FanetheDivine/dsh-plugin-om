@@ -627,12 +627,11 @@ describe('message_id 对照表 buildMessageIdTable', () => {
 });
 
 describe('观察提示词 buildObservePrompt', () => {
-  it('任务声明/聚合规则/对照表/中断标记/尾部排除/输出格式/追加说明', () => {
+  it('任务声明/聚合规则/对照表/中断标记/输出格式/追加说明（提示词不含尾部规则）', () => {
     const prompt = buildObservePrompt({
       table: ['[user] message_id=u1', '[tool/result callId=c1] message_id=r1'],
       interruptions: ['[interrupted] turn 1 被中断（aborted，原因 user）'],
       hasOldHistory: true,
-      tailCount: 2,
       mode: 'fork',
     });
     // fork 模式：停止任务/禁止工具声明
@@ -653,9 +652,10 @@ describe('观察提示词 buildObservePrompt', () => {
     expect(prompt).toContain('[user] message_id=u1');
     expect(prompt).toContain('[tool/result callId=c1] message_id=r1');
     expect(prompt).toContain('追加到上一次压缩产物');
-    // fork 模式：引用上方完整会话记录 + 尾部排除（不压缩、不进日志）
+    // fork 模式：引用上方完整会话记录；尾部不写进提示词（输入已从尾部之前实际截断）
     expect(prompt).toContain('上方的消息记录是主会话的完整历史');
-    expect(prompt).toContain('最近 2 条消息（尾部）不压缩、不进日志');
+    expect(prompt).toContain('最后一次 <om-history> 块之后的全部消息；只对这些消息做压缩');
+    expect(prompt).not.toContain('尾部');
   });
 
   it('首次压缩（无旧摘要）表述为第一条日志', () => {
@@ -663,7 +663,6 @@ describe('观察提示词 buildObservePrompt', () => {
       table: [],
       interruptions: [],
       hasOldHistory: false,
-      tailCount: 0,
       mode: 'fork',
     });
     expect(prompt).toContain('第一条 <om-history> 压缩日志');
@@ -675,7 +674,6 @@ describe('观察提示词 buildObservePrompt', () => {
       table: [],
       interruptions: [],
       hasOldHistory: false,
-      tailCount: 3,
       mode: 'new',
     });
     // new 模式：仅说明总结日志（无停止任务声明）
@@ -1488,7 +1486,7 @@ describe('摘要请求形态（prefix / system 双模式）', () => {
     });
   }
 
-  it('prefix 模式（缺省）：system/tools 复用主会话请求头，messages = 完整历史 + 指令', async () => {
+  it('fork 模式（缺省）：system/tools 复用主会话请求头，messages 从尾部之前实际截断', async () => {
     const session = sessionWithHeader();
     const ctx = makeCtx({ resolveModelInfo: async () => ({ context: { contextWindow: 8 } }) });
     apply(ctx, { tailMessageCount: 1 });
@@ -1500,8 +1498,10 @@ describe('摘要请求形态（prefix / system 双模式）', () => {
     };
     expect(options?.system).toBe('主会话系统提示词');
     expect(options?.tools).toEqual([{ name: 'run_code' }]);
-    // messages = 完整派生历史（3 条）+ 指令 1 条
-    expect(options?.messages).toHaveLength(4);
+    // fork 从尾部之前截断：派生历史 3 条 - 尾部 2 条（assistant+result）= 1 条 + 指令
+    expect(options?.messages).toHaveLength(2);
+    const first = options?.messages?.[0];
+    expect(String(first?.content?.[0]?.text ?? '')).toContain('请帮我完成一个任务'); // 仅被压缩的 user 消息
     const last = options?.messages?.at(-1);
     expect(last?.role).toBe('user');
     expect(String(last?.content?.[0]?.text ?? '')).toContain(OBSERVER_PERSONA);

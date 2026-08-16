@@ -2,9 +2,9 @@
  * 摘要调用（OM 观察/反思）：直连 ctx.llm.stream()，由配置 summaryMode（环境变量
  * DSH_OM_SUMMARY_MODE）控制模式——
  *  - fork（缺省）：fork 会话风格——复用主会话请求前缀。system/tools 取自主会话
- *    requestHeader()，messages = 主会话完整派生历史 + 末尾追加一条指令 user 消息，
- *    使本次请求成为主会话上次请求的真前缀，充分利用 provider 前缀缓存
- *    （与宿主 compaction-basic 同款策略）；
+ *    requestHeader()，messages = 主会话完整派生历史（从尾部之前实际截断，尾部不注入）
+ *    + 末尾追加一条指令 user 消息，充分利用 provider 前缀缓存（与宿主 compaction-basic
+ *    同款策略）；
  *  - new：新开会话风格——指令作为 system 提示词，被压缩消息（由 compress.ts 渲染传入）
  *    作为 user 消息输入模型压缩；
  *  - disable：关闭自动压缩（compress.ts 早退，不发起摘要调用）。
@@ -39,18 +39,17 @@ export type ObservePromptOptions = {
   interruptions: string[];
   /** 是否存在旧摘要（决定「追加到上次产物末尾」的表述）。 */
   hasOldHistory: boolean;
-  /** 参考尾部条数（尾部保留的未压缩消息，不压缩、不进日志）。 */
-  tailCount: number;
   /** 摘要模式：fork=完整历史随请求传入；new=被压缩消息渲染为输入。 */
   mode: SummaryMode;
 };
 
 /**
  * 构建观察指令主体：任务声明（fork：停止任务/禁止工具；new：说明总结日志）+ 模式相关
- * 的上下文定位与压缩范围（fork：上方完整会话记录、范围止于尾部之前；new：下方消息即
- * 压缩对象）+ 规则（用户消息完整保留原文 / AI 消息模块化压缩——工具调用按目的聚合——
- * 不限于 run_code / 倾向于新消息 / 中断标注 / 未完成写进度与下一步）+ 输出格式（合法
- * XML）+ 对照表 + 中断标记 + 追加说明。persona 由调用方拼接到指令开头。
+ * 的上下文定位与压缩范围（fork：上方完整会话记录——尾部已在输入中实际截断，提示词不含
+ * 尾部规则；new：下方消息即压缩对象）+ 规则（用户消息完整保留原文 / AI 消息模块化压缩
+ * ——工具调用按目的聚合——不限于 run_code / 倾向于新消息 / 中断标注 / 未完成写进度与
+ * 下一步）+ 输出格式（合法 XML）+ 对照表 + 中断标记 + 追加说明。persona 由调用方拼接
+ * 到指令开头。
  */
 export function buildObservePrompt(options: ObservePromptOptions): string {
   /** 对照表段落（无则标注「无」）。 */
@@ -67,8 +66,8 @@ export function buildObservePrompt(options: ObservePromptOptions): string {
     options.mode === 'fork'
       ? [
           '上方的消息记录是主会话的完整历史（系统提示词与全部消息）。',
-          `总结范围：最后一次 <${HISTORY_TAG}> 块之后、最近 ${options.tailCount} 条消息之前的全部消息；最近 ${options.tailCount} 条消息（尾部）不压缩、不进日志。`,
-          `如果消息记录里还没有 <${HISTORY_TAG}> 块，则除本指令外的全部消息（尾部除外）都是压缩对象。`,
+          `总结范围：最后一次 <${HISTORY_TAG}> 块之后的全部消息；只对这些消息做压缩，忽略更早的历史。`,
+          `如果消息记录里还没有 <${HISTORY_TAG}> 块，则除本指令外的全部消息都是压缩对象。`,
         ]
       : [
           '下方的消息记录是本次要压缩的全部消息（上一个 <om-history> 块之后的新消息；不含旧压缩日志、不含尾部）。',
@@ -260,7 +259,8 @@ function makePluginUserMessage(text: string): UserMessage {
 
 /**
  * 构建摘要请求选项：
- *  - fork：system/tools 取自主会话 requestHeader()，messages = 完整派生历史 + 指令 user 消息；
+ *  - fork：system/tools 取自主会话 requestHeader()，messages = 完整派生历史（从尾部
+ *    tailCount 条消息之前开始，尾部不注入） + 指令 user 消息；
  *  - new：system = 指令，messages = 渲染输入（被压缩消息）user 消息。
  */
 function buildSummaryOptions(
@@ -269,6 +269,7 @@ function buildSummaryOptions(
   contextText: string | undefined,
   maxTokens: number,
   mode: SummaryMode,
+  tailCount: number,
   target: RoutedTarget,
   signal: AbortSignal | undefined,
 ): GenerateOptions {
@@ -290,11 +291,17 @@ function buildSummaryOptions(
   }
   /** 主会话上次请求的请求头（system/tools 前缀对齐；无则省略）。 */
   const header = session.requestHeader();
+  /** 主会话派生历史（从尾部 tailCount 条消息之前开始，实际截断尾部）。 */
+  const history = session.deriveMessages();
+  const forked =
+    tailCount > 0 && tailCount < history.length
+      ? history.slice(0, history.length - tailCount)
+      : history;
   return {
     ...base,
     ...(header?.system === undefined ? {} : { system: header.system }),
     ...(header?.tools === undefined ? {} : { tools: [...header.tools] }),
-    messages: [...session.deriveMessages(), makePluginUserMessage(instruction)],
+    messages: [...forked, makePluginUserMessage(instruction)],
   };
 }
 
@@ -349,6 +356,7 @@ export async function runSummarySubagent(
   contextText: string | undefined,
   maxTokens: number,
   mode: SummaryMode,
+  tailCount: number,
   target: RoutedTarget,
   signal?: AbortSignal,
 ): Promise<SummarySubagentResult | null> {
@@ -376,6 +384,7 @@ export async function runSummarySubagent(
         contextText,
         maxTokens,
         mode,
+        tailCount,
         target,
         signal,
       );
