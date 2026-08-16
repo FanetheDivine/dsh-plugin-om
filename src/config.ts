@@ -2,7 +2,7 @@
  * 插件配置：默认值、键校验与合并（preset 行 config 可覆盖全部键）。
  * 手写校验，保持零运行时外部依赖。
  */
-import { BUNDLED_MODEL_DIR } from './embedding.ts';
+import { sharedModelDir } from './embedding.ts';
 import { assertNonEmptyString, assertNumber, fail, isRecord } from './utils.ts';
 
 /**
@@ -32,7 +32,7 @@ export type PluginConfig = {
   recallEnabled: boolean;
   /** 是否注册 recall-semantic 工具（缺省 true；false 时不注册、不触发模型下载）。 */
   semanticRecallEnabled: boolean;
-  /** 语义召回嵌入模型目录（默认插件打包的本地模型；可指向自定义模型目录）。 */
+  /** 语义召回嵌入模型目录（默认跨版本共享目录；可指向自定义模型目录）。 */
   modelDir: string;
 };
 
@@ -46,7 +46,7 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   debug: false,
   recallEnabled: true,
   semanticRecallEnabled: true,
-  modelDir: BUNDLED_MODEL_DIR,
+  modelDir: sharedModelDir(),
 });
 
 /** 合法配置键集合（未知键直接拒绝）。 */

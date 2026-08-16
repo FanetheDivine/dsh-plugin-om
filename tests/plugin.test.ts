@@ -21,7 +21,7 @@ import {
 } from '../src/compress.ts';
 import { resolveConfig, resolveSummaryMode } from '../src/config.ts';
 import { HISTORY_TAG, PLUGIN_LABEL } from '../src/constants.ts';
-import { cosineSimilarity, ensureModelReady } from '../src/embedding.ts';
+import { cosineSimilarity, ensureModelReady, sharedModelDir } from '../src/embedding.ts';
 import { apply, inject, name } from '../src/index.ts';
 import {
   indexCompleteMessages,
@@ -145,6 +145,7 @@ describe('配置校验 resolveConfig', () => {
     expect(d.debug).toBe(process.env.NODE_ENV !== 'production'); // 缺省按 NODE_ENV 判定
     expect(d.recallEnabled).toBe(true);
     expect(d.semanticRecallEnabled).toBe(true);
+    expect(d.modelDir).toBe(sharedModelDir()); // 默认跨版本共享目录
     expect(d).not.toHaveProperty('summaryMaxChars');
     expect(d).not.toHaveProperty('recallMaxMessages');
     expect(d).not.toHaveProperty('auto');
