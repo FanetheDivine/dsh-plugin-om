@@ -2,7 +2,9 @@
  * 本地语义嵌入（recall-semantic 的向量引擎）。
  *
  * - 模型：Xenova/paraphrase-multilingual-MiniLM-L12-v2（量化 ONNX，多语言，
- *   中英 + 代码均可处理），模型文件在 models/ 下，完全离线、零下载。
+ *   中英 + 代码均可处理）。模型目录默认 = $DSH_HOME/plugin-data/dsh-plugin-om/
+ *   models/<模型id>/（跨插件版本共享）：随包小文件（config/tokenizer 等）缺失时
+ *   从打包目录复制补齐（离线可用），onnx 二进制按需下载。
  * - 运行时下载：模型 onnx 缺失时由 ensureModelReady 后台下载（不阻塞、单飞、
  *   失败自动重试），下载逻辑见 model-download.ts；就绪前工具告知模型。
  * - 懒加载：首次调用才 `import('@huggingface/transformers')` 并加载 pipeline，
@@ -14,11 +16,14 @@
  * model_quantized.onnx），node 侧使用 onnxruntime-node 原生绑定。
  */
 
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   downloadModel,
   EMBEDDING_MODEL_ID,
+  MODEL_SMALL_FILES,
   type ModelFetch,
   modelTargetPath,
   needsDownload,
@@ -31,6 +36,41 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 export const BUNDLED_MODEL_DIR = path.join(here, '..', 'models', EMBEDDING_MODEL_ID);
 
 export { EMBEDDING_MODEL_ID };
+
+/** DSH 用户数据根目录：$DSH_HOME 优先（空白视为未设置），缺省 ~/.dsh（与宿主解析规则一致）。 */
+export function resolveDshHome(): string {
+  const fromEnv = process.env.DSH_HOME;
+  if (fromEnv !== undefined && fromEnv.trim().length > 0) return path.resolve(fromEnv);
+  return path.join(homedir(), '.dsh');
+}
+
+/**
+ * 跨插件版本共享的默认模型目录：$DSH_HOME/plugin-data/dsh-plugin-om/models/<模型id>。
+ * 不随插件包（版本）变化，升级/重装插件后仍复用同一份已下载模型（onnx 不重复下载）。
+ */
+export function sharedModelDir(): string {
+  return path.join(resolveDshHome(), 'plugin-data', 'dsh-plugin-om', 'models', EMBEDDING_MODEL_ID);
+}
+
+/**
+ * 补齐模型目录的随包小文件（config/tokenizer 等）：modelDir 与打包目录不同
+ * （如共享目录）时，把打包目录中缺失的小文件复制过去，保证模型可离线加载。
+ * 已存在的文件不覆盖（同一模型文件跨版本稳定）；打包目录本身缺失则跳过。
+ * 幂等、无网络。onnx 二进制不在此列（按需下载，见 model-download.ts）。
+ */
+export function ensureModelSmallFiles(
+  modelDir: string,
+  bundledDir: string = BUNDLED_MODEL_DIR,
+): void {
+  if (path.resolve(modelDir) === path.resolve(bundledDir)) return;
+  for (const rel of MODEL_SMALL_FILES) {
+    const src = path.join(bundledDir, rel);
+    const dest = path.join(modelDir, rel);
+    if (existsSync(dest) || !existsSync(src)) continue;
+    mkdirSync(path.dirname(dest), { recursive: true });
+    copyFileSync(src, dest);
+  }
+}
 
 /** 嵌入函数类型：批量文本 → 每条一个向量（Float32Array）。 */
 export type EmbedFn = (texts: readonly string[]) => Promise<Float32Array[]>;
@@ -48,6 +88,8 @@ let pipelinePromise: Promise<EmbedFn> | null = null;
 export function getEmbedder(modelDir: string = BUNDLED_MODEL_DIR): Promise<EmbedFn> {
   if (pipelinePromise !== null) return pipelinePromise;
   pipelinePromise = (async () => {
+    // 非打包目录（如共享目录）先补齐随包小文件（config/tokenizer 等），保证离线可加载
+    ensureModelSmallFiles(modelDir);
     const { env, pipeline } = await import('@huggingface/transformers');
     // 只从本地目录加载（allowRemoteModels=false 保证离线，不会尝试联网）
     env.localModelPath = `${path.dirname(modelDir)}${path.sep}`;
@@ -107,6 +149,8 @@ export function ensureModelReady(
   fetchImpl?: ModelFetch,
   log: (message: string) => void = () => {},
 ): Promise<ModelStatus> {
+  // 非打包目录（如共享目录）先补齐随包小文件（幂等），再判断 onnx 是否需要下载
+  ensureModelSmallFiles(modelDir);
   const target = modelTargetPath(modelDir);
   if (!needsDownload(target)) return Promise.resolve('ready');
   if (!inflightDownloads.has(modelDir)) {

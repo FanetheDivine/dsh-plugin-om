@@ -22,6 +22,14 @@ export const EMBEDDING_MODEL_ID = 'paraphrase-multilingual-MiniLM-L12-v2';
 /** transformers.js 转换仓库（Xenova org）中量化 ONNX 文件的相对路径（相对模型目录）。 */
 export const ONNX_REL = 'onnx/model_quantized.onnx';
 
+/** 随 npm 包分发的小模型文件（相对模型目录；onnx 二进制不随包分发，见 tests/package-pack.test.ts）。 */
+export const MODEL_SMALL_FILES = [
+  'config.json',
+  'special_tokens_map.json',
+  'tokenizer.json',
+  'tokenizer_config.json',
+];
+
 /** 下载返回结果。 */
 export type DownloadResult = { downloaded: boolean; bytes: number; target: string };
 

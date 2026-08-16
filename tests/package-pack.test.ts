@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
-import { EMBEDDING_MODEL_ID } from '../src/model-download.ts';
+import { EMBEDDING_MODEL_ID, MODEL_SMALL_FILES } from '../src/model-download.ts';
 
 /** 仓库根目录（tests/ 的上一级）。 */
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -18,13 +18,8 @@ const ONNX_REL = path.join('models', EMBEDDING_MODEL_ID, 'onnx', 'model_quantize
 /** onnx 绝对路径。 */
 const ONNX_ABS = path.join(ROOT, ONNX_REL);
 
-/** 随包分发的小模型文件（相对模型目录）。 */
-const SMALL_FILES = [
-  'config.json',
-  'special_tokens_map.json',
-  'tokenizer.json',
-  'tokenizer_config.json',
-];
+/** 随包分发的小模型文件（相对模型目录；与 src/model-download.ts 的 MODEL_SMALL_FILES 保持一致）。 */
+const SMALL_FILES = MODEL_SMALL_FILES;
 
 /** 测试期间创建的假 onnx（磁盘原本不存在时才创建；结束后清理）。 */
 let fakeOnnxCreated = false;
