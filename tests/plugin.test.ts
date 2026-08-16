@@ -2115,7 +2115,7 @@ describe('recall-semantic 工具', () => {
     expect(out).toContain('缓存失效问题排查');
     expect(out).not.toContain('权限校验逻辑');
     expect(out).not.toContain('日志输出格式');
-    expect(out).toContain('message_id=m-db-cache');
+    expect(out).toContain('index 2 user'); // m-db-cache 为完整消息 index 2
     expect(out).toContain('相似度');
   });
 
@@ -2160,7 +2160,7 @@ describe('recall-semantic 工具', () => {
     const span = await tool.execute({ query: '数据库', top_k: 3 }, exec as never);
     const out = String(span);
     expect(out).toContain('早期讨论过数据库索引优化');
-    expect(out).toContain('message_id=old-db');
+    expect(out).toContain('index 0 user'); // old-db 为完整消息 index 0
   });
 
   it('start+offset 限定检索区间（完整消息 index）', async () => {
@@ -2296,7 +2296,7 @@ describe('recall-semantic 工具', () => {
     });
     const out = String(await tool.execute({ query: '数据库' }, { agent: { session } } as never));
     expect(out).toContain('数据库配置');
-    expect(out).toContain('message_id=m-db');
+    expect(out).toContain('index 0 user'); // m-db 为完整消息 index 0
   });
 });
 

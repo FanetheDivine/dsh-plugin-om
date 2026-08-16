@@ -7,20 +7,15 @@
  * - 区间缺省（start 未提供）→ 检索全部消息；区间不合法（start/end 越界等）→
  *   不报错，回退全量检索并在输出中明确告知（模型可见）。
  * - 向量：本地 ONNX embedding（embedding.ts，懒加载 + 批量）；相似度 = cosine。
- * - 输出：命中消息的 index/类型/message_id + 完整渲染文本 + 匹配说明（相似度、
+ * - 输出：命中消息的 index/类型（toolcall 附调用 id）+ 完整渲染文本 + 匹配说明（相似度、
  *   命中的关键词）；超大结果由 tool-result-pruner 裁剪（同 recall）。
  * - 仅主会话可用（subagent 拒绝，与 recall 一致）。
  */
 
 import { z } from 'zod';
 import { cosineSimilarity, type EmbedFn, getEmbedder, type ModelStatus } from './embedding.ts';
-import {
-  indexCompleteMessages,
-  messageIdOfEvent,
-  type PrunerLike,
-  renderCompleteMessage,
-} from './log-index.ts';
-import type { CompleteMessage, Session, ToolDefinition, ToolRunContext } from './types.ts';
+import { indexCompleteMessages, type PrunerLike, renderCompleteMessage } from './log-index.ts';
+import type { CompleteMessage, ToolDefinition, ToolRunContext } from './types.ts';
 import { isMainSession } from './utils.ts';
 
 /** recall-semantic 工具参数 schema：query 必填；top_k 默认 3（1-10）；区间参数均可选。 */
@@ -119,15 +114,6 @@ export function matchExplanation(query: string, text: string, score: number): st
   /** 关键词部分（无共有词则省略）。 */
   const keywords = shared.length > 0 ? `，命中关键词: ${shared.join(' ')}` : '';
   return `相似度 ${score.toFixed(3)}${keywords}`;
-}
-
-/** 完整消息的 message_id：取该条覆盖事件中第一个带 id 的（缺失则空串）。 */
-function completeMessageId(session: Session, cm: CompleteMessage): string {
-  for (const seq of cm.seqs) {
-    const id = messageIdOfEvent(session.events[seq]);
-    if (id) return id;
-  }
-  return '';
 }
 
 /** 模型未就绪时返回给模型的文案（告知即可；下载完成后无需另行通知，直接再次调用）。 */
@@ -239,8 +225,9 @@ export function buildSemanticRecallTool(options?: {
         /** 当前命中。 */
         const hit = hits[i];
         if (!hit) continue;
-        /** 命中完整消息的 message_id（缺失则省略）。 */
-        const id = completeMessageId(session, hit.cm);
+        /** 类型标注（toolcall 附调用 id，与 recall 输出一致）。 */
+        const callAttr =
+          hit.cm.type === 'toolcall' && hit.cm.callId ? ` callId=${hit.cm.callId}` : '';
         /** 输出文本（pruner 裁剪超大内容；裁剪失败保留嵌入用文本）。 */
         let text = hit.text;
         try {
@@ -251,7 +238,7 @@ export function buildSemanticRecallTool(options?: {
           /* 保留嵌入用文本 */
         }
         parts.push(
-          `-- [${i + 1}] index ${hit.cm.index} ${hit.cm.type} message_id=${id} — ${matchExplanation(query, hit.text, hit.score)} --`,
+          `-- [${i + 1}] index ${hit.cm.index} ${hit.cm.type}${callAttr} — ${matchExplanation(query, hit.text, hit.score)} --`,
         );
         parts.push(text);
       }
