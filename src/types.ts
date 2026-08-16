@@ -47,7 +47,7 @@ export type {
 
 /**
  * 一条消息事件（user/assistant/tool-result），带稳定 message_id；
- * 供 recall 按 message_id 定位消息序列下标。
+ * 消息级索引（indexMessages）的节点，按 message_id 定位消息序列下标。
  */
 export type MessageNode = {
   /** 事件在日志中的 seq。 */
