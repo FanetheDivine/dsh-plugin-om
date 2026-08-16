@@ -10,6 +10,7 @@
 2. 摘要会替换原始消息，并追加至现有摘要
 3. 在摘要超过阈值后，重新摘要
 4. 摘要过程中保留关键的message_id，允许模型精确recall
+5. 压缩在 `agent/pre-step` 触发（**turn 中间即可**，无需等待轮次结束）：摘要直连 LLM，默认（`prefix` 模式）复用主会话请求前缀（系统提示词 + 完整消息 + 末尾指令），充分利用 provider 前缀缓存
 
 ### 注意
 
@@ -83,12 +84,19 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 ## 插件配置项
 
-| 键                  | 默认   | 含义                                         |
-| ------------------- | ------ | -------------------------------------------- |
-| `thresholdRatio`    | `0.5`  | 观察阈值：未压缩消息 ≥ 窗口 × 该比例触发压缩 |
-| `historyMergeRatio` | `0.2`  | 反思阈值：摘要 ≥ 窗口 × 该比例触发精简合并   |
-| `compressMaxTokens` | `4096` | 单次摘要（观察/反思调用）生成上限            |
-| `tailMessageCount`  | `10`   | 压缩后保留的未压缩消息条数                   |
+| 键                  | 默认   | 含义                                                     |
+| ------------------- | ------ | -------------------------------------------------------- |
+| `thresholdRatio`    | `0.5`  | 观察阈值：未压缩消息 ≥ 窗口 × 该比例触发压缩             |
+| `historyMergeRatio` | `0.2`  | 反思阈值：摘要 ≥ 窗口 × 该比例触发精简合并               |
+| `compressMaxTokens` | `4096` | 单次摘要（观察/反思调用）生成上限                        |
+| `tailMessageCount`  | `10`   | 尾部保留的不压缩消息条数（同时作为摘要模型的参考尾部）   |
+
+### 摘要模式（环境变量）
+
+摘要调用由环境变量 `DSH_OM_SUMMARY_MODE` 控制（缺省 `prefix`；非法值在插件加载时报错）：
+
+- `prefix`（缺省）：复用主会话请求前缀——`system`/`tools` 取自主会话上次请求，`messages` = 完整派生历史 + 末尾追加指令 user 消息，本次摘要请求是主会话请求的**真前缀**，充分利用 provider 前缀缓存（与宿主 `compaction-basic` 同款策略）。
+- `system`：指令（persona + 规则）作为 system 提示词，被压缩消息与参考尾部（渲染为文本）作为 user 消息输入模型压缩。
 
 ## npm 命令
 
@@ -113,20 +121,20 @@ src/
 │   ├─ ② ctx.tools.register(buildRecallTool(() => ctx.get('toolResultPruner')))
 │   │      └─▶ recall.ts                            # recall 工具：按 message_id 回看区间（超大结果由 pruner 裁剪）
 │   └─ ③ 事件接线（仅主会话生效）
-│        └─ ctx.on('agent/pre-step') → compress.ts  # maybeCompress：两级压缩阻塞串行（先反思后观察）
-│              ├─ reflectPass → summarize.ts        # 摘要 ≥ 窗口 × historyMergeRatio：fork 精简合并 <om-history>
-│              ├─ observePass  → summarize.ts       # 未压缩消息 ≥ 窗口 × thresholdRatio：fork 观察日志 → 追加 + 替换
+│        └─ ctx.on('agent/pre-step') → compress.ts  # maybeCompress：两级压缩阻塞串行（先反思后观察；turn 中间即可触发）
+│              ├─ reflectPass → summarize.ts        # 摘要 ≥ 窗口 × historyMergeRatio：摘要调用精简合并 <om-history>
+│              ├─ observePass  → summarize.ts       # 未压缩消息 ≥ 窗口 × thresholdRatio：摘要调用观察日志 → 追加 + 替换
 │              └─ 提交          → compress.ts        # compaction/start → summary → 替换消息(checkpoint) → end；usage 归入主会话
 ├── constants.ts              # 共享常量（PLUGIN_LABEL / HISTORY_TAG / COMPACT_CHECKPOINT_PLUGIN）
 ├── types.ts                  # type-only：宿主类型再导出 + 领域类型（MessageNode / MessageIndex）
 ├── config.ts                 # 配置默认值 / 校验（缺省、null、空串回退默认值）
 ├── utils.ts                  # 零依赖工具函数（配置校验 / 文本渲染 / 主会话判定 / 路由解析）
 ├── log-index.ts              # 消息索引（message_id → 消息事件；recall 消费）
-├── summarize.ts              # 观察/反思 persona + 提示词 + fork 摘要子会话（提取子会话 token usage 归入主会话）
+├── summarize.ts              # 观察/反思 persona + 提示词 + 直连 ctx.llm.stream() 摘要（prefix/system 双模式；流式 usage 归入主会话）
 ├── recall.ts                 # recall 工具
-└── compress.ts               # 两级自动压缩（测量 / 区间计算 / 中断扫描 / 对照表 / compaction/* 生命周期事件 + checkpoint 替换）
+└── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / 中断扫描 / 对照表 / compaction/* 生命周期事件 + checkpoint 替换）
 scripts/                      # release-archive.mjs（CHANGELOG 归档）
-tests/                        # vitest 单元测试（52 例）
+tests/                        # vitest 单元测试（71 例）
 .dsh/skills/                  # 项目级 skill（feature-defect-workflow：需求/缺陷完成工作流）
 ```
 
