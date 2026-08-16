@@ -1,5 +1,6 @@
 # Changelog
 
+- fix: 摘要提示词措辞改为「按模块聚合 assistant 的方式」（修正「与现有格式一致/与现状一致」的错误表述，聚合语义不变）
 - docs: README/文件头注释同步完整消息 index 定位单位（recall / recall-semantic / 摘要日志共用）
 - feat: recall-semantic 改用完整消息 index 定位（start/end 数字参数，区间越界回退全量，输出标 index，去 message_id）
 - feat: recall 改用完整消息 index 定位（start/end/offset 数字参数，输出标 index/类型，越界提示）
