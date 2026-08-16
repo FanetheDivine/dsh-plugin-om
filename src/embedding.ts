@@ -115,7 +115,7 @@ export function ensureModelReady(
     )
       .then(() => {})
       .catch((err: unknown) => {
-        warn('[download-model] 下载失败：' + (err instanceof Error ? err.message : String(err)));
+        warn(`[download-model] 下载失败：${err instanceof Error ? err.message : String(err)}`);
       })
       .finally(() => {
         inflightDownloads.delete(modelDir);

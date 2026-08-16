@@ -58,7 +58,7 @@ export function apply(ctx: Context, config?: unknown): void {
   // 运行时按需下载：仅当启用且模型 onnx 缺失时后台预热（不阻塞）；下载失败
   // 仅记日志，查询时未就绪由工具告知模型，下次查询自动重试。
   if (resolved.semanticRecallEnabled) {
-    const warnModel = (message: string) => ctx.logger.warn('dsh-plugin-om: ' + message);
+    const warnModel = (message: string) => ctx.logger.warn(`dsh-plugin-om: ${message}`);
     void ensureModelReady(resolved.modelDir, warnModel);
     ctx.tools.register(
       buildSemanticRecallTool({

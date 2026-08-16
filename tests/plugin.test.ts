@@ -728,13 +728,13 @@ describe('观察提示词 buildObservePrompt', () => {
     expect(prompt).toContain('从 index 8 开始编号');
     expect(prompt).not.toContain('共用的定位单位');
     // 规则：本指令不入日志、用户消息完整保留原文、模块划分/输出（背景目的行为结果/下一步计划/文件合并简写/单条重要消息）、连续
-    expect(prompt).toContain('本指令消息**不得**进入日志');
+    expect(prompt).toContain('当前消息仅作为指令，**不得**进入日志');
     expect(prompt).toContain('完整保留原文');
     expect(prompt).toContain('内在关联');
     expect(prompt).toContain('连续消息');
     expect(prompt).toContain('逻辑连贯性');
     expect(prompt).toContain('start/end表示当前模块首尾消息的index');
-    expect(prompt).toContain('背景、目的、行为、结果');
+    expect(prompt).toContain('目的、行为、结果');
     expect(prompt).toContain('下一步计划');
     expect(prompt).toContain('合并简写');
     expect(prompt).toContain('内容不受限制');
@@ -789,14 +789,14 @@ describe('反思提示词 buildReflectPrompt', () => {
     const prompt = buildReflectPrompt('fork');
     expect(prompt).toContain('停止一切现有任务，禁止调用任何工具');
     expect(prompt).toContain('精简合并');
-    expect(prompt).toContain('本指令消息**不得**进入日志');
+    expect(prompt).toContain('当前消息仅作为指令，**不得**进入日志');
     expect(prompt).toContain('<user_message index="(index)">');
     expect(prompt).toContain('<assistant start="(起始 index)" end="(结束 index)">');
     expect(prompt).not.toContain('按模块聚合 assistant 的方式');
     expect(prompt).not.toContain('toolcall'); // 不再有逐调用聚合行
     expect(prompt).toContain('内在关联');
     expect(prompt).toContain('逻辑连贯性');
-    expect(prompt).toContain('背景、目的、行为、结果');
+    expect(prompt).toContain('目的、行为、结果');
     expect(prompt).toContain('下一步计划');
     expect(prompt).toContain('合并简写');
     expect(prompt).toContain('内容不受限制');
