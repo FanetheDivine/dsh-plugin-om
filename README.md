@@ -19,7 +19,12 @@
 dsh plugin --profile <profile> add dsh-plugin-om
 ```
 
-需要重启dsh
+> 对于 pnpm11+ 添加脚本失败的说明：
+> 插件的依赖 `@huggingface/transformers` 自带原生构建脚本，pnpm 11 默认禁止依赖构建脚本，并会抛出异常。
+> 把 `$DSH_HOME/profiles/<profile>/pnpm-workspace.yaml` 的 `allowBuilds` 改为 `true` 即可
+> 或者使用`dsh plugin --profile <profile> add dsh-plugin-om --allow-build=onnxruntime-node --allow-build=protobufjs --allow-build=sharp`
+
+安装完成后，需要重启dsh
 
 可以通过`dsh --profile <profile> --dump-config`审查配置是否正确
 
@@ -92,7 +97,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 | `historyMergeRatio`     | `0.2`    | 反思阈值：摘要 ≥ 窗口 × 该比例触发精简合并                                                                                                                                   |
 | `compressMaxTokens`     | `4096`   | 单次摘要（观察/反思调用）生成上限                                                                                                                                            |
 | `tailMessageCount`      | `10`     | 尾部保留的不压缩消息条数（不压缩、不被替换、不进摘要日志）                                                                                                                   |
-| `modelDir`              | 打包模型 | recall-semantic 嵌入模型目录（默认插件内 `models/` 目录，仅小文件随包分发；可指向自定义目录）。onnx 缺失且启用语义召回时运行时自动下载到该目录                                                                |
+| `modelDir`              | 打包模型 | recall-semantic 嵌入模型目录（默认插件内 `models/` 目录，仅小文件随包分发；可指向自定义目录）。onnx 缺失且启用语义召回时运行时自动下载到该目录                               |
 | `summaryMode`           | `fork`   | 摘要模式：`fork`（缺省）/ `new` / `disable`（关闭自动压缩）；非法值在插件加载时报错（见[摘要模式](#摘要模式)）                                                               |
 | `debug`                 | dev      | 压缩流程步骤级（debug）日志开关：`true` 强制开启、`false` 强制关闭；缺省按 `NODE_ENV !== 'production'` 判定（dev/test 输出，生产隐藏）。**失败日志不受此开关影响，始终输出** |
 | `recallEnabled`         | `true`   | 是否注册 `recall` 工具（`false` 时禁用，不注册）                                                                                                                             |
