@@ -145,9 +145,9 @@ src/
 ├── index.ts                   # 打包入口（tsdown entry），导出 name / inject / apply
 │   apply(ctx, config) 三条主线（标注对应实现文件）：
 │   ├─ ① resolveConfig(config) ──▶ config.ts        # 配置默认值合并 + 逐键校验（留空回退默认，冻结返回）
-│   ├─ ② ctx.tools.register(buildRecallTool(() => ctx.get('toolResultPruner')))
+│   ├─ ② recallEnabled 时 ctx.tools.register(buildRecallTool(() => ctx.get('toolResultPruner')))
 │   │      └─▶ recall.ts                            # recall 工具：按 message_id 回看区间（超大结果由 pruner 裁剪）
-│   ├─ ③ ctx.tools.register(buildSemanticRecallTool({ getPruner, modelStatus, embedder }))
+│   ├─ ③ semanticRecallEnabled 时 ctx.tools.register(buildSemanticRecallTool({ getPruner, modelStatus, embedder }))
 │   │      └─▶ semantic-recall.ts                   # recall-semantic 工具：本地嵌入按语义检索全部消息日志（含被压缩/遮蔽）
 │   │           └─▶ embedding.ts                    # 本地 ONNX 嵌入：ensureModelReady 运行时按需下载（不阻塞/单飞）+ 懒加载 + 批量 embed + cosine
 │   │                └─▶ model-download.ts          # 模型下载原语（URL/跳过判定/原子落盘；dev CLI 复用）
@@ -158,7 +158,7 @@ src/
 │              └─ 提交          → compress.ts        # compaction/start → summary → 替换消息(checkpoint) → end；usage 归入主会话
 ├── constants.ts              # 共享常量（PLUGIN_LABEL / HISTORY_TAG / COMPACT_CHECKPOINT_PLUGIN）
 ├── types.ts                  # type-only：宿主类型再导出 + 领域类型（MessageNode / MessageIndex）
-├── config.ts                 # 配置默认值 / 校验（缺省、null、空串回退默认值；含 modelDir）
+├── config.ts                 # 配置默认值 / 校验（缺省、null、空串回退默认值；数值键/布尔键/summaryMode/modelDir）
 ├── utils.ts                  # 零依赖工具函数（配置校验 / 文本渲染 / 主会话判定 / 路由解析）
 ├── log-index.ts              # 消息索引（message_id → 消息事件；recall 消费）
 ├── embedding.ts              # 本地 ONNX 嵌入（@huggingface/transformers + 本地模型；运行时按需下载编排 / 懒加载 / 批量 / cosine）
@@ -170,7 +170,7 @@ src/
 models/
 └── paraphrase-multilingual-MiniLM-L12-v2/   # 嵌入模型目录（小文件随包分发；onnx 二进制由运行时按需下载到此处，不进 git）
 scripts/                      # release-archive.mjs（CHANGELOG 归档）/ download-model.mjs（开发手动预下载 CLI）
-tests/                        # vitest 单元测试（136 例）
+tests/                        # vitest 单元测试（135 例）
 .dsh/skills/                  # 项目级 skill（feature-defect-workflow：需求/缺陷完成工作流）
 ```
 
