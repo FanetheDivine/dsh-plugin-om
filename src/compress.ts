@@ -18,10 +18,12 @@
  * 表层长度-1-tailCount（尾部保留 config.tailMessageCount 条不压缩，作为摘要模型的
  * 参考尾部），当前 turn 中已完备的消息同样可压缩；区间终点回退到 tool-call/result
  * 配对平衡点（不切段）。
+ * 观察摘要的条目用「完整消息」index 定位（三类定义见 log-index.ts）：新消息起始 index
+ * 由插件从日志计算后注入提示词，new 模式输入按完整消息渲染绝对 index。
  * 仅主会话生效。
  */
 import { COMPACT_CHECKPOINT_PLUGIN, HISTORY_TAG, PLUGIN_LABEL } from './constants.ts';
-import { messageIdOfEvent, surfaceIndexOf } from './log-index.ts';
+import { indexCompleteMessages, surfaceIndexOf } from './log-index.ts';
 import { makeLogger } from './logger.ts';
 import {
   buildObservePrompt,
@@ -201,42 +203,6 @@ export function extractHistoryText(
     if (text !== undefined) found = { text, seq };
   }
   return found;
-}
-
-/**
- * message_id 对照表：遮蔽区间内消息事件按表层顺序产出 id 行（插件自产 user/message
- * 如运行时上下文快照与 <om-history> 不入表；观察摘要据此产出正确的 message_id）。
- * 按表层顺序（shadowedSeqs）扫描：与 extractHistoryText 同理，seq 区间扫描会漏。
- */
-export function buildMessageIdTable(session: Session, shadowedSeqs: readonly number[]): string[] {
-  /** 对照表行缓冲区。 */
-  const rows: string[] = [];
-  for (const seq of shadowedSeqs) {
-    /** 当前待检查事件。 */
-    const event = session.events[seq];
-    if (!event) continue;
-    if (event.type === 'user/message') {
-      /** 事件 source（插件自产消息不入表）。 */
-      const source = event.data.source as { kind?: string } | undefined;
-      if (source?.kind === 'plugin') continue;
-      /** 用户消息 id。 */
-      const id = messageIdOfEvent(event);
-      if (id) rows.push(`[user] message_id=${id}`);
-    } else if (event.type === 'assistant/message') {
-      /** 助手消息 id。 */
-      const id = messageIdOfEvent(event);
-      if (id) rows.push(`[assistant] message_id=${id}`);
-    } else if (event.type === 'tool/result') {
-      /** 结果消息 id。 */
-      const id = messageIdOfEvent(event);
-      if (id) {
-        /** 关联调用 id（供摘要模型按 callId 定位代码与结果）。 */
-        const callId = String(event.data.message.source.callId ?? '');
-        rows.push(`[tool/result callId=${callId}] message_id=${id}`);
-      }
-    }
-  }
-  return rows;
 }
 
 /** 当前打开中的 turn 号（最近 turn/start 且未被 turn/end 关闭）；无则 null（跨轮次场景）。 */
@@ -493,30 +459,29 @@ export async function observePass(
     Math.min(...range.shadowedSeqs),
     range.lastEndSeq,
   );
-  /** message_id 对照表行。 */
-  const table = buildMessageIdTable(session, range.shadowedSeqs);
   /** 实际保留的参考尾部条数（配对回退可能多于 tailCount；fork 输入从尾部之前实际截断）。 */
   const surface = [...session.surface.nodes];
   const actualTailCount = surface.length - range.shadowedSeqs.length;
+  /** 遮蔽 seq 集合（计算新消息起始 index）。 */
+  const shadowedSet = new Set(range.shadowedSeqs);
+  /** 压缩区间内第一个完整消息的 index（新消息起始编号；区间内无完整消息则 0）。 */
+  const startIndex =
+    indexCompleteMessages(session).find((cm) => cm.seqs.every((seq) => shadowedSet.has(seq)))
+      ?.index ?? 0;
   logger.step(
-    `观察：实际保留尾部 ${actualTailCount} 条（不压缩、不进日志），中断标记 ${interruptions.length} 条，message_id 对照表 ${table.length} 行`,
+    `观察：实际保留尾部 ${actualTailCount} 条（不压缩、不进日志），中断标记 ${interruptions.length} 条，新消息起始 index ${startIndex}`,
   );
   /** 观察指令（persona + 规则主体）。 */
   const prompt = buildObservePrompt({
-    table,
+    startIndex,
     interruptions,
     hasOldHistory: history !== undefined,
     mode: config.summaryMode,
   });
   const instruction = `${OBSERVER_PERSONA}\n\n${prompt}`;
-  /** new 模式的渲染输入：本次要压缩的消息（过滤旧 <om-history> 日志消息；不含尾部）。 */
+  /** new 模式的渲染输入：本次要压缩的完整消息（含绝对 index；不含尾部，插件自产消息不占位）。 */
   const contextText =
-    config.summaryMode === 'new'
-      ? renderMessages(
-          session,
-          range.shadowedSeqs.filter((seq) => historyTextOf(session.events[seq]) === undefined),
-        )
-      : undefined;
+    config.summaryMode === 'new' ? renderMessages(session, range.shadowedSeqs) : undefined;
   /** 观察摘要结果（null 表示失败/跳过）。 */
   const summaryResult = await runSummarySubagent(
     ctx,
