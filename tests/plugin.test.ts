@@ -1925,11 +1925,11 @@ describe('recall-semantic 参数解析（zod schema）', () => {
   it('query 必填且非空，top_k 与区间参数可选', () => {
     expect(parseSemanticRecallArgs({ query: '找缓存逻辑' })).toEqual({ query: '找缓存逻辑' });
     expect(parseSemanticRecallArgs({ query: 'x', top_k: 5 })).toEqual({ query: 'x', top_k: 5 });
-    expect(parseSemanticRecallArgs({ query: 'x', start_id: 'a', end_id: 'b', offset: 2 })).toEqual({
+    expect(parseSemanticRecallArgs({ query: 'x', start: 2, end: 5, offset: 1 })).toEqual({
       query: 'x',
-      start_id: 'a',
-      end_id: 'b',
-      offset: 2,
+      start: 2,
+      end: 5,
+      offset: 1,
     });
   });
 
@@ -1945,61 +1945,55 @@ describe('recall-semantic 参数解析（zod schema）', () => {
     expect(() => parseSemanticRecallArgs({ query: 'x', top_k: '3' })).toThrow(/top_k/);
   });
 
+  it('start/end/offset 必须为 number', () => {
+    expect(() => parseSemanticRecallArgs({ query: 'x', start: '2' })).toThrow(/start/);
+    expect(() => parseSemanticRecallArgs({ query: 'x', end: '5' })).toThrow(/end/);
+    expect(() => parseSemanticRecallArgs({ query: 'x', offset: '1' })).toThrow(/offset/);
+  });
+
   it('未知键被剥离', () => {
     expect(parseSemanticRecallArgs({ query: 'x', junk: 1 })).toEqual({ query: 'x' });
   });
 });
 
 describe('语义区间解析 resolveSemanticRange', () => {
-  /** 构造消息索引（message_id → 下标）。 */
-  function indexOf(ids: string[]) {
-    return {
-      messages: ids.map((id, index) => ({ seq: index, id, type: 'user/message' as const })),
-      byId: new Map(ids.map((id, index) => [id, index])),
-    };
-  }
-
-  it('start_id 缺省 → 全量检索（fallback=false）', () => {
-    const index = indexOf(['a', 'b', 'c']);
-    expect(resolveSemanticRange(index, {})).toEqual({ lo: 0, hi: 2, fallback: false });
+  it('start 缺省 → 全量检索（fallback=false）', () => {
+    expect(resolveSemanticRange(3, {})).toEqual({ lo: 0, hi: 2, fallback: false });
   });
 
-  it('start_id + end_id 限定区间（顺序无关）', () => {
-    const index = indexOf(['a', 'b', 'c', 'd']);
-    expect(resolveSemanticRange(index, { start_id: 'a', end_id: 'c' })).toEqual({
+  it('start + end 限定区间（顺序无关）', () => {
+    expect(resolveSemanticRange(4, { start: 0, end: 2 })).toEqual({
       lo: 0,
       hi: 2,
       fallback: false,
     });
-    expect(resolveSemanticRange(index, { start_id: 'c', end_id: 'a' })).toEqual({
+    expect(resolveSemanticRange(4, { start: 2, end: 0 })).toEqual({
       lo: 0,
       hi: 2,
       fallback: false,
     });
   });
 
-  it('start_id + offset 正负限定区间（非整数 floor）', () => {
-    const index = indexOf(['a', 'b', 'c', 'd']);
-    expect(resolveSemanticRange(index, { start_id: 'a', offset: 2 })).toEqual({
+  it('start + offset 正负限定区间（非整数 floor）', () => {
+    expect(resolveSemanticRange(4, { start: 0, offset: 2 })).toEqual({
       lo: 0,
       hi: 2,
       fallback: false,
     });
-    expect(resolveSemanticRange(index, { start_id: 'd', offset: -2 })).toEqual({
+    expect(resolveSemanticRange(4, { start: 3, offset: -2 })).toEqual({
       lo: 1,
       hi: 3,
       fallback: false,
     });
-    expect(resolveSemanticRange(index, { start_id: 'a', offset: 2.9 })).toEqual({
+    expect(resolveSemanticRange(4, { start: 0, offset: 2.9 })).toEqual({
       lo: 0,
       hi: 2,
       fallback: false,
     });
   });
 
-  it('end_id 优先于 offset', () => {
-    const index = indexOf(['a', 'b', 'c', 'd']);
-    expect(resolveSemanticRange(index, { start_id: 'a', end_id: 'b', offset: 3 })).toEqual({
+  it('end 优先于 offset', () => {
+    expect(resolveSemanticRange(4, { start: 0, end: 1, offset: 3 })).toEqual({
       lo: 0,
       hi: 1,
       fallback: false,
@@ -2007,35 +2001,38 @@ describe('语义区间解析 resolveSemanticRange', () => {
   });
 
   it('区间越界钳制到消息边界', () => {
-    const index = indexOf(['a', 'b']);
-    expect(resolveSemanticRange(index, { start_id: 'a', offset: 100 })).toEqual({
+    expect(resolveSemanticRange(2, { start: 0, offset: 100 })).toEqual({
       lo: 0,
       hi: 1,
       fallback: false,
     });
-    expect(resolveSemanticRange(index, { start_id: 'b', offset: -100 })).toEqual({
+    expect(resolveSemanticRange(2, { start: 1, offset: -100 })).toEqual({
       lo: 0,
       hi: 1,
       fallback: false,
     });
   });
 
-  it('start_id/end_id 不存在 → 回退全量并标记 fallback', () => {
-    const index = indexOf(['a', 'b', 'c']);
-    expect(resolveSemanticRange(index, { start_id: 'nope', offset: 1 })).toEqual({
+  it('start/end 越界 → 回退全量并标记 fallback', () => {
+    expect(resolveSemanticRange(3, { start: 99, offset: 1 })).toEqual({
       lo: 0,
       hi: 2,
       fallback: true,
     });
-    expect(resolveSemanticRange(index, { start_id: 'a', end_id: 'nope' })).toEqual({
+    expect(resolveSemanticRange(3, { start: -1, offset: 1 })).toEqual({
+      lo: 0,
+      hi: 2,
+      fallback: true,
+    });
+    expect(resolveSemanticRange(3, { start: 0, end: 99 })).toEqual({
       lo: 0,
       hi: 2,
       fallback: true,
     });
   });
 
-  it('空索引 → 空区间（不标记回退）', () => {
-    expect(resolveSemanticRange(indexOf([]), {})).toEqual({ lo: 0, hi: -1, fallback: false });
+  it('空索引（total=0）→ 空区间（不标记回退）', () => {
+    expect(resolveSemanticRange(0, {})).toEqual({ lo: 0, hi: -1, fallback: false });
   });
 });
 
@@ -2166,7 +2163,7 @@ describe('recall-semantic 工具', () => {
     expect(out).toContain('message_id=old-db');
   });
 
-  it('start_id+offset 限定检索区间', async () => {
+  it('start+offset 限定检索区间（完整消息 index）', async () => {
     const session = textSession([
       ['m-db', '修改数据库连接池配置'],
       ['m-cache', '缓存失效问题排查'],
@@ -2174,18 +2171,15 @@ describe('recall-semantic 工具', () => {
     ]);
     const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
     const exec = { agent: { session } };
-    // 区间 [m-db .. m-cache]：不含权限消息
-    const span = await tool.execute(
-      { query: '权限 数据库', start_id: 'm-db', offset: 1 },
-      exec as never,
-    );
+    // 区间 [0..1]（m-db .. m-cache）：不含权限消息
+    const span = await tool.execute({ query: '权限 数据库', start: 0, offset: 1 }, exec as never);
     const out = String(span);
     expect(out).toContain('修改数据库连接池配置');
     expect(out).toContain('缓存失效问题排查');
     expect(out).not.toContain('权限校验逻辑');
   });
 
-  it('区间不合法（id 不存在）→ 回退全量并在输出中告知', async () => {
+  it('区间越界 → 回退全量并在输出中告知', async () => {
     const session = textSession([
       ['m-db', '修改数据库连接池配置'],
       ['m-cache', '缓存失效问题排查'],
@@ -2193,7 +2187,7 @@ describe('recall-semantic 工具', () => {
     ]);
     const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
     const exec = { agent: { session } };
-    const span = await tool.execute({ query: '权限', start_id: 'ghost', offset: 2 }, exec as never);
+    const span = await tool.execute({ query: '权限', start: 99, offset: 2 }, exec as never);
     const out = String(span);
     expect(out).toContain('已回退检索全部消息');
     expect(out).toContain('权限校验逻辑'); // 全量检索可见

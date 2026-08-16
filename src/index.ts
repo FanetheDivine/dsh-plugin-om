@@ -3,9 +3,9 @@
  * 不依赖特定 tool mode（native / code / both 均可运行）。
  *
  * 模块：
- *  - recall.ts  recall({ start_id, end_id?, offset? }) 工具：按 message_id 回看原始会话
- *  - semantic-recall.ts  recall-semantic({ query, top_k?, start_id?, end_id?, offset? }) 工具：
- *    按语义在全部消息日志（含被压缩/遮蔽）中检索，返回最匹配的完整消息与匹配说明
+ *  - recall.ts  recall({ start, end?, offset? }) 工具：按完整消息 index 回看原始会话
+ *  - semantic-recall.ts  recall-semantic({ query, top_k?, start?, end?, offset? }) 工具：
+ *    按语义在全部完整消息（含被压缩/遮蔽）中检索，返回最匹配的完整消息与匹配说明
  *    （本地 ONNX embedding，模型随插件打包，懒加载）
  *  - compress.ts 自动压缩（OM 观察/反思两级阈值）：pre-step 阻塞串行执行——
  *    反思（摘要 ≥ 窗口 × historyMergeRatio 时摘要调用精简合并 <om-history>）、
