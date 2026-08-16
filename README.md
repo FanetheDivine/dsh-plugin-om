@@ -87,20 +87,20 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 ## 插件配置项
 
-| 键                  | 默认   | 含义                                         |
-| ------------------- | ------ | -------------------------------------------- |
-| `thresholdRatio`    | `0.5`  | 观察阈值：未压缩消息 ≥ 窗口 × 该比例触发压缩 |
-| `historyMergeRatio` | `0.2`  | 反思阈值：摘要 ≥ 窗口 × 该比例触发精简合并   |
-| `compressMaxTokens` | `4096` | 单次摘要（观察/反思调用）生成上限            |
-| `tailMessageCount`  | `10`   | 压缩后保留的未压缩消息条数                   |
+| 键                  | 默认     | 含义                                                                       |
+| ------------------- | -------- | -------------------------------------------------------------------------- |
+| `thresholdRatio`    | `0.5`    | 观察阈值：未压缩消息 ≥ 窗口 × 该比例触发压缩                               |
+| `historyMergeRatio` | `0.2`    | 反思阈值：摘要 ≥ 窗口 × 该比例触发精简合并                                 |
+| `compressMaxTokens` | `4096`   | 单次摘要（观察/反思调用）生成上限                                          |
+| `tailMessageCount`  | `10`     | 压缩后保留的未压缩消息条数                                                 |
 | `modelDir`          | 打包模型 | recall-semantic 嵌入模型目录（默认插件内打包的本地模型；可指向自定义目录） |
 
 ## 环境变量
 
-| 变量                          | 默认 | 含义                                                        |
-| ----------------------------- | ---- | ----------------------------------------------------------- |
-| `OM_RECALL_ENABLED`           | 启用 | 是否注册 `recall` 工具（值恰为 `false` 时禁用）             |
-| `OM_SEMANTIC_RECALL_ENABLED`  | 启用 | 是否注册 `recall-semantic` 工具（值恰为 `false` 时禁用）    |
+| 变量                         | 默认 | 含义                                                     |
+| ---------------------------- | ---- | -------------------------------------------------------- |
+| `OM_RECALL_ENABLED`          | 启用 | 是否注册 `recall` 工具（值恰为 `false` 时禁用）          |
+| `OM_SEMANTIC_RECALL_ENABLED` | 启用 | 是否注册 `recall-semantic` 工具（值恰为 `false` 时禁用） |
 
 取值规则：值**恰为** `false` 时禁用对应工具（不注册；`recall-semantic` 禁用时嵌入模型也不会加载），其余取值（含未设置 / 空串 / `true` / `1` 等）均启用。两个开关相互独立，只影响工具注册，不影响压缩接线。
 
@@ -112,9 +112,9 @@ OM_SEMANTIC_RECALL_ENABLED=false dsh web
 
 ## recall 工具
 
-| 参数       | 必填 | 含义                                       |
-| ---------- | ---- | ------------------------------------------ |
-| `start_id` | 是   | message_id(uuid)，区间的基准边界           |
+| 参数       | 必填   | 含义                                      |
+| ---------- | ------ | ----------------------------------------- |
+| `start_id` | 是     | message_id(uuid)，区间的基准边界          |
 | `end_id`   | 二选一 | message_id(uuid)，指定区间的另一个边界    |
 | `offset`   | 二选一 | 相对 start_id 的消息步数（正向后/负向前） |
 
@@ -122,28 +122,28 @@ OM_SEMANTIC_RECALL_ENABLED=false dsh web
 
 ## recall-semantic 工具
 
-| 参数       | 必填 | 含义                                                                 |
-| ---------- | ---- | -------------------------------------------------------------------- |
-| `query`    | 是   | 自然语言描述要找的内容（可混用中英文与代码术语）                     |
-| `top_k`    | 否   | 返回最匹配的消息条数（1-10，默认 3）                                 |
-| `start_id` | 否   | 限定检索区间的基准边界（意义同 recall）；缺省检索全部消息            |
-| `end_id`   | 否   | 限定区间的另一个边界（与 offset 互斥，意义同 recall）                |
-| `offset`   | 否   | 相对 start_id 的步数（与 end_id 互斥，意义同 recall）                |
+| 参数       | 必填 | 含义                                                      |
+| ---------- | ---- | --------------------------------------------------------- |
+| `query`    | 是   | 自然语言描述要找的内容（可混用中英文与代码术语）          |
+| `top_k`    | 否   | 返回最匹配的消息条数（1-10，默认 3）                      |
+| `start_id` | 否   | 限定检索区间的基准边界（意义同 recall）；缺省检索全部消息 |
+| `end_id`   | 否   | 限定区间的另一个边界（与 offset 互斥，意义同 recall）     |
+| `offset`   | 否   | 相对 start_id 的步数（与 end_id 互斥，意义同 recall）     |
 
 按语义（自然语言含义）在**全部消息日志**（含被压缩/遮蔽的 user/assistant/tool-result 事件）中检索，返回最匹配的若干条**完整消息**（message_id / seq / 类型 + 相似度 + 命中关键词）。区间参数限定检索范围；区间不合法（如 id 不存在）不报错，回退全量检索并在结果中明确告知模型。仅主会话可用；超大结果由 `tool-result-pruner` 裁剪。
 
 ## npm 命令
 
-| 命令                        | 作用                                      |
-| --------------------------- | ----------------------------------------- |
-| `pnpm check`                | typecheck + lint + test + build           |
-| `pnpm typecheck`            | TypeScript 类型检查                       |
-| `pnpm lint` / `pnpm format` | 代码检查 / 格式化                         |
-| `pnpm test`                 | vitest 单元测试                           |
+| 命令                        | 作用                                                |
+| --------------------------- | --------------------------------------------------- |
+| `pnpm check`                | typecheck + lint + test + build                     |
+| `pnpm typecheck`            | TypeScript 类型检查                                 |
+| `pnpm lint` / `pnpm format` | 代码检查 / 格式化                                   |
+| `pnpm test`                 | vitest 单元测试                                     |
 | `pnpm run download:model`   | 下载本地嵌入模型 ONNX（已存在跳过，`--force` 重下） |
-| `pnpm build`                |                                           |
-| `pnpm dev`                  | 自动打包                                  |
-| `pnpm run release`          | CHANGELOG 归档 + 版本号更新 + 打 tag 推送 |
+| `pnpm build`                |                                                     |
+| `pnpm dev`                  | 自动打包                                            |
+| `pnpm run release`          | CHANGELOG 归档 + 版本号更新 + 打 tag 推送           |
 
 ## 调用链和文件地图
 
@@ -179,3 +179,7 @@ scripts/                      # release-archive.mjs（CHANGELOG 归档）/ downl
 tests/                        # vitest 单元测试（99 例）
 .dsh/skills/                  # 项目级 skill（feature-defect-workflow：需求/缺陷完成工作流）
 ```
+
+## 开发计划
+
+- 将OM和recall分为两个包
