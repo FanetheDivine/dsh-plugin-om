@@ -232,7 +232,12 @@ export function makeCtx({ llmStream, resolveModelInfo, pruner }: MockCtxOptions 
       stream: async function* (options: unknown) {
         llmCalls.push({ options });
         if (llmStream) yield* llmStream;
-        else yield { type: 'text-delta', text: '合并后的历史条目' };
+        // 缺省输出为合法 <om-history> 块（提取校验要求中间内容 ≥ 10 字符）
+        else
+          yield {
+            type: 'text-delta',
+            text: '<om-history>\n合并后的历史条目内容\n</om-history>',
+          };
       },
     },
     tokenMeter: meter,

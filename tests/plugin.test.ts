@@ -42,6 +42,9 @@ import {
 import {
   buildObservePrompt,
   buildReflectPrompt,
+  extractSummaryLog,
+  HISTORY_FORMAT_NOTE,
+  MIN_HISTORY_LENGTH,
   OBSERVER_PERSONA,
   REFLECTOR_PERSONA,
   renderMessages,
@@ -140,7 +143,7 @@ describe('配置校验 resolveConfig', () => {
     expect(d.historyMergeRatio).toBe(0.2);
     expect(d.compressMaxTokens).toBe(4096);
     expect(d.tailMessageCount).toBe(10);
-    expect(d.summaryMode).toBe('prefix');
+    expect(d.summaryMode).toBe('fork');
     expect(d).not.toHaveProperty('summaryMaxChars');
     expect(d).not.toHaveProperty('recallMaxMessages');
     expect(d).not.toHaveProperty('auto');
@@ -168,7 +171,7 @@ describe('配置校验 resolveConfig', () => {
       expect(d.historyMergeRatio).toBe(0.2);
       expect(d.compressMaxTokens).toBe(4096);
       expect(d.tailMessageCount).toBe(10);
-      expect(d.summaryMode).toBe('prefix');
+      expect(d.summaryMode).toBe('fork');
     }
   });
 
@@ -222,15 +225,21 @@ describe('步骤级日志开关 stepLogEnabled', () => {
 });
 
 describe('摘要模式 resolveSummaryModeFromEnv', () => {
-  it('缺省 / 空串 / prefix 回退 prefix', () => {
-    expect(resolveSummaryModeFromEnv({})).toBe('prefix');
-    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: '' })).toBe('prefix');
-    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: '   ' })).toBe('prefix');
-    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'prefix' })).toBe('prefix');
+  it('缺省 / 空串 / fork 回退 fork', () => {
+    expect(resolveSummaryModeFromEnv({})).toBe('fork');
+    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: '' })).toBe('fork');
+    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: '   ' })).toBe('fork');
+    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'fork' })).toBe('fork');
   });
 
-  it("'system' 切换 system 模式", () => {
-    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'system' })).toBe('system');
+  it("'new' 切换 new 模式、'disable' 关闭自动压缩", () => {
+    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'new' })).toBe('new');
+    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'disable' })).toBe('disable');
+  });
+
+  it('旧值兼容：prefix→fork、system→new', () => {
+    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'prefix' })).toBe('fork');
+    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'system' })).toBe('new');
   });
 
   it('非法值抛错并指出环境变量名', () => {
@@ -242,10 +251,10 @@ describe('摘要模式 resolveSummaryModeFromEnv', () => {
   it('resolveConfig 读取环境变量（设置后清理，不泄漏到其他用例）', () => {
     const prev = process.env[SUMMARY_MODE_ENV];
     try {
-      process.env[SUMMARY_MODE_ENV] = 'system';
-      expect(resolveConfig({}).summaryMode).toBe('system');
+      process.env[SUMMARY_MODE_ENV] = 'new';
+      expect(resolveConfig({}).summaryMode).toBe('new');
       delete process.env[SUMMARY_MODE_ENV];
-      expect(resolveConfig({}).summaryMode).toBe('prefix');
+      expect(resolveConfig({}).summaryMode).toBe('fork');
     } finally {
       if (prev === undefined) delete process.env[SUMMARY_MODE_ENV];
       else process.env[SUMMARY_MODE_ENV] = prev;
@@ -518,6 +527,56 @@ describe('历史提取 extractHistoryText / findLatestHistory', () => {
       ),
     ).toBeUndefined();
   });
+
+  it('D：不通过文本含 <om-history> 判定摘要——普通用户消息即使含标签也不算摘要', () => {
+    // 普通用户消息（非插件 source）文本里恰好含 <om-history>，不应被识别为压缩日志
+    const session = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('请解释一下 <om-history> 标签的含义')],
+            id: 'user-fake',
+          }),
+        } as unknown as SessionEvent,
+        historyMessage('真正的旧任务', 'history-real'),
+      ],
+    });
+    // findLatestHistory 只命中插件 source 的 historyMessage，不含普通用户消息
+    const found = findLatestHistory(session);
+    expect(found?.seq).toBe(1);
+    expect(found?.text).toContain('真正的旧任务');
+    // 普通用户消息（含标签文本）不被识别为摘要
+    const onlyFake = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('请解释一下 <om-history> 标签的含义')],
+            id: 'user-fake',
+          }),
+        } as unknown as SessionEvent,
+      ],
+    });
+    expect(findLatestHistory(onlyFake)).toBeUndefined();
+  });
+
+  it('D：measureUncompressedTokens 将含 <om-history> 文本的普通消息计入未压缩', () => {
+    const fake = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('请解释一下 <om-history> 标签的含义')],
+            id: 'user-fake',
+          }),
+        } as unknown as SessionEvent,
+      ],
+    });
+    const historyOnly = makeSession({ events: [historyMessage('旧任务')] });
+    expect(measureUncompressedTokens(fake, makeMeter())).toBeGreaterThan(0);
+    expect(measureUncompressedTokens(historyOnly, makeMeter())).toBe(0); // 摘要消息不计入
+  });
 });
 
 describe('message_id 对照表 buildMessageIdTable', () => {
@@ -568,26 +627,35 @@ describe('message_id 对照表 buildMessageIdTable', () => {
 });
 
 describe('观察提示词 buildObservePrompt', () => {
-  it('含聚合规则（不限于 run_code）/对照表/中断标记/参考尾部/追加说明', () => {
+  it('任务声明/聚合规则/对照表/中断标记/输出格式/追加说明（提示词不含尾部规则）', () => {
     const prompt = buildObservePrompt({
       table: ['[user] message_id=u1', '[tool/result callId=c1] message_id=r1'],
       interruptions: ['[interrupted] turn 1 被中断（aborted，原因 user）'],
       hasOldHistory: true,
-      tailCount: 2,
-      mode: 'prefix',
+      mode: 'fork',
     });
-    expect(prompt).toContain('user_message message_id:<id> text:<要点>');
+    // fork 模式：停止任务/禁止工具声明
+    expect(prompt).toContain('停止一切现有任务，禁止调用任何工具');
+    // 规则：用户消息完整保留原文、toolcall 聚合（不限于 run_code）、新消息优先
+    expect(prompt).toContain('完整保留原文');
     expect(prompt).toContain('toolcall message_id:<该组最后一条消息的 message_id>');
     expect(prompt).toContain('不限于 run_code');
+    expect(prompt).toContain('倾向于新消息');
+    expect(prompt).toContain('不修改旧日志条目');
     expect(prompt).toContain('当前进度与下一步');
     expect(prompt).toContain('recall 按 message_id 回看');
+    // 输出格式：合法 XML（<user_message id> / <assistant last_id>）
+    expect(prompt).toContain('<user_message id="(message_id)">');
+    expect(prompt).toContain('<assistant last_id="(该组最后一条消息的 message_id)">');
+    // 对照表 / 中断标记 / 追加说明
     expect(prompt).toContain('[interrupted] turn 1 被中断（aborted，原因 user）');
     expect(prompt).toContain('[user] message_id=u1');
     expect(prompt).toContain('[tool/result callId=c1] message_id=r1');
     expect(prompt).toContain('追加到上一次压缩产物');
-    // prefix 模式：引用上方完整会话记录 + 参考尾部条数
+    // fork 模式：引用上方完整会话记录；尾部不写进提示词（输入已从尾部之前实际截断）
     expect(prompt).toContain('上方的消息记录是主会话的完整历史');
-    expect(prompt).toContain('最后 2 条消息是最近上下文');
+    expect(prompt).toContain('最后一次 <om-history> 块之后的全部消息；只对这些消息做压缩');
+    expect(prompt).not.toContain('尾部');
   });
 
   it('首次压缩（无旧摘要）表述为第一条日志', () => {
@@ -595,39 +663,91 @@ describe('观察提示词 buildObservePrompt', () => {
       table: [],
       interruptions: [],
       hasOldHistory: false,
-      tailCount: 0,
-      mode: 'prefix',
+      mode: 'fork',
     });
     expect(prompt).toContain('第一条 <om-history> 压缩日志');
     expect(prompt).not.toContain('追加到上一次压缩产物');
   });
 
-  it('system 模式：定位【被压缩消息】/【参考尾部】段', () => {
+  it('new 模式：只说明总结日志 + 下方消息即压缩对象（不含旧日志/尾部）', () => {
     const prompt = buildObservePrompt({
       table: [],
       interruptions: [],
       hasOldHistory: false,
-      tailCount: 3,
-      mode: 'system',
+      mode: 'new',
     });
-    expect(prompt).toContain('【被压缩消息】段是本次要压缩的对象');
-    expect(prompt).toContain('【参考尾部】段是最近上下文');
-    expect(prompt).toContain('段内全部消息都是未压缩消息');
+    // new 模式：仅说明总结日志（无停止任务声明）
+    expect(prompt).toContain('将过往消息总结为一份日志。');
+    expect(prompt).not.toContain('停止一切现有任务');
+    expect(prompt).toContain('下方的消息记录是本次要压缩的全部消息');
+    expect(prompt).toContain('不含旧压缩日志、不含尾部');
+    expect(prompt).toContain('追加到已有压缩日志之后');
   });
 });
 
 describe('反思提示词 buildReflectPrompt', () => {
-  it('精简合并规则：用户消息保留要点、toolcall 聚合、可写（略）', () => {
-    const prompt = buildReflectPrompt('prefix');
+  it('精简合并规则：声明/用户消息保留要点、toolcall 聚合、可写（略）、XML 输出', () => {
+    const prompt = buildReflectPrompt('fork');
+    expect(prompt).toContain('停止一切现有任务，禁止调用任何工具');
     expect(prompt).toContain('精简合并');
-    expect(prompt).toContain('user_message message_id:<id> text:<要点>');
+    expect(prompt).toContain('<user_message id="(message_id)">');
     expect(prompt).toContain('（略）');
     expect(prompt).toContain('替换当前的 <om-history> 块内容');
+    expect(prompt).toContain('保留新条目');
   });
 
-  it('system 模式定位下方的 <om-history> 压缩日志', () => {
-    const prompt = buildReflectPrompt('system');
+  it('new 模式定位下方的 <om-history> 压缩日志（仅说明总结日志）', () => {
+    const prompt = buildReflectPrompt('new');
+    expect(prompt).toContain('将当前压缩日志精简合并为一份更紧凑的日志。');
+    expect(prompt).not.toContain('停止一切现有任务');
     expect(prompt).toContain('下方的消息记录包含当前的 <om-history> 压缩日志');
+  });
+});
+
+describe('摘要日志提取 extractSummaryLog', () => {
+  /** 构造合法日志块（inner 长度足够）。 */
+  function block(inner: string): string {
+    return `<om-history>\n${inner}\n</om-history>`;
+  }
+
+  it('合法块：取首个 <om-history> 到最后一个 </om-history>（含首尾），插入格式说明注释', () => {
+    const raw = [
+      '前置说明不要',
+      block('<user_message id="u1">\n请帮我完成一个任务\n</user_message>'),
+      '尾部多余文字',
+    ].join('\n');
+    const out = extractSummaryLog(raw);
+    expect(out).not.toBeNull();
+    expect(out?.startsWith('<om-history>')).toBe(true);
+    expect(out?.endsWith('</om-history>')).toBe(true);
+    // 格式说明注释插在首个 <om-history> 之后
+    expect(out).toContain(`<om-history>\n${HISTORY_FORMAT_NOTE}`);
+    expect(out).toContain('<user_message id="u1">');
+    expect(out).not.toContain('前置说明不要');
+    expect(out).not.toContain('尾部多余文字');
+  });
+
+  it('多块输出：跨首个 <om-history> 到最后一个 </om-history> 整体截取', () => {
+    const raw = [block('第一块'), block('第二块')].join('\n');
+    const out = extractSummaryLog(raw);
+    expect(out).not.toBeNull();
+    expect(out).toContain('第一块');
+    expect(out).toContain('第二块');
+    expect((out?.match(/<om-history>/g) ?? []).length).toBe(2);
+  });
+
+  it('找不到标签 / 顺序颠倒返回 null', () => {
+    expect(extractSummaryLog('没有标签的纯文本')).toBeNull();
+    expect(extractSummaryLog('</om-history>\n<om-history>')).toBeNull(); // 闭标签在开标签前
+    expect(extractSummaryLog('只有开标签 <om-history> 内容')).toBeNull();
+    expect(extractSummaryLog('只有闭标签 </om-history>')).toBeNull();
+  });
+
+  it('中间内容过短（< MIN_HISTORY_LENGTH）视为不合法', () => {
+    expect(extractSummaryLog(block('太短'))).toBeNull();
+    expect(extractSummaryLog(block(''))).toBeNull();
+    expect(extractSummaryLog('<om-history>\n   \n</om-history>')).toBeNull(); // 空白不算
+    expect(extractSummaryLog(block('X'.repeat(MIN_HISTORY_LENGTH)))).not.toBeNull(); // 恰好 10 合法
   });
 });
 
@@ -682,8 +802,16 @@ describe('apply 接线（OM 观察压缩）', () => {
       withTurnEnd: true,
     });
     const session = makeSession({ events: flowEvents });
-    const report =
-      'user_message message_id:user-c-eval text:请帮我完成一个任务\ntoolcall message_id:result-c-eval purpose:跑一下 summary:产物符合预期；下一步提交';
+    const report = [
+      '<om-history>',
+      '<user_message id="user-c-eval">',
+      '请帮我完成一个任务',
+      '</user_message>',
+      '<assistant last_id="result-c-eval">',
+      'toolcall message_id:result-c-eval purpose:跑一下 summary:产物符合预期；下一步提交',
+      '</assistant>',
+      '</om-history>',
+    ].join('\n');
     const ctx = observeCtx(report);
     apply(ctx, { tailMessageCount: 1 });
 
@@ -704,10 +832,14 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(options.maxTokens).toBe(4096); // compressMaxTokens 默认
 
     const historyText = latestHistoryText(session);
-    expect(historyText).toContain('user_message message_id:user-c-eval text:请帮我完成一个任务');
+    // 新格式：<user_message id> 完整原文 + <assistant last_id> 聚合模块；格式说明注释在块首
+    expect(historyText).toContain('<user_message id="user-c-eval">');
+    expect(historyText).toContain('请帮我完成一个任务');
+    expect(historyText).toContain('<assistant last_id="result-c-eval">');
     expect(historyText).toContain(
       'toolcall message_id:result-c-eval purpose:跑一下 summary:产物符合预期；下一步提交',
     );
+    expect(historyText).toContain('块内包含了用户的原文'); // HISTORY_FORMAT_NOTE 注释
     // 遮蔽后表层 = <om-history> + 尾部（配对回退后保留 assistant + result 两条）
     expect(session.surface.nodes.length).toBe(3);
     // compaction 生命周期：start → summary → 替换消息 → end（同 compactionId）
@@ -732,7 +864,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     const summaryText = summaryEvent.data.summary
       .map((block) => (block.type === 'text' ? block.text : ''))
       .join('');
-    expect(summaryText).toContain('user_message message_id:user-c-eval text:请帮我完成一个任务');
+    expect(summaryText).toContain('<user_message id="user-c-eval">');
     expect(summaryText).toContain(
       'toolcall message_id:result-c-eval purpose:跑一下 summary:产物符合预期；下一步提交',
     );
@@ -755,10 +887,13 @@ describe('apply 接线（OM 观察压缩）', () => {
     const session = makeSession({
       events: [historyMessage('user_message message_id:old-u text:旧任务'), ...flowEvents],
     });
-    // window 11 + historyMergeRatio 1：观察阈值 5.5 ≤ 未压缩 6 tokens（触发）；
-    // 反思阈值 11 > 旧摘要 10 tokens（不触发）——隔离观察路径验证增量追加
-    const ctx = observeCtx('toolcall message_id:result-c1 summary:新内容', 11);
-    apply(ctx, { tailMessageCount: 1, historyMergeRatio: 1 });
+    // window 11 + historyMergeRatio 2：观察阈值 5.5 ≤ 未压缩 6 tokens（触发）；
+    // 反思阈值 22 > 旧摘要（含标签约 15 tokens，不触发）——隔离观察路径验证增量追加
+    const ctx = observeCtx(
+      '<om-history>\ntoolcall message_id:result-c1 summary:新内容\n</om-history>',
+      11,
+    );
+    apply(ctx, { tailMessageCount: 1, historyMergeRatio: 2 });
     await runPreStep(ctx, session);
     const historyText = latestHistoryText(session);
     expect(historyText).toContain('旧任务'); // 旧摘要原文保留
@@ -767,6 +902,24 @@ describe('apply 接线（OM 观察压缩）', () => {
     const newIdx = historyText.indexOf('新内容');
     expect(oldIdx).toBeGreaterThan(-1);
     expect(newIdx).toBeGreaterThan(oldIdx);
+    // 多块按序拼接：替换消息原文 = 前言 + 旧 <om-history> 块 + 新 <om-history> 块
+    const replaceMsg = session.events.findLast(
+      (e) =>
+        e.type === 'user/message' &&
+        typeof e.surfaceOp === 'object' &&
+        e.surfaceOp !== null &&
+        (e.surfaceOp as { op?: string }).op === 'replace',
+    );
+    const raw = String(
+      (
+        (replaceMsg as { data?: { content?: unknown[] } } | undefined)?.data?.content?.[0] as
+          | { text?: string }
+          | undefined
+      )?.text ?? '',
+    );
+    // 前言里的「（<om-history>）」是行内提及，不计入；块标签须独占一行（两个块 = 2 个开标签）
+    expect((raw.match(/^<om-history>$/gm) ?? []).length).toBe(2);
+    expect(raw.indexOf('旧任务')).toBeLessThan(raw.indexOf('新内容'));
   });
 
   it('未达观察阈值不压缩（无摘要调用、无 <om-history>）', async () => {
@@ -860,7 +1013,10 @@ describe('apply 接线（OM 观察压缩）', () => {
           const current = attempts;
           return (function* () {
             if (current <= 2) throw new Error(`模拟第 ${current} 次失败`);
-            yield { type: 'text-delta', text: 'retried-ok' };
+            yield {
+              type: 'text-delta',
+              text: '<om-history>\nretried-ok\n</om-history>',
+            };
           })();
         },
       },
@@ -926,7 +1082,7 @@ describe('apply 接线（OM 观察压缩）', () => {
         withTurnEnd: true,
       }),
     });
-    const ctx = observeCtx('OBSERVED');
+    const ctx = observeCtx('<om-history>\nOBSERVED-PASS\n</om-history>');
     apply(ctx, { tailMessageCount: 1 });
     await runPreStep(ctx, session);
     const steps = ctx._loggerCalls
@@ -951,7 +1107,9 @@ describe('apply 接线（OM 观察压缩）', () => {
       turnEndReason: { kind: 'aborted', reason: { kind: 'user' } },
     });
     const session = makeSession({ events: flowEvents });
-    const ctx = observeCtx('user_message message_id:user-c1 text:请帮我完成一个任务');
+    const ctx = observeCtx(
+      '<om-history>\nuser_message message_id:user-c1 text:请帮我完成一个任务\n</om-history>',
+    );
     apply(ctx, { tailMessageCount: 1 });
     await runPreStep(ctx, session);
     const instruction = instructionText(summaryOptions(ctx));
@@ -978,7 +1136,7 @@ describe('apply 接线（OM 观察压缩）', () => {
       }),
     ];
     const session = makeSession({ events }); // 表层 [0,1,3,5,6,8]
-    const ctx = observeCtx('toolcall message_id:result-c1 summary:A');
+    const ctx = observeCtx('<om-history>\ntoolcall message_id:result-c1 summary:A\n</om-history>');
     apply(ctx, { tailMessageCount: 1 });
     await runPreStep(ctx, session);
     // 区间 [0..5]（回退到 user-c2@5 平衡点），尾部保留 assistant-c2/result-c2
@@ -1008,6 +1166,39 @@ describe('apply 接线（OM 观察压缩）', () => {
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(0);
     expect(session.surface.nodes.length).toBe(3);
+  });
+
+  it('disable 模式：关闭自动压缩（无摘要调用、无替换、recall 工具仍注册）', async () => {
+    const session = makeSession({
+      events: [
+        historyMessage('旧任务'),
+        ...buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+          withTurnEnd: true,
+        }),
+      ],
+    });
+    const ctx = makeCtx({ resolveModelInfo: async () => ({ context: { contextWindow: 8 } }) });
+    const prev = process.env[SUMMARY_MODE_ENV];
+    try {
+      process.env[SUMMARY_MODE_ENV] = 'disable';
+      apply(ctx, {});
+    } finally {
+      if (prev === undefined) delete process.env[SUMMARY_MODE_ENV];
+      else process.env[SUMMARY_MODE_ENV] = prev;
+    }
+    // 工具注册不受影响（recall 独立开关）
+    expect(ctx._registeredTools.some((t) => t.name === 'recall')).toBe(true);
+    await runPreStep(ctx, session);
+    // 观察/反思均不触发：无摘要调用、无 compaction 生命周期、表层不变
+    expect(ctx._llmCalls).toHaveLength(0);
+    expect(session.events.some((e) => e.type === 'compaction/start')).toBe(false);
+    expect(session.surface.nodes.length).toBe(4); // 旧日志 + flow 3 条
+    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
+    expect(steps.some((s) => s.includes('summaryMode=disable，跳过压缩'))).toBe(true);
   });
 });
 
@@ -1048,7 +1239,7 @@ describe('apply 接线（OM 反思压缩）', () => {
     const before = session.surface.nodes.length;
     const ctx = makeCtx({
       resolveModelInfo: async () => ({ context: { contextWindow: 16 } }),
-      llmStream: [{ type: 'text-delta', text: 'REFLECTED' }],
+      llmStream: [{ type: 'text-delta', text: '<om-history>\nREFLECTED-REPORT\n</om-history>' }],
     });
     apply(ctx, {});
     await runPreStep(ctx, session);
@@ -1073,7 +1264,7 @@ describe('apply 接线（OM 反思压缩）', () => {
         }),
       ],
     });
-    // 可重入迭代器：每次 stream 调用产出一条文本——第 1 次（反思）REFLECTED，第 2 次（观察）OBSERVED
+    // 可重入迭代器：每次 stream 调用产出一个合法 <om-history> 块——第 1 次（反思）REFLECTED，第 2 次（观察）OBSERVED
     let streamCalls = 0;
     const ctx = makeCtx({
       resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
@@ -1084,7 +1275,10 @@ describe('apply 接线（OM 反思压缩）', () => {
           return (function* () {
             yield {
               type: 'text-delta',
-              text: current === 1 ? 'REFLECTED' : 'OBSERVED',
+              text:
+                current === 1
+                  ? '<om-history>\nREFLECTED-REPORT\n</om-history>'
+                  : '<om-history>\nOBSERVED-PASS\n</om-history>',
             };
           })();
         },
@@ -1133,7 +1327,7 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
     });
     const ctx = makeCtx({
       resolveModelInfo: async () => ({ context: { contextWindow: 16 } }),
-      llmStream: [{ type: 'text-delta', text: 'REFLECTED' }],
+      llmStream: [{ type: 'text-delta', text: '<om-history>\nREFLECTED-REPORT\n</om-history>' }],
     });
     apply(ctx, {});
     await runPreStep(ctx, session);
@@ -1181,9 +1375,15 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
     });
     const ctx = makeCtx({
       resolveModelInfo: async () => ({ context: { contextWindow: 11 } }),
-      llmStream: [{ type: 'text-delta', text: 'toolcall message_id:result-c1 summary:新内容' }],
+      llmStream: [
+        {
+          type: 'text-delta',
+          text: '<om-history>\ntoolcall message_id:result-c1 summary:新内容\n</om-history>',
+        },
+      ],
     });
-    apply(ctx, { tailMessageCount: 1, historyMergeRatio: 1 });
+    // historyMergeRatio 2：反思阈值 22 > 旧摘要（含标签约 15 tokens）——隔离观察路径
+    apply(ctx, { tailMessageCount: 1, historyMergeRatio: 2 });
     await runPreStep(ctx, session);
     const { start, summary } = compactionLifecycle(session);
     expect(start).not.toBe(-1);
@@ -1235,7 +1435,10 @@ describe('OM 摘要 token 归入主会话（compaction/summary.usage）', () => 
     };
     const { session, ctx } = sessionAndCtx({
       llmStream: [
-        { type: 'text-delta', text: 'user_message message_id:user-c1 text:请帮我完成一个任务' },
+        {
+          type: 'text-delta',
+          text: '<om-history>\nuser_message message_id:user-c1 text:请帮我完成一个任务\n</om-history>',
+        },
         { type: 'usage', usage: summaryUsage },
       ],
     });
@@ -1283,7 +1486,7 @@ describe('摘要请求形态（prefix / system 双模式）', () => {
     });
   }
 
-  it('prefix 模式（缺省）：system/tools 复用主会话请求头，messages = 完整历史 + 指令', async () => {
+  it('fork 模式（缺省）：system/tools 复用主会话请求头，messages 从尾部之前实际截断', async () => {
     const session = sessionWithHeader();
     const ctx = makeCtx({ resolveModelInfo: async () => ({ context: { contextWindow: 8 } }) });
     apply(ctx, { tailMessageCount: 1 });
@@ -1295,22 +1498,24 @@ describe('摘要请求形态（prefix / system 双模式）', () => {
     };
     expect(options?.system).toBe('主会话系统提示词');
     expect(options?.tools).toEqual([{ name: 'run_code' }]);
-    // messages = 完整派生历史（3 条）+ 指令 1 条
-    expect(options?.messages).toHaveLength(4);
+    // fork 从尾部之前截断：派生历史 3 条 - 尾部 2 条（assistant+result）= 1 条 + 指令
+    expect(options?.messages).toHaveLength(2);
+    const first = options?.messages?.[0];
+    expect(String(first?.content?.[0]?.text ?? '')).toContain('请帮我完成一个任务'); // 仅被压缩的 user 消息
     const last = options?.messages?.at(-1);
     expect(last?.role).toBe('user');
     expect(String(last?.content?.[0]?.text ?? '')).toContain(OBSERVER_PERSONA);
   });
 
-  it('system 模式（DSH_OM_SUMMARY_MODE=system）：指令作为 system，被压缩消息 + 参考尾部作为输入', async () => {
+  it('new 模式（DSH_OM_SUMMARY_MODE=new）：指令作为 system，输入 = 被压缩消息（XML 包裹，不含尾部）', async () => {
     const session = sessionWithHeader();
     const ctx = makeCtx({
       resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
-      llmStream: [{ type: 'text-delta', text: 'OBSERVED' }],
+      llmStream: [{ type: 'text-delta', text: '<om-history>\nOBSERVED-PASS\n</om-history>' }],
     });
     const prev = process.env[SUMMARY_MODE_ENV];
     try {
-      process.env[SUMMARY_MODE_ENV] = 'system';
+      process.env[SUMMARY_MODE_ENV] = 'new';
       apply(ctx, { tailMessageCount: 1 });
       await runPreStep(ctx, session);
     } finally {
@@ -1323,16 +1528,18 @@ describe('摘要请求形态（prefix / system 双模式）', () => {
     };
     expect(options?.system?.startsWith(OBSERVER_PERSONA)).toBe(true);
     const input = String(options?.messages?.[0]?.content?.[0]?.text ?? '');
-    expect(input).toContain('【被压缩消息】');
-    expect(input).toContain('【参考尾部】');
-    expect(input).toContain('message_id=user-c1');
-    // 被压缩消息 = 区间 [0]（tailCount=1，配对回退）；参考尾部 = assistant + result
-    expect(session.surface.nodes.length).toBe(3);
+    // 输入 = 被压缩区间 [0]（tailCount=1 配对回退）的 XML 渲染，不含分段标签与尾部
+    expect(input).toContain('<user_message id="user-c1">');
+    expect(input).toContain('请帮我完成一个任务');
+    expect(input).not.toContain('【被压缩消息】');
+    expect(input).not.toContain('【参考尾部】');
+    expect(input).not.toContain('message_id=user-c1'); // id 走 XML 属性
+    expect(session.surface.nodes.length).toBe(3); // <om-history> + 尾部 assistant + result
   });
 });
 
 describe('消息渲染 renderMessages', () => {
-  it('按表层顺序输出 role 头 + message_id + 文本', () => {
+  it('XML 分组：<user_message id> + <assistant last_id>（连续 AI 消息聚合）', () => {
     const flow = buildToolCallFlow({
       code: 'a()',
       description: '任务A',
@@ -1344,12 +1551,37 @@ describe('消息渲染 renderMessages', () => {
     });
     const session = makeSession({ events: flow }); // 表层 [0,1,3]
     const text = renderMessages(session, [0, 1, 3]);
-    expect(text).toContain('--- user message_id=u1 ---');
+    // 用户消息 → <user_message id>（原文完整保留）
+    expect(text).toContain('<user_message id="u1">');
+    expect(text).toContain('请帮我完成一个任务');
+    expect(text).toContain('</user_message>');
+    // assistant + tool/result 聚合为一个 <assistant> 块，last_id = 组内最后一条消息 id
+    expect(text).toContain('<assistant last_id="r1m">');
     expect(text).toContain('--- assistant message_id=a1 ---');
     expect(text).toContain('--- tool/result message_id=r1m ---');
-    expect(text).toContain('请帮我完成一个任务');
     expect(text).toContain('run_code'); // tool-call 展开参数
     expect(text).toContain('r1');
+    expect(text).toContain('</assistant>');
+  });
+
+  it('相邻用户消息各自成块；缺 id 时省略属性', () => {
+    const session = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({ content: [textBlock('你好')], id: 'u1' }),
+        } as unknown as SessionEvent,
+        {
+          type: 'user/message',
+          data: makeMessage({ content: [textBlock('再见')], id: '' }), // 空 id
+        } as unknown as SessionEvent,
+      ],
+    });
+    const text = renderMessages(session, [0, 1]);
+    expect(text).toContain('<user_message id="u1">');
+    expect(text).toContain('<user_message>'); // 无 id 属性
+    expect(text).toContain('你好');
+    expect(text).toContain('再见');
   });
 });
 

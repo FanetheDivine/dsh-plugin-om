@@ -1,8 +1,8 @@
 /**
  * 自动压缩（OM 观察/反思两级阈值，思路参考 Mastra Observational Memory）：
  *  - 观察：未压缩消息 tokens ≥ 窗口 × thresholdRatio → 直连 ctx.llm.stream() 摘要
- *    （prefix 模式复用主会话请求前缀缓存；system 模式指令作为 system）把未压缩消息压缩为
- *    观察日志，追加到旧摘要（<om-history> 原文保留），替换被压缩消息区间；
+ *    （fork 模式复用主会话请求前缀缓存；new 模式指令作为 system）把未压缩消息压缩为
+ *    观察日志，以新的 <om-history> 块追加到旧日志（多块按序拼接），替换被压缩消息区间；
  *  - 反思：摘要 tokens ≥ 窗口 × historyMergeRatio（默认 0.2）→ 同上摘要调用精简合并摘要，
  *    替换单个 <om-history> 节点。
  * 两级检查在 pre-step 阻塞串行执行（先反思后观察），避免压缩失败或重复压缩。
@@ -20,7 +20,7 @@
  * 配对平衡点（不切段）。
  * 仅主会话生效。
  */
-import { COMPACT_CHECKPOINT_PLUGIN, HISTORY_TAG } from './constants.ts';
+import { COMPACT_CHECKPOINT_PLUGIN, HISTORY_TAG, PLUGIN_LABEL } from './constants.ts';
 import { messageIdOfEvent, surfaceIndexOf } from './log-index.ts';
 import { makeLogger } from './logger.ts';
 import {
@@ -48,14 +48,24 @@ export function estimateTextTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-/** 提取 <om-history> 压缩日志消息的内文（去掉标签）；非压缩日志消息返回 undefined。 */
+/**
+ * 判定消息是否为本插件的压缩日志消息并提取日志文本（D：不通过文本含 <om-history> 判断，
+ * 改用 source 标记——plugin 为宿主 checkpoint 标记 'compact' 或插件标识 'dsh-plugin-om'）。
+ * 日志文本取首个 <om-history> 起的内容（含标签与格式说明注释，多块拼接时返回全部块）；
+ * 非压缩日志消息返回 undefined。
+ */
 function historyTextOf(event: SessionEvent | undefined): string | undefined {
   if (event?.type !== 'user/message') return undefined;
+  /** 消息 source（插件自产消息的标记）。 */
+  const source = event.data.source as { kind?: string; plugin?: string } | undefined;
+  if (source?.kind !== 'plugin') return undefined;
+  if (source.plugin !== COMPACT_CHECKPOINT_PLUGIN && source.plugin !== PLUGIN_LABEL)
+    return undefined;
   /** 消息纯文本。 */
   const text = blocksToText(event.data.content);
-  return text.includes(`<${HISTORY_TAG}>`)
-    ? text.replace(new RegExp(`</?${HISTORY_TAG}>`, 'g'), '').trim()
-    : undefined;
+  /** 首个 <om-history> 的位置（日志文本起点；无则整段视为日志）。 */
+  const start = text.indexOf(`<${HISTORY_TAG}>`);
+  return start === -1 ? text : text.slice(start);
 }
 
 /** token 估算器的结构类型（仅需 estimateMessage；避免依赖完整 TokenMeter 接口）。 */
@@ -308,7 +318,7 @@ function appendHistoryMessage(
   surfaceOp: { op: 'replace'; start: number; end: number },
   compactionId: CompactionId,
 ): void {
-  /** 压缩替换消息（<om-history> 包裹摘要，source 标记宿主 checkpoint 供 UI 关联）。 */
+  /** 压缩替换消息（内容已含 <om-history> 标签块，不再额外包裹；source 标记宿主 checkpoint 供 UI 关联）。 */
   const message = {
     id: uuid(),
     role: 'user',
@@ -318,9 +328,7 @@ function appendHistoryMessage(
         text: [
           '以下是过往会话的压缩日志（<om-history>），为已确立背景：直接继续，不要复述。',
           '',
-          `<${HISTORY_TAG}>`,
           content,
-          `</${HISTORY_TAG}>`,
         ].join('\n'),
       },
     ],
@@ -368,8 +376,8 @@ export async function reflectPass(
   }
   /** 反思指令（persona + 规则主体）。 */
   const instruction = `${REFLECTOR_PERSONA}\n\n${buildReflectPrompt(config.summaryMode)}`;
-  /** system 模式的渲染输入（当前 <om-history> 内文）。 */
-  const contextText = config.summaryMode === 'system' ? history.text : undefined;
+  /** new 模式的渲染输入（当前 <om-history> 内文）。 */
+  const contextText = config.summaryMode === 'new' ? history.text : undefined;
   /** 反思摘要结果（null 表示失败/跳过）。 */
   const summaryResult = await runSummarySubagent(
     ctx,
@@ -378,6 +386,7 @@ export async function reflectPass(
     contextText,
     config.compressMaxTokens,
     config.summaryMode,
+    0, // 反思注入完整历史（尾部不裁剪；只精简合并日志本身）
     target,
     signal,
   );
@@ -485,31 +494,27 @@ export async function observePass(
   );
   /** message_id 对照表行。 */
   const table = buildMessageIdTable(session, range.shadowedSeqs);
-  /** 实际保留的参考尾部条数（配对回退可能多于 tailCount）。 */
+  /** 实际保留的参考尾部条数（配对回退可能多于 tailCount；fork 输入从尾部之前实际截断）。 */
   const surface = [...session.surface.nodes];
   const actualTailCount = surface.length - range.shadowedSeqs.length;
   logger.step(
-    `观察：实际保留参考尾部 ${actualTailCount} 条，中断标记 ${interruptions.length} 条，message_id 对照表 ${table.length} 行`,
+    `观察：实际保留尾部 ${actualTailCount} 条（不压缩、不进日志），中断标记 ${interruptions.length} 条，message_id 对照表 ${table.length} 行`,
   );
   /** 观察指令（persona + 规则主体）。 */
   const prompt = buildObservePrompt({
     table,
     interruptions,
     hasOldHistory: history !== undefined,
-    tailCount: actualTailCount,
     mode: config.summaryMode,
   });
   const instruction = `${OBSERVER_PERSONA}\n\n${prompt}`;
-  /** system 模式的渲染输入（被压缩消息 + 参考尾部）。 */
+  /** new 模式的渲染输入：本次要压缩的消息（过滤旧 <om-history> 日志消息；不含尾部）。 */
   const contextText =
-    config.summaryMode === 'system'
-      ? [
-          '【被压缩消息】',
-          renderMessages(session, range.shadowedSeqs),
-          '',
-          `【参考尾部】（最后 ${actualTailCount} 条消息）`,
-          renderMessages(session, surface.slice(range.shadowedSeqs.length)),
-        ].join('\n')
+    config.summaryMode === 'new'
+      ? renderMessages(
+          session,
+          range.shadowedSeqs.filter((seq) => historyTextOf(session.events[seq]) === undefined),
+        )
       : undefined;
   /** 观察摘要结果（null 表示失败/跳过）。 */
   const summaryResult = await runSummarySubagent(
@@ -519,6 +524,7 @@ export async function observePass(
     contextText,
     config.compressMaxTokens,
     config.summaryMode,
+    actualTailCount, // fork 输入从尾部之前实际截断（new 模式输入本身不含尾部）
     target,
     signal,
   );
@@ -602,6 +608,11 @@ export async function maybeCompress(
   const session = agent.session;
   /** 插件日志门面。 */
   const logger = makeLogger(ctx);
+  /** disable 模式：关闭自动压缩（观察/反思均不触发，recall 工具不受影响）。 */
+  if (config.summaryMode === 'disable') {
+    logger.step('summaryMode=disable，跳过压缩');
+    return;
+  }
   /** 会话路由目标（未路由无法查询容量）。 */
   const target = routedTarget(session);
   if (target === undefined) {
