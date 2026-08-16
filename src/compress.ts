@@ -22,6 +22,7 @@
  */
 import { COMPACT_CHECKPOINT_PLUGIN, HISTORY_TAG } from './constants.ts';
 import { messageIdOfEvent, surfaceIndexOf } from './log-index.ts';
+import { makeLogger } from './logger.ts';
 import {
   buildObservePrompt,
   buildReflectPrompt,
@@ -342,16 +343,29 @@ export async function reflectPass(
 ): Promise<void> {
   /** 当前会话。 */
   const session = agent.session;
+  /** 插件日志门面。 */
+  const logger = makeLogger(ctx);
+  logger.step(`反思检查（窗口 ${window} × historyMergeRatio ${config.historyMergeRatio}）`);
   /** 当前摘要（最后一次 <om-history>；无则跳过）。 */
   const history = findLatestHistory(session);
-  if (!history) return;
+  if (!history) {
+    logger.step('反思：无 <om-history> 压缩日志，跳过');
+    return;
+  }
   /** 反思阈值（窗口 × historyMergeRatio 向下取整）。 */
   const threshold = Math.floor(window * config.historyMergeRatio);
   /** 摘要 token 估算。 */
   const tokens = estimateTextTokens(history.text);
-  if (tokens < threshold) return;
+  if (tokens < threshold) {
+    logger.step(`反思：摘要 ${tokens} tokens < 阈值 ${threshold}，跳过`);
+    return;
+  }
+  logger.step(`反思：摘要 ${tokens} tokens ≥ 阈值 ${threshold}，触发精简合并`);
   /** 摘要节点须仍在表层才可替换。 */
-  if (surfaceIndexOf([...session.surface.nodes], history.seq) === -1) return;
+  if (surfaceIndexOf([...session.surface.nodes], history.seq) === -1) {
+    logger.step('反思：摘要节点已不在表层，跳过');
+    return;
+  }
   /** 反思指令（persona + 规则主体）。 */
   const instruction = `${REFLECTOR_PERSONA}\n\n${buildReflectPrompt(config.summaryMode)}`;
   /** system 模式的渲染输入（当前 <om-history> 内文）。 */
@@ -367,7 +381,10 @@ export async function reflectPass(
     target,
     signal,
   );
-  if (summaryResult === null || summaryResult.text.trim().length === 0) return;
+  if (summaryResult === null || summaryResult.text.trim().length === 0) {
+    logger.step('反思：摘要调用失败/无输出，不产生替换');
+    return;
+  }
   /** 反思摘要文本。 */
   const report = summaryResult.text;
   /** 本次压缩生命周期（compactionId + 当前轮次；摘要成功后才写入日志）。 */
@@ -376,7 +393,9 @@ export async function reflectPass(
     turn: openTurnOf(session),
   };
   try {
+    logger.step('反思提交：追加 compaction/start');
     appendCompactionStart(session, lifecycle);
+    logger.step('反思提交：追加 compaction/summary（影子价格认领）');
     /** compaction/summary 事件 seq（承担影子价格认领，紧随其后的替换消息消费）。 */
     const summarySeq = appendCompactionSummary(session, {
       lifecycle,
@@ -389,6 +408,7 @@ export async function reflectPass(
       maxTokens: config.compressMaxTokens,
       ...(summaryResult.usage === undefined ? {} : { usage: summaryResult.usage }),
     });
+    logger.step('反思提交：替换 <om-history> 摘要节点');
     appendHistoryMessage(
       session,
       report,
@@ -400,14 +420,13 @@ export async function reflectPass(
       },
       lifecycle.compactionId,
     );
+    logger.step('反思提交：追加 compaction/end');
     appendCompactionEnd(session, lifecycle);
-    ctx.logger.info(
-      `dsh-plugin-om: 反思完成（摘要 ${tokens} tokens ≥ 阈值 ${threshold}，替换摘要节点）`,
-    );
+    logger.info(`反思完成（摘要 ${tokens} tokens ≥ 阈值 ${threshold}，替换摘要节点）`);
   } catch (error) {
     /** 提交失败信息（统一字符串）。 */
     const message = error instanceof Error ? error.message : String(error);
-    ctx.logger.warn(`dsh-plugin-om: 反思提交失败: ${message}`);
+    logger.warn(`反思提交失败: ${message}`);
     try {
       appendCompactionEnd(session, lifecycle, message);
     } catch {
@@ -431,14 +450,29 @@ export async function observePass(
 ): Promise<void> {
   /** 当前会话。 */
   const session = agent.session;
+  /** 插件日志门面。 */
+  const logger = makeLogger(ctx);
+  logger.step(
+    `观察检查（窗口 ${window} × thresholdRatio ${config.thresholdRatio}，尾部保留 ${tailCount} 条）`,
+  );
   /** 观察阈值（窗口 × thresholdRatio 向下取整）。 */
   const threshold = Math.floor(window * config.thresholdRatio);
   /** 未压缩消息 token 估算（不含 <om-history> 摘要节点）。 */
   const uncompressedTokens = measureUncompressedTokens(session, ctx.tokenMeter);
-  if (uncompressedTokens < threshold) return;
+  if (uncompressedTokens < threshold) {
+    logger.step(`观察：未压缩消息 ${uncompressedTokens} tokens < 阈值 ${threshold}，跳过`);
+    return;
+  }
+  logger.step(`观察：未压缩消息 ${uncompressedTokens} tokens ≥ 阈值 ${threshold}，触发压缩`);
   /** 观察压缩区间（尾部保留 tailCount 条不压缩；无可行区间则跳过）。 */
   const range = computeCompressRange(session, tailCount);
-  if (!range) return;
+  if (!range) {
+    logger.step('观察：无可行压缩区间（表层过短或配对无法平衡），跳过');
+    return;
+  }
+  logger.step(
+    `观察：压缩区间 [${range.start}..${range.end}]，遮蔽 ${range.shadowedSeqs.length} 个表层节点`,
+  );
   /** 区间内旧摘要（追加基准；无则首次压缩）。 */
   const history = extractHistoryText(session, range.shadowedSeqs);
   // turn/end 事件在所属 turn 最后一个消息之后（seq 可大于 end），中断扫描取
@@ -454,6 +488,9 @@ export async function observePass(
   /** 实际保留的参考尾部条数（配对回退可能多于 tailCount）。 */
   const surface = [...session.surface.nodes];
   const actualTailCount = surface.length - range.shadowedSeqs.length;
+  logger.step(
+    `观察：实际保留参考尾部 ${actualTailCount} 条，中断标记 ${interruptions.length} 条，message_id 对照表 ${table.length} 行`,
+  );
   /** 观察指令（persona + 规则主体）。 */
   const prompt = buildObservePrompt({
     table,
@@ -485,7 +522,10 @@ export async function observePass(
     target,
     signal,
   );
-  if (summaryResult === null || summaryResult.text.trim().length === 0) return;
+  if (summaryResult === null || summaryResult.text.trim().length === 0) {
+    logger.step('观察：摘要调用失败/无输出，不产生替换');
+    return;
+  }
   /** 观察摘要文本。 */
   const report = summaryResult.text;
   /** 合并后的摘要（旧摘要原文保留，新观察日志追加在末尾）。 */
@@ -504,7 +544,9 @@ export async function observePass(
     turn: openTurnOf(session),
   };
   try {
+    logger.step('观察提交：追加 compaction/start');
     appendCompactionStart(session, lifecycle);
+    logger.step('观察提交：追加 compaction/summary（影子价格认领）');
     /** compaction/summary 事件 seq（承担影子价格认领，紧随其后的替换消息消费）。 */
     const summarySeq = appendCompactionSummary(session, {
       lifecycle,
@@ -517,6 +559,7 @@ export async function observePass(
       maxTokens: config.compressMaxTokens,
       ...(summaryResult.usage === undefined ? {} : { usage: summaryResult.usage }),
     });
+    logger.step('观察提交：替换被压缩消息区间为 <om-history>');
     appendHistoryMessage(
       session,
       combined,
@@ -528,14 +571,15 @@ export async function observePass(
       },
       lifecycle.compactionId,
     );
+    logger.step('观察提交：追加 compaction/end');
     appendCompactionEnd(session, lifecycle);
-    ctx.logger.info(
-      `dsh-plugin-om: 观察压缩完成（未压缩 ${uncompressedTokens} tokens ≥ 阈值 ${threshold}，遮蔽 ${range.shadowedSeqs.length} 个表层节点，约 ${shadowedTokenCount} tokens）`,
+    logger.info(
+      `观察压缩完成（未压缩 ${uncompressedTokens} tokens ≥ 阈值 ${threshold}，遮蔽 ${range.shadowedSeqs.length} 个表层节点，约 ${shadowedTokenCount} tokens）`,
     );
   } catch (error) {
     /** 提交失败信息（统一字符串）。 */
     const message = error instanceof Error ? error.message : String(error);
-    ctx.logger.warn(`dsh-plugin-om: 观察压缩提交失败: ${message}`);
+    logger.warn(`观察压缩提交失败: ${message}`);
     try {
       appendCompactionEnd(session, lifecycle, message);
     } catch {
@@ -556,26 +600,36 @@ export async function maybeCompress(
 ): Promise<void> {
   /** 当前会话。 */
   const session = agent.session;
+  /** 插件日志门面。 */
+  const logger = makeLogger(ctx);
   /** 会话路由目标（未路由无法查询容量）。 */
   const target = routedTarget(session);
-  if (target === undefined) return;
+  if (target === undefined) {
+    logger.step('会话未路由（无 provider/model），跳过压缩');
+    return;
+  }
+  logger.step(`会话路由：provider ${target.provider}，model ${target.model}`);
   /** 模型容量信息（contextWindow 决定两级阈值）。 */
   let info: Awaited<ReturnType<typeof ctx.llm.resolveModelInfo>> | undefined;
   try {
     info = await ctx.llm.resolveModelInfo(target.provider, target.model, signal);
   } catch (error) {
-    ctx.logger.warn(
-      'dsh-plugin-om: 解析模型容量失败: ' +
-        (error instanceof Error ? error.message : String(error)),
-    );
+    logger.warn(`解析模型容量失败: ${error instanceof Error ? error.message : String(error)}`);
     return;
   }
   /** 模型上下文窗口大小（非法值视为无法压缩）。 */
   const window = info.context?.contextWindow;
-  if (typeof window !== 'number' || !Number.isFinite(window) || window <= 0) return;
+  if (typeof window !== 'number' || !Number.isFinite(window) || window <= 0) {
+    logger.step(`模型上下文窗口非法（${String(window)}），跳过压缩`);
+    return;
+  }
+  logger.step(`模型上下文窗口 ${window} tokens，开始两级压缩（先反思后观察）`);
   /** 尾部保留条数（config.tailMessageCount，缺省 10）。 */
   const tailCount = config.tailMessageCount;
   // 先反思（压缩过往摘要），后观察（压缩新消息，有必要才做）
+  logger.step('反思 pass 开始');
   await reflectPass(ctx, agent, config, window, target, signal);
+  logger.step('反思 pass 结束，观察 pass 开始');
   await observePass(ctx, agent, config, window, tailCount, target, signal);
+  logger.step('观察 pass 结束，压缩流程完成');
 }
