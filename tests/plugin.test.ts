@@ -140,7 +140,7 @@ describe('配置校验 resolveConfig', () => {
     expect(d.historyMergeRatio).toBe(0.2);
     expect(d.compressMaxTokens).toBe(4096);
     expect(d.tailMessageCount).toBe(10);
-    expect(d.summaryMode).toBe('prefix');
+    expect(d.summaryMode).toBe('fork');
     expect(d).not.toHaveProperty('summaryMaxChars');
     expect(d).not.toHaveProperty('recallMaxMessages');
     expect(d).not.toHaveProperty('auto');
@@ -168,7 +168,7 @@ describe('配置校验 resolveConfig', () => {
       expect(d.historyMergeRatio).toBe(0.2);
       expect(d.compressMaxTokens).toBe(4096);
       expect(d.tailMessageCount).toBe(10);
-      expect(d.summaryMode).toBe('prefix');
+      expect(d.summaryMode).toBe('fork');
     }
   });
 
@@ -222,15 +222,21 @@ describe('步骤级日志开关 stepLogEnabled', () => {
 });
 
 describe('摘要模式 resolveSummaryModeFromEnv', () => {
-  it('缺省 / 空串 / prefix 回退 prefix', () => {
-    expect(resolveSummaryModeFromEnv({})).toBe('prefix');
-    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: '' })).toBe('prefix');
-    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: '   ' })).toBe('prefix');
-    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'prefix' })).toBe('prefix');
+  it('缺省 / 空串 / fork 回退 fork', () => {
+    expect(resolveSummaryModeFromEnv({})).toBe('fork');
+    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: '' })).toBe('fork');
+    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: '   ' })).toBe('fork');
+    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'fork' })).toBe('fork');
   });
 
-  it("'system' 切换 system 模式", () => {
-    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'system' })).toBe('system');
+  it("'new' 切换 new 模式、'disable' 关闭自动压缩", () => {
+    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'new' })).toBe('new');
+    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'disable' })).toBe('disable');
+  });
+
+  it('旧值兼容：prefix→fork、system→new', () => {
+    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'prefix' })).toBe('fork');
+    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'system' })).toBe('new');
   });
 
   it('非法值抛错并指出环境变量名', () => {
@@ -242,10 +248,10 @@ describe('摘要模式 resolveSummaryModeFromEnv', () => {
   it('resolveConfig 读取环境变量（设置后清理，不泄漏到其他用例）', () => {
     const prev = process.env[SUMMARY_MODE_ENV];
     try {
-      process.env[SUMMARY_MODE_ENV] = 'system';
-      expect(resolveConfig({}).summaryMode).toBe('system');
+      process.env[SUMMARY_MODE_ENV] = 'new';
+      expect(resolveConfig({}).summaryMode).toBe('new');
       delete process.env[SUMMARY_MODE_ENV];
-      expect(resolveConfig({}).summaryMode).toBe('prefix');
+      expect(resolveConfig({}).summaryMode).toBe('fork');
     } finally {
       if (prev === undefined) delete process.env[SUMMARY_MODE_ENV];
       else process.env[SUMMARY_MODE_ENV] = prev;
@@ -574,7 +580,7 @@ describe('观察提示词 buildObservePrompt', () => {
       interruptions: ['[interrupted] turn 1 被中断（aborted，原因 user）'],
       hasOldHistory: true,
       tailCount: 2,
-      mode: 'prefix',
+      mode: 'fork',
     });
     expect(prompt).toContain('user_message message_id:<id> text:<要点>');
     expect(prompt).toContain('toolcall message_id:<该组最后一条消息的 message_id>');
@@ -596,7 +602,7 @@ describe('观察提示词 buildObservePrompt', () => {
       interruptions: [],
       hasOldHistory: false,
       tailCount: 0,
-      mode: 'prefix',
+      mode: 'fork',
     });
     expect(prompt).toContain('第一条 <om-history> 压缩日志');
     expect(prompt).not.toContain('追加到上一次压缩产物');
@@ -608,7 +614,7 @@ describe('观察提示词 buildObservePrompt', () => {
       interruptions: [],
       hasOldHistory: false,
       tailCount: 3,
-      mode: 'system',
+      mode: 'new',
     });
     expect(prompt).toContain('【被压缩消息】段是本次要压缩的对象');
     expect(prompt).toContain('【参考尾部】段是最近上下文');
@@ -618,7 +624,7 @@ describe('观察提示词 buildObservePrompt', () => {
 
 describe('反思提示词 buildReflectPrompt', () => {
   it('精简合并规则：用户消息保留要点、toolcall 聚合、可写（略）', () => {
-    const prompt = buildReflectPrompt('prefix');
+    const prompt = buildReflectPrompt('fork');
     expect(prompt).toContain('精简合并');
     expect(prompt).toContain('user_message message_id:<id> text:<要点>');
     expect(prompt).toContain('（略）');
@@ -626,7 +632,7 @@ describe('反思提示词 buildReflectPrompt', () => {
   });
 
   it('system 模式定位下方的 <om-history> 压缩日志', () => {
-    const prompt = buildReflectPrompt('system');
+    const prompt = buildReflectPrompt('new');
     expect(prompt).toContain('下方的消息记录包含当前的 <om-history> 压缩日志');
   });
 });
@@ -1310,7 +1316,7 @@ describe('摘要请求形态（prefix / system 双模式）', () => {
     });
     const prev = process.env[SUMMARY_MODE_ENV];
     try {
-      process.env[SUMMARY_MODE_ENV] = 'system';
+      process.env[SUMMARY_MODE_ENV] = 'new';
       apply(ctx, { tailMessageCount: 1 });
       await runPreStep(ctx, session);
     } finally {

@@ -5,10 +5,19 @@
 import { BUNDLED_MODEL_DIR } from './embedding.ts';
 import { assertNonEmptyString, assertNumber, fail, isRecord } from './utils.ts';
 
-/** 摘要模式：prefix=复用主会话请求前缀（缺省）；system=指令作为 system、消息作为输入。 */
-export type SummaryMode = 'prefix' | 'system';
+/**
+ * 摘要模式：
+ *  - fork（缺省）：fork 会话风格——复用主会话请求前缀（system/tools 与完整派生历史），
+ *    充分利用 provider 前缀缓存；
+ *  - new：新开会话风格——只注入本次要压缩的消息（XML 包裹），指令作为 system；
+ *  - disable：关闭自动压缩（观察/反思均不触发）。
+ */
+export type SummaryMode = 'fork' | 'new' | 'disable';
 
-/** 摘要模式环境变量名（缺省 prefix；值 'system' 切换为 system 模式）。 */
+/**
+ * 摘要模式环境变量名（缺省 fork）。
+ * 取值：fork / new / disable；兼容旧值 prefix（→fork）、system（→new）。
+ */
 export const SUMMARY_MODE_ENV = 'DSH_OM_SUMMARY_MODE';
 
 /** 插件配置项（全部可选覆盖，未给出或留空的键用默认值）。 */
@@ -21,7 +30,7 @@ export type PluginConfig = {
   compressMaxTokens: number;
   /** 压缩边界：其后不压缩消息数下限（正整数，尾部保留）。 */
   tailMessageCount: number;
-  /** 摘要模式（由环境变量 SUMMARY_MODE_ENV 决定，缺省 prefix）。 */
+  /** 摘要模式（由环境变量 SUMMARY_MODE_ENV 决定，缺省 fork）。 */
   summaryMode: SummaryMode;
   /** 语义召回嵌入模型目录（默认插件打包的本地模型；可指向自定义模型目录）。 */
   modelDir: string;
@@ -33,7 +42,7 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   historyMergeRatio: 0.2,
   compressMaxTokens: 4096,
   tailMessageCount: 10,
-  summaryMode: 'prefix',
+  summaryMode: 'fork',
   modelDir: BUNDLED_MODEL_DIR,
 });
 
@@ -66,15 +75,17 @@ function normalizeConfigInput(raw: unknown): Record<string, unknown> {
 }
 
 /**
- * 解析摘要模式环境变量：缺省 / 空串回退 prefix；'system' 切换 system 模式；
- * 其余值抛错（环境变量配置错误须立即可见）。
+ * 解析摘要模式环境变量：缺省 / 空串回退 fork；'new' 切换 new 模式、'disable' 关闭自动压缩；
+ * 兼容旧值 'prefix'（→fork）、'system'（→new）；其余值抛错（环境变量配置错误须立即可见）。
  */
 export function resolveSummaryModeFromEnv(env: Record<string, string | undefined>): SummaryMode {
   /** 环境变量原始值（trim 后判定）。 */
   const raw = env[SUMMARY_MODE_ENV]?.trim();
-  if (raw === undefined || raw === '') return 'prefix';
-  if (raw === 'prefix' || raw === 'system') return raw;
-  fail(`${SUMMARY_MODE_ENV} must be "prefix" or "system"`);
+  if (raw === undefined || raw === '') return 'fork';
+  if (raw === 'fork' || raw === 'new' || raw === 'disable') return raw;
+  if (raw === 'prefix') return 'fork'; // 旧值兼容（prefix → fork）
+  if (raw === 'system') return 'new'; // 旧值兼容（system → new）
+  fail(`${SUMMARY_MODE_ENV} must be "fork", "new" or "disable"`);
 }
 
 /**

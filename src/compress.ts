@@ -368,8 +368,8 @@ export async function reflectPass(
   }
   /** 反思指令（persona + 规则主体）。 */
   const instruction = `${REFLECTOR_PERSONA}\n\n${buildReflectPrompt(config.summaryMode)}`;
-  /** system 模式的渲染输入（当前 <om-history> 内文）。 */
-  const contextText = config.summaryMode === 'system' ? history.text : undefined;
+  /** new 模式的渲染输入（当前 <om-history> 内文）。 */
+  const contextText = config.summaryMode === 'new' ? history.text : undefined;
   /** 反思摘要结果（null 表示失败/跳过）。 */
   const summaryResult = await runSummarySubagent(
     ctx,
@@ -500,9 +500,9 @@ export async function observePass(
     mode: config.summaryMode,
   });
   const instruction = `${OBSERVER_PERSONA}\n\n${prompt}`;
-  /** system 模式的渲染输入（被压缩消息 + 参考尾部）。 */
+  /** new 模式的渲染输入（被压缩消息，不含旧日志与参考尾部）。 */
   const contextText =
-    config.summaryMode === 'system'
+    config.summaryMode === 'new'
       ? [
           '【被压缩消息】',
           renderMessages(session, range.shadowedSeqs),
@@ -602,6 +602,11 @@ export async function maybeCompress(
   const session = agent.session;
   /** 插件日志门面。 */
   const logger = makeLogger(ctx);
+  /** disable 模式：关闭自动压缩（观察/反思均不触发，recall 工具不受影响）。 */
+  if (config.summaryMode === 'disable') {
+    logger.step('summaryMode=disable，跳过压缩');
+    return;
+  }
   /** 会话路由目标（未路由无法查询容量）。 */
   const target = routedTarget(session);
   if (target === undefined) {

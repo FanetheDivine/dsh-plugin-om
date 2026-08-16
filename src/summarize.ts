@@ -1,13 +1,15 @@
 /**
  * 摘要调用（OM 观察/反思）：直连 ctx.llm.stream()，由配置 summaryMode（环境变量
- * DSH_OM_SUMMARY_MODE）控制两种模式——
- *  - prefix（缺省）：复用主会话请求前缀。system/tools 取自主会话 requestHeader()，
- *    messages = 主会话完整派生历史 + 末尾追加一条指令 user 消息，使本次请求成为主会话
- *    上次请求的真前缀，充分利用 provider 前缀缓存（与宿主 compaction-basic 同款策略）；
- *  - system：指令作为 system 提示词，被压缩消息与参考尾部（由 compress.ts 渲染传入）
- *    作为 user 消息输入模型压缩。
+ * DSH_OM_SUMMARY_MODE）控制模式——
+ *  - fork（缺省）：fork 会话风格——复用主会话请求前缀。system/tools 取自主会话
+ *    requestHeader()，messages = 主会话完整派生历史 + 末尾追加一条指令 user 消息，
+ *    使本次请求成为主会话上次请求的真前缀，充分利用 provider 前缀缓存
+ *    （与宿主 compaction-basic 同款策略）；
+ *  - new：新开会话风格——指令作为 system 提示词，被压缩消息（由 compress.ts 渲染传入）
+ *    作为 user 消息输入模型压缩；
+ *  - disable：关闭自动压缩（compress.ts 早退，不发起摘要调用）。
  *
- * 提示词不内嵌消息全文（prefix 模式完整历史随请求传入；system 模式由 compress.ts 渲染
+ * 提示词不内嵌消息全文（fork 模式完整历史随请求传入；new 模式由 compress.ts 渲染
  * 区间传入）；message_id 对照表与中断标记由插件从日志计算后内嵌（id 非原文，保留关键 id
  * 供 recall 检索）。token usage 从流式响应的 usage chunk 提取，归入主会话记录。
  * 仅主会话生效（index.ts 守卫）。
@@ -37,16 +39,16 @@ export type ObservePromptOptions = {
   interruptions: string[];
   /** 是否存在旧摘要（决定「追加到上次产物末尾」的表述）。 */
   hasOldHistory: boolean;
-  /** 参考尾部条数（尾部保留的未压缩消息，摘要须准确反映其进度）。 */
+  /** 参考尾部条数（尾部保留的未压缩消息，不压缩、不进日志）。 */
   tailCount: number;
-  /** 摘要模式：prefix=完整历史随请求传入；system=被压缩消息渲染为输入。 */
+  /** 摘要模式：fork=完整历史随请求传入；new=被压缩消息渲染为输入。 */
   mode: SummaryMode;
 };
 
 /**
  * 构建观察指令主体：规则（消息概括为要点 / 工具调用按目的聚合——不限于 run_code /
  * 仅关键消息保留 message_id / 中断标注 / 未完成写进度与下一步）+ 模式相关的上下文定位
- * 说明（prefix：上方完整会话记录；system：下方【被压缩消息】段）+ 对照表 + 中断标记 +
+ * 说明（fork：上方完整会话记录；new：下方【被压缩消息】段）+ 对照表 + 中断标记 +
  * 追加说明。persona 由调用方拼接到指令开头。
  */
 export function buildObservePrompt(options: ObservePromptOptions): string {
@@ -56,7 +58,7 @@ export function buildObservePrompt(options: ObservePromptOptions): string {
   const interruptionSection = options.interruptions.length > 0 ? options.interruptions : ['（无）'];
   /** 上下文定位说明（按模式区分输入结构）。 */
   const framing =
-    options.mode === 'system'
+    options.mode === 'new'
       ? [
           `下方的消息记录包含两个段落：【被压缩消息】段是本次要压缩的对象；【参考尾部】段是最近上下文（最后 ${options.tailCount} 条消息，不压缩，供你理解当前状态）。`,
           `如果【被压缩消息】段里还没有 <${HISTORY_TAG}> 块，则段内全部消息都是未压缩消息。`,
@@ -94,7 +96,7 @@ export function buildObservePrompt(options: ObservePromptOptions): string {
 export function buildReflectPrompt(mode: SummaryMode): string {
   /** 上下文定位说明（按模式区分输入结构）。 */
   const framing =
-    mode === 'system'
+    mode === 'new'
       ? [
           '下方的消息记录包含当前的 <om-history> 压缩日志（最后一次 <om-history> 块）。',
           '只对这份压缩日志做精简合并；不要涉及日志之外的消息。',
@@ -228,7 +230,7 @@ function buildSummaryOptions(
     purpose: 'compaction' as const,
     ...(signal === undefined ? {} : { signal }),
   };
-  if (mode === 'system') {
+  if (mode === 'new') {
     return {
       ...base,
       system: instruction,

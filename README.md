@@ -93,17 +93,18 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 | `thresholdRatio`    | `0.5`    | 观察阈值：未压缩消息 ≥ 窗口 × 该比例触发压缩                               |
 | `historyMergeRatio` | `0.2`    | 反思阈值：摘要 ≥ 窗口 × 该比例触发精简合并                                 |
 | `compressMaxTokens` | `4096`   | 单次摘要（观察/反思调用）生成上限                                          |
-| `tailMessageCount`  | `10`     | 尾部保留的不压缩消息条数（同时作为摘要模型的参考尾部）                     |
+| `tailMessageCount`  | `10`     | 尾部保留的不压缩消息条数（不压缩、不被替换、不进摘要日志）                 |
 | `modelDir`          | 打包模型 | recall-semantic 嵌入模型目录（默认插件内打包的本地模型；可指向自定义目录）。onnx 缺失时运行时自动下载到该目录 |
 
 > 数值键（`thresholdRatio` / `historyMergeRatio` / `compressMaxTokens` / `tailMessageCount`）**不做取值区间限制**（如阈值不再限定 0.01–1）：用户提供的值按原样接受（仅校验为有限数，整数键另校验整数性），便于调试时设置任意值。
 
 ### 摘要模式（环境变量）
 
-摘要调用由环境变量 `DSH_OM_SUMMARY_MODE` 控制（缺省 `prefix`；非法值在插件加载时报错）：
+摘要调用由环境变量 `DSH_OM_SUMMARY_MODE` 控制（缺省 `fork`；非法值在插件加载时报错；旧值 `prefix` / `system` 仍兼容，分别视为 `fork` / `new`）：
 
-- `prefix`（缺省）：复用主会话请求前缀——`system`/`tools` 取自主会话上次请求，`messages` = 完整派生历史 + 末尾追加指令 user 消息，本次摘要请求是主会话请求的**真前缀**，充分利用 provider 前缀缓存（与宿主 `compaction-basic` 同款策略）。
-- `system`：指令（persona + 规则）作为 system 提示词，被压缩消息与参考尾部（渲染为文本）作为 user 消息输入模型压缩。
+- `fork`（缺省）：fork 会话风格——复用主会话请求前缀——`system`/`tools` 取自主会话上次请求，`messages` = 完整派生历史 + 末尾追加指令 user 消息，本次摘要请求是主会话请求的**真前缀**，充分利用 provider 前缀缓存（与宿主 `compaction-basic` 同款策略）。
+- `new`：新开会话风格——指令（persona + 规则）作为 system 提示词，只注入本次要压缩的消息作为 user 消息输入模型压缩（不注入旧压缩日志、不注入尾部）。
+- `disable`：关闭自动压缩（观察/反思均不触发；recall 工具仍由 `OM_RECALL_ENABLED` / `OM_SEMANTIC_RECALL_ENABLED` 独立控制）。
 
 ## 环境变量
 
