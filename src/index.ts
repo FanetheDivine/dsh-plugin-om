@@ -18,13 +18,12 @@
 
 import { maybeCompress } from './compress.ts';
 import { resolveConfig } from './config.ts';
-import { RECALL_ENABLED_ENV, SEMANTIC_RECALL_ENABLED_ENV } from './constants.ts';
 import { ensureModelReady, getEmbedder } from './embedding.ts';
 import { makeLogger } from './logger.ts';
 import { buildRecallTool } from './recall.ts';
 import { buildSemanticRecallTool } from './semantic-recall.ts';
 import type { Context } from './types.ts';
-import { envFlagEnabled, isMainSession } from './utils.ts';
+import { isMainSession } from './utils.ts';
 
 /** 插件名（Loader 识别入口的稳定标识）。 */
 export const name = 'dsh-plugin-om';
@@ -33,31 +32,32 @@ export const name = 'dsh-plugin-om';
 export const inject = ['tools', 'llm', 'tokenMeter', 'sessions'];
 
 /**
- * 插件激活入口：注册 recall / recall-semantic 工具，并在 agent/pre-step 阻塞触发
- * 两级自动压缩（先反思后观察）。仅主会话生效。
+ * 插件激活入口：注册 recall / recall-semantic 工具（由配置键 recallEnabled /
+ * semanticRecallEnabled 控制），并在 agent/pre-step 阻塞触发两级自动压缩
+ * （先反思后观察）。仅主会话生效。
  */
 export function apply(ctx: Context, config?: unknown): void {
-  /** 插件日志门面（step=debug 仅 dev 输出；info/warn 始终输出）。 */
-  const logger = makeLogger(ctx);
   /** 解析后的插件配置（默认值合并 + 校验）。 */
   const resolved = resolveConfig(config);
+  /** 插件日志门面（step=debug 按配置 debug 开关输出；info/warn 始终输出）。 */
+  const logger = makeLogger(ctx, resolved.debug);
   logger.step(
-    `apply 启动：thresholdRatio=${String(resolved.thresholdRatio)} historyMergeRatio=${String(resolved.historyMergeRatio)} compressMaxTokens=${String(resolved.compressMaxTokens)} tailMessageCount=${String(resolved.tailMessageCount)} summaryMode=${resolved.summaryMode}`,
+    `apply 启动：thresholdRatio=${String(resolved.thresholdRatio)} historyMergeRatio=${String(resolved.historyMergeRatio)} compressMaxTokens=${String(resolved.compressMaxTokens)} tailMessageCount=${String(resolved.tailMessageCount)} summaryMode=${resolved.summaryMode} debug=${String(resolved.debug)}`,
   );
 
   // recall 工具（code 呈现下即 SDK 绑定 tools.recall(...)）；输出 token 由
   // tool-result-pruner 控制（recall 渲染超大的工具结果时调用其 pruneContent）。
-  // 环境变量 OM_RECALL_ENABLED=false 时禁用（不注册该工具）。
-  if (envFlagEnabled(RECALL_ENABLED_ENV)) {
+  // 配置键 recallEnabled=false 时禁用（不注册该工具）。
+  if (resolved.recallEnabled) {
     ctx.tools.register(buildRecallTool(() => ctx.get('toolResultPruner')));
   }
 
   // recall-semantic 工具：本地 ONNX embedding（懒加载，首次调用才加载模型），
   // 输出同样由 tool-result-pruner 裁剪。
-  // 环境变量 OM_SEMANTIC_RECALL_ENABLED=false 时禁用（不注册，也不触发模型下载）。
-  // 运行时按需下载：仅当 env 启用且模型 onnx 缺失时后台预热（不阻塞）；下载失败
+  // 配置键 semanticRecallEnabled=false 时禁用（不注册，也不触发模型下载）。
+  // 运行时按需下载：仅当启用且模型 onnx 缺失时后台预热（不阻塞）；下载失败
   // 仅记日志，查询时未就绪由工具告知模型，下次查询自动重试。
-  if (envFlagEnabled(SEMANTIC_RECALL_ENABLED_ENV)) {
+  if (resolved.semanticRecallEnabled) {
     const warnModel = (message: string) => ctx.logger.warn('dsh-plugin-om: ' + message);
     void ensureModelReady(resolved.modelDir, warnModel);
     ctx.tools.register(

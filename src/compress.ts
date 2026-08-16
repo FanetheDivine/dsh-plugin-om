@@ -352,7 +352,7 @@ export async function reflectPass(
   /** 当前会话。 */
   const session = agent.session;
   /** 插件日志门面。 */
-  const logger = makeLogger(ctx);
+  const logger = makeLogger(ctx, config.debug);
   logger.step(`反思检查（窗口 ${window} × historyMergeRatio ${config.historyMergeRatio}）`);
   /** 当前摘要（最后一次 <om-history>；无则跳过）。 */
   const history = findLatestHistory(session);
@@ -388,6 +388,7 @@ export async function reflectPass(
     config.summaryMode,
     0, // 反思注入完整历史（尾部不裁剪；只精简合并日志本身）
     target,
+    config.debug,
     signal,
   );
   if (summaryResult === null || summaryResult.text.trim().length === 0) {
@@ -460,7 +461,7 @@ export async function observePass(
   /** 当前会话。 */
   const session = agent.session;
   /** 插件日志门面。 */
-  const logger = makeLogger(ctx);
+  const logger = makeLogger(ctx, config.debug);
   logger.step(
     `观察检查（窗口 ${window} × thresholdRatio ${config.thresholdRatio}，尾部保留 ${tailCount} 条）`,
   );
@@ -526,6 +527,7 @@ export async function observePass(
     config.summaryMode,
     actualTailCount, // fork 输入从尾部之前实际截断（new 模式输入本身不含尾部）
     target,
+    config.debug,
     signal,
   );
   if (summaryResult === null || summaryResult.text.trim().length === 0) {
@@ -607,7 +609,7 @@ export async function maybeCompress(
   /** 当前会话。 */
   const session = agent.session;
   /** 插件日志门面。 */
-  const logger = makeLogger(ctx);
+  const logger = makeLogger(ctx, config.debug);
   /** disable 模式：关闭自动压缩（观察/反思均不触发，recall 工具不受影响）。 */
   if (config.summaryMode === 'disable') {
     logger.step('summaryMode=disable，跳过压缩');
