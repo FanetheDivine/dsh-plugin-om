@@ -723,7 +723,7 @@ describe('摘要日志提取 extractSummaryLog', () => {
     expect(out?.startsWith('<om-history>')).toBe(true);
     expect(out?.endsWith('</om-history>')).toBe(true);
     // 格式说明注释插在首个 <om-history> 之后
-    expect(out).toContain('<om-history>\n' + HISTORY_FORMAT_NOTE);
+    expect(out).toContain(`<om-history>\n${HISTORY_FORMAT_NOTE}`);
     expect(out).toContain('<user_message id="u1">');
     expect(out).not.toContain('前置说明不要');
     expect(out).not.toContain('尾部多余文字');
@@ -904,6 +904,24 @@ describe('apply 接线（OM 观察压缩）', () => {
     const newIdx = historyText.indexOf('新内容');
     expect(oldIdx).toBeGreaterThan(-1);
     expect(newIdx).toBeGreaterThan(oldIdx);
+    // 多块按序拼接：替换消息原文 = 前言 + 旧 <om-history> 块 + 新 <om-history> 块
+    const replaceMsg = session.events.findLast(
+      (e) =>
+        e.type === 'user/message' &&
+        typeof e.surfaceOp === 'object' &&
+        e.surfaceOp !== null &&
+        (e.surfaceOp as { op?: string }).op === 'replace',
+    );
+    const raw = String(
+      (
+        (replaceMsg as { data?: { content?: unknown[] } } | undefined)?.data?.content?.[0] as
+          | { text?: string }
+          | undefined
+      )?.text ?? '',
+    );
+    // 前言里的「（<om-history>）」是行内提及，不计入；块标签须独占一行（两个块 = 2 个开标签）
+    expect((raw.match(/^<om-history>$/gm) ?? []).length).toBe(2);
+    expect(raw.indexOf('旧任务')).toBeLessThan(raw.indexOf('新内容'));
   });
 
   it('未达观察阈值不压缩（无摘要调用、无 <om-history>）', async () => {

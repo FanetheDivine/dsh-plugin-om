@@ -1,8 +1,8 @@
 /**
  * 自动压缩（OM 观察/反思两级阈值，思路参考 Mastra Observational Memory）：
  *  - 观察：未压缩消息 tokens ≥ 窗口 × thresholdRatio → 直连 ctx.llm.stream() 摘要
- *    （prefix 模式复用主会话请求前缀缓存；system 模式指令作为 system）把未压缩消息压缩为
- *    观察日志，追加到旧摘要（<om-history> 原文保留），替换被压缩消息区间；
+ *    （fork 模式复用主会话请求前缀缓存；new 模式指令作为 system）把未压缩消息压缩为
+ *    观察日志，以新的 <om-history> 块追加到旧日志（多块按序拼接），替换被压缩消息区间；
  *  - 反思：摘要 tokens ≥ 窗口 × historyMergeRatio（默认 0.2）→ 同上摘要调用精简合并摘要，
  *    替换单个 <om-history> 节点。
  * 两级检查在 pre-step 阻塞串行执行（先反思后观察），避免压缩失败或重复压缩。

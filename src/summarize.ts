@@ -248,7 +248,7 @@ export function renderMessages(session: Session, seqs: readonly number[]): strin
   return parts.join('\n\n');
 }
 
-/** 构造插件自产 user 消息（指令或 system 模式的输入消息；id 为品牌类型 MessageId）。 */
+/** 构造插件自产 user 消息（指令或 new 模式的输入消息；id 为品牌类型 MessageId）。 */
 function makePluginUserMessage(text: string): UserMessage {
   return {
     id: uuid() as unknown as UserMessage['id'],
@@ -260,8 +260,8 @@ function makePluginUserMessage(text: string): UserMessage {
 
 /**
  * 构建摘要请求选项：
- *  - prefix：system/tools 取自主会话 requestHeader()，messages = 完整派生历史 + 指令 user 消息；
- *  - system：system = 指令，messages = 渲染输入（被压缩消息 + 参考尾部）user 消息。
+ *  - fork：system/tools 取自主会话 requestHeader()，messages = 完整派生历史 + 指令 user 消息；
+ *  - new：system = 指令，messages = 渲染输入（被压缩消息）user 消息。
  */
 function buildSummaryOptions(
   session: Session,
@@ -327,7 +327,7 @@ export function extractSummaryLog(raw: string): string | null {
   if (inner.trim().length < MIN_HISTORY_LENGTH) return null;
   /** 完整日志块（含两个首尾）。 */
   const block = raw.slice(open, close + closeTag.length);
-  return block.replace(openTag, openTag + '\n' + HISTORY_FORMAT_NOTE);
+  return block.replace(openTag, `${openTag}\n${HISTORY_FORMAT_NOTE}`);
 }
 
 /** 单次摘要最多尝试次数（首次 + 失败重试，总上限；失败/未完成均重试）。 */
