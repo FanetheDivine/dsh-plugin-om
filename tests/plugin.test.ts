@@ -1725,113 +1725,113 @@ describe('消息渲染 renderMessages', () => {
 });
 
 describe('recall 工具', () => {
-  it('start_id+end_id 返回区间内全部原始消息（含代码与结果）', async () => {
+  it('start+end 返回区间内全部完整消息（含代码与结果），输出标 index/类型', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const span = await tool.execute({ start_id: 'user-c1', end_id: 'result-c2' }, exec as never);
+    const span = await tool.execute({ start: 0, end: 5 }, exec as never);
+    expect(span).toContain('firstCode()');
+    expect(span).toContain('secondCode()');
+    expect(span).toContain('out1');
+    expect(span).toContain('out2');
+    expect(String(span)).toContain('-- [index 0] user --');
+    expect(String(span)).toContain('-- [index 2] toolcall callId=c1 --');
+    expect(String(span)).toContain('-- [index 5] toolcall callId=c2 --');
+  });
+
+  it('end 在 start 之前时仍输出两者间全部完整消息（顺序无关）', async () => {
+    const session = makeSession({ events: twoCallFlow() });
+    const tool = buildRecallTool();
+    const exec = { agent: { session } };
+    const span = await tool.execute({ start: 5, end: 0 }, exec as never);
     expect(span).toContain('firstCode()');
     expect(span).toContain('secondCode()');
     expect(span).toContain('out1');
     expect(span).toContain('out2');
   });
 
-  it('end_id 在 start_id 之前时仍输出两者间全部消息（顺序无关）', async () => {
+  it('offset 正数从 start 向后延伸', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const span = await tool.execute({ start_id: 'result-c2', end_id: 'user-c1' }, exec as never);
-    expect(span).toContain('firstCode()');
-    expect(span).toContain('secondCode()');
-    expect(span).toContain('out1');
-    expect(span).toContain('out2');
-  });
-
-  it('offset 正数从 start_id 向后延伸', async () => {
-    const session = makeSession({ events: twoCallFlow() });
-    const tool = buildRecallTool();
-    const exec = { agent: { session } };
-    const span = await tool.execute({ start_id: 'assistant-c1', offset: 2 }, exec as never);
+    const span = await tool.execute({ start: 1, offset: 2 }, exec as never);
+    // cms 1..3：assistant 文本 + toolcall c1 + user-c2
     expect(span).toContain('firstCode()');
     expect(span).toContain('out1');
     expect(span).toContain('请帮我完成一个任务');
     expect(span).not.toContain('secondCode()');
   });
 
-  it('offset 负数从 start_id 向前延伸', async () => {
+  it('offset 负数从 start 向前延伸', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const span = await tool.execute({ start_id: 'result-c2', offset: -3 }, exec as never);
-    expect(span).toContain('out1');
+    const span = await tool.execute({ start: 5, offset: -2 }, exec as never);
+    // endIndex=3 → cms 3..5：user-c2 + assistant 文本 + toolcall c2
+    expect(span).toContain('请帮我完成一个任务');
     expect(span).toContain('secondCode()');
     expect(span).toContain('out2');
-    expect(span).not.toContain('firstCode()');
+    expect(span).not.toContain('out1');
   });
 
   it('offset 非整数自动向下取整（正负都取 floor）', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const up = await tool.execute({ start_id: 'assistant-c1', offset: 2.9 }, exec as never);
+    const up = await tool.execute({ start: 1, offset: 2.9 }, exec as never);
     expect(up).toContain('out1');
     expect(up).not.toContain('secondCode()');
-    const down = await tool.execute({ start_id: 'result-c2', offset: -1.5 }, exec as never);
+    const down = await tool.execute({ start: 5, offset: -1.5 }, exec as never);
     expect(down).toContain('secondCode()');
     expect(down).toContain('out2');
     expect(down).not.toContain('out1');
-    const zero = await tool.execute({ start_id: 'result-c2', offset: 0 }, exec as never);
+    const zero = await tool.execute({ start: 5, offset: 0 }, exec as never);
+    expect(zero).toContain('secondCode()'); // toolcall 条含调用参数与结果
     expect(zero).toContain('out2');
-    expect(zero).not.toContain('secondCode()');
-    expect(zero).not.toContain('out1');
+    expect(zero).not.toContain('firstCode()');
   });
 
-  it('end_id 与 offset 同时给出时 end_id 优先', async () => {
+  it('end 与 offset 同时给出时 end 优先', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const span = await tool.execute(
-      { start_id: 'user-c1', end_id: 'result-c2', offset: 0 },
-      exec as never,
-    );
+    const span = await tool.execute({ start: 0, end: 5, offset: 0 }, exec as never);
     expect(span).toContain('secondCode()');
     expect(span).toContain('out2');
   });
 
-  it('end_id 与 offset 都缺省时抛错', async () => {
+  it('end 与 offset 都缺省时抛错', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    await expect(tool.execute({ start_id: 'user-c1' }, exec as never)).rejects.toThrow(
-      /至少提供一个/,
-    );
+    await expect(tool.execute({ start: 0 }, exec as never)).rejects.toThrow(/至少提供一个/);
   });
 
-  it('未知 message_id 返回提示', async () => {
+  it('start/end 越界返回提示', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const badStart = await tool.execute({ start_id: 'nope', offset: 1 }, exec as never);
-    expect(String(badStart)).toContain('start_id "nope" 不存在');
-    const badEnd = await tool.execute({ start_id: 'user-c1', end_id: 'nope2' }, exec as never);
-    expect(String(badEnd)).toContain('end_id "nope2" 不存在');
+    const badStart = await tool.execute({ start: 99, offset: 1 }, exec as never);
+    expect(String(badStart)).toContain('start 99 越界');
+    const badEnd = await tool.execute({ start: 0, end: 99 }, exec as never);
+    expect(String(badEnd)).toContain('end 99 越界');
+    const badNeg = await tool.execute({ start: -1, offset: 1 }, exec as never);
+    expect(String(badNeg)).toContain('start -1 越界');
   });
 
-  it('execute 缺 start_id 抛错', async () => {
+  it('execute 缺 start 抛错', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    await expect(tool.execute({ offset: 1 }, exec as never)).rejects.toThrow(/start_id/);
-    await expect(tool.execute({}, exec as never)).rejects.toThrow(/start_id/);
+    await expect(tool.execute({ offset: 1 }, exec as never)).rejects.toThrow(/start/);
+    await expect(tool.execute({}, exec as never)).rejects.toThrow(/start/);
   });
 
   it('execute offset 类型非法时抛错', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    await expect(tool.execute({ start_id: 'user-c1', offset: '2' }, exec as never)).rejects.toThrow(
-      /offset/,
-    );
+    await expect(tool.execute({ start: 0, offset: '2' }, exec as never)).rejects.toThrow(/offset/);
   });
 
   it('tool-result-pruner 控制超大工具结果的输出（recall 不截断）', async () => {
@@ -1870,13 +1870,10 @@ describe('recall 工具', () => {
       },
     }));
     const exec = { agent: { session } };
-    const span = await tool.execute({ start_id: 'result-cb', offset: 0 }, exec as never);
+    const span = await tool.execute({ start: 2, offset: 0 }, exec as never);
     expect(String(span)).toContain('PRUNED-HEAD');
     expect(String(span)).not.toContain('X'.repeat(20000));
-    const raw = await buildRecallTool().execute(
-      { start_id: 'result-cb', offset: 0 },
-      exec as never,
-    );
+    const raw = await buildRecallTool().execute({ start: 2, offset: 0 }, exec as never);
     expect(String(raw)).toContain('X'.repeat(20000));
   });
 
@@ -1889,7 +1886,7 @@ describe('recall 工具', () => {
     });
     const session = makeSession({ events: flow, header: { origin: 'subagent' } });
     const tool = buildRecallTool();
-    const result = await tool.execute({ start_id: 'user-c1', offset: 1 }, {
+    const result = await tool.execute({ start: 0, offset: 1 }, {
       agent: { session },
     } as never);
     expect(String(result)).toContain('仅主会话可用');
@@ -1897,36 +1894,30 @@ describe('recall 工具', () => {
 });
 
 describe('recall 参数校验（zod schema）', () => {
-  it('合法参数通过解析（start_id 必填，end_id/offset 至少其一，可同时给出）', () => {
-    expect(parseRecallArgs({ start_id: 'a', offset: 2 })).toEqual({ start_id: 'a', offset: 2 });
-    expect(parseRecallArgs({ start_id: 'a', end_id: 'b' })).toEqual({ start_id: 'a', end_id: 'b' });
-    expect(parseRecallArgs({ start_id: 'a', end_id: 'b', offset: 0 })).toEqual({
-      start_id: 'a',
-      end_id: 'b',
+  it('合法参数通过解析（start 必填，end/offset 至少其一，可同时给出）', () => {
+    expect(parseRecallArgs({ start: 0, offset: 2 })).toEqual({ start: 0, offset: 2 });
+    expect(parseRecallArgs({ start: 0, end: 5 })).toEqual({ start: 0, end: 5 });
+    expect(parseRecallArgs({ start: 0, end: 5, offset: 0 })).toEqual({
+      start: 0,
+      end: 5,
       offset: 0,
     });
   });
 
-  it('缺 start_id 抛错并指出字段', () => {
-    expect(() => parseRecallArgs({ offset: 1 })).toThrow(/start_id/);
-    expect(() => parseRecallArgs({ end_id: 'b' })).toThrow(/start_id/);
+  it('缺 start 抛错并指出字段', () => {
+    expect(() => parseRecallArgs({ offset: 1 })).toThrow(/start/);
+    expect(() => parseRecallArgs({ end: 5 })).toThrow(/start/);
   });
 
-  it('空字符串 id 不抛错（由 execute 走「不存在」提示）', () => {
-    expect(parseRecallArgs({ start_id: '', offset: 1 })).toEqual({ start_id: '', offset: 1 });
-    expect(parseRecallArgs({ start_id: 'a', end_id: '' })).toEqual({ start_id: 'a', end_id: '' });
-  });
-
-  it('offset 必须为 number', () => {
-    expect(() => parseRecallArgs({ start_id: 'a', offset: '2' })).toThrow(/offset/);
-    expect(() => parseRecallArgs({ start_id: 'a', offset: null })).toThrow(/offset/);
+  it('start/end/offset 必须为 number', () => {
+    expect(() => parseRecallArgs({ start: 0, offset: '2' })).toThrow(/offset/);
+    expect(() => parseRecallArgs({ start: 0, offset: null })).toThrow(/offset/);
+    expect(() => parseRecallArgs({ start: '0', offset: 1 })).toThrow(/start/);
+    expect(() => parseRecallArgs({ start: 0, end: '5' })).toThrow(/end/);
   });
 
   it('未知键被剥离', () => {
-    expect(parseRecallArgs({ start_id: 'a', offset: 1, junk: true })).toEqual({
-      start_id: 'a',
-      offset: 1,
-    });
+    expect(parseRecallArgs({ start: 0, offset: 1, junk: true })).toEqual({ start: 0, offset: 1 });
   });
 });
 
