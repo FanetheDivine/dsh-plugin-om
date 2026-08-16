@@ -16,13 +16,14 @@
 
 - recall 不截断，建议保留 `tool-result-pruner`
 - 默认上下文压缩插件 `compaction-basic` 到达阈值后会自动摘要，不建议和此插件一起使用
-- recall-semantic 使用随插件打包的本地多语言嵌入模型（paraphrase-multilingual-MiniLM-L12-v2，量化 ONNX），完全离线；首次调用时加载模型，之后复用
+- recall-semantic 使用随插件打包的本地多语言嵌入模型（paraphrase-multilingual-MiniLM-L12-v2，量化 ONNX），完全离线；首次调用时加载模型，之后复用。模型二进制（~113MB）不进入 git 仓库，发布打包时自动下载（见[依赖策略](#依赖策略)）
 
 ### 依赖策略
 
 - 以type-only的方式引用第三方库（编译期类型，运行时零依赖）
 - 复用dsh宿主提供的依赖，如 cordis / dsh-tools / zod 等
 - 例外：recall-semantic 的本地嵌入需要运行时依赖 `@huggingface/transformers`（transformers.js v4 + onnxruntime-node），模型文件随 npm 包分发（`models/`），不做运行时下载
+- 模型二进制：量化 ONNX 约 113MB，超过 GitHub 单文件 100MB 限制，**不进入 git 仓库**。`npm pack` / `npm publish` 会在 prepack 阶段自动从 HuggingFace（[Xenova 转换仓库](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2)）下载到 `models/`；本地开发用 `pnpm run download:model` 手动补齐（已存在则跳过，`--force` 强制重下）；直连 `huggingface.co` 受限时设置环境变量 `HF_ENDPOINT=https://hf-mirror.com` 走镜像
 
 ## 安装与启用
 
@@ -56,7 +57,7 @@ dsh plugin --profile <profile> add dsh-plugin-om
 
 ### 开发插件
 
-运行`pnpm dev`，等待`dist/index.mjs`构筑完毕
+先补齐本地嵌入模型（`pnpm run download:model`，已存在则跳过），再运行`pnpm dev`，等待`dist/index.mjs`构筑完毕
 
 在 `cordis.patch.yml` 里加入
 
@@ -139,6 +140,7 @@ OM_SEMANTIC_RECALL_ENABLED=false dsh web
 | `pnpm typecheck`            | TypeScript 类型检查                       |
 | `pnpm lint` / `pnpm format` | 代码检查 / 格式化                         |
 | `pnpm test`                 | vitest 单元测试                           |
+| `pnpm run download:model`   | 下载本地嵌入模型 ONNX（已存在跳过，`--force` 重下） |
 | `pnpm build`                |                                           |
 | `pnpm dev`                  | 自动打包                                  |
 | `pnpm run release`          | CHANGELOG 归档 + 版本号更新 + 打 tag 推送 |
@@ -172,8 +174,8 @@ src/
 ├── semantic-recall.ts        # recall-semantic 工具（query 语义检索 + 区间限定 + 回退全量 + 匹配说明）
 └── compress.ts               # 两级自动压缩（测量 / 区间计算 / 中断扫描 / 对照表 / compaction/* 生命周期事件 + checkpoint 替换）
 models/
-└── paraphrase-multilingual-MiniLM-L12-v2/   # 随包分发的量化 ONNX 嵌入模型（离线可用）
-scripts/                      # release-archive.mjs（CHANGELOG 归档）
-tests/                        # vitest 单元测试（84 例）
+└── paraphrase-multilingual-MiniLM-L12-v2/   # 随包分发的量化 ONNX 嵌入模型（离线可用；onnx 二进制由 prepack 自动下载，不进 git）
+scripts/                      # release-archive.mjs（CHANGELOG 归档）/ download-model.mjs（模型下载）
+tests/                        # vitest 单元测试（99 例）
 .dsh/skills/                  # 项目级 skill（feature-defect-workflow：需求/缺陷完成工作流）
 ```
