@@ -12,7 +12,6 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
 });
 
 import {
-  buildMessageIdTable,
   computeCompressRange,
   estimateTextTokens,
   extractHistoryText,
@@ -25,7 +24,12 @@ import { resolveConfig, resolveSummaryMode } from '../src/config.ts';
 import { HISTORY_TAG, PLUGIN_LABEL } from '../src/constants.ts';
 import { cosineSimilarity, ensureModelReady } from '../src/embedding.ts';
 import { apply, inject, name } from '../src/index.ts';
-import { indexMessages, messageIdOfEvent } from '../src/log-index.ts';
+import {
+  indexCompleteMessages,
+  indexMessages,
+  messageIdOfEvent,
+  renderCompleteMessage,
+} from '../src/log-index.ts';
 import { buildRecallTool, parseRecallArgs } from '../src/recall.ts';
 import {
   buildSemanticRecallTool,
@@ -51,6 +55,8 @@ import {
   makeMeter,
   makeSession,
   textBlock,
+  toolCallBlock,
+  toolResultBlock,
 } from './helpers.ts';
 
 /** 从会话日志提取最后一次 <om-history> 消息的完整文本（去标签）。 */
@@ -320,6 +326,162 @@ describe('消息索引 indexMessages / messageIdOfEvent', () => {
         data: { turn: 1, reason: { kind: 'completed' } },
       } as unknown as SessionEvent),
     ).toBeUndefined();
+  });
+});
+
+describe('完整消息索引 indexCompleteMessages', () => {
+  it('三类折叠：用户消息 / AI 文本 / 每 tool-call+result 一条（文本与调用拆开）', () => {
+    const session = makeSession({ events: twoCallFlow() });
+    const cms = indexCompleteMessages(session);
+    expect(cms.map((c) => [c.index, c.type])).toEqual([
+      [0, 'user'],
+      [1, 'assistant'],
+      [2, 'toolcall'],
+      [3, 'user'],
+      [4, 'assistant'],
+      [5, 'toolcall'],
+    ]);
+    expect(cms[2]?.callId).toBe('c1');
+    expect(cms[2]?.seqs).toEqual([1, 3]); // assistant-c1 + result-c1
+    expect(cms[5]?.callId).toBe('c2');
+    expect(cms[5]?.seqs).toEqual([5, 7]); // assistant-c2 + result-c2（tool/call 为日志事件不入索引）
+  });
+
+  it('插件自产 user 消息不占位（<om-history> 与运行时快照）', () => {
+    const session = makeSession({
+      events: [
+        historyMessage('旧任务'),
+        ...twoCallFlow(),
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('运行时上下文快照')],
+            source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' },
+            id: 'snap',
+          }),
+        } as unknown as SessionEvent,
+      ],
+    });
+    const cms = indexCompleteMessages(session);
+    expect(cms).toHaveLength(6); // 仅两条流程的 6 条完整消息
+    expect(cms[0]?.type).toBe('user');
+  });
+
+  it('未匹配的 result 独立成条（防御）', () => {
+    const events = [
+      {
+        type: 'tool/result',
+        data: {
+          turn: 1,
+          step: 1,
+          message: makeMessage({
+            role: 'user',
+            content: [toolResultBlock('ghost', [textBlock('r')])],
+            source: { kind: 'tool', callId: 'ghost' },
+            id: 'r-ghost',
+          }),
+        },
+      } as unknown as SessionEvent,
+    ];
+    const cms = indexCompleteMessages(makeSession({ events }));
+    expect(cms).toHaveLength(1);
+    expect(cms[0]?.type).toBe('toolcall');
+    expect(cms[0]?.seqs).toEqual([0]);
+  });
+
+  it('同一 assistant 消息含文本 + 多个 tool-call：文本 1 条 + 每调用 1 条', () => {
+    const events = [
+      {
+        type: 'user/message',
+        data: makeMessage({ content: [textBlock('hi')], id: 'u' }),
+      },
+      {
+        type: 'assistant/message',
+        data: {
+          message: makeMessage({
+            role: 'assistant',
+            content: [
+              textBlock('好的'),
+              toolCallBlock('c1', 'run_code', {}),
+              toolCallBlock('c2', 'run_code', {}),
+            ],
+            source: { kind: 'model', provider: 'p', model: 'm' },
+            id: 'a',
+          }),
+        },
+      },
+      {
+        type: 'tool/result',
+        data: {
+          turn: 1,
+          step: 1,
+          message: makeMessage({
+            role: 'user',
+            content: [toolResultBlock('c1', [textBlock('r1')])],
+            source: { kind: 'tool', callId: 'c1' },
+            id: 'r1',
+          }),
+        },
+      },
+      {
+        type: 'tool/result',
+        data: {
+          turn: 1,
+          step: 1,
+          message: makeMessage({
+            role: 'user',
+            content: [toolResultBlock('c2', [textBlock('r2')])],
+            source: { kind: 'tool', callId: 'c2' },
+            id: 'r2',
+          }),
+        },
+      },
+    ] as unknown as SessionEvent[];
+    const cms = indexCompleteMessages(makeSession({ events }));
+    expect(cms.map((c) => [c.type, c.callId])).toEqual([
+      ['user', undefined],
+      ['assistant', undefined],
+      ['toolcall', 'c1'],
+      ['toolcall', 'c2'],
+    ]);
+    expect(cms[2]?.seqs).toEqual([1, 2]);
+    expect(cms[3]?.seqs).toEqual([1, 3]);
+  });
+});
+
+describe('完整消息渲染 renderCompleteMessage', () => {
+  it('user=原文；assistant=仅文本；toolcall=调用参数+结果', () => {
+    const session = makeSession({ events: twoCallFlow() });
+    const cms = indexCompleteMessages(session);
+    /** 取完整消息（缺失时测试直接失败）。 */
+    const cm = (index: number) => {
+      const c = cms[index];
+      if (!c) throw new Error(`缺少完整消息 ${index}`);
+      return c;
+    };
+    expect(renderCompleteMessage(session, cm(0))).toContain('请帮我完成一个任务');
+    expect(renderCompleteMessage(session, cm(1))).toContain('我来执行代码');
+    expect(renderCompleteMessage(session, cm(1))).not.toContain('run_code'); // 文本条不含调用
+    const tc = renderCompleteMessage(session, cm(2));
+    expect(tc).toContain('firstCode()');
+    expect(tc).toContain('out1');
+  });
+
+  it('toolcall 结果走 pruner 裁剪', () => {
+    const flow = buildToolCallFlow({
+      code: 'big()',
+      description: '大结果',
+      callId: 'cb',
+      resultText: 'X'.repeat(20000),
+    });
+    const session = makeSession({ events: flow });
+    const cms = indexCompleteMessages(session);
+    const pruner = { pruneContent: () => [{ type: 'text', text: 'PRUNED' }] };
+    const cm2 = cms[2];
+    if (!cm2) throw new Error('缺少完整消息 2');
+    const text = renderCompleteMessage(session, cm2, pruner);
+    expect(text).toContain('PRUNED');
+    expect(text).not.toContain('X'.repeat(20000));
   });
 });
 
@@ -599,79 +761,41 @@ describe('历史提取 extractHistoryText / findLatestHistory', () => {
   });
 });
 
-describe('message_id 对照表 buildMessageIdTable', () => {
-  it('按序列出 user/assistant/tool-result 的 message_id（tool-result 附 callId）', () => {
-    const flow = buildToolCallFlow({
-      code: 'a()',
-      description: '任务A',
-      callId: 'c1',
-      resultText: 'r1',
-      userMessageId: 'u1',
-      assistantMessageId: 'a1',
-      resultMessageId: 'r1m',
-    });
-    const session = makeSession({ events: flow }); // 表层 [0,1,3]
-    expect(buildMessageIdTable(session, [0, 1, 3])).toEqual([
-      '[user] message_id=u1',
-      '[assistant] message_id=a1',
-      '[tool/result callId=c1] message_id=r1m',
-    ]);
-  });
-
-  it('插件自产 user/message 不入表', () => {
-    const flow = buildToolCallFlow({
-      code: 'a()',
-      description: '任务A',
-      callId: 'c1',
-      resultText: 'r1',
-    });
-    const session = makeSession({
-      events: [
-        historyMessage('旧任务'),
-        ...flow,
-        {
-          type: 'user/message',
-          data: makeMessage({
-            content: [textBlock('运行时上下文快照')],
-            source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' },
-            id: 'snap',
-          }),
-        } as unknown as SessionEvent,
-      ],
-    });
-    const rows = buildMessageIdTable(session, [0, 1, 2, 4, 5]);
-    expect(rows.some((row) => row.includes('history-msg'))).toBe(false);
-    expect(rows.some((row) => row.includes('snap'))).toBe(false);
-    expect(rows).toHaveLength(3); // 仅 user/assistant/tool-result
-  });
-});
-
 describe('观察提示词 buildObservePrompt', () => {
-  it('任务声明/聚合规则/对照表/中断标记/输出格式/追加说明（提示词不含尾部规则）', () => {
+  it('任务声明/完整消息与 index/聚合规则/起始编号/中断标记/输出格式/追加说明（不含对照表与尾部规则）', () => {
     const prompt = buildObservePrompt({
-      table: ['[user] message_id=u1', '[tool/result callId=c1] message_id=r1'],
+      startIndex: 8,
       interruptions: ['[interrupted] turn 1 被中断（aborted，原因 user）'],
       hasOldHistory: true,
       mode: 'fork',
     });
     // fork 模式：停止任务/禁止工具声明
     expect(prompt).toContain('停止一切现有任务，禁止调用任何工具');
-    // 规则：用户消息完整保留原文、toolcall 聚合（不限于 run_code）、新消息优先
+    // 完整消息与 index：三类定义 + 起始编号
+    expect(prompt).toContain('完整消息分三类');
+    expect(prompt).toContain('用户消息占一条');
+    expect(prompt).toContain('AI 文本占一条');
+    expect(prompt).toContain('工具调用及其结果占一条');
+    expect(prompt).toContain('每个 tool-call 与其 result 各一条');
+    expect(prompt).toContain('从 index 8 开始编号');
+    // 规则：用户消息完整保留原文、toolcall index 行、模块 start/end、重要调用单独条目、recall 按 index 回看
     expect(prompt).toContain('完整保留原文');
-    expect(prompt).toContain('toolcall message_id:<该组最后一条消息的 message_id>');
+    expect(prompt).toContain('toolcall index:<该条完整消息的 index>');
+    expect(prompt).toContain('start/end 标注模块覆盖的 index 区间');
     expect(prompt).toContain('不限于 run_code');
     expect(prompt).toContain('倾向于新消息');
     expect(prompt).toContain('不修改旧日志条目');
     expect(prompt).toContain('当前进度与下一步');
-    expect(prompt).toContain('recall 按 message_id 回看');
-    // 输出格式：合法 XML（<user_message id> / <assistant last_id>）
-    expect(prompt).toContain('<user_message id="(message_id)">');
-    expect(prompt).toContain('<assistant last_id="(该组最后一条消息的 message_id)">');
-    // 对照表 / 中断标记 / 追加说明
+    expect(prompt).toContain('recall 按 index 回看');
+    // 输出格式：合法 XML（<user_message index> / <assistant start..end> / <assistant index>）
+    expect(prompt).toContain('<user_message index="(index)">');
+    expect(prompt).toContain('<assistant start="(起始 index)" end="(结束 index)">');
+    expect(prompt).toContain('<assistant index="(index)">');
+    // 中断标记 / 追加说明；不再有对照表
     expect(prompt).toContain('[interrupted] turn 1 被中断（aborted，原因 user）');
-    expect(prompt).toContain('[user] message_id=u1');
-    expect(prompt).toContain('[tool/result callId=c1] message_id=r1');
     expect(prompt).toContain('追加到上一次压缩产物');
+    expect(prompt).not.toContain('对照表');
+    expect(prompt).not.toContain('message_id');
     // fork 模式：引用上方完整会话记录；尾部不写进提示词（输入已从尾部之前实际截断）
     expect(prompt).toContain('上方的消息记录是主会话的完整历史');
     expect(prompt).toContain('最后一次 <om-history> 块之后的全部消息；只对这些消息做压缩');
@@ -680,7 +804,7 @@ describe('观察提示词 buildObservePrompt', () => {
 
   it('首次压缩（无旧摘要）表述为第一条日志', () => {
     const prompt = buildObservePrompt({
-      table: [],
+      startIndex: 0,
       interruptions: [],
       hasOldHistory: false,
       mode: 'fork',
@@ -691,7 +815,7 @@ describe('观察提示词 buildObservePrompt', () => {
 
   it('new 模式：只说明总结日志 + 下方消息即压缩对象（不含旧日志/尾部）', () => {
     const prompt = buildObservePrompt({
-      table: [],
+      startIndex: 0,
       interruptions: [],
       hasOldHistory: false,
       mode: 'new',
@@ -706,14 +830,17 @@ describe('观察提示词 buildObservePrompt', () => {
 });
 
 describe('反思提示词 buildReflectPrompt', () => {
-  it('精简合并规则：声明/用户消息保留要点、toolcall 聚合、可写（略）、XML 输出', () => {
+  it('精简合并规则：声明/用户消息保留要点与 index、toolcall 聚合、可写（略）、XML 输出', () => {
     const prompt = buildReflectPrompt('fork');
     expect(prompt).toContain('停止一切现有任务，禁止调用任何工具');
     expect(prompt).toContain('精简合并');
-    expect(prompt).toContain('<user_message id="(message_id)">');
+    expect(prompt).toContain('<user_message index="(index)">');
+    expect(prompt).toContain('<assistant start="(起始 index)" end="(结束 index)">');
     expect(prompt).toContain('（略）');
+    expect(prompt).toContain('index 不重新编号'); // 合并不重排，全局稳定
     expect(prompt).toContain('替换当前的 <om-history> 块内容');
     expect(prompt).toContain('保留新条目');
+    expect(prompt).not.toContain('message_id');
   });
 
   it('new 模式定位下方的 <om-history> 压缩日志（仅说明总结日志）', () => {
@@ -733,7 +860,7 @@ describe('摘要日志提取 extractSummaryLog', () => {
   it('合法块：取首个 <om-history> 到最后一个 </om-history>（含首尾），插入格式说明注释', () => {
     const raw = [
       '前置说明不要',
-      block('<user_message id="u1">\n请帮我完成一个任务\n</user_message>'),
+      block('<user_message index="0">\n请帮我完成一个任务\n</user_message>'),
       '尾部多余文字',
     ].join('\n');
     const out = extractSummaryLog(raw);
@@ -742,7 +869,7 @@ describe('摘要日志提取 extractSummaryLog', () => {
     expect(out?.endsWith('</om-history>')).toBe(true);
     // 格式说明注释插在首个 <om-history> 之后
     expect(out).toContain(`<om-history>\n${HISTORY_FORMAT_NOTE}`);
-    expect(out).toContain('<user_message id="u1">');
+    expect(out).toContain('<user_message index="0">');
     expect(out).not.toContain('前置说明不要');
     expect(out).not.toContain('尾部多余文字');
   });
@@ -824,11 +951,11 @@ describe('apply 接线（OM 观察压缩）', () => {
     const session = makeSession({ events: flowEvents });
     const report = [
       '<om-history>',
-      '<user_message id="user-c-eval">',
+      '<user_message index="0">',
       '请帮我完成一个任务',
       '</user_message>',
-      '<assistant last_id="result-c-eval">',
-      'toolcall message_id:result-c-eval purpose:跑一下 summary:产物符合预期；下一步提交',
+      '<assistant start="1" end="2">',
+      'toolcall index:2 purpose:跑一下 summary:产物符合预期；下一步提交',
       '</assistant>',
       '</om-history>',
     ].join('\n');
@@ -852,14 +979,14 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(options.maxTokens).toBe(4096); // compressMaxTokens 默认
 
     const historyText = latestHistoryText(session);
-    // 新格式：<user_message id> 完整原文 + <assistant last_id> 聚合模块；格式说明注释在块首
-    expect(historyText).toContain('<user_message id="user-c-eval">');
+    // 新格式：<user_message index> 完整原文 + <assistant start..end> 聚合模块；格式说明注释在块首
+    expect(historyText).toContain('<user_message index="0">');
     expect(historyText).toContain('请帮我完成一个任务');
-    expect(historyText).toContain('<assistant last_id="result-c-eval">');
+    expect(historyText).toContain('<assistant start="1" end="2">');
     expect(historyText).toContain(
-      'toolcall message_id:result-c-eval purpose:跑一下 summary:产物符合预期；下一步提交',
+      'toolcall index:2 purpose:跑一下 summary:产物符合预期；下一步提交',
     );
-    expect(historyText).toContain('块内包含了用户的原文'); // HISTORY_FORMAT_NOTE 注释
+    expect(historyText).toContain('完整消息分三类'); // HISTORY_FORMAT_NOTE 注释
     // 遮蔽后表层 = <om-history> + 尾部（配对回退后保留 assistant + result 两条）
     expect(session.surface.nodes.length).toBe(3);
     // compaction 生命周期：start → summary → 替换消息 → end（同 compactionId）
@@ -884,9 +1011,9 @@ describe('apply 接线（OM 观察压缩）', () => {
     const summaryText = summaryEvent.data.summary
       .map((block) => (block.type === 'text' ? block.text : ''))
       .join('');
-    expect(summaryText).toContain('<user_message id="user-c-eval">');
+    expect(summaryText).toContain('<user_message index="0">');
     expect(summaryText).toContain(
-      'toolcall message_id:result-c-eval purpose:跑一下 summary:产物符合预期；下一步提交',
+      'toolcall index:2 purpose:跑一下 summary:产物符合预期；下一步提交',
     );
     // 替换消息 source = 宿主 checkpoint 标记（plugin: 'compact' + compactionId）
     const source = checkpointSourceOf(replaceEvent);
@@ -1136,7 +1263,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(instruction).toContain('[interrupted] turn 1 被中断（aborted，原因 user）');
   });
 
-  it('当前 turn 消息可压缩：mid-turn 压缩后其消息被替换、对照表含当前 turn 消息', async () => {
+  it('当前 turn 消息可压缩：mid-turn 压缩后其消息被替换、起始 index 覆盖当前 turn 消息', async () => {
     const events = [
       ...buildToolCallFlow({
         code: 'a()',
@@ -1164,10 +1291,10 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(nodes.length).toBe(3); // <om-history> + 6,8
     expect(nodes[1]).toBe(6);
     expect(nodes[2]).toBe(8);
-    // 对照表含被压缩的 0,1,3 与当前 turn 的 user-c2（mid-turn 压缩）
+    // 起始 index 从 0 开始（无旧摘要）：新消息（含当前 turn 的 user-c2）从 0 编号
     const instruction = instructionText(summaryOptions(ctx));
-    expect(instruction).toContain('message_id=user-c1');
-    expect(instruction).toContain('message_id=user-c2');
+    expect(instruction).toContain('从 index 0 开始编号');
+    expect(instruction).not.toContain('message_id'); // 不再携带对照表
   });
 
   it('subagent 会话不压缩（主会话守卫）', async () => {
@@ -1534,18 +1661,18 @@ describe('摘要请求形态（fork / new 双模式）', () => {
     };
     expect(options?.system?.startsWith(OBSERVER_PERSONA)).toBe(true);
     const input = String(options?.messages?.[0]?.content?.[0]?.text ?? '');
-    // 输入 = 被压缩区间 [0]（tailCount=1 配对回退）的 XML 渲染，不含分段标签与尾部
-    expect(input).toContain('<user_message id="user-c1">');
+    // 输入 = 被压缩区间 [0]（tailCount=1 配对回退）的完整消息渲染（带绝对 index），不含分段标签与尾部
+    expect(input).toContain('<user_message index="0">');
     expect(input).toContain('请帮我完成一个任务');
     expect(input).not.toContain('【被压缩消息】');
     expect(input).not.toContain('【参考尾部】');
-    expect(input).not.toContain('message_id=user-c1'); // id 走 XML 属性
+    expect(input).not.toContain('message_id=user-c1'); // 不用 message_id
     expect(session.surface.nodes.length).toBe(3); // <om-history> + 尾部 assistant + result
   });
 });
 
 describe('消息渲染 renderMessages', () => {
-  it('XML 分组：<user_message id> + <assistant last_id>（连续 AI 消息聚合）', () => {
+  it('完整消息渲染：<user_message index> + <assistant index>（文本与 toolcall 分条）', () => {
     const flow = buildToolCallFlow({
       code: 'a()',
       description: '任务A',
@@ -1557,20 +1684,21 @@ describe('消息渲染 renderMessages', () => {
     });
     const session = makeSession({ events: flow }); // 表层 [0,1,3]
     const text = renderMessages(session, [0, 1, 3]);
-    // 用户消息 → <user_message id>（原文完整保留）
-    expect(text).toContain('<user_message id="u1">');
+    // 用户消息 → <user_message index="0">（原文完整保留）
+    expect(text).toContain('<user_message index="0">');
     expect(text).toContain('请帮我完成一个任务');
     expect(text).toContain('</user_message>');
-    // assistant + tool/result 聚合为一个 <assistant> 块，last_id = 组内最后一条消息 id
-    expect(text).toContain('<assistant last_id="r1m">');
-    expect(text).toContain('--- assistant message_id=a1 ---');
-    expect(text).toContain('--- tool/result message_id=r1m ---');
-    expect(text).toContain('run_code'); // tool-call 展开参数
+    // 文本与 toolcall 拆开：文本 index=1，toolcall（调用+结果）index=2
+    expect(text).toContain('<assistant index="1">');
+    expect(text).toContain('我来执行代码');
+    expect(text).toContain('<assistant index="2">');
+    expect(text).toContain('[tool-call run_code id=c1]');
     expect(text).toContain('r1');
-    expect(text).toContain('</assistant>');
+    expect(text).toContain('[result]');
+    expect(text).not.toContain('message_id');
   });
 
-  it('相邻用户消息各自成块；缺 id 时省略属性', () => {
+  it('相邻用户消息各占一条（index 0/1）；区间外完整消息不渲染', () => {
     const session = makeSession({
       events: [
         {
@@ -1579,126 +1707,131 @@ describe('消息渲染 renderMessages', () => {
         } as unknown as SessionEvent,
         {
           type: 'user/message',
-          data: makeMessage({ content: [textBlock('再见')], id: '' }), // 空 id
+          data: makeMessage({ content: [textBlock('再见')], id: '' }),
+        } as unknown as SessionEvent,
+        {
+          type: 'user/message',
+          data: makeMessage({ content: [textBlock('区间外')], id: 'u3' }),
         } as unknown as SessionEvent,
       ],
     });
     const text = renderMessages(session, [0, 1]);
-    expect(text).toContain('<user_message id="u1">');
-    expect(text).toContain('<user_message>'); // 无 id 属性
+    expect(text).toContain('<user_message index="0">');
     expect(text).toContain('你好');
+    expect(text).toContain('<user_message index="1">');
     expect(text).toContain('再见');
+    expect(text).not.toContain('区间外'); // 不在遮蔽集合内
   });
 });
 
 describe('recall 工具', () => {
-  it('start_id+end_id 返回区间内全部原始消息（含代码与结果）', async () => {
+  it('start+end 返回区间内全部完整消息（含代码与结果），输出标 index/类型', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const span = await tool.execute({ start_id: 'user-c1', end_id: 'result-c2' }, exec as never);
+    const span = await tool.execute({ start: 0, end: 5 }, exec as never);
+    expect(span).toContain('firstCode()');
+    expect(span).toContain('secondCode()');
+    expect(span).toContain('out1');
+    expect(span).toContain('out2');
+    expect(String(span)).toContain('-- [index 0] user --');
+    expect(String(span)).toContain('-- [index 2] toolcall callId=c1 --');
+    expect(String(span)).toContain('-- [index 5] toolcall callId=c2 --');
+  });
+
+  it('end 在 start 之前时仍输出两者间全部完整消息（顺序无关）', async () => {
+    const session = makeSession({ events: twoCallFlow() });
+    const tool = buildRecallTool();
+    const exec = { agent: { session } };
+    const span = await tool.execute({ start: 5, end: 0 }, exec as never);
     expect(span).toContain('firstCode()');
     expect(span).toContain('secondCode()');
     expect(span).toContain('out1');
     expect(span).toContain('out2');
   });
 
-  it('end_id 在 start_id 之前时仍输出两者间全部消息（顺序无关）', async () => {
+  it('offset 正数从 start 向后延伸', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const span = await tool.execute({ start_id: 'result-c2', end_id: 'user-c1' }, exec as never);
-    expect(span).toContain('firstCode()');
-    expect(span).toContain('secondCode()');
-    expect(span).toContain('out1');
-    expect(span).toContain('out2');
-  });
-
-  it('offset 正数从 start_id 向后延伸', async () => {
-    const session = makeSession({ events: twoCallFlow() });
-    const tool = buildRecallTool();
-    const exec = { agent: { session } };
-    const span = await tool.execute({ start_id: 'assistant-c1', offset: 2 }, exec as never);
+    const span = await tool.execute({ start: 1, offset: 2 }, exec as never);
+    // cms 1..3：assistant 文本 + toolcall c1 + user-c2
     expect(span).toContain('firstCode()');
     expect(span).toContain('out1');
     expect(span).toContain('请帮我完成一个任务');
     expect(span).not.toContain('secondCode()');
   });
 
-  it('offset 负数从 start_id 向前延伸', async () => {
+  it('offset 负数从 start 向前延伸', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const span = await tool.execute({ start_id: 'result-c2', offset: -3 }, exec as never);
-    expect(span).toContain('out1');
+    const span = await tool.execute({ start: 5, offset: -2 }, exec as never);
+    // endIndex=3 → cms 3..5：user-c2 + assistant 文本 + toolcall c2
+    expect(span).toContain('请帮我完成一个任务');
     expect(span).toContain('secondCode()');
     expect(span).toContain('out2');
-    expect(span).not.toContain('firstCode()');
+    expect(span).not.toContain('out1');
   });
 
   it('offset 非整数自动向下取整（正负都取 floor）', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const up = await tool.execute({ start_id: 'assistant-c1', offset: 2.9 }, exec as never);
+    const up = await tool.execute({ start: 1, offset: 2.9 }, exec as never);
     expect(up).toContain('out1');
     expect(up).not.toContain('secondCode()');
-    const down = await tool.execute({ start_id: 'result-c2', offset: -1.5 }, exec as never);
+    const down = await tool.execute({ start: 5, offset: -1.5 }, exec as never);
     expect(down).toContain('secondCode()');
     expect(down).toContain('out2');
     expect(down).not.toContain('out1');
-    const zero = await tool.execute({ start_id: 'result-c2', offset: 0 }, exec as never);
+    const zero = await tool.execute({ start: 5, offset: 0 }, exec as never);
+    expect(zero).toContain('secondCode()'); // toolcall 条含调用参数与结果
     expect(zero).toContain('out2');
-    expect(zero).not.toContain('secondCode()');
-    expect(zero).not.toContain('out1');
+    expect(zero).not.toContain('firstCode()');
   });
 
-  it('end_id 与 offset 同时给出时 end_id 优先', async () => {
+  it('end 与 offset 同时给出时 end 优先', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const span = await tool.execute(
-      { start_id: 'user-c1', end_id: 'result-c2', offset: 0 },
-      exec as never,
-    );
+    const span = await tool.execute({ start: 0, end: 5, offset: 0 }, exec as never);
     expect(span).toContain('secondCode()');
     expect(span).toContain('out2');
   });
 
-  it('end_id 与 offset 都缺省时抛错', async () => {
+  it('end 与 offset 都缺省时抛错', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    await expect(tool.execute({ start_id: 'user-c1' }, exec as never)).rejects.toThrow(
-      /至少提供一个/,
-    );
+    await expect(tool.execute({ start: 0 }, exec as never)).rejects.toThrow(/至少提供一个/);
   });
 
-  it('未知 message_id 返回提示', async () => {
+  it('start/end 越界返回提示', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const badStart = await tool.execute({ start_id: 'nope', offset: 1 }, exec as never);
-    expect(String(badStart)).toContain('start_id "nope" 不存在');
-    const badEnd = await tool.execute({ start_id: 'user-c1', end_id: 'nope2' }, exec as never);
-    expect(String(badEnd)).toContain('end_id "nope2" 不存在');
+    const badStart = await tool.execute({ start: 99, offset: 1 }, exec as never);
+    expect(String(badStart)).toContain('start 99 越界');
+    const badEnd = await tool.execute({ start: 0, end: 99 }, exec as never);
+    expect(String(badEnd)).toContain('end 99 越界');
+    const badNeg = await tool.execute({ start: -1, offset: 1 }, exec as never);
+    expect(String(badNeg)).toContain('start -1 越界');
   });
 
-  it('execute 缺 start_id 抛错', async () => {
+  it('execute 缺 start 抛错', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    await expect(tool.execute({ offset: 1 }, exec as never)).rejects.toThrow(/start_id/);
-    await expect(tool.execute({}, exec as never)).rejects.toThrow(/start_id/);
+    await expect(tool.execute({ offset: 1 }, exec as never)).rejects.toThrow(/start/);
+    await expect(tool.execute({}, exec as never)).rejects.toThrow(/start/);
   });
 
   it('execute offset 类型非法时抛错', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    await expect(tool.execute({ start_id: 'user-c1', offset: '2' }, exec as never)).rejects.toThrow(
-      /offset/,
-    );
+    await expect(tool.execute({ start: 0, offset: '2' }, exec as never)).rejects.toThrow(/offset/);
   });
 
   it('tool-result-pruner 控制超大工具结果的输出（recall 不截断）', async () => {
@@ -1737,13 +1870,10 @@ describe('recall 工具', () => {
       },
     }));
     const exec = { agent: { session } };
-    const span = await tool.execute({ start_id: 'result-cb', offset: 0 }, exec as never);
+    const span = await tool.execute({ start: 2, offset: 0 }, exec as never);
     expect(String(span)).toContain('PRUNED-HEAD');
     expect(String(span)).not.toContain('X'.repeat(20000));
-    const raw = await buildRecallTool().execute(
-      { start_id: 'result-cb', offset: 0 },
-      exec as never,
-    );
+    const raw = await buildRecallTool().execute({ start: 2, offset: 0 }, exec as never);
     expect(String(raw)).toContain('X'.repeat(20000));
   });
 
@@ -1756,7 +1886,7 @@ describe('recall 工具', () => {
     });
     const session = makeSession({ events: flow, header: { origin: 'subagent' } });
     const tool = buildRecallTool();
-    const result = await tool.execute({ start_id: 'user-c1', offset: 1 }, {
+    const result = await tool.execute({ start: 0, offset: 1 }, {
       agent: { session },
     } as never);
     expect(String(result)).toContain('仅主会话可用');
@@ -1764,36 +1894,30 @@ describe('recall 工具', () => {
 });
 
 describe('recall 参数校验（zod schema）', () => {
-  it('合法参数通过解析（start_id 必填，end_id/offset 至少其一，可同时给出）', () => {
-    expect(parseRecallArgs({ start_id: 'a', offset: 2 })).toEqual({ start_id: 'a', offset: 2 });
-    expect(parseRecallArgs({ start_id: 'a', end_id: 'b' })).toEqual({ start_id: 'a', end_id: 'b' });
-    expect(parseRecallArgs({ start_id: 'a', end_id: 'b', offset: 0 })).toEqual({
-      start_id: 'a',
-      end_id: 'b',
+  it('合法参数通过解析（start 必填，end/offset 至少其一，可同时给出）', () => {
+    expect(parseRecallArgs({ start: 0, offset: 2 })).toEqual({ start: 0, offset: 2 });
+    expect(parseRecallArgs({ start: 0, end: 5 })).toEqual({ start: 0, end: 5 });
+    expect(parseRecallArgs({ start: 0, end: 5, offset: 0 })).toEqual({
+      start: 0,
+      end: 5,
       offset: 0,
     });
   });
 
-  it('缺 start_id 抛错并指出字段', () => {
-    expect(() => parseRecallArgs({ offset: 1 })).toThrow(/start_id/);
-    expect(() => parseRecallArgs({ end_id: 'b' })).toThrow(/start_id/);
+  it('缺 start 抛错并指出字段', () => {
+    expect(() => parseRecallArgs({ offset: 1 })).toThrow(/start/);
+    expect(() => parseRecallArgs({ end: 5 })).toThrow(/start/);
   });
 
-  it('空字符串 id 不抛错（由 execute 走「不存在」提示）', () => {
-    expect(parseRecallArgs({ start_id: '', offset: 1 })).toEqual({ start_id: '', offset: 1 });
-    expect(parseRecallArgs({ start_id: 'a', end_id: '' })).toEqual({ start_id: 'a', end_id: '' });
-  });
-
-  it('offset 必须为 number', () => {
-    expect(() => parseRecallArgs({ start_id: 'a', offset: '2' })).toThrow(/offset/);
-    expect(() => parseRecallArgs({ start_id: 'a', offset: null })).toThrow(/offset/);
+  it('start/end/offset 必须为 number', () => {
+    expect(() => parseRecallArgs({ start: 0, offset: '2' })).toThrow(/offset/);
+    expect(() => parseRecallArgs({ start: 0, offset: null })).toThrow(/offset/);
+    expect(() => parseRecallArgs({ start: '0', offset: 1 })).toThrow(/start/);
+    expect(() => parseRecallArgs({ start: 0, end: '5' })).toThrow(/end/);
   });
 
   it('未知键被剥离', () => {
-    expect(parseRecallArgs({ start_id: 'a', offset: 1, junk: true })).toEqual({
-      start_id: 'a',
-      offset: 1,
-    });
+    expect(parseRecallArgs({ start: 0, offset: 1, junk: true })).toEqual({ start: 0, offset: 1 });
   });
 });
 
@@ -1801,11 +1925,11 @@ describe('recall-semantic 参数解析（zod schema）', () => {
   it('query 必填且非空，top_k 与区间参数可选', () => {
     expect(parseSemanticRecallArgs({ query: '找缓存逻辑' })).toEqual({ query: '找缓存逻辑' });
     expect(parseSemanticRecallArgs({ query: 'x', top_k: 5 })).toEqual({ query: 'x', top_k: 5 });
-    expect(parseSemanticRecallArgs({ query: 'x', start_id: 'a', end_id: 'b', offset: 2 })).toEqual({
+    expect(parseSemanticRecallArgs({ query: 'x', start: 2, end: 5, offset: 1 })).toEqual({
       query: 'x',
-      start_id: 'a',
-      end_id: 'b',
-      offset: 2,
+      start: 2,
+      end: 5,
+      offset: 1,
     });
   });
 
@@ -1821,61 +1945,55 @@ describe('recall-semantic 参数解析（zod schema）', () => {
     expect(() => parseSemanticRecallArgs({ query: 'x', top_k: '3' })).toThrow(/top_k/);
   });
 
+  it('start/end/offset 必须为 number', () => {
+    expect(() => parseSemanticRecallArgs({ query: 'x', start: '2' })).toThrow(/start/);
+    expect(() => parseSemanticRecallArgs({ query: 'x', end: '5' })).toThrow(/end/);
+    expect(() => parseSemanticRecallArgs({ query: 'x', offset: '1' })).toThrow(/offset/);
+  });
+
   it('未知键被剥离', () => {
     expect(parseSemanticRecallArgs({ query: 'x', junk: 1 })).toEqual({ query: 'x' });
   });
 });
 
 describe('语义区间解析 resolveSemanticRange', () => {
-  /** 构造消息索引（message_id → 下标）。 */
-  function indexOf(ids: string[]) {
-    return {
-      messages: ids.map((id, index) => ({ seq: index, id, type: 'user/message' as const })),
-      byId: new Map(ids.map((id, index) => [id, index])),
-    };
-  }
-
-  it('start_id 缺省 → 全量检索（fallback=false）', () => {
-    const index = indexOf(['a', 'b', 'c']);
-    expect(resolveSemanticRange(index, {})).toEqual({ lo: 0, hi: 2, fallback: false });
+  it('start 缺省 → 全量检索（fallback=false）', () => {
+    expect(resolveSemanticRange(3, {})).toEqual({ lo: 0, hi: 2, fallback: false });
   });
 
-  it('start_id + end_id 限定区间（顺序无关）', () => {
-    const index = indexOf(['a', 'b', 'c', 'd']);
-    expect(resolveSemanticRange(index, { start_id: 'a', end_id: 'c' })).toEqual({
+  it('start + end 限定区间（顺序无关）', () => {
+    expect(resolveSemanticRange(4, { start: 0, end: 2 })).toEqual({
       lo: 0,
       hi: 2,
       fallback: false,
     });
-    expect(resolveSemanticRange(index, { start_id: 'c', end_id: 'a' })).toEqual({
+    expect(resolveSemanticRange(4, { start: 2, end: 0 })).toEqual({
       lo: 0,
       hi: 2,
       fallback: false,
     });
   });
 
-  it('start_id + offset 正负限定区间（非整数 floor）', () => {
-    const index = indexOf(['a', 'b', 'c', 'd']);
-    expect(resolveSemanticRange(index, { start_id: 'a', offset: 2 })).toEqual({
+  it('start + offset 正负限定区间（非整数 floor）', () => {
+    expect(resolveSemanticRange(4, { start: 0, offset: 2 })).toEqual({
       lo: 0,
       hi: 2,
       fallback: false,
     });
-    expect(resolveSemanticRange(index, { start_id: 'd', offset: -2 })).toEqual({
+    expect(resolveSemanticRange(4, { start: 3, offset: -2 })).toEqual({
       lo: 1,
       hi: 3,
       fallback: false,
     });
-    expect(resolveSemanticRange(index, { start_id: 'a', offset: 2.9 })).toEqual({
+    expect(resolveSemanticRange(4, { start: 0, offset: 2.9 })).toEqual({
       lo: 0,
       hi: 2,
       fallback: false,
     });
   });
 
-  it('end_id 优先于 offset', () => {
-    const index = indexOf(['a', 'b', 'c', 'd']);
-    expect(resolveSemanticRange(index, { start_id: 'a', end_id: 'b', offset: 3 })).toEqual({
+  it('end 优先于 offset', () => {
+    expect(resolveSemanticRange(4, { start: 0, end: 1, offset: 3 })).toEqual({
       lo: 0,
       hi: 1,
       fallback: false,
@@ -1883,35 +2001,38 @@ describe('语义区间解析 resolveSemanticRange', () => {
   });
 
   it('区间越界钳制到消息边界', () => {
-    const index = indexOf(['a', 'b']);
-    expect(resolveSemanticRange(index, { start_id: 'a', offset: 100 })).toEqual({
+    expect(resolveSemanticRange(2, { start: 0, offset: 100 })).toEqual({
       lo: 0,
       hi: 1,
       fallback: false,
     });
-    expect(resolveSemanticRange(index, { start_id: 'b', offset: -100 })).toEqual({
+    expect(resolveSemanticRange(2, { start: 1, offset: -100 })).toEqual({
       lo: 0,
       hi: 1,
       fallback: false,
     });
   });
 
-  it('start_id/end_id 不存在 → 回退全量并标记 fallback', () => {
-    const index = indexOf(['a', 'b', 'c']);
-    expect(resolveSemanticRange(index, { start_id: 'nope', offset: 1 })).toEqual({
+  it('start/end 越界 → 回退全量并标记 fallback', () => {
+    expect(resolveSemanticRange(3, { start: 99, offset: 1 })).toEqual({
       lo: 0,
       hi: 2,
       fallback: true,
     });
-    expect(resolveSemanticRange(index, { start_id: 'a', end_id: 'nope' })).toEqual({
+    expect(resolveSemanticRange(3, { start: -1, offset: 1 })).toEqual({
+      lo: 0,
+      hi: 2,
+      fallback: true,
+    });
+    expect(resolveSemanticRange(3, { start: 0, end: 99 })).toEqual({
       lo: 0,
       hi: 2,
       fallback: true,
     });
   });
 
-  it('空索引 → 空区间（不标记回退）', () => {
-    expect(resolveSemanticRange(indexOf([]), {})).toEqual({ lo: 0, hi: -1, fallback: false });
+  it('空索引（total=0）→ 空区间（不标记回退）', () => {
+    expect(resolveSemanticRange(0, {})).toEqual({ lo: 0, hi: -1, fallback: false });
   });
 });
 
@@ -1994,7 +2115,7 @@ describe('recall-semantic 工具', () => {
     expect(out).toContain('缓存失效问题排查');
     expect(out).not.toContain('权限校验逻辑');
     expect(out).not.toContain('日志输出格式');
-    expect(out).toContain('message_id=m-db-cache');
+    expect(out).toContain('index 2 user'); // m-db-cache 为完整消息 index 2
     expect(out).toContain('相似度');
   });
 
@@ -2039,10 +2160,10 @@ describe('recall-semantic 工具', () => {
     const span = await tool.execute({ query: '数据库', top_k: 3 }, exec as never);
     const out = String(span);
     expect(out).toContain('早期讨论过数据库索引优化');
-    expect(out).toContain('message_id=old-db');
+    expect(out).toContain('index 0 user'); // old-db 为完整消息 index 0
   });
 
-  it('start_id+offset 限定检索区间', async () => {
+  it('start+offset 限定检索区间（完整消息 index）', async () => {
     const session = textSession([
       ['m-db', '修改数据库连接池配置'],
       ['m-cache', '缓存失效问题排查'],
@@ -2050,18 +2171,15 @@ describe('recall-semantic 工具', () => {
     ]);
     const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
     const exec = { agent: { session } };
-    // 区间 [m-db .. m-cache]：不含权限消息
-    const span = await tool.execute(
-      { query: '权限 数据库', start_id: 'm-db', offset: 1 },
-      exec as never,
-    );
+    // 区间 [0..1]（m-db .. m-cache）：不含权限消息
+    const span = await tool.execute({ query: '权限 数据库', start: 0, offset: 1 }, exec as never);
     const out = String(span);
     expect(out).toContain('修改数据库连接池配置');
     expect(out).toContain('缓存失效问题排查');
     expect(out).not.toContain('权限校验逻辑');
   });
 
-  it('区间不合法（id 不存在）→ 回退全量并在输出中告知', async () => {
+  it('区间越界 → 回退全量并在输出中告知', async () => {
     const session = textSession([
       ['m-db', '修改数据库连接池配置'],
       ['m-cache', '缓存失效问题排查'],
@@ -2069,7 +2187,7 @@ describe('recall-semantic 工具', () => {
     ]);
     const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
     const exec = { agent: { session } };
-    const span = await tool.execute({ query: '权限', start_id: 'ghost', offset: 2 }, exec as never);
+    const span = await tool.execute({ query: '权限', start: 99, offset: 2 }, exec as never);
     const out = String(span);
     expect(out).toContain('已回退检索全部消息');
     expect(out).toContain('权限校验逻辑'); // 全量检索可见
@@ -2178,7 +2296,7 @@ describe('recall-semantic 工具', () => {
     });
     const out = String(await tool.execute({ query: '数据库' }, { agent: { session } } as never));
     expect(out).toContain('数据库配置');
-    expect(out).toContain('message_id=m-db');
+    expect(out).toContain('index 0 user'); // m-db 为完整消息 index 0
   });
 });
 
