@@ -298,6 +298,38 @@ function buildSummaryOptions(
   };
 }
 
+/** 日志最小有效长度：<om-history> 中间内容小于该长度视为不合法（C 段校验）。 */
+export const MIN_HISTORY_LENGTH = 10;
+
+/** 产出日志后插入首个 <om-history> 后的格式说明（XML 注释，避免被误读为日志条目）。 */
+export const HISTORY_FORMAT_NOTE =
+  '<!-- <user_message>块内包含了用户的原文 id表示该消息的id；<assistant>块是多条ai连续消息的聚合，last_id指向最后一条消息 -->';
+
+/**
+ * 从 AI 摘要输出中提取合法日志（不信任 AI 的总结结果）：
+ *  - 取首个 <om-history> 到最后一个 </om-history>（含两个首尾）切为日志；
+ *  - 找不到、顺序颠倒（首个开标签在最后一个闭标签之后）或中间内容长度 < MIN_HISTORY_LENGTH
+ *    视为不合法（返回 null，调用方按失败重试）；
+ *  - 产出后在首个 <om-history> 后插入格式说明注释（HISTORY_FORMAT_NOTE）。
+ */
+export function extractSummaryLog(raw: string): string | null {
+  /** 开标签。 */
+  const openTag = `<${HISTORY_TAG}>`;
+  /** 闭标签。 */
+  const closeTag = `</${HISTORY_TAG}>`;
+  /** 首个开标签位置（无则 -1）。 */
+  const open = raw.indexOf(openTag);
+  /** 最后一个闭标签位置（无则 -1）。 */
+  const close = raw.lastIndexOf(closeTag);
+  if (open === -1 || close === -1 || close < open) return null;
+  /** 中间内容（开闭标签之间）。 */
+  const inner = raw.slice(open + openTag.length, close);
+  if (inner.trim().length < MIN_HISTORY_LENGTH) return null;
+  /** 完整日志块（含两个首尾）。 */
+  const block = raw.slice(open, close + closeTag.length);
+  return block.replace(openTag, openTag + '\n' + HISTORY_FORMAT_NOTE);
+}
+
 /** 单次摘要最多尝试次数（首次 + 失败重试，总上限；失败/未完成均重试）。 */
 export const SUMMARY_MAX_ATTEMPTS = 3;
 
@@ -350,16 +382,18 @@ export async function runSummarySubagent(
       /** 流收集器（文本/usage/finish）。 */
       const collector = new StreamCollector();
       for await (const chunk of ctx.llm.stream(options)) collector.push(chunk);
-      /** 拼接、去标签、去首尾空白的摘要文本。 */
-      const text = collector.text
-        .trim()
-        .replace(new RegExp(`</?${HISTORY_TAG}>`, 'g'), '')
-        .trim();
+      /** 提取合法日志（首个 <om-history> 到最后一个 </om-history>，含格式说明注释；不信任 AI 输出）。 */
+      const text = extractSummaryLog(collector.text);
       /** 终止原因（仅 stop 视为完成）。 */
       const finish = collector.finish;
-      if (finish.kind !== 'stop' || text.length === 0) {
-        /** 未完成原因（空输出 / 非 stop 终止原因）。 */
-        const reason = finish.kind === 'stop' ? '无输出' : String(finish.kind);
+      if (finish.kind !== 'stop' || text === null) {
+        /** 未完成原因（空输出 / 非法日志 / 非 stop 终止原因）。 */
+        const reason =
+          finish.kind === 'stop'
+            ? collector.text.trim() === ''
+              ? '无输出'
+              : '缺少 <om-history> 块或内容过短'
+            : String(finish.kind);
         lastFailure = { finish: reason };
         logger.warn(
           `摘要未完成（第 ${attempt}/${SUMMARY_MAX_ATTEMPTS} 次，${reason}）` +
