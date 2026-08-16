@@ -14,15 +14,15 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-
-/** 打包模型的目录名（models/ 下，目录名 = 模型 id）。 */
-export const EMBEDDING_MODEL_ID = 'paraphrase-multilingual-MiniLM-L12-v2';
+import { EMBEDDING_MODEL_ID } from './model-download.ts';
 
 /** 当前模块所在路径（dist/ 或 src/，models 在其上一级）。 */
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 /** 打包模型目录：<包根>/models/<model-id>/。 */
 export const BUNDLED_MODEL_DIR = path.join(here, '..', 'models', EMBEDDING_MODEL_ID);
+
+export { EMBEDDING_MODEL_ID };
 
 /** 嵌入函数类型：批量文本 → 每条一个向量（Float32Array）。 */
 export type EmbedFn = (texts: readonly string[]) => Promise<Float32Array[]>;
