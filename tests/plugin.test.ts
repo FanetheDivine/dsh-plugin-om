@@ -782,6 +782,9 @@ describe('观察提示词 buildObservePrompt', () => {
     expect(prompt).toContain('完整保留原文');
     expect(prompt).toContain('toolcall index:<该条完整消息的 index>');
     expect(prompt).toContain('start/end 标注模块覆盖的 index 区间');
+    expect(prompt).toContain('按模块聚合 assistant 的方式'); // 聚合方式措辞（非「与现有格式一致」）
+    expect(prompt).not.toContain('与现有格式一致');
+    expect(prompt).not.toContain('与现状一致');
     expect(prompt).toContain('不限于 run_code');
     expect(prompt).toContain('倾向于新消息');
     expect(prompt).toContain('不修改旧日志条目');
@@ -836,6 +839,8 @@ describe('反思提示词 buildReflectPrompt', () => {
     expect(prompt).toContain('精简合并');
     expect(prompt).toContain('<user_message index="(index)">');
     expect(prompt).toContain('<assistant start="(起始 index)" end="(结束 index)">');
+    expect(prompt).toContain('按模块聚合 assistant 的方式'); // 聚合方式措辞（非「与现有格式一致」）
+    expect(prompt).not.toContain('与现有格式一致');
     expect(prompt).toContain('（略）');
     expect(prompt).toContain('index 不重新编号'); // 合并不重排，全局稳定
     expect(prompt).toContain('替换当前的 <om-history> 块内容');
