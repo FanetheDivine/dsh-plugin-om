@@ -23,6 +23,7 @@
   "files": [
     "dist",
     "models",
+    "!models/*/onnx/*.onnx",
     "cordis.patch.yml",
     "README.md"
   ],
