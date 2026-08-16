@@ -122,7 +122,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 | `pnpm run download:model`   | 手动预下载本地嵌入模型 ONNX（已存在跳过，`--force` 重下；运行时也会按需自动下载） |
 | `pnpm build`                |                                                                                   |
 | `pnpm dev`                  | 自动打包                                                                          |
-| `pnpm run release`          | CHANGELOG 归档 + 版本号更新 + 打 tag 推送                                         |
+| `pnpm run release`          | 先跑 check（typecheck+lint+test+build），再 CHANGELOG 归档 + 版本号更新 + 打 tag 推送      |
 
 ## 调用链和文件地图
 
