@@ -25,7 +25,12 @@ import { resolveConfig, resolveSummaryMode } from '../src/config.ts';
 import { HISTORY_TAG, PLUGIN_LABEL } from '../src/constants.ts';
 import { cosineSimilarity, ensureModelReady } from '../src/embedding.ts';
 import { apply, inject, name } from '../src/index.ts';
-import { indexMessages, messageIdOfEvent } from '../src/log-index.ts';
+import {
+  indexCompleteMessages,
+  indexMessages,
+  messageIdOfEvent,
+  renderCompleteMessage,
+} from '../src/log-index.ts';
 import { buildRecallTool, parseRecallArgs } from '../src/recall.ts';
 import {
   buildSemanticRecallTool,
@@ -51,6 +56,8 @@ import {
   makeMeter,
   makeSession,
   textBlock,
+  toolCallBlock,
+  toolResultBlock,
 } from './helpers.ts';
 
 /** 从会话日志提取最后一次 <om-history> 消息的完整文本（去标签）。 */
@@ -320,6 +327,162 @@ describe('消息索引 indexMessages / messageIdOfEvent', () => {
         data: { turn: 1, reason: { kind: 'completed' } },
       } as unknown as SessionEvent),
     ).toBeUndefined();
+  });
+});
+
+describe('完整消息索引 indexCompleteMessages', () => {
+  it('三类折叠：用户消息 / AI 文本 / 每 tool-call+result 一条（文本与调用拆开）', () => {
+    const session = makeSession({ events: twoCallFlow() });
+    const cms = indexCompleteMessages(session);
+    expect(cms.map((c) => [c.index, c.type])).toEqual([
+      [0, 'user'],
+      [1, 'assistant'],
+      [2, 'toolcall'],
+      [3, 'user'],
+      [4, 'assistant'],
+      [5, 'toolcall'],
+    ]);
+    expect(cms[2]?.callId).toBe('c1');
+    expect(cms[2]?.seqs).toEqual([1, 3]); // assistant-c1 + result-c1
+    expect(cms[5]?.callId).toBe('c2');
+    expect(cms[5]?.seqs).toEqual([5, 7]); // assistant-c2 + result-c2（tool/call 为日志事件不入索引）
+  });
+
+  it('插件自产 user 消息不占位（<om-history> 与运行时快照）', () => {
+    const session = makeSession({
+      events: [
+        historyMessage('旧任务'),
+        ...twoCallFlow(),
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('运行时上下文快照')],
+            source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' },
+            id: 'snap',
+          }),
+        } as unknown as SessionEvent,
+      ],
+    });
+    const cms = indexCompleteMessages(session);
+    expect(cms).toHaveLength(6); // 仅两条流程的 6 条完整消息
+    expect(cms[0]?.type).toBe('user');
+  });
+
+  it('未匹配的 result 独立成条（防御）', () => {
+    const events = [
+      {
+        type: 'tool/result',
+        data: {
+          turn: 1,
+          step: 1,
+          message: makeMessage({
+            role: 'user',
+            content: [toolResultBlock('ghost', [textBlock('r')])],
+            source: { kind: 'tool', callId: 'ghost' },
+            id: 'r-ghost',
+          }),
+        },
+      } as unknown as SessionEvent,
+    ];
+    const cms = indexCompleteMessages(makeSession({ events }));
+    expect(cms).toHaveLength(1);
+    expect(cms[0]?.type).toBe('toolcall');
+    expect(cms[0]?.seqs).toEqual([0]);
+  });
+
+  it('同一 assistant 消息含文本 + 多个 tool-call：文本 1 条 + 每调用 1 条', () => {
+    const events = [
+      {
+        type: 'user/message',
+        data: makeMessage({ content: [textBlock('hi')], id: 'u' }),
+      },
+      {
+        type: 'assistant/message',
+        data: {
+          message: makeMessage({
+            role: 'assistant',
+            content: [
+              textBlock('好的'),
+              toolCallBlock('c1', 'run_code', {}),
+              toolCallBlock('c2', 'run_code', {}),
+            ],
+            source: { kind: 'model', provider: 'p', model: 'm' },
+            id: 'a',
+          }),
+        },
+      },
+      {
+        type: 'tool/result',
+        data: {
+          turn: 1,
+          step: 1,
+          message: makeMessage({
+            role: 'user',
+            content: [toolResultBlock('c1', [textBlock('r1')])],
+            source: { kind: 'tool', callId: 'c1' },
+            id: 'r1',
+          }),
+        },
+      },
+      {
+        type: 'tool/result',
+        data: {
+          turn: 1,
+          step: 1,
+          message: makeMessage({
+            role: 'user',
+            content: [toolResultBlock('c2', [textBlock('r2')])],
+            source: { kind: 'tool', callId: 'c2' },
+            id: 'r2',
+          }),
+        },
+      },
+    ] as unknown as SessionEvent[];
+    const cms = indexCompleteMessages(makeSession({ events }));
+    expect(cms.map((c) => [c.type, c.callId])).toEqual([
+      ['user', undefined],
+      ['assistant', undefined],
+      ['toolcall', 'c1'],
+      ['toolcall', 'c2'],
+    ]);
+    expect(cms[2]?.seqs).toEqual([1, 2]);
+    expect(cms[3]?.seqs).toEqual([1, 3]);
+  });
+});
+
+describe('完整消息渲染 renderCompleteMessage', () => {
+  it('user=原文；assistant=仅文本；toolcall=调用参数+结果', () => {
+    const session = makeSession({ events: twoCallFlow() });
+    const cms = indexCompleteMessages(session);
+    /** 取完整消息（缺失时测试直接失败）。 */
+    const cm = (index: number) => {
+      const c = cms[index];
+      if (!c) throw new Error(`缺少完整消息 ${index}`);
+      return c;
+    };
+    expect(renderCompleteMessage(session, cm(0))).toContain('请帮我完成一个任务');
+    expect(renderCompleteMessage(session, cm(1))).toContain('我来执行代码');
+    expect(renderCompleteMessage(session, cm(1))).not.toContain('run_code'); // 文本条不含调用
+    const tc = renderCompleteMessage(session, cm(2));
+    expect(tc).toContain('firstCode()');
+    expect(tc).toContain('out1');
+  });
+
+  it('toolcall 结果走 pruner 裁剪', () => {
+    const flow = buildToolCallFlow({
+      code: 'big()',
+      description: '大结果',
+      callId: 'cb',
+      resultText: 'X'.repeat(20000),
+    });
+    const session = makeSession({ events: flow });
+    const cms = indexCompleteMessages(session);
+    const pruner = { pruneContent: () => [{ type: 'text', text: 'PRUNED' }] };
+    const cm2 = cms[2];
+    if (!cm2) throw new Error('缺少完整消息 2');
+    const text = renderCompleteMessage(session, cm2, pruner);
+    expect(text).toContain('PRUNED');
+    expect(text).not.toContain('X'.repeat(20000));
   });
 });
 
