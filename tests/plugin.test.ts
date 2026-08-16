@@ -574,7 +574,7 @@ describe('message_id 对照表 buildMessageIdTable', () => {
 });
 
 describe('观察提示词 buildObservePrompt', () => {
-  it('含聚合规则（不限于 run_code）/对照表/中断标记/参考尾部/追加说明', () => {
+  it('任务声明/聚合规则/对照表/中断标记/尾部排除/输出格式/追加说明', () => {
     const prompt = buildObservePrompt({
       table: ['[user] message_id=u1', '[tool/result callId=c1] message_id=r1'],
       interruptions: ['[interrupted] turn 1 被中断（aborted，原因 user）'],
@@ -582,18 +582,27 @@ describe('观察提示词 buildObservePrompt', () => {
       tailCount: 2,
       mode: 'fork',
     });
-    expect(prompt).toContain('user_message message_id:<id> text:<要点>');
+    // fork 模式：停止任务/禁止工具声明
+    expect(prompt).toContain('停止一切现有任务，禁止调用任何工具');
+    // 规则：用户消息完整保留原文、toolcall 聚合（不限于 run_code）、新消息优先
+    expect(prompt).toContain('完整保留原文');
     expect(prompt).toContain('toolcall message_id:<该组最后一条消息的 message_id>');
     expect(prompt).toContain('不限于 run_code');
+    expect(prompt).toContain('倾向于新消息');
+    expect(prompt).toContain('不修改旧日志条目');
     expect(prompt).toContain('当前进度与下一步');
     expect(prompt).toContain('recall 按 message_id 回看');
+    // 输出格式：合法 XML（<user_message id> / <assistant last_id>）
+    expect(prompt).toContain('<user_message id="(message_id)">');
+    expect(prompt).toContain('<assistant last_id="(该组最后一条消息的 message_id)">');
+    // 对照表 / 中断标记 / 追加说明
     expect(prompt).toContain('[interrupted] turn 1 被中断（aborted，原因 user）');
     expect(prompt).toContain('[user] message_id=u1');
     expect(prompt).toContain('[tool/result callId=c1] message_id=r1');
     expect(prompt).toContain('追加到上一次压缩产物');
-    // prefix 模式：引用上方完整会话记录 + 参考尾部条数
+    // fork 模式：引用上方完整会话记录 + 尾部排除（不压缩、不进日志）
     expect(prompt).toContain('上方的消息记录是主会话的完整历史');
-    expect(prompt).toContain('最后 2 条消息是最近上下文');
+    expect(prompt).toContain('最近 2 条消息（尾部）不压缩、不进日志');
   });
 
   it('首次压缩（无旧摘要）表述为第一条日志', () => {
@@ -608,7 +617,7 @@ describe('观察提示词 buildObservePrompt', () => {
     expect(prompt).not.toContain('追加到上一次压缩产物');
   });
 
-  it('system 模式：定位【被压缩消息】/【参考尾部】段', () => {
+  it('new 模式：只说明总结日志 + 下方消息即压缩对象（不含旧日志/尾部）', () => {
     const prompt = buildObservePrompt({
       table: [],
       interruptions: [],
@@ -616,23 +625,30 @@ describe('观察提示词 buildObservePrompt', () => {
       tailCount: 3,
       mode: 'new',
     });
-    expect(prompt).toContain('【被压缩消息】段是本次要压缩的对象');
-    expect(prompt).toContain('【参考尾部】段是最近上下文');
-    expect(prompt).toContain('段内全部消息都是未压缩消息');
+    // new 模式：仅说明总结日志（无停止任务声明）
+    expect(prompt).toContain('将过往消息总结为一份日志。');
+    expect(prompt).not.toContain('停止一切现有任务');
+    expect(prompt).toContain('下方的消息记录是本次要压缩的全部消息');
+    expect(prompt).toContain('不含旧压缩日志、不含尾部');
+    expect(prompt).toContain('追加到已有压缩日志之后');
   });
 });
 
 describe('反思提示词 buildReflectPrompt', () => {
-  it('精简合并规则：用户消息保留要点、toolcall 聚合、可写（略）', () => {
+  it('精简合并规则：声明/用户消息保留要点、toolcall 聚合、可写（略）、XML 输出', () => {
     const prompt = buildReflectPrompt('fork');
+    expect(prompt).toContain('停止一切现有任务，禁止调用任何工具');
     expect(prompt).toContain('精简合并');
-    expect(prompt).toContain('user_message message_id:<id> text:<要点>');
+    expect(prompt).toContain('<user_message id="(message_id)">');
     expect(prompt).toContain('（略）');
     expect(prompt).toContain('替换当前的 <om-history> 块内容');
+    expect(prompt).toContain('保留新条目');
   });
 
-  it('system 模式定位下方的 <om-history> 压缩日志', () => {
+  it('new 模式定位下方的 <om-history> 压缩日志（仅说明总结日志）', () => {
     const prompt = buildReflectPrompt('new');
+    expect(prompt).toContain('将当前压缩日志精简合并为一份更紧凑的日志。');
+    expect(prompt).not.toContain('停止一切现有任务');
     expect(prompt).toContain('下方的消息记录包含当前的 <om-history> 压缩日志');
   });
 });

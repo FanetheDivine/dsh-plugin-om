@@ -46,37 +46,54 @@ export type ObservePromptOptions = {
 };
 
 /**
- * 构建观察指令主体：规则（消息概括为要点 / 工具调用按目的聚合——不限于 run_code /
- * 仅关键消息保留 message_id / 中断标注 / 未完成写进度与下一步）+ 模式相关的上下文定位
- * 说明（fork：上方完整会话记录；new：下方【被压缩消息】段）+ 对照表 + 中断标记 +
- * 追加说明。persona 由调用方拼接到指令开头。
+ * 构建观察指令主体：任务声明（fork：停止任务/禁止工具；new：说明总结日志）+ 模式相关
+ * 的上下文定位与压缩范围（fork：上方完整会话记录、范围止于尾部之前；new：下方消息即
+ * 压缩对象）+ 规则（用户消息完整保留原文 / AI 消息模块化压缩——工具调用按目的聚合——
+ * 不限于 run_code / 倾向于新消息 / 中断标注 / 未完成写进度与下一步）+ 输出格式（合法
+ * XML）+ 对照表 + 中断标记 + 追加说明。persona 由调用方拼接到指令开头。
  */
 export function buildObservePrompt(options: ObservePromptOptions): string {
   /** 对照表段落（无则标注「无」）。 */
   const tableSection = options.table.length > 0 ? options.table : ['（无）'];
   /** 中断标记段落（无则标注「无」）。 */
   const interruptionSection = options.interruptions.length > 0 ? options.interruptions : ['（无）'];
-  /** 上下文定位说明（按模式区分输入结构）。 */
+  /** 任务声明：fork 会话可见完整上下文（可能处于任务中途），须停止任务并禁止工具；new 会话说明总结日志即可。 */
+  const declaration =
+    options.mode === 'fork'
+      ? '停止一切现有任务，禁止调用任何工具，改为将过往消息总结为一份日志。'
+      : '将过往消息总结为一份日志。';
+  /** 上下文定位与压缩范围（按模式区分输入结构）。 */
   const framing =
-    options.mode === 'new'
+    options.mode === 'fork'
       ? [
-          `下方的消息记录包含两个段落：【被压缩消息】段是本次要压缩的对象；【参考尾部】段是最近上下文（最后 ${options.tailCount} 条消息，不压缩，供你理解当前状态）。`,
-          `如果【被压缩消息】段里还没有 <${HISTORY_TAG}> 块，则段内全部消息都是未压缩消息。`,
+          '上方的消息记录是主会话的完整历史（系统提示词与全部消息）。',
+          `总结范围：最后一次 <${HISTORY_TAG}> 块之后、最近 ${options.tailCount} 条消息之前的全部消息；最近 ${options.tailCount} 条消息（尾部）不压缩、不进日志。`,
+          `如果消息记录里还没有 <${HISTORY_TAG}> 块，则除本指令外的全部消息（尾部除外）都是压缩对象。`,
         ]
       : [
-          `上方的消息记录是主会话的完整历史（系统提示词与全部消息）。最后一次 <${HISTORY_TAG}> 块之后的全部消息都是「未压缩消息」；只对这些消息做压缩，忽略更早的历史。`,
-          `如果消息记录里还没有 <${HISTORY_TAG}> 块，则除本指令外的全部消息都是未压缩消息。`,
-          `最后 ${options.tailCount} 条消息是最近上下文（参考尾部）：摘要须准确反映其中未完成的工作、当前进度与下一步。`,
+          '下方的消息记录是本次要压缩的全部消息（上一个 <om-history> 块之后的新消息；不含旧压缩日志、不含尾部）。',
+          '你的压缩结果会作为新的 <om-history> 块追加到已有压缩日志之后。',
         ];
   return [
+    declaration,
+    '',
     ...framing,
     '',
     '【规则】',
-    '- 用户消息概括为 user_message 条目（保留需求要点与关键事实：数字、路径、命令、决定），仅对关键消息保留 message_id（格式：user_message message_id:<id> text:<要点>）。关键消息指开启新任务/提出需求的请求、包含关键决策或不可再得事实的输入；普通消息（寒暄、重复、可推断内容）可以省略 message_id。',
-    '- 所有工具调用（run_code 与其他工具同等对待，不限于 run_code）按调用目的聚合为一行 toolcall message_id:<该组最后一条消息的 message_id> purpose:<聚合目的> summary:<行为与结果摘要>；工具组内部细节（参数、完整输出）不保留，需要原文时用 recall 按 message_id 回看。',
+    '- 用户消息完整保留原文，输出为 <user_message> 条目（id 为该消息的 message_id，内容为消息原文，不概括、不省略）。',
+    '- AI 消息划分模块压缩（与现状一致）：所有工具调用（run_code 与其他工具同等对待，不限于 run_code）按调用目的聚合为一行 toolcall message_id:<该组最后一条消息的 message_id> purpose:<聚合目的> summary:<行为与结果摘要>；目的相同、关联度高的连续行为聚合为一个 <assistant> 模块，模块内最后一条消息的 message_id 作为 last_id；工具组内部细节（参数、完整输出）不保留，需要原文时用 recall 按 message_id 回看。',
+    '- 总结时倾向于新消息，旧消息一句话带过即可；新旧消息冲突时强调新消息，不修改旧日志条目。',
     '- 若【中断标记】非空，在对应位置明确写出中断（例如「被用户打断，因此上一段工作未完成」），帮助后续理解用户为何再次输入消息、为何不延续之前的工作。',
     '- 若当前工作看起来未完成（最后一次工具调用没有结果、或对话被中断/异常结束），在日志末尾说明当前进度与下一步要做什么。',
-    `- 只输出日志条目本身；不要 <${HISTORY_TAG}> 标签、不要解释、不要复述规则。`,
+    '【输出格式】只输出一个 <om-history> 包裹的合法 XML 日志块，不要解释、不要复述规则：',
+    `<${HISTORY_TAG}>`,
+    '<user_message id="(message_id)">',
+    '(user 消息原文)',
+    '</user_message>',
+    '<assistant last_id="(该组最后一条消息的 message_id)">',
+    '(压缩模块：toolcall 聚合行等，与现有格式一致)',
+    '</assistant>',
+    `</${HISTORY_TAG}>`,
     '',
     '【message_id 对照表】（按顺序对应消息记录中的未压缩消息，用于产出正确的 message_id）',
     ...tableSection,
@@ -86,14 +103,20 @@ export function buildObservePrompt(options: ObservePromptOptions): string {
     '',
     ...(options.hasOldHistory
       ? [
-          `【说明】你的压缩结果会被直接追加到上一次压缩产物（<${HISTORY_TAG}>）的末尾，条目格式须与上一条目保持一致。`,
+          `【说明】你的压缩结果会被直接追加到上一次压缩产物（<${HISTORY_TAG}>）的末尾，作为新的 <${HISTORY_TAG}> 块；条目格式与本块一致。`,
         ]
       : [`【说明】你的压缩结果将成为第一条 <${HISTORY_TAG}> 压缩日志。`]),
   ].join('\n');
 }
 
-/** 构建反思指令主体：精简合并当前 <om-history>；消息记录全文由请求（prefix）或渲染输入（system）提供。 */
+/** 构建反思指令主体：任务声明（fork：停止任务/禁止工具；new：说明总结日志）+ 精简合并
+ * 当前 <om-history> 的规则 + 输出格式（合法 XML）；消息记录全文由请求（fork）或渲染输入（new）提供。 */
 export function buildReflectPrompt(mode: SummaryMode): string {
+  /** 任务声明：fork 会话可见完整上下文，须停止任务并禁止工具；new 会话说明总结日志即可。 */
+  const declaration =
+    mode === 'fork'
+      ? '停止一切现有任务，禁止调用任何工具，改为将当前压缩日志精简合并为一份更紧凑的日志。'
+      : '将当前压缩日志精简合并为一份更紧凑的日志。';
   /** 上下文定位说明（按模式区分输入结构）。 */
   const framing =
     mode === 'new'
@@ -106,14 +129,24 @@ export function buildReflectPrompt(mode: SummaryMode): string {
           '只对这份压缩日志做精简合并；不要涉及日志之外的消息。',
         ];
   return [
+    declaration,
+    '',
     ...framing,
     '',
     '【规则】',
-    '- 用户消息保留要点，仅保留关键 message_id（格式：user_message message_id:<id> text:<要点>）；可省略的 message_id 删除。',
+    '- 用户消息保留要点与 message_id（格式：<user_message id="(message_id)"> 要点 </user_message>）；可省略的条目删除。',
     '- toolcall 条目按调用目的进一步聚合，保留组内最后一条消息的 message_id；不重要的条目 summary 写「（略）」。',
     '- 保留中断说明与未完成说明（若原日志中有）。',
-    '- 过时事实丢弃，不逐字复制旧文本。',
-    `- 只输出合并后的日志条目本身；不要 <${HISTORY_TAG}> 标签、不要解释、不要复述规则。`,
+    '- 过时事实丢弃，不逐字复制旧文本；新旧条目冲突时保留新条目。',
+    '【输出格式】只输出一个 <om-history> 包裹的合法 XML 日志块，不要解释、不要复述规则：',
+    `<${HISTORY_TAG}>`,
+    '<user_message id="(message_id)">',
+    '(user 消息要点)',
+    '</user_message>',
+    '<assistant last_id="(该组最后一条消息的 message_id)">',
+    '(压缩模块：toolcall 聚合行等，与现有格式一致)',
+    '</assistant>',
+    `</${HISTORY_TAG}>`,
     '',
     `【说明】你的合并结果会替换当前的 <${HISTORY_TAG}> 块内容。`,
   ].join('\n');
