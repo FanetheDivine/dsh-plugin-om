@@ -98,29 +98,13 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 | `recallEnabled`         | `true`   | 是否注册 `recall` 工具（`false` 时禁用，不注册）                                                                                                                             |
 | `semanticRecallEnabled` | `true`   | 是否注册 `recall-semantic` 工具（`false` 时禁用，不注册、不触发模型下载）                                                                                                    |
 
-> 数值键（`thresholdRatio` / `historyMergeRatio` / `compressMaxTokens` / `tailMessageCount`）**不做取值区间限制**（如阈值不再限定 0.01–1）：用户提供的值按原样接受（仅校验为有限数，整数键另校验整数性），便于调试时设置任意值。
-
 ### 摘要模式
 
-摘要调用由配置键 `summaryMode` 控制（缺省 `fork`；非法值在插件加载时报错）：
+摘要调用由配置键 `summaryMode` 控制：
 
-- `fork`（缺省）：fork 会话风格——复用主会话请求前缀——`system`/`tools` 取自主会话上次请求，`messages` = 完整派生历史**从尾部之前实际截断**（尾部 `tailMessageCount` 条不注入、不进日志）+ 末尾追加指令 user 消息，充分利用 provider 前缀缓存（与宿主 `compaction-basic` 同款策略）。
-- `new`：新开会话风格——指令（persona + 规则）作为 system 提示词，只注入本次要压缩的消息作为 user 消息输入模型压缩（不注入旧压缩日志、不注入尾部）。
-- `disable`：关闭自动压缩（观察/反思均不触发；recall 工具仍由 `recallEnabled` / `semanticRecallEnabled` 独立控制）。
-
-示例（禁用 recall-semantic，保留 recall；生产环境强制输出步骤日志）：在 `cordis.patch.yml` 的插件配置中加入
-
-```yaml
-- id: dsh-plugin-om
-  config:
-    semanticRecallEnabled: false
-    debug: true
-```
-
-### 日志与摘要重试
-
-- 压缩流程（路由 / 模型容量 / 阈值判定 / 区间计算 / 摘要调用 / 提交各步）逐步输出步骤级日志（`debug` 级，dev 环境默认可见，见配置键 `debug`）。
-- 摘要调用失败（抛异常 / 空输出 / 非 `stop` 结束）均记录日志并**自动重试，总共最多尝试 3 次**；每次失败记录尝试次数与原因，重试耗尽后记录最终失败日志。失败日志不受 dev 开关影响，始终输出。
+- `fork`：从需要压缩的位置fork会话，复用前缀缓存，要求摘要
+- `new`：开启一个新会话，输入需要压缩的会话，要求摘要
+- `disable`：关闭OM。recall需要提供message_id，这是ai无法感知的
 
 ## npm 命令
 
