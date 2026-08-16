@@ -55,15 +55,21 @@ export function apply(ctx: Context, config?: unknown): void {
   // recall-semantic 工具：本地 ONNX embedding（懒加载，首次调用才加载模型），
   // 输出同样由 tool-result-pruner 裁剪。
   // 配置键 semanticRecallEnabled=false 时禁用（不注册，也不触发模型下载）。
-  // 运行时按需下载：仅当启用且模型 onnx 缺失时后台预热（不阻塞）；下载失败
-  // 仅记日志，查询时未就绪由工具告知模型，下次查询自动重试。
+  // 运行时按需下载：仅当启用且模型 onnx 缺失时后台预热（不阻塞）；下载开始/结束
+  // 经 console.log + 插件日志双通道输出；下载失败仅记日志（含镜像建议），查询时
+  // 未就绪由工具告知模型，下次查询自动重试。
   if (resolved.semanticRecallEnabled) {
     const warnModel = (message: string) => ctx.logger.warn(`dsh-plugin-om: ${message}`);
-    void ensureModelReady(resolved.modelDir, warnModel);
+    /** 下载开始/结束日志：console + 插件日志双通道（失败经 warnModel 输出）。 */
+    const logModel = (message: string) => {
+      console.log(message);
+      logger.info(message);
+    };
+    void ensureModelReady(resolved.modelDir, warnModel, undefined, logModel);
     ctx.tools.register(
       buildSemanticRecallTool({
         getPruner: () => ctx.get('toolResultPruner'),
-        modelStatus: () => ensureModelReady(resolved.modelDir, warnModel),
+        modelStatus: () => ensureModelReady(resolved.modelDir, warnModel, undefined, logModel),
         embedder: (texts) => getEmbedder(resolved.modelDir).then((embed) => embed(texts)),
       }),
     );

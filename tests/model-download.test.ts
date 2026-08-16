@@ -48,10 +48,17 @@ function fakeFetch(status = 200, body = 'fake-onnx-bytes') {
 }
 
 describe('modelSourceUrl', () => {
-  it('指向 Xenova 转换仓库的量化 ONNX 文件', () => {
-    expect(modelSourceUrl()).toBe(
-      'https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/onnx/model_quantized.onnx',
-    );
+  it('指向 Xenova 转换仓库的量化 ONNX 文件（HF_ENDPOINT 未设置时用默认源）', () => {
+    const prev = process.env.HF_ENDPOINT;
+    try {
+      delete process.env.HF_ENDPOINT;
+      expect(modelSourceUrl()).toBe(
+        'https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/onnx/model_quantized.onnx',
+      );
+    } finally {
+      if (prev === undefined) delete process.env.HF_ENDPOINT;
+      else process.env.HF_ENDPOINT = prev;
+    }
   });
 
   it('支持镜像/自定义 base（HF_ENDPOINT 或显式传参）', () => {
@@ -107,7 +114,7 @@ describe('needsDownload', () => {
 });
 
 describe('downloadModel', () => {
-  it('成功下载：建目录、落盘内容、原子改名（无 .tmp 残留）、返回字节数', async () => {
+  it('成功下载：开始/结束日志（开始先于结束）、建目录、落盘内容、原子改名（无 .tmp 残留）', async () => {
     const modelDir = path.join(tempRoot(), 'models', EMBEDDING_MODEL_ID);
     const { impl, calls } = fakeFetch(200, 'hello-model');
     const logs: string[] = [];
@@ -119,7 +126,10 @@ describe('downloadModel', () => {
     expect(readFileSync(target, 'utf8')).toBe('hello-model');
     expect(existsSync(`${target}.tmp`)).toBe(false);
     expect(calls).toEqual([modelSourceUrl()]);
-    expect(logs.join('\n')).toContain('已下载 11 字节');
+    expect(logs.join('\n')).toContain(`开始下载：${modelSourceUrl()}`);
+    expect(logs.join('\n')).toContain('下载完成：11 字节');
+    expect(logs[0]).toContain('开始下载'); // 开始日志在结束日志之前
+    expect(logs[1]).toContain('下载完成');
   });
 
   it('已存在且未强制：跳过（不发起请求）', async () => {
@@ -142,10 +152,13 @@ describe('downloadModel', () => {
     expect(readFileSync(target, 'utf8')).toBe('new-bytes');
   });
 
-  it('HTTP 错误：抛错且不留下目标文件或 .tmp 残留', async () => {
+  it('HTTP 错误：抛错附带 HF_ENDPOINT 镜像建议，不留下目标文件或 .tmp 残留', async () => {
     const modelDir = path.join(tempRoot(), 'models', EMBEDDING_MODEL_ID);
     const { impl } = fakeFetch(404);
     await expect(downloadModel(modelDir, { fetchImpl: impl })).rejects.toThrow(/HTTP 404/);
+    await expect(downloadModel(modelDir, { fetchImpl: impl })).rejects.toThrow(
+      /HF_ENDPOINT=https:\/\/hf-mirror\.com/,
+    );
     expect(existsSync(modelTargetPath(modelDir))).toBe(false);
     expect(existsSync(`${modelTargetPath(modelDir)}.tmp`)).toBe(false);
   });
@@ -200,7 +213,7 @@ describe('ensureModelReady（运行时下载编排）', () => {
     await expect(ensureModelReady(modelDir, () => {}, impl)).resolves.toBe('ready');
   });
 
-  it('下载失败：仅记日志，下次调用自动重试', async () => {
+  it('下载失败：仅记日志（含镜像建议），下次调用自动重试', async () => {
     const modelDir = path.join(tempRoot(), 'models', EMBEDDING_MODEL_ID);
     const { impl, calls } = fakeFetch(500);
     const warns: string[] = [];
@@ -209,8 +222,26 @@ describe('ensureModelReady（运行时下载编排）', () => {
     await settle();
     expect(warns.length).toBe(1);
     expect(warns[0]).toContain('下载失败');
+    expect(warns[0]).toContain('HF_ENDPOINT=https://hf-mirror.com'); // 失败附带镜像建议
     // 下次调用重新触发下载（自动重试）
     await ensureModelReady(modelDir, () => {}, impl);
     expect(calls).toHaveLength(2);
+  });
+
+  it('log 透传：下载开始/结束经 log 回调输出', async () => {
+    const modelDir = path.join(tempRoot(), 'models', EMBEDDING_MODEL_ID);
+    const { impl } = fakeFetch(200, 'bytes');
+    const logs: string[] = [];
+    const status = await ensureModelReady(
+      modelDir,
+      () => {},
+      impl,
+      (m) => logs.push(m),
+    );
+    expect(status).toBe('downloading');
+    await settle();
+    expect(existsSync(modelTargetPath(modelDir))).toBe(true);
+    expect(logs.join('\n')).toContain('开始下载');
+    expect(logs.join('\n')).toContain('下载完成');
   });
 });

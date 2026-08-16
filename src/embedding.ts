@@ -98,12 +98,14 @@ const inflightDownloads = new Map<string, Promise<void>>();
  * - 缺失 → 启动后台下载（不阻塞，单飞）并返回 'downloading'；下载失败仅调用
  *   warn 记录日志并结束本次尝试，下次调用会重新触发下载（自动重试）。
  * - warn 可选：下载失败时的日志回调（默认静默；apply 注入 ctx.logger.warn）。
+ * - log 可选：下载开始/结束日志回调（默认静默；apply 注入 console.log + ctx.logger.info 双通道）。
  * - fetchImpl 可注入（测试传替身，默认全局 fetch）。
  */
 export function ensureModelReady(
   modelDir: string = BUNDLED_MODEL_DIR,
   warn: (message: string) => void = () => {},
   fetchImpl?: ModelFetch,
+  log: (message: string) => void = () => {},
 ): Promise<ModelStatus> {
   const target = modelTargetPath(modelDir);
   if (!needsDownload(target)) return Promise.resolve('ready');
@@ -111,7 +113,7 @@ export function ensureModelReady(
     // fetchImpl 可选注入（测试传替身）；缺省时不下传，保持 exactOptionalPropertyTypes 满足
     const task: Promise<void> = downloadModel(
       modelDir,
-      fetchImpl === undefined ? { log: () => {} } : { fetchImpl, log: () => {} },
+      fetchImpl === undefined ? { log } : { fetchImpl, log },
     )
       .then(() => {})
       .catch((err: unknown) => {
