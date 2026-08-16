@@ -39,15 +39,26 @@
 dsh plugin --profile <profile> add dsh-plugin-om
 ```
 
-需要重启
+需要重启dsh
 
 可以通过`dsh --profile <profile> --dump-config`审查配置是否正确
+
+如果需要覆盖默认配置，打开 `$DSH_HOME/profiles/<profile>/cordis.patch.yml` 删除里面的空数组，加入
+
+```yaml
+- id: dsh-plugin-om
+  config:
+    thresholdRatio: 0.2
+    # 其他配置参考下文
+```
+
+不需要重启 可以热更新
 
 ### 开发插件
 
 运行`pnpm dev`，等待`dist/index.mjs`构筑完毕
 
-打开 `$DSH_HOME/profiles/<profile>/cordis.patch.yml` 删除里面的空数组，加入
+在 `cordis.patch.yml` 里加入
 
 ```yaml
 - insert:
