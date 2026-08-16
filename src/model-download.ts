@@ -3,8 +3,9 @@
  *
  * - 模型：Xenova/paraphrase-multilingual-MiniLM-L12-v2（量化 ONNX ~113MB，超过
  *   GitHub 单文件 100MB 限制，不能进入 git 仓库；仅小文件随仓库提交）。
- * - 下载目标：<modelDir>/onnx/model_quantized.onnx（modelDir 默认 = 插件包内
- *   models/<id>/，与 embedding.ts 的本地加载路径一致；自定义 modelDir 同样生效）。
+ * - 下载目标：<modelDir>/onnx/model_quantized.onnx（modelDir 默认 = 跨版本共享目录
+ *   $DSH_HOME/plugin-data/dsh-plugin-om/models/<id>/，见 embedding.ts 的 sharedModelDir；
+ *   自定义 modelDir 同样生效）。
  * - 直连 huggingface.co 受限时设置环境变量 HF_ENDPOINT=https://hf-mirror.com 走镜像。
  * - 原子落盘：先写 .tmp 再改名，避免半截文件被当成完整模型加载。
  * - 日志：下载开始/结束（含跳过）经 log 回调输出（默认 console.log）；失败时
