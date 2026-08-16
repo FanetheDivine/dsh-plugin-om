@@ -1,6 +1,16 @@
 // dsh-plugin-om 单元测试（vitest）：配置校验 / 消息索引 /
 // OM 两级压缩（观察/反思 fork 摘要）/ recall（范围+拒绝+参数校验）/ apply 接线。
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// 隔离 apply 的模型下载编排：ensureModelReady 打桩为"就绪"，避免单测触发真实下载/网络
+vi.mock('../src/embedding.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/embedding.ts')>();
+  return {
+    ...actual,
+    ensureModelReady: vi.fn(async () => 'ready' as const),
+  };
+});
+
 import {
   buildMessageIdTable,
   computeCompressRange,
@@ -12,10 +22,22 @@ import {
   scanInterruptions,
 } from '../src/compress.ts';
 import { resolveConfig, resolveSummaryModeFromEnv, SUMMARY_MODE_ENV } from '../src/config.ts';
-import { HISTORY_TAG, PLUGIN_LABEL } from '../src/constants.ts';
+import {
+  HISTORY_TAG,
+  PLUGIN_LABEL,
+  RECALL_ENABLED_ENV,
+  SEMANTIC_RECALL_ENABLED_ENV,
+} from '../src/constants.ts';
+import { cosineSimilarity, ensureModelReady } from '../src/embedding.ts';
 import { apply, inject, name } from '../src/index.ts';
 import { indexMessages, messageIdOfEvent } from '../src/log-index.ts';
 import { buildRecallTool, parseRecallArgs } from '../src/recall.ts';
+import {
+  buildSemanticRecallTool,
+  matchExplanation,
+  parseSemanticRecallArgs,
+  resolveSemanticRange,
+} from '../src/semantic-recall.ts';
 import {
   buildObservePrompt,
   buildReflectPrompt,
@@ -24,6 +46,7 @@ import {
   renderMessages,
 } from '../src/summarize.ts';
 import type { Session, SessionEvent } from '../src/types.ts';
+import { envFlagEnabled } from '../src/utils.ts';
 import {
   buildToolCallFlow,
   makeCtx,
@@ -643,6 +666,7 @@ describe('apply 接线（OM 观察压缩）', () => {
 
     expect(ctx._sections).toHaveLength(0);
     expect(ctx._registeredTools.some((t) => t.name === 'recall')).toBe(true);
+    expect(ctx._registeredTools.some((t) => t.name === 'recall-semantic')).toBe(true);
     const sessionListeners = ctx._onCallbacks.get('session/event');
     expect(sessionListeners).toBeUndefined(); // 不监听 session/event
 
@@ -1394,6 +1418,511 @@ describe('recall 参数校验（zod schema）', () => {
       start_id: 'a',
       offset: 1,
     });
+  });
+});
+
+describe('recall-semantic 参数解析（zod schema）', () => {
+  it('query 必填且非空，top_k 与区间参数可选', () => {
+    expect(parseSemanticRecallArgs({ query: '找缓存逻辑' })).toEqual({ query: '找缓存逻辑' });
+    expect(parseSemanticRecallArgs({ query: 'x', top_k: 5 })).toEqual({ query: 'x', top_k: 5 });
+    expect(parseSemanticRecallArgs({ query: 'x', start_id: 'a', end_id: 'b', offset: 2 })).toEqual({
+      query: 'x',
+      start_id: 'a',
+      end_id: 'b',
+      offset: 2,
+    });
+  });
+
+  it('空 query / 缺失 query 抛错', () => {
+    expect(() => parseSemanticRecallArgs({})).toThrow(/query/);
+    expect(() => parseSemanticRecallArgs({ query: '   ' })).toThrow(/query/);
+  });
+
+  it('top_k 越界或非整数抛错（1-10）', () => {
+    expect(() => parseSemanticRecallArgs({ query: 'x', top_k: 0 })).toThrow(/top_k/);
+    expect(() => parseSemanticRecallArgs({ query: 'x', top_k: 11 })).toThrow(/top_k/);
+    expect(() => parseSemanticRecallArgs({ query: 'x', top_k: 2.5 })).toThrow(/top_k/);
+    expect(() => parseSemanticRecallArgs({ query: 'x', top_k: '3' })).toThrow(/top_k/);
+  });
+
+  it('未知键被剥离', () => {
+    expect(parseSemanticRecallArgs({ query: 'x', junk: 1 })).toEqual({ query: 'x' });
+  });
+});
+
+describe('语义区间解析 resolveSemanticRange', () => {
+  /** 构造消息索引（message_id → 下标）。 */
+  function indexOf(ids: string[]) {
+    return {
+      messages: ids.map((id, index) => ({ seq: index, id, type: 'user/message' as const })),
+      byId: new Map(ids.map((id, index) => [id, index])),
+    };
+  }
+
+  it('start_id 缺省 → 全量检索（fallback=false）', () => {
+    const index = indexOf(['a', 'b', 'c']);
+    expect(resolveSemanticRange(index, {})).toEqual({ lo: 0, hi: 2, fallback: false });
+  });
+
+  it('start_id + end_id 限定区间（顺序无关）', () => {
+    const index = indexOf(['a', 'b', 'c', 'd']);
+    expect(resolveSemanticRange(index, { start_id: 'a', end_id: 'c' })).toEqual({
+      lo: 0,
+      hi: 2,
+      fallback: false,
+    });
+    expect(resolveSemanticRange(index, { start_id: 'c', end_id: 'a' })).toEqual({
+      lo: 0,
+      hi: 2,
+      fallback: false,
+    });
+  });
+
+  it('start_id + offset 正负限定区间（非整数 floor）', () => {
+    const index = indexOf(['a', 'b', 'c', 'd']);
+    expect(resolveSemanticRange(index, { start_id: 'a', offset: 2 })).toEqual({
+      lo: 0,
+      hi: 2,
+      fallback: false,
+    });
+    expect(resolveSemanticRange(index, { start_id: 'd', offset: -2 })).toEqual({
+      lo: 1,
+      hi: 3,
+      fallback: false,
+    });
+    expect(resolveSemanticRange(index, { start_id: 'a', offset: 2.9 })).toEqual({
+      lo: 0,
+      hi: 2,
+      fallback: false,
+    });
+  });
+
+  it('end_id 优先于 offset', () => {
+    const index = indexOf(['a', 'b', 'c', 'd']);
+    expect(resolveSemanticRange(index, { start_id: 'a', end_id: 'b', offset: 3 })).toEqual({
+      lo: 0,
+      hi: 1,
+      fallback: false,
+    });
+  });
+
+  it('区间越界钳制到消息边界', () => {
+    const index = indexOf(['a', 'b']);
+    expect(resolveSemanticRange(index, { start_id: 'a', offset: 100 })).toEqual({
+      lo: 0,
+      hi: 1,
+      fallback: false,
+    });
+    expect(resolveSemanticRange(index, { start_id: 'b', offset: -100 })).toEqual({
+      lo: 0,
+      hi: 1,
+      fallback: false,
+    });
+  });
+
+  it('start_id/end_id 不存在 → 回退全量并标记 fallback', () => {
+    const index = indexOf(['a', 'b', 'c']);
+    expect(resolveSemanticRange(index, { start_id: 'nope', offset: 1 })).toEqual({
+      lo: 0,
+      hi: 2,
+      fallback: true,
+    });
+    expect(resolveSemanticRange(index, { start_id: 'a', end_id: 'nope' })).toEqual({
+      lo: 0,
+      hi: 2,
+      fallback: true,
+    });
+  });
+
+  it('空索引 → 空区间（不标记回退）', () => {
+    expect(resolveSemanticRange(indexOf([]), {})).toEqual({ lo: 0, hi: -1, fallback: false });
+  });
+});
+
+describe('cosine 相似度 cosineSimilarity', () => {
+  it('相同向量 = 1，正交 = 0，零向量 = 0', () => {
+    expect(cosineSimilarity([1, 0], [1, 0])).toBe(1);
+    expect(cosineSimilarity([1, 0], [0, 1])).toBe(0);
+    expect(cosineSimilarity([0, 0], [1, 1])).toBe(0);
+    expect(cosineSimilarity(new Float32Array(4), new Float32Array(4))).toBe(0);
+  });
+
+  it('未归一化向量自动归一化（比例不变）', () => {
+    expect(cosineSimilarity([2, 0], [1, 0])).toBeCloseTo(1, 10);
+    expect(cosineSimilarity([3, 4], [0, 1])).toBeCloseTo(0.8, 10);
+  });
+});
+
+describe('匹配说明 matchExplanation', () => {
+  it('含相似度与命中的关键词（最多 8 个）', () => {
+    const line = matchExplanation('retry backoff 重试退避', '实现 retry backoff 逻辑', 0.87);
+    expect(line).toContain('0.870');
+    expect(line).toContain('retry');
+    expect(line).toContain('backoff');
+  });
+
+  it('无共有词时省略关键词部分', () => {
+    const line = matchExplanation('数据库权限', 'hello world', 0.2);
+    expect(line).toContain('相似度');
+    expect(line).not.toContain('命中关键词');
+  });
+});
+
+describe('recall-semantic 工具', () => {
+  /** 构造纯 user/message 会话（每个 id 一条文本）。 */
+  function textSession(texts: Array<[string, string]>, header?: { origin?: 'subagent' }) {
+    const events = texts.map(
+      ([id, text]) =>
+        ({
+          type: 'user/message',
+          data: makeMessage({ content: [textBlock(text)], id }),
+        }) as unknown as SessionEvent,
+    );
+    return makeSession({ events, ...(header ? { header } : {}) });
+  }
+
+  /** 可编程 embedder 替身：按关键词命中产出 3 维 one-hot 向量（未命中全 0，相似度为 0）。 */
+  function fakeEmbedder() {
+    return async (texts: readonly string[]) =>
+      texts.map((text) => {
+        const vec = new Float32Array(3);
+        const lower = text.toLowerCase();
+        if (lower.includes('缓存')) vec[0] = 1;
+        if (lower.includes('数据库')) vec[1] = 1;
+        if (lower.includes('权限')) vec[2] = 1;
+        return vec;
+      });
+  }
+
+  it('按语义相似度排序返回 top_k 完整消息（默认 3）', async () => {
+    const session = textSession([
+      ['m-db', '修改数据库连接池配置'],
+      ['m-cache', '缓存失效问题排查'],
+      ['m-db-cache', '数据库查询走缓存'],
+      ['m-auth', '权限校验逻辑'],
+      ['m-log', '日志输出格式'],
+    ]);
+    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const exec = { agent: { session } };
+    const span = await tool.execute({ query: '数据库 缓存' }, exec as never);
+    const out = String(span);
+    // 最匹配 3 条按分数降序：同时含数据库+缓存 > 单数据库 > 单缓存
+    const idxDbCache = out.indexOf('数据库查询走缓存');
+    const idxDb = out.indexOf('修改数据库连接池配置');
+    const idxCache = out.indexOf('缓存失效问题排查');
+    expect(idxDbCache).toBeGreaterThan(-1);
+    expect(idxDbCache).toBeLessThan(idxDb);
+    expect(idxDb).toBeLessThan(idxCache);
+    expect(out).toContain('数据库查询走缓存');
+    expect(out).toContain('修改数据库连接池配置');
+    expect(out).toContain('缓存失效问题排查');
+    expect(out).not.toContain('权限校验逻辑');
+    expect(out).not.toContain('日志输出格式');
+    expect(out).toContain('message_id=m-db-cache');
+    expect(out).toContain('相似度');
+  });
+
+  it('top_k 参数可覆盖默认 3', async () => {
+    const session = textSession([
+      ['m-db', '修改数据库连接池配置'],
+      ['m-cache', '缓存失效问题排查'],
+      ['m-db-cache', '数据库查询走缓存'],
+      ['m-auth', '权限校验逻辑'],
+      ['m-log', '日志输出格式'],
+    ]);
+    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const exec = { agent: { session } };
+    const span = await tool.execute({ query: '数据库 缓存', top_k: 5 }, exec as never);
+    const out = String(span);
+    expect(out).toContain('权限校验逻辑');
+    expect(out).toContain('日志输出格式');
+    const top1 = await tool.execute({ query: '数据库 缓存', top_k: 1 }, exec as never);
+    expect(String(top1)).toContain('数据库查询走缓存');
+    expect(String(top1)).not.toContain('修改数据库连接池配置');
+  });
+
+  it('被压缩/遮蔽的消息仍在检索范围（全部日志）', async () => {
+    // 模拟压缩：遮蔽部分 seq（表层仅剩最新一条），但日志中消息仍可被语义找回
+    const events = [
+      {
+        type: 'user/message',
+        data: makeMessage({ content: [textBlock('早期讨论过数据库索引优化')], id: 'old-db' }),
+      },
+      {
+        type: 'user/message',
+        data: makeMessage({ content: [textBlock('缓存过期策略')], id: 'old-cache' }),
+      },
+      {
+        type: 'user/message',
+        data: makeMessage({ content: [textBlock('当前在做权限模块')], id: 'now-auth' }),
+      },
+    ] as unknown as SessionEvent[];
+    const session = makeSession({ events, surfaceNodes: [2] }); // 0、1 被压缩遮蔽
+    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const exec = { agent: { session } };
+    const span = await tool.execute({ query: '数据库', top_k: 3 }, exec as never);
+    const out = String(span);
+    expect(out).toContain('早期讨论过数据库索引优化');
+    expect(out).toContain('message_id=old-db');
+  });
+
+  it('start_id+offset 限定检索区间', async () => {
+    const session = textSession([
+      ['m-db', '修改数据库连接池配置'],
+      ['m-cache', '缓存失效问题排查'],
+      ['m-auth', '权限校验逻辑'],
+    ]);
+    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const exec = { agent: { session } };
+    // 区间 [m-db .. m-cache]：不含权限消息
+    const span = await tool.execute(
+      { query: '权限 数据库', start_id: 'm-db', offset: 1 },
+      exec as never,
+    );
+    const out = String(span);
+    expect(out).toContain('修改数据库连接池配置');
+    expect(out).toContain('缓存失效问题排查');
+    expect(out).not.toContain('权限校验逻辑');
+  });
+
+  it('区间不合法（id 不存在）→ 回退全量并在输出中告知', async () => {
+    const session = textSession([
+      ['m-db', '修改数据库连接池配置'],
+      ['m-cache', '缓存失效问题排查'],
+      ['m-auth', '权限校验逻辑'],
+    ]);
+    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const exec = { agent: { session } };
+    const span = await tool.execute({ query: '权限', start_id: 'ghost', offset: 2 }, exec as never);
+    const out = String(span);
+    expect(out).toContain('已回退检索全部消息');
+    expect(out).toContain('权限校验逻辑'); // 全量检索可见
+  });
+
+  it('范围描述：无区间时标注检索全部消息', async () => {
+    const session = textSession([['m-auth', '权限校验逻辑']]);
+    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const exec = { agent: { session } };
+    const span = await tool.execute({ query: '权限' }, exec as never);
+    expect(String(span)).toContain('检索全部消息');
+  });
+
+  it('tool-result-pruner 裁剪超大命中消息', async () => {
+    const events = [
+      {
+        type: 'user/message',
+        data: makeMessage({ content: [textBlock('数据库权限问题说明')], id: 'big-db' }),
+      },
+      {
+        type: 'tool/result',
+        data: {
+          message: makeMessage({
+            role: 'user',
+            content: [
+              {
+                type: 'tool-result',
+                toolCallId: 'tc1',
+                content: [{ type: 'text', text: 'X'.repeat(20000) }],
+              },
+            ],
+            source: { kind: 'tool', callId: 'tc1' },
+            id: 'big-result',
+          }),
+        },
+      },
+    ] as unknown as SessionEvent[];
+    const session = makeSession({ events });
+    const prunedBlocks = [{ type: 'text', text: 'PRUNED-SEMANTIC' }];
+    const tool = buildSemanticRecallTool({
+      embedder: fakeEmbedder(),
+      getPruner: () => ({
+        pruneContent: (blocks: unknown[]) => {
+          const text = (
+            blocks as Array<{
+              type?: string;
+              text?: string;
+              content?: Array<{ type?: string; text?: string }>;
+            }>
+          )
+            .map((b) => {
+              if (b.type === 'text') return b.text ?? '';
+              if (b.type === 'tool-result')
+                return (b.content ?? []).map((c) => (c.type === 'text' ? c.text : '')).join('');
+              return '';
+            })
+            .join('');
+          return text.length > 10 ? prunedBlocks : null;
+        },
+      }),
+    });
+    const exec = { agent: { session } };
+    const span = await tool.execute({ query: '数据库权限', top_k: 3 }, exec as never);
+    const out = String(span);
+    // 未裁剪时 20000 个 X 会溢出输出；裁剪后不出现
+    expect(out).not.toContain('X'.repeat(20000));
+  });
+
+  it('subagent 会话调用被拒绝', async () => {
+    const session = textSession([['m-db', '数据库配置']], { origin: 'subagent' });
+    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const result = await tool.execute({ query: '数据库' }, { agent: { session } } as never);
+    expect(String(result)).toContain('仅主会话可用');
+  });
+
+  it('无可检索消息返回提示', async () => {
+    const session = makeSession({ events: [] });
+    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const exec = { agent: { session } };
+    const span = await tool.execute({ query: '数据库' }, exec as never);
+    expect(String(span)).toContain('没有可检索的消息');
+  });
+
+  it('模型未就绪：返回告知文案（不报错、不触发嵌入）', async () => {
+    const session = textSession([['m-db', '数据库配置']]);
+    let embedded = false;
+    const tool = buildSemanticRecallTool({
+      embedder: async (texts) => {
+        embedded = true;
+        return fakeEmbedder()(texts);
+      },
+      modelStatus: async () => 'downloading' as const,
+    });
+    const result = await tool.execute({ query: '数据库' }, { agent: { session } } as never);
+    const out = String(result);
+    expect(out).toContain('尚未就绪');
+    expect(out).toContain('recall');
+    expect(embedded).toBe(false);
+  });
+
+  it('模型就绪（ready）时正常执行检索', async () => {
+    const session = textSession([['m-db', '数据库配置']]);
+    const tool = buildSemanticRecallTool({
+      embedder: fakeEmbedder(),
+      modelStatus: async () => 'ready' as const,
+    });
+    const out = String(await tool.execute({ query: '数据库' }, { agent: { session } } as never));
+    expect(out).toContain('数据库配置');
+    expect(out).toContain('message_id=m-db');
+  });
+});
+
+// 环境变量开关判定：OM_RECALL_ENABLED / OM_SEMANTIC_RECALL_ENABLED
+// 控制 recall / recall-semantic 工具是否注册（=false 禁用，其余取值启用；缺省启用）。
+describe('envFlagEnabled', () => {
+  it("值 === 'false' 时禁用，其余取值（未设置/空串/true/1/FALSE）启用", () => {
+    const key = 'OM_TEST_FLAG';
+    try {
+      delete process.env[key];
+      expect(envFlagEnabled(key)).toBe(true);
+      process.env[key] = 'false';
+      expect(envFlagEnabled(key)).toBe(false);
+      process.env[key] = 'true';
+      expect(envFlagEnabled(key)).toBe(true);
+      process.env[key] = '1';
+      expect(envFlagEnabled(key)).toBe(true);
+      process.env[key] = '';
+      expect(envFlagEnabled(key)).toBe(true);
+      process.env[key] = 'FALSE';
+      expect(envFlagEnabled(key)).toBe(true);
+    } finally {
+      delete process.env[key];
+    }
+  });
+});
+
+// apply 接线（环境变量开关）：两个环境变量独立控制 recall / recall-semantic 工具注册，
+// 缺省启用；=false 禁用；不影响压缩接线。
+describe('apply 接线（环境变量开关）', () => {
+  /** 涉及的两个环境变量名。 */
+  const envKeys = [RECALL_ENABLED_ENV, SEMANTIC_RECALL_ENABLED_ENV];
+  /** 原始环境变量快照（afterEach 恢复，避免污染其他用例）。 */
+  const saved = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    saved.clear();
+    for (const key of envKeys) saved.set(key, process.env[key]);
+  });
+
+  afterEach(() => {
+    for (const key of envKeys) {
+      const value = saved.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  /** 已注册工具名集合。 */
+  function registeredNames(ctx: ReturnType<typeof makeCtx>): string[] {
+    return ctx._registeredTools.map((t) => t.name).filter((n): n is string => n !== undefined);
+  }
+
+  it('缺省（未设置）两个工具都注册', () => {
+    for (const key of envKeys) delete process.env[key];
+    const ctx = makeCtx();
+    apply(ctx, {});
+    expect(registeredNames(ctx)).toEqual(expect.arrayContaining(['recall', 'recall-semantic']));
+  });
+
+  it('OM_RECALL_ENABLED=false 仅禁用 recall，recall-semantic 仍注册', () => {
+    for (const key of envKeys) delete process.env[key];
+    process.env[RECALL_ENABLED_ENV] = 'false';
+    const ctx = makeCtx();
+    apply(ctx, {});
+    const names = registeredNames(ctx);
+    expect(names).not.toContain('recall');
+    expect(names).toContain('recall-semantic');
+  });
+
+  it('OM_SEMANTIC_RECALL_ENABLED=false 仅禁用 recall-semantic，recall 仍注册', () => {
+    for (const key of envKeys) delete process.env[key];
+    process.env[SEMANTIC_RECALL_ENABLED_ENV] = 'false';
+    const ctx = makeCtx();
+    apply(ctx, {});
+    const names = registeredNames(ctx);
+    expect(names).toContain('recall');
+    expect(names).not.toContain('recall-semantic');
+  });
+
+  it('两个开关都=false 时两个工具都不注册，压缩接线不受影响', () => {
+    for (const key of envKeys) delete process.env[key];
+    process.env[RECALL_ENABLED_ENV] = 'false';
+    process.env[SEMANTIC_RECALL_ENABLED_ENV] = 'false';
+    const ctx = makeCtx();
+    apply(ctx, {});
+    const names = registeredNames(ctx);
+    expect(names).not.toContain('recall');
+    expect(names).not.toContain('recall-semantic');
+    // env 开关只控制 recall 工具注册，agent/pre-step 压缩监听始终注册
+    expect(ctx._onCallbacks.has('agent/pre-step')).toBe(true);
+  });
+
+  it('非 false 取值（true/1/空串）均视为启用', () => {
+    for (const value of ['true', '1', '']) {
+      for (const key of envKeys) delete process.env[key];
+      for (const key of envKeys) process.env[key] = value;
+      const ctx = makeCtx();
+      apply(ctx, {});
+      expect(registeredNames(ctx)).toEqual(expect.arrayContaining(['recall', 'recall-semantic']));
+    }
+  });
+
+  it('env 启用：apply 触发模型后台预热下载（ensureModelReady 被调用）', () => {
+    const mockEnsure = ensureModelReady as unknown as ReturnType<typeof vi.fn>;
+    mockEnsure.mockClear();
+    for (const key of envKeys) delete process.env[key];
+    const ctx = makeCtx();
+    apply(ctx, {});
+    expect(mockEnsure).toHaveBeenCalled();
+  });
+
+  it('OM_SEMANTIC_RECALL_ENABLED=false：不触发模型下载', () => {
+    const mockEnsure = ensureModelReady as unknown as ReturnType<typeof vi.fn>;
+    mockEnsure.mockClear();
+    for (const key of envKeys) delete process.env[key];
+    process.env[SEMANTIC_RECALL_ENABLED_ENV] = 'false';
+    const ctx = makeCtx();
+    apply(ctx, {});
+    expect(mockEnsure).not.toHaveBeenCalled();
   });
 });
 

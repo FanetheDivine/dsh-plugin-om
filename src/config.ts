@@ -2,7 +2,8 @@
  * 插件配置：默认值、键校验与合并（preset 行 config 可覆盖全部键）。
  * 手写校验，保持零运行时外部依赖。
  */
-import { assertNumber, fail, isRecord } from './utils.ts';
+import { BUNDLED_MODEL_DIR } from './embedding.ts';
+import { assertNonEmptyString, assertNumber, fail, isRecord } from './utils.ts';
 
 /** 摘要模式：prefix=复用主会话请求前缀（缺省）；system=指令作为 system、消息作为输入。 */
 export type SummaryMode = 'prefix' | 'system';
@@ -22,6 +23,8 @@ export type PluginConfig = {
   tailMessageCount: number;
   /** 摘要模式（由环境变量 SUMMARY_MODE_ENV 决定，缺省 prefix）。 */
   summaryMode: SummaryMode;
+  /** 语义召回嵌入模型目录（默认插件打包的本地模型；可指向自定义模型目录）。 */
+  modelDir: string;
 };
 
 /** 默认配置（冻结对象，resolveConfig 合并的基底；summaryMode 由环境变量在解析时决定）。 */
@@ -31,6 +34,7 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   compressMaxTokens: 4096,
   tailMessageCount: 10,
   summaryMode: 'prefix',
+  modelDir: BUNDLED_MODEL_DIR,
 });
 
 /** 合法配置键集合（未知键直接拒绝）。 */
@@ -39,6 +43,7 @@ const CONFIG_KEYS = new Set<string>([
   'historyMergeRatio',
   'compressMaxTokens',
   'tailMessageCount',
+  'modelDir',
 ]);
 
 /** 数值配置键（用于逐键校验其取值区间）。 */
@@ -73,7 +78,7 @@ export function resolveSummaryModeFromEnv(env: Record<string, string | undefined
 }
 
 /**
- * 解析合并配置：校验未知键与数值类型，返回冻结的完整配置。
+ * 解析合并配置：校验未知键与数值/字符串类型，返回冻结的完整配置。
  * 允许所有配置留空——缺省 / null / 空串的键回退默认值，未给出的键亦取默认值。
  * summaryMode 由环境变量 SUMMARY_MODE_ENV 决定（不随 preset 配置）。
  */
@@ -95,5 +100,14 @@ export function resolveConfig(raw?: unknown): Readonly<PluginConfig> {
   }
   /** 摘要模式（环境变量覆盖默认值）。 */
   config.summaryMode = resolveSummaryModeFromEnv(process.env);
+  /** modelDir 原始值（留空回退默认；非空串必须为字符串）。 */
+  const modelDir = input.modelDir;
+  if (modelDir !== undefined && modelDir !== null) {
+    if (typeof modelDir === 'string' && modelDir.trim() !== '') {
+      config.modelDir = modelDir;
+    } else {
+      assertNonEmptyString('modelDir', modelDir);
+    }
+  }
   return Object.freeze(config);
 }

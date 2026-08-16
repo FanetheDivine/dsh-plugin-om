@@ -40,6 +40,21 @@ export function assertNumber(
   if (integer && !Number.isInteger(value)) fail(`config ${name} must be an integer`);
 }
 
+/** 校验配置字符串：必须是非空（含非空白）字符串，否则抛出带插件前缀的错误。 */
+export function assertNonEmptyString(name: string, value: unknown): void {
+  if (typeof value !== 'string' || value.trim() === '') {
+    fail(`config ${name} must be a non-empty string`);
+  }
+}
+
+/**
+ * 环境变量开关判定：值 === 'false' 时禁用（返回 false），其余取值
+ * （含未设置 / 空串 / 'true' / '1' 等）均视为启用（返回 true）。默认启用。
+ */
+export function envFlagEnabled(name: string): boolean {
+  return process.env[name] !== 'false';
+}
+
 /** 生成 uuid：优先 crypto.randomUUID，回退为时间戳+随机串拼接（保证唯一性）。 */
 export function uuid(): string {
   /** 全局 crypto 对象（提供 randomUUID 的现代环境才存在）。 */

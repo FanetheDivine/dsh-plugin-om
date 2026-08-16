@@ -11,16 +11,20 @@
 3. 在摘要超过阈值后，重新摘要
 4. 摘要过程中保留关键的message_id，允许模型精确recall
 5. 压缩在 `agent/pre-step` 触发（**turn 中间即可**，无需等待轮次结束）：摘要直连 LLM，默认（`prefix` 模式）复用主会话请求前缀（系统提示词 + 完整消息 + 末尾指令），充分利用 provider 前缀缓存
+6. 提供语义召回（recall-semantic）：按自然语言在全部消息日志中检索，被压缩/遮蔽的消息也可按语义找回
 
 ### 注意
 
 - recall 不截断，建议保留 `tool-result-pruner`
 - 默认上下文压缩插件 `compaction-basic` 到达阈值后会自动摘要，不建议和此插件一起使用
+- recall-semantic 使用本地多语言嵌入模型（paraphrase-multilingual-MiniLM-L12-v2，量化 ONNX），完全离线；首次调用时加载模型，之后复用。模型二进制（~113MB）不进入 git 仓库，改为**运行时按需下载**：启用 recall-semantic 且模型缺失时，插件启动即后台自动下载（不阻塞），未就绪时工具会告知模型（见[依赖策略](#依赖策略)）
 
 ### 依赖策略
 
-- 以type-only的方式引用第三方库
+- 以type-only的方式引用第三方库（编译期类型，运行时零依赖）
 - 复用dsh宿主提供的依赖，如 cordis / dsh-tools / zod 等
+- 例外：recall-semantic 的本地嵌入需要运行时依赖 `@huggingface/transformers`（transformers.js v4 + onnxruntime-node），模型小文件（config/tokenizer 等）随 npm 包分发（`models/`），onnx 二进制不做构建/发布时下载
+- 模型二进制：量化 ONNX 约 113MB，超过 GitHub 单文件 100MB 限制，**不进入 git 仓库**。改为**运行时按需下载**：仅当 `OM_SEMANTIC_RECALL_ENABLED` 启用且 `models/<id>/onnx/model_quantized.onnx` 缺失时，插件 apply 后台自动从 HuggingFace（[Xenova 转换仓库](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2)）下载到 `models/`（不阻塞；下载失败仅记日志，下次调用自动重试；未就绪时 `recall-semantic` 工具返回文案告知模型）；本地开发也可用 `pnpm run download:model` 手动预下载（已存在则跳过，`--force` 强制重下）；直连 `huggingface.co` 受限时设置环境变量 `HF_ENDPOINT=https://hf-mirror.com` 走镜像
 
 ## 安装与启用
 
@@ -54,7 +58,7 @@ dsh plugin --profile <profile> add dsh-plugin-om
 
 ### 开发插件
 
-运行`pnpm dev`，等待`dist/index.mjs`构筑完毕
+运行`pnpm dev`，等待`dist/index.mjs`构筑完毕（本地嵌入模型可在运行时自动下载；如需提前预下载用`pnpm run download:model`，已存在则跳过）
 
 在 `cordis.patch.yml` 里加入
 
@@ -84,12 +88,13 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 ## 插件配置项
 
-| 键                  | 默认   | 含义                                                     |
-| ------------------- | ------ | -------------------------------------------------------- |
-| `thresholdRatio`    | `0.5`  | 观察阈值：未压缩消息 ≥ 窗口 × 该比例触发压缩             |
-| `historyMergeRatio` | `0.2`  | 反思阈值：摘要 ≥ 窗口 × 该比例触发精简合并               |
-| `compressMaxTokens` | `4096` | 单次摘要（观察/反思调用）生成上限                        |
-| `tailMessageCount`  | `10`   | 尾部保留的不压缩消息条数（同时作为摘要模型的参考尾部）   |
+| 键                  | 默认     | 含义                                                                       |
+| ------------------- | -------- | -------------------------------------------------------------------------- |
+| `thresholdRatio`    | `0.5`    | 观察阈值：未压缩消息 ≥ 窗口 × 该比例触发压缩                               |
+| `historyMergeRatio` | `0.2`    | 反思阈值：摘要 ≥ 窗口 × 该比例触发精简合并                                 |
+| `compressMaxTokens` | `4096`   | 单次摘要（观察/反思调用）生成上限                                          |
+| `tailMessageCount`  | `10`     | 尾部保留的不压缩消息条数（同时作为摘要模型的参考尾部）                     |
+| `modelDir`          | 打包模型 | recall-semantic 嵌入模型目录（默认插件内打包的本地模型；可指向自定义目录）。onnx 缺失时运行时自动下载到该目录 |
 
 ### 摘要模式（环境变量）
 
@@ -98,17 +103,55 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 - `prefix`（缺省）：复用主会话请求前缀——`system`/`tools` 取自主会话上次请求，`messages` = 完整派生历史 + 末尾追加指令 user 消息，本次摘要请求是主会话请求的**真前缀**，充分利用 provider 前缀缓存（与宿主 `compaction-basic` 同款策略）。
 - `system`：指令（persona + 规则）作为 system 提示词，被压缩消息与参考尾部（渲染为文本）作为 user 消息输入模型压缩。
 
+## 环境变量
+
+| 变量                         | 默认 | 含义                                                     |
+| ---------------------------- | ---- | -------------------------------------------------------- |
+| `OM_RECALL_ENABLED`          | 启用 | 是否注册 `recall` 工具（值恰为 `false` 时禁用）          |
+| `OM_SEMANTIC_RECALL_ENABLED` | 启用 | 是否注册 `recall-semantic` 工具（值恰为 `false` 时禁用；启用且模型缺失时才触发后台模型下载） |
+
+取值规则：值**恰为** `false` 时禁用对应工具（不注册；`recall-semantic` 禁用时嵌入模型不会加载、也不会触发模型下载），其余取值（含未设置 / 空串 / `true` / `1` 等）均启用。两个开关相互独立，只影响工具注册，不影响压缩接线。
+
+示例（禁用 recall-semantic，保留 recall）：
+
+```sh
+OM_SEMANTIC_RECALL_ENABLED=false dsh web
+```
+
+## recall 工具
+
+| 参数       | 必填   | 含义                                      |
+| ---------- | ------ | ----------------------------------------- |
+| `start_id` | 是     | message_id(uuid)，区间的基准边界          |
+| `end_id`   | 二选一 | message_id(uuid)，指定区间的另一个边界    |
+| `offset`   | 二选一 | 相对 start_id 的消息步数（正向后/负向前） |
+
+按 message_id 回看指定区间的原始消息（含代码与工具结果），超大结果由 `tool-result-pruner` 裁剪。
+
+## recall-semantic 工具
+
+| 参数       | 必填 | 含义                                                      |
+| ---------- | ---- | --------------------------------------------------------- |
+| `query`    | 是   | 自然语言描述要找的内容（可混用中英文与代码术语）          |
+| `top_k`    | 否   | 返回最匹配的消息条数（1-10，默认 3）                      |
+| `start_id` | 否   | 限定检索区间的基准边界（意义同 recall）；缺省检索全部消息 |
+| `end_id`   | 否   | 限定区间的另一个边界（与 offset 互斥，意义同 recall）     |
+| `offset`   | 否   | 相对 start_id 的步数（与 end_id 互斥，意义同 recall）     |
+
+按语义（自然语言含义）在**全部消息日志**（含被压缩/遮蔽的 user/assistant/tool-result 事件）中检索，返回最匹配的若干条**完整消息**（message_id / seq / 类型 + 相似度 + 命中关键词）。区间参数限定检索范围；区间不合法（如 id 不存在）不报错，回退全量检索并在结果中明确告知模型。首次启用时嵌入模型可能正在后台下载：未就绪时工具返回提示文案告知模型（不报错、不阻塞等待），下载完成后直接再次调用即可。仅主会话可用；超大结果由 `tool-result-pruner` 裁剪。
+
 ## npm 命令
 
-| 命令                        | 作用                                      |
-| --------------------------- | ----------------------------------------- |
-| `pnpm check`                | typecheck + lint + test + build           |
-| `pnpm typecheck`            | TypeScript 类型检查                       |
-| `pnpm lint` / `pnpm format` | 代码检查 / 格式化                         |
-| `pnpm test`                 | vitest 单元测试                           |
-| `pnpm build`                |                                           |
-| `pnpm dev`                  | 自动打包                                  |
-| `pnpm run release`          | CHANGELOG 归档 + 版本号更新 + 打 tag 推送 |
+| 命令                        | 作用                                                |
+| --------------------------- | --------------------------------------------------- |
+| `pnpm check`                | typecheck + lint + test + build                     |
+| `pnpm typecheck`            | TypeScript 类型检查                                 |
+| `pnpm lint` / `pnpm format` | 代码检查 / 格式化                                   |
+| `pnpm test`                 | vitest 单元测试                                     |
+| `pnpm run download:model`   | 手动预下载本地嵌入模型 ONNX（已存在跳过，`--force` 重下；运行时也会按需自动下载） |
+| `pnpm build`                |                                                     |
+| `pnpm dev`                  | 自动打包                                            |
+| `pnpm run release`          | CHANGELOG 归档 + 版本号更新 + 打 tag 推送           |
 
 ## 调用链和文件地图
 
@@ -120,25 +163,33 @@ src/
 │   ├─ ① resolveConfig(config) ──▶ config.ts        # 配置默认值合并 + 逐键校验（留空回退默认，冻结返回）
 │   ├─ ② ctx.tools.register(buildRecallTool(() => ctx.get('toolResultPruner')))
 │   │      └─▶ recall.ts                            # recall 工具：按 message_id 回看区间（超大结果由 pruner 裁剪）
-│   └─ ③ 事件接线（仅主会话生效）
+│   ├─ ③ ctx.tools.register(buildSemanticRecallTool({ getPruner, modelStatus, embedder }))
+│   │      └─▶ semantic-recall.ts                   # recall-semantic 工具：本地嵌入按语义检索全部消息日志（含被压缩/遮蔽）
+│   │           └─▶ embedding.ts                    # 本地 ONNX 嵌入：ensureModelReady 运行时按需下载（不阻塞/单飞）+ 懒加载 + 批量 embed + cosine
+│   │                └─▶ model-download.ts          # 模型下载原语（URL/跳过判定/原子落盘；dev CLI 复用）
+│   └─ ④ 事件接线（仅主会话生效）
 │        └─ ctx.on('agent/pre-step') → compress.ts  # maybeCompress：两级压缩阻塞串行（先反思后观察；turn 中间即可触发）
 │              ├─ reflectPass → summarize.ts        # 摘要 ≥ 窗口 × historyMergeRatio：摘要调用精简合并 <om-history>
 │              ├─ observePass  → summarize.ts       # 未压缩消息 ≥ 窗口 × thresholdRatio：摘要调用观察日志 → 追加 + 替换
 │              └─ 提交          → compress.ts        # compaction/start → summary → 替换消息(checkpoint) → end；usage 归入主会话
 ├── constants.ts              # 共享常量（PLUGIN_LABEL / HISTORY_TAG / COMPACT_CHECKPOINT_PLUGIN）
 ├── types.ts                  # type-only：宿主类型再导出 + 领域类型（MessageNode / MessageIndex）
-├── config.ts                 # 配置默认值 / 校验（缺省、null、空串回退默认值）
+├── config.ts                 # 配置默认值 / 校验（缺省、null、空串回退默认值；含 modelDir）
 ├── utils.ts                  # 零依赖工具函数（配置校验 / 文本渲染 / 主会话判定 / 路由解析）
 ├── log-index.ts              # 消息索引（message_id → 消息事件；recall 消费）
+├── embedding.ts              # 本地 ONNX 嵌入（@huggingface/transformers + 本地模型；运行时按需下载编排 / 懒加载 / 批量 / cosine）
+├── model-download.ts          # 模型下载原语（modelSourceUrl / needsDownload / 原子落盘；运行时与 dev CLI 共用）
 ├── summarize.ts              # 观察/反思 persona + 提示词 + 直连 ctx.llm.stream() 摘要（prefix/system 双模式；流式 usage 归入主会话）
 ├── recall.ts                 # recall 工具
+├── semantic-recall.ts        # recall-semantic 工具（query 语义检索 + 区间限定 + 回退全量 + 匹配说明）
 └── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / 中断扫描 / 对照表 / compaction/* 生命周期事件 + checkpoint 替换）
-scripts/                      # release-archive.mjs（CHANGELOG 归档）
-tests/                        # vitest 单元测试（71 例）
+models/
+└── paraphrase-multilingual-MiniLM-L12-v2/   # 嵌入模型目录（小文件随包分发；onnx 二进制由运行时按需下载到此处，不进 git）
+scripts/                      # release-archive.mjs（CHANGELOG 归档）/ download-model.mjs（开发手动预下载 CLI）
+tests/                        # vitest 单元测试（121 例）
 .dsh/skills/                  # 项目级 skill（feature-defect-workflow：需求/缺陷完成工作流）
 ```
 
 ## 开发计划
 
-- 引入OM消息的语义召回查询
 - 将OM和recall分为两个包
