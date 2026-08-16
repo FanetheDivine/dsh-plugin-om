@@ -9,7 +9,7 @@
  *  - disable：关闭自动压缩（compress.ts 早退，不发起摘要调用）。
  *
  * 提示词不内嵌消息全文（fork 模式完整历史随请求传入；new 模式由 compress.ts 渲染
- * 区间传入）；新消息起始 index 与中断标记由插件从日志计算后内嵌——AI 按「完整消息」的
+ * 区间传入）；新消息起始 index 由插件从日志计算后内嵌——AI 按「完整消息」的
  * index 编号（三类定义见 log-index.ts），recall 用同一套编号定位。token usage 从流式
  * 响应的 usage chunk 提取，归入主会话记录。仅主会话生效（index.ts 守卫）。
  */
@@ -24,18 +24,16 @@ import { type RoutedTarget, uuid } from './utils.ts';
 
 /** 观察者 persona：只针对未压缩消息产出观察日志，不用工具、不展示思考。 */
 export const OBSERVER_PERSONA =
-  '你是 dsh-plugin-om 的上下文观察者（Observer，机制参考 Mastra Observational Memory）：把会话中尚未压缩的消息压缩为一份观察日志。不用工具、不展示思考、不评价代码、不输出多余文字。';
+  '把会话中尚未压缩的消息压缩为一份观察日志。不用工具、不展示思考、不评价代码、不输出多余文字。';
 
 /** 反思者 persona：只精简合并当前摘要，不用工具、不展示思考。 */
 export const REFLECTOR_PERSONA =
-  '你是 dsh-plugin-om 的上下文反思者（Reflector，机制参考 Mastra Observational Memory）：把当前 <om-history> 压缩日志精简合并为一份更紧凑的日志。不用工具、不展示思考、不输出多余文字。';
+  '把当前 <om-history> 压缩日志精简合并为一份更紧凑的日志。不用工具、不展示思考、不输出多余文字。';
 
-/** 观察提示词参数（起始 index/中断标记由 compress.ts 从日志计算后传入）。 */
+/** 观察提示词参数（起始 index 由 compress.ts 从日志计算后传入）。 */
 export type ObservePromptOptions = {
   /** 本次要压缩的新消息起始完整消息 index（AI 从该序号开始编号）。 */
   startIndex: number;
-  /** 中断标记行（aborted/interrupted 轮次）。 */
-  interruptions: string[];
   /** 是否存在旧摘要（决定「追加到上次产物末尾」的表述）。 */
   hasOldHistory: boolean;
   /** 摘要模式：fork=完整历史随请求传入；new=被压缩消息渲染为输入。 */
@@ -46,13 +44,11 @@ export type ObservePromptOptions = {
  * 构建观察指令主体：任务声明（fork：停止任务/禁止工具；new：说明总结日志）+ 模式相关
  * 的上下文定位与压缩范围（fork：上方完整会话记录——尾部已在输入中实际截断，提示词不含
  * 尾部规则；new：下方消息即压缩对象）+ 完整消息与 index 定义（三类合并规则、起始编号）+
- * 规则（用户消息完整保留原文 / AI 消息模块化压缩——工具调用按目的聚合——不限于 run_code /
- * 倾向于新消息 / 中断标注 / 未完成写进度与下一步）+ 输出格式（合法 XML）+ 中断标记 +
- * 追加说明。persona 由调用方拼接到指令开头。
+ * 规则（用户消息完整保留原文 / AI 消息按模块压缩 / 本指令不入日志 / index/start/end 连续 /
+ * 倾向于新消息 / 未完成写进度与下一步）+ 输出格式（合法 XML）+ 追加说明。
+ * persona 由调用方拼接到指令开头。
  */
 export function buildObservePrompt(options: ObservePromptOptions): string {
-  /** 中断标记段落（无则标注「无」）。 */
-  const interruptionSection = options.interruptions.length > 0 ? options.interruptions : ['（无）'];
   /** 任务声明：fork 会话可见完整上下文（可能处于任务中途），须停止任务并禁止工具；new 会话说明总结日志即可。 */
   const declaration =
     options.mode === 'fork'
@@ -76,31 +72,30 @@ export function buildObservePrompt(options: ObservePromptOptions): string {
     ...framing,
     '',
     '【完整消息与 index】',
-    '- 完整消息是压缩日志与 recall 共用的定位单位，每一条占一个 index（从 0 起、按会话顺序递增、全局稳定）。完整消息分三类：用户消息占一条；AI 文本占一条；工具调用及其结果占一条（每个 tool-call 与其 result 各一条，同一条 AI 消息里的文本与工具调用拆开）。',
+    '- 完整消息分三类：用户消息占一条；AI 文本占一条；工具调用及其结果占一条（每个 tool-call 与其 result 各一条，同一条 AI 消息里的文本与工具调用拆开）。每条完整消息有一个 index（从 0 起、按会话顺序递增、全局稳定），index 是该条完整消息的序号。',
     `- 本次要压缩的新消息从 index ${options.startIndex} 开始编号，按日志顺序逐条递增；旧 <${HISTORY_TAG}> 中已有的 index 无需理会，也不要改动旧条目。`,
     '',
     '【规则】',
+    '- 当前消息仅作为指令，**不得**进入日志。',
     '- 用户消息完整保留原文，输出为 <user_message index="N"> 条目（N 为该条完整消息的 index，内容为消息原文，不概括、不省略）。',
-    '- AI 消息划分模块压缩（按模块聚合 assistant 的方式）：所有工具调用（run_code 与其他工具同等对待，不限于 run_code）按调用目的聚合为一行 toolcall index:<该条完整消息的 index> purpose:<聚合目的> summary:<行为与结果摘要>；相邻的 AI 侧完整消息（文本与工具调用）聚合为一个 <assistant> 模块，start/end 标注模块覆盖的 index 区间（start 为首条 index、end 为末条 index）；重要工具调用（关键决策、写文件等）单独用 <assistant index="N"> 呈现。工具组内部细节（参数、完整输出）不保留，需要原文时用 recall 按 index 回看（start/end 定位）。',
-    '- 条目须按 index 顺序覆盖本次压缩的全部完整消息，不遗漏。',
+    '- 将AI 消息按照内在关联，划分为**连续消息**组成的模块，消息模块的划分方式不受限制，但内部须有足够的**逻辑连贯性**，应当是AI基于某个目的做出了一系列动作或论述',
+    '- 模块内的消息聚合输出为<assistant start="" end="">块，start/end表示当前模块首尾消息的index；块内不描述单条消息的细节，只描述当前模块的**目的、行为、结果**；最后一个<assistant>块，额外包含`下一步计划`',
+    '- 对于模块涉及到的具体文件，应当出现在<assistant>块中，多个前缀相同的路径要合并简写',
+    '- 对于单条重要的AI完整消息，以<assistant index="">单独呈现，其内容不受限制',
+    '- 条目按 index 顺序覆盖本次压缩的全部完整消息，index/start/end 必须连续（区间内 index 连续、相邻条目相接），不跳号、不重叠、不遗漏。',
     '- 总结时倾向于新消息，旧消息一句话带过即可；新旧消息冲突时强调新消息，不修改旧日志条目。',
-    '- 若【中断标记】非空，在对应位置明确写出中断（例如「被用户打断，因此上一段工作未完成」），帮助后续理解用户为何再次输入消息、为何不延续之前的工作。',
-    '- 若当前工作看起来未完成（最后一次工具调用没有结果、或对话被中断/异常结束），在日志末尾说明当前进度与下一步要做什么。',
     '【输出格式】只输出一个 <om-history> 包裹的合法 XML 日志块，不要解释、不要复述规则：',
     `<${HISTORY_TAG}>`,
     '<user_message index="(index)">',
     '(user 消息原文)',
     '</user_message>',
     '<assistant start="(起始 index)" end="(结束 index)">',
-    '(压缩模块：toolcall 聚合行等，按模块聚合 assistant 的方式)',
+    '(模块的目的、行为与结果摘要)',
     '</assistant>',
     '<assistant index="(index)">',
-    '(重要调用单独条目)',
+    '(单条完整消息的模块摘要)',
     '</assistant>',
     `</${HISTORY_TAG}>`,
-    '',
-    '【中断标记】',
-    ...interruptionSection,
     '',
     ...(options.hasOldHistory
       ? [
@@ -135,11 +130,14 @@ export function buildReflectPrompt(mode: SummaryMode): string {
     ...framing,
     '',
     '【规则】',
-    '- 完整消息是压缩日志的定位单位（用户消息 / AI 文本 / 工具调用及其结果各占一个 index，从 0 起、全局稳定）；合并时单个完整消息的 index 不重新编号，被删除的条目 index 空缺。',
-    '- 用户消息保留要点与 index（格式：<user_message index="(index)"> 要点 </user_message>）；可省略的条目删除。',
-    '- toolcall 条目按调用目的进一步聚合，保留 index；不重要的条目 summary 写「（略）」。',
-    '- 相邻的 assistant 条目可合并为一个 <assistant> 模块，start/end 随合并后的区间变化。',
-    '- 保留中断说明与未完成说明（若原日志中有）。',
+    '- 当前消息仅作为指令，**不得**进入日志。',
+    '- 完整消息分三类（用户消息 / AI 文本 / 单个工具调用及其结果），各占一个 index（从 0 起、会话内全局稳定），index 是该条完整消息的序号。',
+    '- 将AI 消息按照内在关联，划分为**连续消息**组成的模块，消息模块的划分方式不受限制，但内部须有足够的**逻辑连贯性**，应当是AI基于某个目的做出了一系列动作或论述',
+    '- 模块内的消息聚合输出为<assistant start="" end="">块，start/end表示当前模块首尾消息的index；块内不描述单条消息的细节，只描述当前模块的**目的、行为、结果**；最后一个<assistant>块，额外包含`下一步计划`',
+    '- 对于模块涉及到的具体文件，应当出现在<assistant>块中，多个前缀相同的路径要合并简写',
+    '- 对于单条重要的AI完整消息，以<assistant index="">单独呈现，其内容不受限制',
+    '- 用户消息保留要点与 index（格式：<user_message index="(index)"> 要点 </user_message>）；不重要的内容概括为「（略）」。',
+    '- 条目按 index 顺序覆盖日志中的全部完整消息，index/start/end 必须连续（区间内 index 连续、相邻条目相接），不跳号、不重叠、不遗漏；合并时条目的 index 不重新编号。',
     '- 过时事实丢弃，不逐字复制旧文本；新旧条目冲突时保留新条目。',
     '【输出格式】只输出一个 <om-history> 包裹的合法 XML 日志块，不要解释、不要复述规则：',
     `<${HISTORY_TAG}>`,
@@ -147,10 +145,10 @@ export function buildReflectPrompt(mode: SummaryMode): string {
     '(user 消息要点)',
     '</user_message>',
     '<assistant start="(起始 index)" end="(结束 index)">',
-    '(压缩模块：toolcall 聚合行等，按模块聚合 assistant 的方式)',
+    '(模块的目的、行为与结果摘要)',
     '</assistant>',
     '<assistant index="(index)">',
-    '(重要调用单独条目)',
+    '(单条完整消息的模块摘要)',
     '</assistant>',
     `</${HISTORY_TAG}>`,
     '',
@@ -295,7 +293,7 @@ export const MIN_HISTORY_LENGTH = 10;
 
 /** 产出日志后插入首个 <om-history> 后的格式说明（XML 注释，避免被误读为日志条目）。 */
 export const HISTORY_FORMAT_NOTE =
-  '<!-- 本日志以「完整消息」为定位单位：完整消息分三类（用户消息 / AI 文本 / 单个工具调用及其结果），各占一个 index（从 0 起、会话内全局稳定）；<user_message index="N"> 与 <assistant index="N"> 定位单条完整消息，<assistant start="A" end="B"> 定位连续区间（含两端）。需要原文时用 recall(start, end) 按 index 回看。 -->';
+  '<!-- 完整消息分三类（用户消息 / AI 文本 / 单个工具调用及其结果），各占一个 index（从 0 起、会话内全局稳定）；<user_message index="N"> 与 <assistant index="N"> 表示单条完整消息，<assistant start="A" end="B"> 表示多条完整消息，start/end是首尾消息的index -->';
 
 /**
  * 从 AI 摘要输出中提取合法日志（不信任 AI 的总结结果）：

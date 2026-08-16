@@ -129,12 +129,11 @@ export function isPairBalancedAfter(session: Session, seq: number): boolean {
  * 观察压缩区间：pre-step 触发时日志 call-result 完备，区间不再受 turn/end 封顶——
  * 头部 → 表层长度-1-tailCount（尾部保留 tailCount 条不压缩），当前 turn 中已完备的
  * 消息同样可压缩；区间终点回退到 tool-call/result 配对平衡点（不切段）。
- * lastEndSeq 仅为中断扫描提供最后一个已结束 turn 的边界（无则 -1）。
  */
 export function computeCompressRange(
   session: Session,
   tailCount: number,
-): { start: number; end: number; shadowedSeqs: number[]; lastEndSeq: number } | undefined {
+): { start: number; end: number; shadowedSeqs: number[] } | undefined {
   /** 当前表层节点（按日志顺序）。 */
   const surface = [...session.surface.nodes];
   if (surface.length === 0) return undefined;
@@ -156,34 +155,7 @@ export function computeCompressRange(
   if (start === undefined || end === undefined) return undefined;
   /** 被遮蔽的表层 seq 列表。 */
   const shadowedSeqs = surface.slice(0, endIdx + 1);
-  /** 最后一个 turn/end（中断扫描边界；无则 -1）。 */
-  const lastEnd = session.events.findLast((event) => event.type === 'turn/end');
-  return { start, end, shadowedSeqs, lastEndSeq: lastEnd?.seq ?? -1 };
-}
-
-/**
- * 中断标记行：范围内 turn/end 以 aborted（含 cause 类型）或 interrupted 结束的轮次
- * （标记用途：让摘要 AI 理解中断原因）。
- */
-export function scanInterruptions(session: Session, fromSeq: number, toSeq: number): string[] {
-  /** 标记行缓冲区。 */
-  const marks: string[] = [];
-  for (let seq = fromSeq + 1; seq <= toSeq; seq += 1) {
-    /** 当前待检查事件。 */
-    const event = session.events[seq];
-    if (event?.type !== 'turn/end') continue;
-    /** 结束原因（判别 kind）。 */
-    const reason = event.data.reason;
-    if (!reason || typeof reason !== 'object') continue;
-    if (reason.kind === 'aborted') {
-      /** 取消来源（user/parent/hook/disposed；未知标记 unknown）。 */
-      const cause = (reason as { reason?: { kind?: string } }).reason?.kind ?? 'unknown';
-      marks.push(`[interrupted] turn ${String(event.data.turn)} 被中断（aborted，原因 ${cause}）`);
-    } else if (reason.kind === 'interrupted') {
-      marks.push(`[interrupted] turn ${String(event.data.turn)} 因崩溃恢复中断（interrupted）`);
-    }
-  }
-  return marks;
+  return { start, end, shadowedSeqs };
 }
 
 /**
@@ -451,14 +423,6 @@ export async function observePass(
   );
   /** 区间内旧摘要（追加基准；无则首次压缩）。 */
   const history = extractHistoryText(session, range.shadowedSeqs);
-  // turn/end 事件在所属 turn 最后一个消息之后（seq 可大于 end），中断扫描取
-  // 压缩消息的最小 seq 为起点、最后一个 turn/end 的 seq 为终点，覆盖被压缩轮次
-  /** 中断标记行。 */
-  const interruptions = scanInterruptions(
-    session,
-    Math.min(...range.shadowedSeqs),
-    range.lastEndSeq,
-  );
   /** 实际保留的参考尾部条数（配对回退可能多于 tailCount；fork 输入从尾部之前实际截断）。 */
   const surface = [...session.surface.nodes];
   const actualTailCount = surface.length - range.shadowedSeqs.length;
@@ -469,12 +433,11 @@ export async function observePass(
     indexCompleteMessages(session).find((cm) => cm.seqs.every((seq) => shadowedSet.has(seq)))
       ?.index ?? 0;
   logger.step(
-    `观察：实际保留尾部 ${actualTailCount} 条（不压缩、不进日志），中断标记 ${interruptions.length} 条，新消息起始 index ${startIndex}`,
+    `观察：实际保留尾部 ${actualTailCount} 条（不压缩、不进日志），新消息起始 index ${startIndex}`,
   );
   /** 观察指令（persona + 规则主体）。 */
   const prompt = buildObservePrompt({
     startIndex,
-    interruptions,
     hasOldHistory: history !== undefined,
     mode: config.summaryMode,
   });

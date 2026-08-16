@@ -153,7 +153,7 @@ src/
 ├── summarize.ts              # 观察/反思 persona + 提示词 + 直连 ctx.llm.stream() 摘要（fork/new 双模式；extractSummaryLog 提取校验；流式 usage 归入主会话）
 ├── recall.ts                 # recall 工具
 ├── semantic-recall.ts        # recall-semantic 工具（query 语义检索 + 区间限定 + 回退全量 + 匹配说明）
-└── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / 中断扫描 / source 标记判定摘要消息 / compaction/* 生命周期事件 + checkpoint 替换）
+└── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / source 标记判定摘要消息 / compaction/* 生命周期事件 + checkpoint 替换）
 models/
 └── paraphrase-multilingual-MiniLM-L12-v2/   # 嵌入模型目录（小文件随包分发；onnx 二进制不随包分发、由运行时按需下载到此处，不进 git）
 scripts/                      # release-archive.mjs（CHANGELOG 归档）/ download-model.mjs（开发手动预下载 CLI）

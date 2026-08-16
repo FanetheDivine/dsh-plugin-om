@@ -18,7 +18,6 @@ import {
   findLatestHistory,
   isPairBalancedAfter,
   measureUncompressedTokens,
-  scanInterruptions,
 } from '../src/compress.ts';
 import { resolveConfig, resolveSummaryMode } from '../src/config.ts';
 import { HISTORY_TAG, PLUGIN_LABEL } from '../src/constants.ts';
@@ -535,14 +534,12 @@ describe('观察压缩区间 computeCompressRange', () => {
       start: 0,
       end: 0,
       shadowedSeqs: [0],
-      lastEndSeq: 4,
     });
     // tailCount=0：压缩全部（result 之后平衡）
     expect(computeCompressRange(session, 0)).toEqual({
       start: 0,
       end: 3,
       shadowedSeqs: [0, 1, 3],
-      lastEndSeq: 4,
     });
   });
 
@@ -566,7 +563,6 @@ describe('观察压缩区间 computeCompressRange', () => {
       start: 0,
       end: 5,
       shadowedSeqs: [0, 1, 3, 5],
-      lastEndSeq: 4,
     });
   });
 
@@ -577,12 +573,11 @@ describe('观察压缩区间 computeCompressRange', () => {
       callId: 'c1',
       resultText: 'r1',
     });
-    // 表层 [0,1,3]；tailCount=1 → 回退到 0；lastEndSeq 无 → -1
+    // 表层 [0,1,3]；tailCount=1 → 回退到 0
     expect(computeCompressRange(makeSession({ events: flow }), 1)).toEqual({
       start: 0,
       end: 0,
       shadowedSeqs: [0],
-      lastEndSeq: -1,
     });
   });
 
@@ -619,52 +614,6 @@ describe('配对平衡 isPairBalancedAfter', () => {
       ],
     });
     expect(isPairBalancedAfter(session, 0)).toBe(true);
-  });
-});
-
-describe('中断扫描 scanInterruptions', () => {
-  it('aborted（含 cause）与 interrupted 产生标记，completed 不产生', () => {
-    const events: SessionEvent[] = [
-      ...buildToolCallFlow({ code: 'a()', description: '任务A', callId: 'c1', resultText: 'r1' }),
-      {
-        type: 'turn/end',
-        data: { turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } },
-      } as unknown as SessionEvent,
-      ...buildToolCallFlow({
-        code: 'b()',
-        description: '任务B',
-        callId: 'c2',
-        resultText: 'r2',
-        userMessageId: 'user-c2',
-        assistantMessageId: 'assistant-c2',
-        resultMessageId: 'result-c2',
-      }),
-      {
-        type: 'turn/end',
-        data: { turn: 2, reason: { kind: 'interrupted' } },
-      } as unknown as SessionEvent,
-      {
-        type: 'turn/end',
-        data: { turn: 3, reason: { kind: 'completed' } },
-      } as unknown as SessionEvent,
-    ];
-    const session = makeSession({ events });
-    const marks = scanInterruptions(session, -1, 9); // 含 turn 1/2 的 turn/end，不含 turn 3
-    expect(marks).toEqual([
-      '[interrupted] turn 1 被中断（aborted，原因 user）',
-      '[interrupted] turn 2 因崩溃恢复中断（interrupted）',
-    ]);
-  });
-
-  it('范围外事件不产生标记', () => {
-    const events: SessionEvent[] = [
-      ...buildToolCallFlow({ code: 'a()', description: '任务A', callId: 'c1', resultText: 'r1' }),
-      {
-        type: 'turn/end',
-        data: { turn: 1, reason: { kind: 'interrupted' } },
-      } as unknown as SessionEvent,
-    ];
-    expect(scanInterruptions(makeSession({ events }), -1, 3)).toEqual([]); // turn/end@4 不在 (from..to]
   });
 });
 
@@ -762,40 +711,45 @@ describe('历史提取 extractHistoryText / findLatestHistory', () => {
 });
 
 describe('观察提示词 buildObservePrompt', () => {
-  it('任务声明/完整消息与 index/聚合规则/起始编号/中断标记/输出格式/追加说明（不含对照表与尾部规则）', () => {
+  it('任务声明/完整消息与 index/模块压缩规则/起始编号/输出格式/追加说明（不含对照表与尾部规则）', () => {
     const prompt = buildObservePrompt({
       startIndex: 8,
-      interruptions: ['[interrupted] turn 1 被中断（aborted，原因 user）'],
       hasOldHistory: true,
       mode: 'fork',
     });
     // fork 模式：停止任务/禁止工具声明
     expect(prompt).toContain('停止一切现有任务，禁止调用任何工具');
-    // 完整消息与 index：三类定义 + 起始编号
+    // 完整消息与 index：三类定义 + 起始编号（仅定义与 index，无「共用定位单位」表述）
     expect(prompt).toContain('完整消息分三类');
     expect(prompt).toContain('用户消息占一条');
     expect(prompt).toContain('AI 文本占一条');
     expect(prompt).toContain('工具调用及其结果占一条');
     expect(prompt).toContain('每个 tool-call 与其 result 各一条');
     expect(prompt).toContain('从 index 8 开始编号');
-    // 规则：用户消息完整保留原文、toolcall index 行、模块 start/end、重要调用单独条目、recall 按 index 回看
+    expect(prompt).not.toContain('共用的定位单位');
+    // 规则：本指令不入日志、用户消息完整保留原文、模块划分/输出（背景目的行为结果/下一步计划/文件合并简写/单条重要消息）、连续
+    expect(prompt).toContain('本指令消息**不得**进入日志');
     expect(prompt).toContain('完整保留原文');
-    expect(prompt).toContain('toolcall index:<该条完整消息的 index>');
-    expect(prompt).toContain('start/end 标注模块覆盖的 index 区间');
-    expect(prompt).toContain('按模块聚合 assistant 的方式'); // 聚合方式措辞（非「与现有格式一致」）
-    expect(prompt).not.toContain('与现有格式一致');
-    expect(prompt).not.toContain('与现状一致');
-    expect(prompt).toContain('不限于 run_code');
+    expect(prompt).toContain('内在关联');
+    expect(prompt).toContain('连续消息');
+    expect(prompt).toContain('逻辑连贯性');
+    expect(prompt).toContain('start/end表示当前模块首尾消息的index');
+    expect(prompt).toContain('背景、目的、行为、结果');
+    expect(prompt).toContain('下一步计划');
+    expect(prompt).toContain('合并简写');
+    expect(prompt).toContain('内容不受限制');
+    expect(prompt).toContain('index/start/end 必须连续');
     expect(prompt).toContain('倾向于新消息');
     expect(prompt).toContain('不修改旧日志条目');
-    expect(prompt).toContain('当前进度与下一步');
-    expect(prompt).toContain('recall 按 index 回看');
+    expect(prompt).not.toContain('toolcall index:'); // 不再要求逐调用聚合行
+    expect(prompt).not.toContain('按模块聚合 assistant 的方式');
+    expect(prompt).not.toContain('run_code');
     // 输出格式：合法 XML（<user_message index> / <assistant start..end> / <assistant index>）
     expect(prompt).toContain('<user_message index="(index)">');
     expect(prompt).toContain('<assistant start="(起始 index)" end="(结束 index)">');
     expect(prompt).toContain('<assistant index="(index)">');
-    // 中断标记 / 追加说明；不再有对照表
-    expect(prompt).toContain('[interrupted] turn 1 被中断（aborted，原因 user）');
+    // 追加说明；不再有中断标记注入与对照表
+    expect(prompt).not.toContain('[interrupted]');
     expect(prompt).toContain('追加到上一次压缩产物');
     expect(prompt).not.toContain('对照表');
     expect(prompt).not.toContain('message_id');
@@ -808,7 +762,6 @@ describe('观察提示词 buildObservePrompt', () => {
   it('首次压缩（无旧摘要）表述为第一条日志', () => {
     const prompt = buildObservePrompt({
       startIndex: 0,
-      interruptions: [],
       hasOldHistory: false,
       mode: 'fork',
     });
@@ -819,7 +772,6 @@ describe('观察提示词 buildObservePrompt', () => {
   it('new 模式：只说明总结日志 + 下方消息即压缩对象（不含旧日志/尾部）', () => {
     const prompt = buildObservePrompt({
       startIndex: 0,
-      interruptions: [],
       hasOldHistory: false,
       mode: 'new',
     });
@@ -833,16 +785,24 @@ describe('观察提示词 buildObservePrompt', () => {
 });
 
 describe('反思提示词 buildReflectPrompt', () => {
-  it('精简合并规则：声明/用户消息保留要点与 index、toolcall 聚合、可写（略）、XML 输出', () => {
+  it('精简合并规则：声明/本指令不入日志/模块划分与输出/用户消息保留要点与 index/连续/可写（略）/XML 输出', () => {
     const prompt = buildReflectPrompt('fork');
     expect(prompt).toContain('停止一切现有任务，禁止调用任何工具');
     expect(prompt).toContain('精简合并');
+    expect(prompt).toContain('本指令消息**不得**进入日志');
     expect(prompt).toContain('<user_message index="(index)">');
     expect(prompt).toContain('<assistant start="(起始 index)" end="(结束 index)">');
-    expect(prompt).toContain('按模块聚合 assistant 的方式'); // 聚合方式措辞（非「与现有格式一致」）
-    expect(prompt).not.toContain('与现有格式一致');
+    expect(prompt).not.toContain('按模块聚合 assistant 的方式');
+    expect(prompt).not.toContain('toolcall'); // 不再有逐调用聚合行
+    expect(prompt).toContain('内在关联');
+    expect(prompt).toContain('逻辑连贯性');
+    expect(prompt).toContain('背景、目的、行为、结果');
+    expect(prompt).toContain('下一步计划');
+    expect(prompt).toContain('合并简写');
+    expect(prompt).toContain('内容不受限制');
     expect(prompt).toContain('（略）');
     expect(prompt).toContain('index 不重新编号'); // 合并不重排，全局稳定
+    expect(prompt).toContain('index/start/end 必须连续');
     expect(prompt).toContain('替换当前的 <om-history> 块内容');
     expect(prompt).toContain('保留新条目');
     expect(prompt).not.toContain('message_id');
@@ -1249,7 +1209,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(steps.some((s) => s.includes('观察 pass 结束'))).toBe(true);
   });
 
-  it('中断标记（aborted）进入观察指令', async () => {
+  it('中断不注入观察指令（AI 自主判断，无中断标记）', async () => {
     const flowEvents = buildToolCallFlow({
       code: 'a()',
       description: '任务A',
@@ -1265,7 +1225,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     apply(ctx, { tailMessageCount: 1 });
     await runPreStep(ctx, session);
     const instruction = instructionText(summaryOptions(ctx));
-    expect(instruction).toContain('[interrupted] turn 1 被中断（aborted，原因 user）');
+    expect(instruction).not.toContain('[interrupted]');
   });
 
   it('当前 turn 消息可压缩：mid-turn 压缩后其消息被替换、起始 index 覆盖当前 turn 消息', async () => {
