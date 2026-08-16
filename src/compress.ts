@@ -1,8 +1,9 @@
 /**
  * 自动压缩（OM 观察/反思两级阈值，思路参考 Mastra Observational Memory）：
- *  - 观察：未压缩消息 tokens ≥ 窗口 × thresholdRatio → fork 子会话把未压缩消息压缩为
+ *  - 观察：未压缩消息 tokens ≥ 窗口 × thresholdRatio → 直连 ctx.llm.stream() 摘要
+ *    （prefix 模式复用主会话请求前缀缓存；system 模式指令作为 system）把未压缩消息压缩为
  *    观察日志，追加到旧摘要（<om-history> 原文保留），替换被压缩消息区间；
- *  - 反思：摘要 tokens ≥ 窗口 × historyMergeRatio（默认 0.2）→ fork 子会话精简合并摘要，
+ *  - 反思：摘要 tokens ≥ 窗口 × historyMergeRatio（默认 0.2）→ 同上摘要调用精简合并摘要，
  *    替换单个 <om-history> 节点。
  * 两级检查在 pre-step 阻塞串行执行（先反思后观察），避免压缩失败或重复压缩。
  *
@@ -10,12 +11,13 @@
  * 替换 <om-history> 消息 → compaction/end），使消息记录（聊天视图压缩卡片）与轨迹视图
  * 可见；compaction/summary 同时承担影子价格认领（shadowedTokenCount），不再单独发
  * compaction/prune。替换消息的 source 使用宿主 checkpoint 标记（plugin: 'compact' +
- * compactionId），UI 据此关联 summary 与替换消息。生命周期事件在 fork 摘要成功后才写入
+ * compactionId），UI 据此关联 summary 与替换消息。生命周期事件在摘要成功后才写入
  * （失败不产生任何日志变更）。
  *
- * 观察区间：尾部保留 config.tailMessageCount（默认 10）条消息不压缩；
- * 其余全部未压缩消息一次压缩。fork seed 截断于最后一个 turn/end，
- * 故区间表层节点封顶在最后一个已结束 turn 的表层节点（当前 turn 消息留待下次）。
+ * 观察区间：pre-step 触发时日志 call-result 完备，区间不再受 turn/end 封顶——头部 →
+ * 表层长度-1-tailCount（尾部保留 config.tailMessageCount 条不压缩，作为摘要模型的
+ * 参考尾部），当前 turn 中已完备的消息同样可压缩；区间终点回退到 tool-call/result
+ * 配对平衡点（不切段）。
  * 仅主会话生效。
  */
 import { COMPACT_CHECKPOINT_PLUGIN, HISTORY_TAG } from './constants.ts';
@@ -25,6 +27,7 @@ import {
   buildReflectPrompt,
   OBSERVER_PERSONA,
   REFLECTOR_PERSONA,
+  renderMessages,
   runSummarySubagent,
 } from './summarize.ts';
 import type {
@@ -88,8 +91,32 @@ export function findLatestHistory(session: Session): { text: string; seq: number
 }
 
 /**
- * 观察压缩区间：尾部保留 tailCount 条消息不压缩，区间封顶在最后一个已结束 turn 的
- * 表层节点（fork seed 截断于最后一个 turn/end，当前 turn 消息不可压缩）。
+ * 判定表层节点 seq 之后的切点是否 tool-call/result 配对平衡（与宿主
+ * dsh-compaction 的 toolPairingBalancedAfter 同语义）：按表层顺序折叠未闭合的
+ * 工具调用数，处理到 seq 后计数为 0 即平衡。pre-step 时日志 call-result 完备，
+ * 该检查作为区间边界的安全网（防止把助手 tool-call 与其结果切到两侧）。
+ */
+export function isPairBalancedAfter(session: Session, seq: number): boolean {
+  /** 未闭合工具调用计数。 */
+  let inProgress = 0;
+  for (const node of session.surface.nodes) {
+    /** 当前表层事件。 */
+    const event = session.events[node];
+    if (event?.type === 'assistant/message') {
+      inProgress += event.data.message.content.filter((block) => block.type === 'tool-call').length;
+    } else if (event?.type === 'tool/result') {
+      inProgress -= 1;
+    }
+    if (node === seq) return inProgress === 0;
+  }
+  return false;
+}
+
+/**
+ * 观察压缩区间：pre-step 触发时日志 call-result 完备，区间不再受 turn/end 封顶——
+ * 头部 → 表层长度-1-tailCount（尾部保留 tailCount 条不压缩），当前 turn 中已完备的
+ * 消息同样可压缩；区间终点回退到 tool-call/result 配对平衡点（不切段）。
+ * lastEndSeq 仅为中断扫描提供最后一个已结束 turn 的边界（无则 -1）。
  */
 export function computeCompressRange(
   session: Session,
@@ -98,30 +125,27 @@ export function computeCompressRange(
   /** 当前表层节点（按日志顺序）。 */
   const surface = [...session.surface.nodes];
   if (surface.length === 0) return undefined;
-  /** 最后一个 turn/end（fork seed 截断于此；无则无可压缩内容）。 */
-  const lastEnd = session.events.findLast((event) => event.type === 'turn/end');
-  if (!lastEnd) return undefined;
-  /** seed 覆盖的最后表层节点下标（其后为当前 turn 消息，不可压缩）。 */
-  let seedIdx = -1;
-  for (let i = surface.length - 1; i >= 0; i -= 1) {
-    const node = surface[i];
-    if (node !== undefined && node <= lastEnd.seq) {
-      seedIdx = i;
-      break;
-    }
-  }
-  if (seedIdx === -1) return undefined;
-  /** 区间末表层节点下标（尾部保留与 seed 封顶取小）。 */
-  const endIdx = Math.min(surface.length - 1 - tailCount, seedIdx);
+  /** 区间末表层节点下标（尾部保留 tailCount 条不压缩）。 */
+  let endIdx = surface.length - 1 - tailCount;
   if (endIdx < 0) return undefined;
-  /** 区间起点（表层首节点）。 */
+  /** 区间终点回退到配对平衡点（不切断 tool-call/result 配对）。 */
+  while (endIdx >= 0) {
+    /** 当前候选终点节点（表层节点序列稠密，防御性判空）。 */
+    const node = surface[endIdx];
+    if (node === undefined || isPairBalancedAfter(session, node)) break;
+    endIdx -= 1;
+  }
+  if (endIdx < 0) return undefined;
+  /** 区间起点（表层首节点，含旧 <om-history> 时一并合并）。 */
   const start = surface[0];
   /** 区间终点（表层节点 seq）。 */
   const end = surface[endIdx];
   if (start === undefined || end === undefined) return undefined;
   /** 被遮蔽的表层 seq 列表。 */
   const shadowedSeqs = surface.slice(0, endIdx + 1);
-  return { start, end, shadowedSeqs, lastEndSeq: lastEnd.seq };
+  /** 最后一个 turn/end（中断扫描边界；无则 -1）。 */
+  const lastEnd = session.events.findLast((event) => event.type === 'turn/end');
+  return { start, end, shadowedSeqs, lastEndSeq: lastEnd?.seq ?? -1 };
 }
 
 /**
@@ -170,7 +194,7 @@ export function extractHistoryText(
 
 /**
  * message_id 对照表：遮蔽区间内消息事件按表层顺序产出 id 行（插件自产 user/message
- * 如运行时上下文快照与 <om-history> 不入表；观察子会话据此产出正确的 message_id）。
+ * 如运行时上下文快照与 <om-history> 不入表；观察摘要据此产出正确的 message_id）。
  * 按表层顺序（shadowedSeqs）扫描：与 extractHistoryText 同理，seq 区间扫描会漏。
  */
 export function buildMessageIdTable(session: Session, shadowedSeqs: readonly number[]): string[] {
@@ -195,7 +219,7 @@ export function buildMessageIdTable(session: Session, shadowedSeqs: readonly num
       /** 结果消息 id。 */
       const id = messageIdOfEvent(event);
       if (id) {
-        /** 关联调用 id（供子会话按 callId 定位代码与结果）。 */
+        /** 关联调用 id（供摘要模型按 callId 定位代码与结果）。 */
         const callId = String(event.data.message.source.callId ?? '');
         rows.push(`[tool/result callId=${callId}] message_id=${id}`);
       }
@@ -233,7 +257,7 @@ function appendCompactionStart(session: Session, lifecycle: CompactionLifecycle)
 
 /**
  * 追加 compaction/summary（log-only，承担影子价格认领：紧随其后的替换消息消费 claim）。
- * summary 为完整合并后的 <om-history> 内文；usage 由 fork 子会话提取（无则省略）。
+ * summary 为完整合并后的 <om-history> 内文；usage 由摘要调用提取（无则省略）。
  */
 function appendCompactionSummary(
   session: Session,
@@ -305,7 +329,7 @@ function appendHistoryMessage(
 }
 
 /**
- * 反思：摘要 tokens ≥ 窗口 × historyMergeRatio 时，fork 子会话精简合并摘要，
+ * 反思：摘要 tokens ≥ 窗口 × historyMergeRatio 时，摘要调用精简合并摘要，
  * 替换单个 <om-history> 节点。失败不产生部分替换。
  */
 export async function reflectPass(
@@ -328,19 +352,25 @@ export async function reflectPass(
   if (tokens < threshold) return;
   /** 摘要节点须仍在表层才可替换。 */
   if (surfaceIndexOf([...session.surface.nodes], history.seq) === -1) return;
-  /** 反思子会话结果（null 表示失败/跳过）。 */
+  /** 反思指令（persona + 规则主体）。 */
+  const instruction = `${REFLECTOR_PERSONA}\n\n${buildReflectPrompt(config.summaryMode)}`;
+  /** system 模式的渲染输入（当前 <om-history> 内文）。 */
+  const contextText = config.summaryMode === 'system' ? history.text : undefined;
+  /** 反思摘要结果（null 表示失败/跳过）。 */
   const summaryResult = await runSummarySubagent(
     ctx,
     agent,
-    REFLECTOR_PERSONA,
-    buildReflectPrompt(),
+    instruction,
+    contextText,
     config.compressMaxTokens,
+    config.summaryMode,
+    target,
     signal,
   );
   if (summaryResult === null || summaryResult.text.trim().length === 0) return;
   /** 反思摘要文本。 */
   const report = summaryResult.text;
-  /** 本次压缩生命周期（compactionId + 当前轮次；fork 成功后才写入日志）。 */
+  /** 本次压缩生命周期（compactionId + 当前轮次；摘要成功后才写入日志）。 */
   const lifecycle: CompactionLifecycle = {
     compactionId: newCompactionId(),
     turn: openTurnOf(session),
@@ -387,7 +417,7 @@ export async function reflectPass(
 }
 
 /**
- * 观察：未压缩消息 tokens ≥ 窗口 × thresholdRatio 时，fork 子会话把未压缩消息压缩为
+ * 观察：未压缩消息 tokens ≥ 窗口 × thresholdRatio 时，摘要调用把未压缩消息压缩为
  * 观察日志，追加到旧摘要并替换被压缩消息区间。失败不产生部分替换。
  */
 export async function observePass(
@@ -406,7 +436,7 @@ export async function observePass(
   /** 未压缩消息 token 估算（不含 <om-history> 摘要节点）。 */
   const uncompressedTokens = measureUncompressedTokens(session, ctx.tokenMeter);
   if (uncompressedTokens < threshold) return;
-  /** 观察压缩区间（尾部保留 tailCount 条 + seed 封顶；无可行区间则跳过）。 */
+  /** 观察压缩区间（尾部保留 tailCount 条不压缩；无可行区间则跳过）。 */
   const range = computeCompressRange(session, tailCount);
   if (!range) return;
   /** 区间内旧摘要（追加基准；无则首次压缩）。 */
@@ -421,19 +451,38 @@ export async function observePass(
   );
   /** message_id 对照表行。 */
   const table = buildMessageIdTable(session, range.shadowedSeqs);
-  /** 观察提示词。 */
+  /** 实际保留的参考尾部条数（配对回退可能多于 tailCount）。 */
+  const surface = [...session.surface.nodes];
+  const actualTailCount = surface.length - range.shadowedSeqs.length;
+  /** 观察指令（persona + 规则主体）。 */
   const prompt = buildObservePrompt({
     table,
     interruptions,
     hasOldHistory: history !== undefined,
+    tailCount: actualTailCount,
+    mode: config.summaryMode,
   });
-  /** 观察子会话结果（null 表示失败/跳过）。 */
+  const instruction = `${OBSERVER_PERSONA}\n\n${prompt}`;
+  /** system 模式的渲染输入（被压缩消息 + 参考尾部）。 */
+  const contextText =
+    config.summaryMode === 'system'
+      ? [
+          '【被压缩消息】',
+          renderMessages(session, range.shadowedSeqs),
+          '',
+          `【参考尾部】（最后 ${actualTailCount} 条消息）`,
+          renderMessages(session, surface.slice(range.shadowedSeqs.length)),
+        ].join('\n')
+      : undefined;
+  /** 观察摘要结果（null 表示失败/跳过）。 */
   const summaryResult = await runSummarySubagent(
     ctx,
     agent,
-    OBSERVER_PERSONA,
-    prompt,
+    instruction,
+    contextText,
     config.compressMaxTokens,
+    config.summaryMode,
+    target,
     signal,
   );
   if (summaryResult === null || summaryResult.text.trim().length === 0) return;
@@ -449,7 +498,7 @@ export async function observePass(
     const message = event ? session.deriveEventMessage(event) : null;
     return total + (message ? ctx.tokenMeter.estimateMessage(message) : 0);
   }, 0);
-  /** 本次压缩生命周期（compactionId + 当前轮次；fork 成功后才写入日志）。 */
+  /** 本次压缩生命周期（compactionId + 当前轮次；摘要成功后才写入日志）。 */
   const lifecycle: CompactionLifecycle = {
     compactionId: newCompactionId(),
     turn: openTurnOf(session),

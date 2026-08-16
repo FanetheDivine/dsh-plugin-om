@@ -17,10 +17,11 @@ import {
   estimateTextTokens,
   extractHistoryText,
   findLatestHistory,
+  isPairBalancedAfter,
   measureUncompressedTokens,
   scanInterruptions,
 } from '../src/compress.ts';
-import { resolveConfig } from '../src/config.ts';
+import { resolveConfig, resolveSummaryModeFromEnv, SUMMARY_MODE_ENV } from '../src/config.ts';
 import {
   HISTORY_TAG,
   PLUGIN_LABEL,
@@ -42,13 +43,13 @@ import {
   buildReflectPrompt,
   OBSERVER_PERSONA,
   REFLECTOR_PERSONA,
+  renderMessages,
 } from '../src/summarize.ts';
 import type { Session, SessionEvent } from '../src/types.ts';
 import { envFlagEnabled } from '../src/utils.ts';
 import {
   buildToolCallFlow,
   makeCtx,
-  makeForkChildSession,
   makeMessage,
   makeMeter,
   makeSession,
@@ -138,6 +139,7 @@ describe('配置校验 resolveConfig', () => {
     expect(d.historyMergeRatio).toBe(0.2);
     expect(d.compressMaxTokens).toBe(4096);
     expect(d.tailMessageCount).toBe(10);
+    expect(d.summaryMode).toBe('prefix');
     expect(d).not.toHaveProperty('summaryMaxChars');
     expect(d).not.toHaveProperty('recallMaxMessages');
     expect(d).not.toHaveProperty('auto');
@@ -165,6 +167,7 @@ describe('配置校验 resolveConfig', () => {
       expect(d.historyMergeRatio).toBe(0.2);
       expect(d.compressMaxTokens).toBe(4096);
       expect(d.tailMessageCount).toBe(10);
+      expect(d.summaryMode).toBe('prefix');
     }
   });
 
@@ -192,6 +195,38 @@ describe('配置校验 resolveConfig', () => {
     expect(() => resolveConfig({ tailTokenBudgetRatio: 0.1 })).toThrow();
     expect(() => resolveConfig({ auto: false })).toThrow();
     expect(() => resolveConfig({ evalEnabled: false })).toThrow();
+  });
+});
+
+describe('摘要模式 resolveSummaryModeFromEnv', () => {
+  it('缺省 / 空串 / prefix 回退 prefix', () => {
+    expect(resolveSummaryModeFromEnv({})).toBe('prefix');
+    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: '' })).toBe('prefix');
+    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: '   ' })).toBe('prefix');
+    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'prefix' })).toBe('prefix');
+  });
+
+  it("'system' 切换 system 模式", () => {
+    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'system' })).toBe('system');
+  });
+
+  it('非法值抛错并指出环境变量名', () => {
+    expect(() => resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'bogus' })).toThrow(
+      /DSH_OM_SUMMARY_MODE/,
+    );
+  });
+
+  it('resolveConfig 读取环境变量（设置后清理，不泄漏到其他用例）', () => {
+    const prev = process.env[SUMMARY_MODE_ENV];
+    try {
+      process.env[SUMMARY_MODE_ENV] = 'system';
+      expect(resolveConfig({}).summaryMode).toBe('system');
+      delete process.env[SUMMARY_MODE_ENV];
+      expect(resolveConfig({}).summaryMode).toBe('prefix');
+    } finally {
+      if (prev === undefined) delete process.env[SUMMARY_MODE_ENV];
+      else process.env[SUMMARY_MODE_ENV] = prev;
+    }
   });
 });
 
@@ -279,14 +314,16 @@ describe('观察压缩区间 computeCompressRange', () => {
     });
   }
 
-  it('尾部保留 tailCount 条，其余全部压缩', () => {
+  it('尾部保留 tailCount 条，其余压缩（区间终点回退到配对平衡点）', () => {
     const session = makeSession({ events: singleFlow() });
+    // tailCount=1：表层 [0,1,3]，endIdx=1 落在 assistant(tool-call) 上 → 回退到 0
     expect(computeCompressRange(session, 1)).toEqual({
       start: 0,
-      end: 1,
-      shadowedSeqs: [0, 1],
+      end: 0,
+      shadowedSeqs: [0],
       lastEndSeq: 4,
     });
+    // tailCount=0：压缩全部（result 之后平衡）
     expect(computeCompressRange(session, 0)).toEqual({
       start: 0,
       end: 3,
@@ -295,8 +332,8 @@ describe('观察压缩区间 computeCompressRange', () => {
     });
   });
 
-  it('当前 turn 消息不压缩：区间封顶在最后一个已结束 turn 的表层节点', () => {
-    // 第二个流程没有 turn/end：模拟当前 turn 进行中，其消息已在表层但 fork seed 不可见
+  it('当前 turn 消息可压缩（mid-turn：区间延伸到当前 turn 已完备的消息）', () => {
+    // 第二个流程没有 turn/end：模拟当前 turn 进行中，pre-step 时 call-result 已完备
     const events = [
       ...singleFlow(),
       ...buildToolCallFlow({
@@ -310,18 +347,29 @@ describe('观察压缩区间 computeCompressRange', () => {
       }),
     ];
     const session = makeSession({ events }); // 表层 [0,1,3,5,6,8]
-    const range = computeCompressRange(session, 1);
-    expect(range).toEqual({ start: 0, end: 3, shadowedSeqs: [0, 1, 3], lastEndSeq: 4 });
+    // tailCount=1：endIdx=4 落在 assistant-c2(tool-call) 上 → 回退到 3（user-c2，平衡）
+    expect(computeCompressRange(session, 1)).toEqual({
+      start: 0,
+      end: 5,
+      shadowedSeqs: [0, 1, 3, 5],
+      lastEndSeq: 4,
+    });
   });
 
-  it('无 turn/end 时返回 undefined', () => {
+  it('无 turn/end 时仍可压缩（pre-step call-result 完备，不依赖 turn 边界）', () => {
     const flow = buildToolCallFlow({
       code: 'a()',
       description: '任务A',
       callId: 'c1',
       resultText: 'r1',
     });
-    expect(computeCompressRange(makeSession({ events: flow }), 1)).toBeUndefined();
+    // 表层 [0,1,3]；tailCount=1 → 回退到 0；lastEndSeq 无 → -1
+    expect(computeCompressRange(makeSession({ events: flow }), 1)).toEqual({
+      start: 0,
+      end: 0,
+      shadowedSeqs: [0],
+      lastEndSeq: -1,
+    });
   });
 
   it('尾部条数 ≥ 表层节点数时返回 undefined', () => {
@@ -330,6 +378,33 @@ describe('观察压缩区间 computeCompressRange', () => {
 
   it('空表层返回 undefined', () => {
     expect(computeCompressRange(makeSession(), 1)).toBeUndefined();
+  });
+});
+
+describe('配对平衡 isPairBalancedAfter', () => {
+  it('助手 tool-call 与其结果之间不平衡，结果之后平衡', () => {
+    const flow = buildToolCallFlow({
+      code: 'a()',
+      description: '任务A',
+      callId: 'c1',
+      resultText: 'r1',
+    });
+    const session = makeSession({ events: flow }); // 表层 [0,1,3]
+    expect(isPairBalancedAfter(session, 0)).toBe(true); // user 之后
+    expect(isPairBalancedAfter(session, 1)).toBe(false); // assistant(tool-call) 之后
+    expect(isPairBalancedAfter(session, 3)).toBe(true); // tool/result 之后
+  });
+
+  it('无工具调用的消息边界平衡', () => {
+    const session = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({ content: [textBlock('你好')], id: 'u1' }),
+        } as unknown as SessionEvent,
+      ],
+    });
+    expect(isPairBalancedAfter(session, 0)).toBe(true);
   });
 });
 
@@ -470,11 +545,13 @@ describe('message_id 对照表 buildMessageIdTable', () => {
 });
 
 describe('观察提示词 buildObservePrompt', () => {
-  it('含聚合规则（不限于 run_code）/对照表/中断标记/追加说明', () => {
+  it('含聚合规则（不限于 run_code）/对照表/中断标记/参考尾部/追加说明', () => {
     const prompt = buildObservePrompt({
       table: ['[user] message_id=u1', '[tool/result callId=c1] message_id=r1'],
       interruptions: ['[interrupted] turn 1 被中断（aborted，原因 user）'],
       hasOldHistory: true,
+      tailCount: 2,
+      mode: 'prefix',
     });
     expect(prompt).toContain('user_message message_id:<id> text:<要点>');
     expect(prompt).toContain('toolcall message_id:<该组最后一条消息的 message_id>');
@@ -485,22 +562,49 @@ describe('观察提示词 buildObservePrompt', () => {
     expect(prompt).toContain('[user] message_id=u1');
     expect(prompt).toContain('[tool/result callId=c1] message_id=r1');
     expect(prompt).toContain('追加到上一次压缩产物');
+    // prefix 模式：引用上方完整会话记录 + 参考尾部条数
+    expect(prompt).toContain('上方的消息记录是主会话的完整历史');
+    expect(prompt).toContain('最后 2 条消息是最近上下文');
   });
 
   it('首次压缩（无旧摘要）表述为第一条日志', () => {
-    const prompt = buildObservePrompt({ table: [], interruptions: [], hasOldHistory: false });
+    const prompt = buildObservePrompt({
+      table: [],
+      interruptions: [],
+      hasOldHistory: false,
+      tailCount: 0,
+      mode: 'prefix',
+    });
     expect(prompt).toContain('第一条 <om-history> 压缩日志');
     expect(prompt).not.toContain('追加到上一次压缩产物');
+  });
+
+  it('system 模式：定位【被压缩消息】/【参考尾部】段', () => {
+    const prompt = buildObservePrompt({
+      table: [],
+      interruptions: [],
+      hasOldHistory: false,
+      tailCount: 3,
+      mode: 'system',
+    });
+    expect(prompt).toContain('【被压缩消息】段是本次要压缩的对象');
+    expect(prompt).toContain('【参考尾部】段是最近上下文');
+    expect(prompt).toContain('段内全部消息都是未压缩消息');
   });
 });
 
 describe('反思提示词 buildReflectPrompt', () => {
   it('精简合并规则：用户消息保留要点、toolcall 聚合、可写（略）', () => {
-    const prompt = buildReflectPrompt();
+    const prompt = buildReflectPrompt('prefix');
     expect(prompt).toContain('精简合并');
     expect(prompt).toContain('user_message message_id:<id> text:<要点>');
     expect(prompt).toContain('（略）');
     expect(prompt).toContain('替换当前的 <om-history> 块内容');
+  });
+
+  it('system 模式定位下方的 <om-history> 压缩日志', () => {
+    const prompt = buildReflectPrompt('system');
+    expect(prompt).toContain('下方的消息记录包含当前的 <om-history> 压缩日志');
   });
 });
 
@@ -519,21 +623,34 @@ describe('apply 接线（OM 观察压缩）', () => {
     return nextCalled;
   }
 
+  /** 取一次摘要调用（llm.stream）的请求选项。 */
+  function summaryOptions(ctx: ReturnType<typeof makeCtx>, index = 0) {
+    return ctx._llmCalls[index]?.options as {
+      system?: string;
+      messages?: Array<{
+        role?: string;
+        content?: Array<{ type?: string; text?: string }>;
+      }>;
+      maxTokens?: number;
+    };
+  }
+
+  /** 提取摘要指令文本（prefix 模式为最后一条消息；system 模式为 system 字段）。 */
+  function instructionText(options: ReturnType<typeof summaryOptions>): string {
+    if (options.system !== undefined) return options.system;
+    const last = options.messages?.at(-1);
+    return String(last?.content?.[0]?.text ?? '');
+  }
+
   /** 返回固定观察报告的 ctx（默认 window 8：观察阈值 4 tokens，必然触发）。 */
-  function observeCtx(report: string, calls: { n: number }, window = 8) {
+  function observeCtx(report: string, window = 8) {
     return makeCtx({
       resolveModelInfo: async () => ({ context: { contextWindow: window } }),
-      subagentStart: async () => {
-        calls.n += 1;
-        return {
-          result: Promise.resolve({ output: [textBlock(report)], stopReason: 'completed' }),
-          dispose: async () => {},
-        };
-      },
+      llmStream: [{ type: 'text-delta', text: report }],
     });
   }
 
-  it('触发观察：fork 摘要 → 追加为 <om-history>，替换被压缩区间', async () => {
+  it('触发观察：摘要调用 → 追加为 <om-history>，替换被压缩区间', async () => {
     const flowEvents = buildToolCallFlow({
       code: 'runMe()',
       description: '跑一下',
@@ -544,8 +661,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     const session = makeSession({ events: flowEvents });
     const report =
       'user_message message_id:user-c-eval text:请帮我完成一个任务\ntoolcall message_id:result-c-eval purpose:跑一下 summary:产物符合预期；下一步提交';
-    const calls = { n: 0 };
-    const ctx = observeCtx(report, calls);
+    const ctx = observeCtx(report);
     apply(ctx, { tailMessageCount: 1 });
 
     expect(ctx._sections).toHaveLength(0);
@@ -556,20 +672,21 @@ describe('apply 接线（OM 观察压缩）', () => {
 
     const nextCalled = await runPreStep(ctx, session);
     expect(nextCalled).toBe(true); // 阻塞执行后放行
-    expect(calls.n).toBe(1);
-    const req = ctx._subagentCalls[0]?.request as {
-      persona?: string;
-      prompt?: Array<{ type?: string; text?: string }>;
-    };
-    expect(req.persona).toBe(OBSERVER_PERSONA);
+    expect(ctx._llmCalls).toHaveLength(1);
+    const options = summaryOptions(ctx);
+    // prefix 模式：persona 并入指令（最后一条 user 消息）；mock requestHeader 无 system
+    const instruction = instructionText(options);
+    expect(instruction.startsWith(OBSERVER_PERSONA)).toBe(true);
+    expect(options.system).toBeUndefined();
+    expect(options.maxTokens).toBe(4096); // compressMaxTokens 默认
 
     const historyText = latestHistoryText(session);
     expect(historyText).toContain('user_message message_id:user-c-eval text:请帮我完成一个任务');
     expect(historyText).toContain(
       'toolcall message_id:result-c-eval purpose:跑一下 summary:产物符合预期；下一步提交',
     );
-    // 遮蔽后表层 = <om-history> + 尾部 1 条
-    expect(session.surface.nodes.length).toBe(2);
+    // 遮蔽后表层 = <om-history> + 尾部（配对回退后保留 assistant + result 两条）
+    expect(session.surface.nodes.length).toBe(3);
     // compaction 生命周期：start → summary → 替换消息 → end（同 compactionId）
     const { start, summary, end, replace } = compactionLifecycle(session);
     expect(start).not.toBe(-1);
@@ -615,10 +732,9 @@ describe('apply 接线（OM 观察压缩）', () => {
     const session = makeSession({
       events: [historyMessage('user_message message_id:old-u text:旧任务'), ...flowEvents],
     });
-    const calls = { n: 0 };
     // window 11 + historyMergeRatio 1：观察阈值 5.5 ≤ 未压缩 6 tokens（触发）；
     // 反思阈值 11 > 旧摘要 10 tokens（不触发）——隔离观察路径验证增量追加
-    const ctx = observeCtx('toolcall message_id:result-c1 summary:新内容', calls, 11);
+    const ctx = observeCtx('toolcall message_id:result-c1 summary:新内容', 11);
     apply(ctx, { tailMessageCount: 1, historyMergeRatio: 1 });
     await runPreStep(ctx, session);
     const historyText = latestHistoryText(session);
@@ -630,7 +746,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(newIdx).toBeGreaterThan(oldIdx);
   });
 
-  it('未达观察阈值不压缩（无 fork、无 <om-history>）', async () => {
+  it('未达观察阈值不压缩（无摘要调用、无 <om-history>）', async () => {
     const session = makeSession({
       events: buildToolCallFlow({
         code: 'a()',
@@ -643,12 +759,12 @@ describe('apply 接线（OM 观察压缩）', () => {
     const ctx = makeCtx({ resolveModelInfo: async () => ({ context: { contextWindow: 100000 } }) });
     apply(ctx, {});
     await runPreStep(ctx, session);
-    expect(ctx._subagentCalls).toHaveLength(0);
+    expect(ctx._llmCalls).toHaveLength(0);
     expect(latestHistoryText(session)).toBe('');
     expect(session.surface.nodes.length).toBe(3);
   });
 
-  it('fork 失败（无输出）不产生替换', async () => {
+  it('摘要无输出（空文本）不产生替换', async () => {
     const session = makeSession({
       events: buildToolCallFlow({
         code: 'a()',
@@ -660,22 +776,43 @@ describe('apply 接线（OM 观察压缩）', () => {
     });
     const ctx = makeCtx({
       resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
-      subagentStart: async () => ({
-        result: Promise.resolve({ output: [], stopReason: 'completed' }),
-        dispose: async () => {},
-      }),
+      llmStream: [{ type: 'text-delta', text: '' }],
     });
     apply(ctx, { tailMessageCount: 1 });
     await runPreStep(ctx, session);
-    expect(ctx._subagentCalls).toHaveLength(1); // fork 被调用
-    // fork 无输出：不写任何 compaction 生命周期事件，也无部分替换
+    expect(ctx._llmCalls).toHaveLength(1); // 摘要调用已发出
+    // 摘要无输出：不写任何 compaction 生命周期事件，也无部分替换
     expect(session.events.some((e) => e.type === 'compaction/start')).toBe(false);
     expect(session.events.some((e) => e.type === 'compaction/summary')).toBe(false);
     expect(session.events.some((e) => e.type === 'compaction/end')).toBe(false);
     expect(latestHistoryText(session)).toBe(''); // 无部分替换
   });
 
-  it('中断标记（aborted）进入观察提示词', async () => {
+  it('摘要流非 stop 结束（max-tokens）视为未完成，不产生替换', async () => {
+    const session = makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
+    });
+    const ctx = makeCtx({
+      resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
+      llmStream: [
+        { type: 'text-delta', text: '部分输出' },
+        { type: 'finish', reason: { kind: 'max-tokens' } },
+      ],
+    });
+    apply(ctx, { tailMessageCount: 1 });
+    await runPreStep(ctx, session);
+    expect(ctx._llmCalls).toHaveLength(1);
+    expect(session.events.some((e) => e.type === 'compaction/start')).toBe(false);
+    expect(latestHistoryText(session)).toBe('');
+  });
+
+  it('中断标记（aborted）进入观察指令', async () => {
     const flowEvents = buildToolCallFlow({
       code: 'a()',
       description: '任务A',
@@ -685,18 +822,14 @@ describe('apply 接线（OM 观察压缩）', () => {
       turnEndReason: { kind: 'aborted', reason: { kind: 'user' } },
     });
     const session = makeSession({ events: flowEvents });
-    const calls = { n: 0 };
-    const ctx = observeCtx('user_message message_id:user-c1 text:请帮我完成一个任务', calls);
+    const ctx = observeCtx('user_message message_id:user-c1 text:请帮我完成一个任务');
     apply(ctx, { tailMessageCount: 1 });
     await runPreStep(ctx, session);
-    const req = ctx._subagentCalls[0]?.request as {
-      prompt?: Array<{ type?: string; text?: string }>;
-    };
-    const promptText = String(req.prompt?.[0]?.text ?? '');
-    expect(promptText).toContain('[interrupted] turn 1 被中断（aborted，原因 user）');
+    const instruction = instructionText(summaryOptions(ctx));
+    expect(instruction).toContain('[interrupted] turn 1 被中断（aborted，原因 user）');
   });
 
-  it('当前 turn 消息不压缩：区间封顶后其消息留在表层', async () => {
+  it('当前 turn 消息可压缩：mid-turn 压缩后其消息被替换、对照表含当前 turn 消息', async () => {
     const events = [
       ...buildToolCallFlow({
         code: 'a()',
@@ -716,22 +849,18 @@ describe('apply 接线（OM 观察压缩）', () => {
       }),
     ];
     const session = makeSession({ events }); // 表层 [0,1,3,5,6,8]
-    const calls = { n: 0 };
-    const ctx = observeCtx('toolcall message_id:result-c1 summary:A', calls);
+    const ctx = observeCtx('toolcall message_id:result-c1 summary:A');
     apply(ctx, { tailMessageCount: 1 });
     await runPreStep(ctx, session);
+    // 区间 [0..5]（回退到 user-c2@5 平衡点），尾部保留 assistant-c2/result-c2
     const nodes = session.surface.nodes;
-    expect(nodes.length).toBe(4); // <om-history> + 5,6,8
-    expect(nodes[1]).toBe(5);
-    expect(nodes[2]).toBe(6);
-    expect(nodes[3]).toBe(8);
-    // 对照表只含被压缩的 0,1,3，不含当前 turn 消息
-    const req = ctx._subagentCalls[0]?.request as {
-      prompt?: Array<{ type?: string; text?: string }>;
-    };
-    const promptText = String(req.prompt?.[0]?.text ?? '');
-    expect(promptText).toContain('message_id=user-c1');
-    expect(promptText).not.toContain('message_id=user-c2');
+    expect(nodes.length).toBe(3); // <om-history> + 6,8
+    expect(nodes[1]).toBe(6);
+    expect(nodes[2]).toBe(8);
+    // 对照表含被压缩的 0,1,3 与当前 turn 的 user-c2（mid-turn 压缩）
+    const instruction = instructionText(summaryOptions(ctx));
+    expect(instruction).toContain('message_id=user-c1');
+    expect(instruction).toContain('message_id=user-c2');
   });
 
   it('subagent 会话不压缩（主会话守卫）', async () => {
@@ -748,13 +877,13 @@ describe('apply 接线（OM 观察压缩）', () => {
     const ctx = makeCtx({ resolveModelInfo: async () => ({ context: { contextWindow: 8 } }) });
     apply(ctx, {});
     await runPreStep(ctx, session);
-    expect(ctx._subagentCalls).toHaveLength(0);
+    expect(ctx._llmCalls).toHaveLength(0);
     expect(session.surface.nodes.length).toBe(3);
   });
 });
 
 describe('apply 接线（OM 反思压缩）', () => {
-  /** 运行 pre-step 监听器并返回 fork 调用记录。 */
+  /** 运行 pre-step 监听器并返回摘要调用记录。 */
   async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
     const preStepListeners = ctx._onCallbacks.get('agent/pre-step');
     await preStepListeners?.[0]?.(
@@ -763,7 +892,16 @@ describe('apply 接线（OM 反思压缩）', () => {
     );
   }
 
-  it('摘要超反思阈值：fork 精简合并并替换单个 <om-history> 节点', async () => {
+  /** 提取摘要指令文本（prefix 模式为最后一条消息的文本）。 */
+  function instructionText(options: unknown): string {
+    const o = options as {
+      messages?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
+    };
+    const last = o.messages?.at(-1);
+    return String(last?.content?.[0]?.text ?? '');
+  }
+
+  it('摘要超反思阈值：摘要调用精简合并并替换单个 <om-history> 节点', async () => {
     // 摘要 40 字符 ≈ 10 tokens；window 16 × 0.2 = 3.2 → 触发反思
     // 未压缩消息 ≈ 6 tokens < 16 × 0.5 = 8 → 观察不触发
     const session = makeSession({
@@ -779,22 +917,14 @@ describe('apply 接线（OM 反思压缩）', () => {
       ],
     });
     const before = session.surface.nodes.length;
-    const calls = { n: 0 };
     const ctx = makeCtx({
       resolveModelInfo: async () => ({ context: { contextWindow: 16 } }),
-      subagentStart: async () => {
-        calls.n += 1;
-        return {
-          result: Promise.resolve({ output: [textBlock('REFLECTED')], stopReason: 'completed' }),
-          dispose: async () => {},
-        };
-      },
+      llmStream: [{ type: 'text-delta', text: 'REFLECTED' }],
     });
     apply(ctx, {});
     await runPreStep(ctx, session);
-    expect(calls.n).toBe(1);
-    const req = ctx._subagentCalls[0]?.request as { persona?: string };
-    expect(req.persona).toBe(REFLECTOR_PERSONA);
+    expect(ctx._llmCalls).toHaveLength(1);
+    expect(instructionText(ctx._llmCalls[0]?.options).startsWith(REFLECTOR_PERSONA)).toBe(true);
     expect(session.surface.nodes.length).toBe(before); // 单节点替换，节点数不变
     expect(latestHistoryText(session)).toContain('REFLECTED');
     expect(latestHistoryText(session)).not.toContain('X'.repeat(40)); // 旧摘要被替换
@@ -814,27 +944,21 @@ describe('apply 接线（OM 反思压缩）', () => {
         }),
       ],
     });
-    let n = 0;
+    // 生成器按次 yield：第一次 stream 调用消费 REFLECTED，第二次消费 OBSERVED
     const ctx = makeCtx({
       resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
-      subagentStart: async () => {
-        n += 1;
-        return {
-          result: Promise.resolve({
-            output: [textBlock(n === 1 ? 'REFLECTED' : 'OBSERVED')],
-            stopReason: 'completed',
-          }),
-          dispose: async () => {},
-        };
-      },
+      llmStream: (function* () {
+        yield { type: 'text-delta', text: 'REFLECTED' };
+        yield { type: 'text-delta', text: 'OBSERVED' };
+      })(),
     });
     apply(ctx, { tailMessageCount: 1 });
     await runPreStep(ctx, session);
-    expect(ctx._subagentCalls).toHaveLength(2);
-    const persona0 = (ctx._subagentCalls[0]?.request as { persona?: string } | undefined)?.persona;
-    const persona1 = (ctx._subagentCalls[1]?.request as { persona?: string } | undefined)?.persona;
-    expect(persona0).toBe(REFLECTOR_PERSONA); // 先反思
-    expect(persona1).toBe(OBSERVER_PERSONA); // 后观察
+    expect(ctx._llmCalls).toHaveLength(2);
+    const firstText = instructionText(ctx._llmCalls[0]?.options);
+    const secondText = instructionText(ctx._llmCalls[1]?.options);
+    expect(firstText.startsWith(REFLECTOR_PERSONA)).toBe(true); // 先反思
+    expect(secondText.startsWith(OBSERVER_PERSONA)).toBe(true); // 后观察
     const text = latestHistoryText(session);
     expect(text.indexOf('REFLECTED')).toBeGreaterThan(-1);
     expect(text.indexOf('OBSERVED')).toBeGreaterThan(text.indexOf('REFLECTED'));
@@ -871,10 +995,7 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
     });
     const ctx = makeCtx({
       resolveModelInfo: async () => ({ context: { contextWindow: 16 } }),
-      subagentStart: async () => ({
-        result: Promise.resolve({ output: [textBlock('REFLECTED')], stopReason: 'completed' }),
-        dispose: async () => {},
-      }),
+      llmStream: [{ type: 'text-delta', text: 'REFLECTED' }],
     });
     apply(ctx, {});
     await runPreStep(ctx, session);
@@ -922,13 +1043,7 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
     });
     const ctx = makeCtx({
       resolveModelInfo: async () => ({ context: { contextWindow: 11 } }),
-      subagentStart: async () => ({
-        result: Promise.resolve({
-          output: [textBlock('toolcall message_id:result-c1 summary:新内容')],
-          stopReason: 'completed',
-        }),
-        dispose: async () => {},
-      }),
+      llmStream: [{ type: 'text-delta', text: 'toolcall message_id:result-c1 summary:新内容' }],
     });
     apply(ctx, { tailMessageCount: 1, historyMergeRatio: 1 });
     await runPreStep(ctx, session);
@@ -945,7 +1060,7 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
   });
 });
 
-describe('OM 会话 token 归入主会话（compaction/summary.usage）', () => {
+describe('OM 摘要 token 归入主会话（compaction/summary.usage）', () => {
   async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
     const preStepListeners = ctx._onCallbacks.get('agent/pre-step');
     await preStepListeners?.[0]?.(
@@ -973,55 +1088,130 @@ describe('OM 会话 token 归入主会话（compaction/summary.usage）', () => 
     return { session, ctx };
   }
 
-  it('fork 子会话报告 usage：写入主会话 compaction/summary.usage', async () => {
-    const childUsage = {
+  it('摘要流报告 usage：写入主会话 compaction/summary.usage', async () => {
+    const summaryUsage = {
       inputTokens: 100,
       outputTokens: 50,
       cacheReadTokens: 10,
       cacheWriteTokens: 5,
     };
     const { session, ctx } = sessionAndCtx({
-      subagentStart: async () => ({
-        result: Promise.resolve({
-          output: [textBlock('user_message message_id:user-c1 text:请帮我完成一个任务')],
-          stopReason: 'completed',
-        }),
-        dispose: async () => {},
-        localAgent: { session: makeForkChildSession(childUsage) },
-      }),
+      llmStream: [
+        { type: 'text-delta', text: 'user_message message_id:user-c1 text:请帮我完成一个任务' },
+        { type: 'usage', usage: summaryUsage },
+      ],
     });
     await runPreStep(ctx, session);
     const summaryIdx = session.events.findIndex((e) => e.type === 'compaction/summary');
     const summaryEvent = session.events[summaryIdx];
     if (summaryEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
-    expect(summaryEvent.data.usage).toEqual(childUsage);
+    expect(summaryEvent.data.usage).toEqual(summaryUsage);
   });
 
-  it('fork 无 usage（无 localAgent / 无 usage 事件）时省略 usage 字段', async () => {
-    const { session, ctx } = sessionAndCtx(); // 默认 mock：run 无 localAgent
+  it('摘要流无 usage（无 usage chunk）时省略 usage 字段', async () => {
+    const { session, ctx } = sessionAndCtx(); // 默认 mock：无 usage chunk
     await runPreStep(ctx, session);
     const summaryIdx = session.events.findIndex((e) => e.type === 'compaction/summary');
     const summaryEvent = session.events[summaryIdx];
     if (summaryEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
     expect(summaryEvent.data.usage).toBeUndefined();
   });
+});
 
-  it('localAgent 存在但子会话无 usage 事件时省略 usage 字段', async () => {
-    const { session, ctx } = sessionAndCtx({
-      subagentStart: async () => ({
-        result: Promise.resolve({
-          output: [textBlock('user_message message_id:user-c1 text:请帮我完成一个任务')],
-          stopReason: 'completed',
-        }),
-        dispose: async () => {},
-        localAgent: { session: makeForkChildSession(undefined) },
+describe('摘要请求形态（prefix / system 双模式）', () => {
+  async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
+    const preStepListeners = ctx._onCallbacks.get('agent/pre-step');
+    await preStepListeners?.[0]?.(
+      { agent: { session }, signal: new AbortController().signal },
+      () => {},
+    );
+  }
+
+  /** 带 requestHeader system/tools 的会话（prefix 模式前缀对齐断言用）。 */
+  function sessionWithHeader() {
+    return makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
       }),
+      requestHeaderValue: {
+        config: { provider: 'test', model: 'test-model' },
+        system: '主会话系统提示词',
+        tools: [{ name: 'run_code' }],
+      },
     });
+  }
+
+  it('prefix 模式（缺省）：system/tools 复用主会话请求头，messages = 完整历史 + 指令', async () => {
+    const session = sessionWithHeader();
+    const ctx = makeCtx({ resolveModelInfo: async () => ({ context: { contextWindow: 8 } }) });
+    apply(ctx, { tailMessageCount: 1 });
     await runPreStep(ctx, session);
-    const summaryIdx = session.events.findIndex((e) => e.type === 'compaction/summary');
-    const summaryEvent = session.events[summaryIdx];
-    if (summaryEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
-    expect(summaryEvent.data.usage).toBeUndefined();
+    const options = ctx._llmCalls[0]?.options as {
+      system?: string;
+      tools?: unknown[];
+      messages?: Array<{ role?: string; content?: Array<{ type?: string; text?: string }> }>;
+    };
+    expect(options?.system).toBe('主会话系统提示词');
+    expect(options?.tools).toEqual([{ name: 'run_code' }]);
+    // messages = 完整派生历史（3 条）+ 指令 1 条
+    expect(options?.messages).toHaveLength(4);
+    const last = options?.messages?.at(-1);
+    expect(last?.role).toBe('user');
+    expect(String(last?.content?.[0]?.text ?? '')).toContain(OBSERVER_PERSONA);
+  });
+
+  it('system 模式（DSH_OM_SUMMARY_MODE=system）：指令作为 system，被压缩消息 + 参考尾部作为输入', async () => {
+    const session = sessionWithHeader();
+    const ctx = makeCtx({
+      resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
+      llmStream: [{ type: 'text-delta', text: 'OBSERVED' }],
+    });
+    const prev = process.env[SUMMARY_MODE_ENV];
+    try {
+      process.env[SUMMARY_MODE_ENV] = 'system';
+      apply(ctx, { tailMessageCount: 1 });
+      await runPreStep(ctx, session);
+    } finally {
+      if (prev === undefined) delete process.env[SUMMARY_MODE_ENV];
+      else process.env[SUMMARY_MODE_ENV] = prev;
+    }
+    const options = ctx._llmCalls[0]?.options as {
+      system?: string;
+      messages?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
+    };
+    expect(options?.system?.startsWith(OBSERVER_PERSONA)).toBe(true);
+    const input = String(options?.messages?.[0]?.content?.[0]?.text ?? '');
+    expect(input).toContain('【被压缩消息】');
+    expect(input).toContain('【参考尾部】');
+    expect(input).toContain('message_id=user-c1');
+    // 被压缩消息 = 区间 [0]（tailCount=1，配对回退）；参考尾部 = assistant + result
+    expect(session.surface.nodes.length).toBe(3);
+  });
+});
+
+describe('消息渲染 renderMessages', () => {
+  it('按表层顺序输出 role 头 + message_id + 文本', () => {
+    const flow = buildToolCallFlow({
+      code: 'a()',
+      description: '任务A',
+      callId: 'c1',
+      resultText: 'r1',
+      userMessageId: 'u1',
+      assistantMessageId: 'a1',
+      resultMessageId: 'r1m',
+    });
+    const session = makeSession({ events: flow }); // 表层 [0,1,3]
+    const text = renderMessages(session, [0, 1, 3]);
+    expect(text).toContain('--- user message_id=u1 ---');
+    expect(text).toContain('--- assistant message_id=a1 ---');
+    expect(text).toContain('--- tool/result message_id=r1m ---');
+    expect(text).toContain('请帮我完成一个任务');
+    expect(text).toContain('run_code'); // tool-call 展开参数
+    expect(text).toContain('r1');
   });
 });
 

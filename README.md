@@ -10,7 +10,8 @@
 2. 摘要会替换原始消息，并追加至现有摘要
 3. 在摘要超过阈值后，重新摘要
 4. 摘要过程中保留关键的message_id，允许模型精确recall
-5. 提供语义召回（recall-semantic）：按自然语言在全部消息日志中检索，被压缩/遮蔽的消息也可按语义找回
+5. 压缩在 `agent/pre-step` 触发（**turn 中间即可**，无需等待轮次结束）：摘要直连 LLM，默认（`prefix` 模式）复用主会话请求前缀（系统提示词 + 完整消息 + 末尾指令），充分利用 provider 前缀缓存
+6. 提供语义召回（recall-semantic）：按自然语言在全部消息日志中检索，被压缩/遮蔽的消息也可按语义找回
 
 ### 注意
 
@@ -92,8 +93,15 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 | `thresholdRatio`    | `0.5`    | 观察阈值：未压缩消息 ≥ 窗口 × 该比例触发压缩                               |
 | `historyMergeRatio` | `0.2`    | 反思阈值：摘要 ≥ 窗口 × 该比例触发精简合并                                 |
 | `compressMaxTokens` | `4096`   | 单次摘要（观察/反思调用）生成上限                                          |
-| `tailMessageCount`  | `10`     | 压缩后保留的未压缩消息条数                                                 |
+| `tailMessageCount`  | `10`     | 尾部保留的不压缩消息条数（同时作为摘要模型的参考尾部）                     |
 | `modelDir`          | 打包模型 | recall-semantic 嵌入模型目录（默认插件内打包的本地模型；可指向自定义目录）。onnx 缺失时运行时自动下载到该目录 |
+
+### 摘要模式（环境变量）
+
+摘要调用由环境变量 `DSH_OM_SUMMARY_MODE` 控制（缺省 `prefix`；非法值在插件加载时报错）：
+
+- `prefix`（缺省）：复用主会话请求前缀——`system`/`tools` 取自主会话上次请求，`messages` = 完整派生历史 + 末尾追加指令 user 消息，本次摘要请求是主会话请求的**真前缀**，充分利用 provider 前缀缓存（与宿主 `compaction-basic` 同款策略）。
+- `system`：指令（persona + 规则）作为 system 提示词，被压缩消息与参考尾部（渲染为文本）作为 user 消息输入模型压缩。
 
 ## 环境变量
 
@@ -160,9 +168,9 @@ src/
 │   │           └─▶ embedding.ts                    # 本地 ONNX 嵌入：ensureModelReady 运行时按需下载（不阻塞/单飞）+ 懒加载 + 批量 embed + cosine
 │   │                └─▶ model-download.ts          # 模型下载原语（URL/跳过判定/原子落盘；dev CLI 复用）
 │   └─ ④ 事件接线（仅主会话生效）
-│        └─ ctx.on('agent/pre-step') → compress.ts  # maybeCompress：两级压缩阻塞串行（先反思后观察）
-│              ├─ reflectPass → summarize.ts        # 摘要 ≥ 窗口 × historyMergeRatio：fork 精简合并 <om-history>
-│              ├─ observePass  → summarize.ts       # 未压缩消息 ≥ 窗口 × thresholdRatio：fork 观察日志 → 追加 + 替换
+│        └─ ctx.on('agent/pre-step') → compress.ts  # maybeCompress：两级压缩阻塞串行（先反思后观察；turn 中间即可触发）
+│              ├─ reflectPass → summarize.ts        # 摘要 ≥ 窗口 × historyMergeRatio：摘要调用精简合并 <om-history>
+│              ├─ observePass  → summarize.ts       # 未压缩消息 ≥ 窗口 × thresholdRatio：摘要调用观察日志 → 追加 + 替换
 │              └─ 提交          → compress.ts        # compaction/start → summary → 替换消息(checkpoint) → end；usage 归入主会话
 ├── constants.ts              # 共享常量（PLUGIN_LABEL / HISTORY_TAG / COMPACT_CHECKPOINT_PLUGIN）
 ├── types.ts                  # type-only：宿主类型再导出 + 领域类型（MessageNode / MessageIndex）
@@ -171,14 +179,14 @@ src/
 ├── log-index.ts              # 消息索引（message_id → 消息事件；recall 消费）
 ├── embedding.ts              # 本地 ONNX 嵌入（@huggingface/transformers + 本地模型；运行时按需下载编排 / 懒加载 / 批量 / cosine）
 ├── model-download.ts          # 模型下载原语（modelSourceUrl / needsDownload / 原子落盘；运行时与 dev CLI 共用）
-├── summarize.ts              # 观察/反思 persona + 提示词 + fork 摘要子会话（提取子会话 token usage 归入主会话）
+├── summarize.ts              # 观察/反思 persona + 提示词 + 直连 ctx.llm.stream() 摘要（prefix/system 双模式；流式 usage 归入主会话）
 ├── recall.ts                 # recall 工具
 ├── semantic-recall.ts        # recall-semantic 工具（query 语义检索 + 区间限定 + 回退全量 + 匹配说明）
-└── compress.ts               # 两级自动压缩（测量 / 区间计算 / 中断扫描 / 对照表 / compaction/* 生命周期事件 + checkpoint 替换）
+└── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / 中断扫描 / 对照表 / compaction/* 生命周期事件 + checkpoint 替换）
 models/
 └── paraphrase-multilingual-MiniLM-L12-v2/   # 嵌入模型目录（小文件随包分发；onnx 二进制由运行时按需下载到此处，不进 git）
 scripts/                      # release-archive.mjs（CHANGELOG 归档）/ download-model.mjs（开发手动预下载 CLI）
-tests/                        # vitest 单元测试（110 例）
+tests/                        # vitest 单元测试（121 例）
 .dsh/skills/                  # 项目级 skill（feature-defect-workflow：需求/缺陷完成工作流）
 ```
 

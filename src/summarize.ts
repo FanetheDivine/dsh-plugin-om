@@ -1,18 +1,24 @@
 /**
- * 摘要子会话（OM 观察/反思）：两级阈值下分别 fork 子会话——
- *  - observe：把「上下文中最后一次 <om-history> 之后」的未压缩消息压缩为观察日志
- *    （结果追加到旧摘要末尾，替换被压缩消息区间）；
- *  - reflect：把当前 <om-history> 精简合并（结果替换单个摘要节点）。
+ * 摘要调用（OM 观察/反思）：直连 ctx.llm.stream()，由配置 summaryMode（环境变量
+ * DSH_OM_SUMMARY_MODE）控制两种模式——
+ *  - prefix（缺省）：复用主会话请求前缀。system/tools 取自主会话 requestHeader()，
+ *    messages = 主会话完整派生历史 + 末尾追加一条指令 user 消息，使本次请求成为主会话
+ *    上次请求的真前缀，充分利用 provider 前缀缓存（与宿主 compaction-basic 同款策略）；
+ *  - system：指令作为 system 提示词，被压缩消息与参考尾部（由 compress.ts 渲染传入）
+ *    作为 user 消息输入模型压缩。
  *
- * 提示词不内嵌消息/摘要全文：fork 子会话继承父会话日志前缀（seed 截断于最后一个
- * turn/end，宿主 fork 提供方语义），按上下文中的 <om-history> 定位待处理部分；
- * message_id 对照表与中断标记由插件从日志计算后内嵌（id 非原文，保留关键 id 供
- * recall 检索）。摘要以工具调用为核心节点，不限于 run_code。
+ * 提示词不内嵌消息全文（prefix 模式完整历史随请求传入；system 模式由 compress.ts 渲染
+ * 区间传入）；message_id 对照表与中断标记由插件从日志计算后内嵌（id 非原文，保留关键 id
+ * 供 recall 检索）。token usage 从流式响应的 usage chunk 提取，归入主会话记录。
  * 仅主会话生效（index.ts 守卫）。
  */
-import { HISTORY_TAG } from './constants.ts';
-import type { Agent, Context, SubagentRun, SubagentStartRequest, TokenUsage } from './types.ts';
-import { blocksToText } from './utils.ts';
+
+import type { FinishReason, GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
+import type { SummaryMode } from './config.ts';
+import { HISTORY_TAG, PLUGIN_LABEL } from './constants.ts';
+import { messageIdOfEvent } from './log-index.ts';
+import type { Agent, Context, Session, TokenUsage, UserMessage } from './types.ts';
+import { type RoutedTarget, renderMessageText, uuid } from './utils.ts';
 
 /** 观察者 persona：只针对未压缩消息产出观察日志，不用工具、不展示思考。 */
 export const OBSERVER_PERSONA =
@@ -24,27 +30,43 @@ export const REFLECTOR_PERSONA =
 
 /** 观察提示词参数（对照表/中断标记由 compress.ts 从日志计算后传入）。 */
 export type ObservePromptOptions = {
-  /** message_id 对照表行（按序对应上下文中未压缩消息）。 */
+  /** message_id 对照表行（按序对应消息记录中的未压缩消息）。 */
   table: string[];
   /** 中断标记行（aborted/interrupted 轮次）。 */
   interruptions: string[];
   /** 是否存在旧摘要（决定「追加到上次产物末尾」的表述）。 */
   hasOldHistory: boolean;
+  /** 参考尾部条数（尾部保留的未压缩消息，摘要须准确反映其进度）。 */
+  tailCount: number;
+  /** 摘要模式：prefix=完整历史随请求传入；system=被压缩消息渲染为输入。 */
+  mode: SummaryMode;
 };
 
 /**
- * 构建观察提示词：规则（消息概括为要点 / 工具调用按目的聚合——不限于 run_code /
- * 仅关键消息保留 message_id / 中断标注 / 未完成写进度与下一步）+ message_id 对照表 +
- * 中断标记 + 追加说明。全文由继承上下文提供。
+ * 构建观察指令主体：规则（消息概括为要点 / 工具调用按目的聚合——不限于 run_code /
+ * 仅关键消息保留 message_id / 中断标注 / 未完成写进度与下一步）+ 模式相关的上下文定位
+ * 说明（prefix：上方完整会话记录；system：下方【被压缩消息】段）+ 对照表 + 中断标记 +
+ * 追加说明。persona 由调用方拼接到指令开头。
  */
 export function buildObservePrompt(options: ObservePromptOptions): string {
   /** 对照表段落（无则标注「无」）。 */
   const tableSection = options.table.length > 0 ? options.table : ['（无）'];
   /** 中断标记段落（无则标注「无」）。 */
   const interruptionSection = options.interruptions.length > 0 ? options.interruptions : ['（无）'];
+  /** 上下文定位说明（按模式区分输入结构）。 */
+  const framing =
+    options.mode === 'system'
+      ? [
+          `下方的消息记录包含两个段落：【被压缩消息】段是本次要压缩的对象；【参考尾部】段是最近上下文（最后 ${options.tailCount} 条消息，不压缩，供你理解当前状态）。`,
+          `如果【被压缩消息】段里还没有 <${HISTORY_TAG}> 块，则段内全部消息都是未压缩消息。`,
+        ]
+      : [
+          `上方的消息记录是主会话的完整历史（系统提示词与全部消息）。最后一次 <${HISTORY_TAG}> 块之后的全部消息都是「未压缩消息」；只对这些消息做压缩，忽略更早的历史。`,
+          `如果消息记录里还没有 <${HISTORY_TAG}> 块，则除本指令外的全部消息都是未压缩消息。`,
+          `最后 ${options.tailCount} 条消息是最近上下文（参考尾部）：摘要须准确反映其中未完成的工作、当前进度与下一步。`,
+        ];
   return [
-    `你继承的会话上下文中，最后一次 <${HISTORY_TAG}> 块之后的全部消息都是「未压缩消息」；只对这些消息做压缩，忽略更早的历史。`,
-    `如果上下文里还没有 <${HISTORY_TAG}> 块，则除本消息外的全部消息都是未压缩消息。`,
+    ...framing,
     '',
     '【规则】',
     '- 用户消息概括为 user_message 条目（保留需求要点与关键事实：数字、路径、命令、决定），仅对关键消息保留 message_id（格式：user_message message_id:<id> text:<要点>）。关键消息指开启新任务/提出需求的请求、包含关键决策或不可再得事实的输入；普通消息（寒暄、重复、可推断内容）可以省略 message_id。',
@@ -53,7 +75,7 @@ export function buildObservePrompt(options: ObservePromptOptions): string {
     '- 若当前工作看起来未完成（最后一次工具调用没有结果、或对话被中断/异常结束），在日志末尾说明当前进度与下一步要做什么。',
     `- 只输出日志条目本身；不要 <${HISTORY_TAG}> 标签、不要解释、不要复述规则。`,
     '',
-    '【message_id 对照表】（按顺序对应你上下文中的消息，用于产出正确的 message_id）',
+    '【message_id 对照表】（按顺序对应消息记录中的未压缩消息，用于产出正确的 message_id）',
     ...tableSection,
     '',
     '【中断标记】',
@@ -67,11 +89,21 @@ export function buildObservePrompt(options: ObservePromptOptions): string {
   ].join('\n');
 }
 
-/** 构建反思提示词：精简合并当前 <om-history>；全文由继承上下文提供。 */
-export function buildReflectPrompt(): string {
+/** 构建反思指令主体：精简合并当前 <om-history>；消息记录全文由请求（prefix）或渲染输入（system）提供。 */
+export function buildReflectPrompt(mode: SummaryMode): string {
+  /** 上下文定位说明（按模式区分输入结构）。 */
+  const framing =
+    mode === 'system'
+      ? [
+          '下方的消息记录包含当前的 <om-history> 压缩日志（最后一次 <om-history> 块）。',
+          '只对这份压缩日志做精简合并；不要涉及日志之外的消息。',
+        ]
+      : [
+          '上方的消息记录是主会话的完整历史，其中包含当前的 <om-history> 压缩日志（最后一次 <om-history> 块）。',
+          '只对这份压缩日志做精简合并；不要涉及日志之外的消息。',
+        ];
   return [
-    `你继承的会话上下文中包含当前的 <${HISTORY_TAG}> 压缩日志（最后一次 <${HISTORY_TAG}> 块）。`,
-    '只对这份压缩日志做精简合并；不要涉及日志之外的消息。',
+    ...framing,
     '',
     '【规则】',
     '- 用户消息保留要点，仅保留关键 message_id（格式：user_message message_id:<id> text:<要点>）；可省略的 message_id 删除。',
@@ -85,7 +117,7 @@ export function buildReflectPrompt(): string {
 }
 
 /**
- * 摘要子会话结果：文本 + 可选 token usage（fork 子会话自身消耗，随 compaction/summary
+ * 摘要调用结果：文本 + 可选 token usage（摘要请求自身消耗，随 compaction/summary
  * 归入主会话记录）。
  */
 export type SummarySubagentResult = {
@@ -93,109 +125,177 @@ export type SummarySubagentResult = {
   usage?: TokenUsage;
 };
 
-/**
- * 提取 fork 子会话（run.localAgent.session）的 token usage：仅统计子会话自身事件
- * （firstLiveSeq 之后，不含继承的父会话 seed 前缀），按 turn/step 去重（同 step 的
- * usage chunk 与 assistant/message 后写覆盖）后累加四桶；无 usage 返回 undefined。
- */
-function extractSubagentUsage(agent: Agent | undefined): TokenUsage | undefined {
-  if (!agent) return undefined;
-  /** 子会话自身事件的起点（构造 seed 长度；缺省回退 0）。 */
-  const start = Number.isFinite(agent.session.firstLiveSeq) ? agent.session.firstLiveSeq : 0;
-  /** 子会话自身事件（跳过继承的父会话前缀）。 */
-  const ownEvents = agent.session.events.slice(start);
-  /** turn/step → usage（同 step 后写覆盖，与宿主投影语义一致）。 */
-  const perStep = new Map<string, TokenUsage>();
-  for (const event of ownEvents) {
-    if (event.type === 'assistant/message' && event.data.usage !== undefined) {
-      perStep.set(`${event.data.turn}:${event.data.step}`, event.data.usage);
-    } else if (event.type === 'assistant/chunk' && event.data.chunk.type === 'usage') {
-      perStep.set(`${event.data.turn}:${event.data.step}`, event.data.chunk.usage);
+/** 流收集器：提取文本输出 + usage + finish（不依赖宿主 BlockAssembler，保持零运行时依赖）。 */
+class StreamCollector {
+  /** 文本输出缓冲（text-delta 拼接；reasoning 不计入）。 */
+  private textBuf = '';
+  /** usage chunk（无则 undefined）。 */
+  private _usage: TokenUsage | undefined;
+  /** finish chunk（流结束仍无则视为 stop）。 */
+  private _finish: FinishReason | undefined;
+
+  /** 喂入一个流 chunk（仅消费文本/usage/finish，其余忽略）。 */
+  push(chunk: StreamChunk): void {
+    switch (chunk.type) {
+      case 'text-delta':
+        this.textBuf += chunk.text;
+        break;
+      case 'usage':
+        this._usage = chunk.usage;
+        break;
+      case 'finish':
+        this._finish = chunk.reason;
+        break;
+      default:
+        break;
     }
   }
-  if (perStep.size === 0) return undefined;
-  /** 累加结果（四桶互斥，不重复累加推理 token）。 */
-  const total: TokenUsage = {
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-  };
-  for (const usage of perStep.values()) {
-    total.inputTokens += usage.inputTokens;
-    total.outputTokens += usage.outputTokens;
-    total.cacheReadTokens = (total.cacheReadTokens ?? 0) + (usage.cacheReadTokens ?? 0);
-    total.cacheWriteTokens = (total.cacheWriteTokens ?? 0) + (usage.cacheWriteTokens ?? 0);
+
+  /** 拼接后的文本输出。 */
+  get text(): string {
+    return this.textBuf;
   }
-  return total;
+
+  /** 摘要 token usage（无则 undefined）。 */
+  get usage(): TokenUsage | undefined {
+    return this._usage;
+  }
+
+  /** 终止原因（流未给出 finish 时视为 stop）。 */
+  get finish(): FinishReason {
+    return this._finish ?? { kind: 'stop' };
+  }
 }
 
 /**
- * Fork 子会话执行一次摘要（观察或反思），返回文本与可选 token usage；
- * 失败或无法 fork 返回 null。工具被 toolFilter 禁用，输出长度受 maxTokens 限制。
+ * 渲染表层消息记录（system 模式输入）：按表层顺序输出 role 头 + message_id + 文本
+ * （tool-call 展开参数、tool-result 取文本）。
+ */
+export function renderMessages(session: Session, seqs: readonly number[]): string {
+  /** 渲染段缓冲区。 */
+  const parts: string[] = [];
+  for (const seq of seqs) {
+    /** 当前待渲染事件。 */
+    const event = session.events[seq];
+    if (!event) continue;
+    /** 消息 id（缺失则省略）。 */
+    const id = messageIdOfEvent(event);
+    /** role 标签（tool/result 属 user 角色但标注为工具结果）。 */
+    const role =
+      event.type === 'user/message'
+        ? 'user'
+        : event.type === 'assistant/message'
+          ? 'assistant'
+          : 'tool/result';
+    /** 消息文本呈现。 */
+    const text = renderMessageText(session.deriveEventMessage(event));
+    parts.push(`--- ${role}${id ? ` message_id=${id}` : ''} ---\n${text}`);
+  }
+  return parts.join('\n\n');
+}
+
+/** 构造插件自产 user 消息（指令或 system 模式的输入消息；id 为品牌类型 MessageId）。 */
+function makePluginUserMessage(text: string): UserMessage {
+  return {
+    id: uuid() as unknown as UserMessage['id'],
+    role: 'user',
+    content: [{ type: 'text', text }],
+    source: { kind: 'plugin', plugin: PLUGIN_LABEL },
+  } as unknown as UserMessage;
+}
+
+/**
+ * 构建摘要请求选项：
+ *  - prefix：system/tools 取自主会话 requestHeader()，messages = 完整派生历史 + 指令 user 消息；
+ *  - system：system = 指令，messages = 渲染输入（被压缩消息 + 参考尾部）user 消息。
+ */
+function buildSummaryOptions(
+  session: Session,
+  instruction: string,
+  contextText: string | undefined,
+  maxTokens: number,
+  mode: SummaryMode,
+  target: RoutedTarget,
+  signal: AbortSignal | undefined,
+): GenerateOptions {
+  /** 公共请求字段（provider/model/输出上限/会话归属/用途/取消）。 */
+  const base = {
+    provider: target.provider,
+    model: target.model,
+    maxTokens,
+    sessionId: session.id,
+    purpose: 'compaction' as const,
+    ...(signal === undefined ? {} : { signal }),
+  };
+  if (mode === 'system') {
+    return {
+      ...base,
+      system: instruction,
+      messages: [makePluginUserMessage(contextText ?? '')],
+    };
+  }
+  /** 主会话上次请求的请求头（system/tools 前缀对齐；无则省略）。 */
+  const header = session.requestHeader();
+  return {
+    ...base,
+    ...(header?.system === undefined ? {} : { system: header.system }),
+    ...(header?.tools === undefined ? {} : { tools: [...header.tools] }),
+    messages: [...session.deriveMessages(), makePluginUserMessage(instruction)],
+  };
+}
+
+/**
+ * 直连 LLM 执行一次摘要（观察或反思），返回文本与可选 token usage；
+ * 失败或摘要未完成返回 null。输出长度受 maxTokens 限制。
  */
 export async function runSummarySubagent(
   ctx: Context,
   agent: Agent,
-  persona: string,
-  prompt: string,
+  instruction: string,
+  contextText: string | undefined,
   maxTokens: number,
+  mode: SummaryMode,
+  target: RoutedTarget,
   signal?: AbortSignal,
 ): Promise<SummarySubagentResult | null> {
-  /** subagents 服务（缺失则无法分叉摘要）。 */
-  const subagents = ctx.get('subagents');
-  if (!subagents) {
-    ctx.logger.warn('dsh-plugin-om: 未找到 subagents 服务，跳过摘要分叉');
-    return null;
-  }
-  if (!subagents.getProvider('fork')) {
-    ctx.logger.warn('dsh-plugin-om: fork 子代理提供方未注册，跳过摘要分叉');
-    return null;
-  }
-  /** 本次 fork 运行的句柄（用于取结果与 dispose）。 */
-  let run: SubagentRun | undefined;
+  /** 当前会话。 */
+  const session = agent.session;
   try {
-    run = await subagents.start('fork', {
-      label: 'om-summary',
-      prompt: [{ type: 'text', text: prompt }],
-      parent: agent,
-      persona,
-      toolFilter: { allow: [] }, // 禁用工具
-      agentOptions: { maxTokens }, // 限制输出（含思考）长度
-      ...(signal !== undefined ? { signal } : {}),
-    } as SubagentStartRequest);
-    /** 子代理运行结果。 */
-    const result = await run.result;
-    /** 输出块数组（取纯文本）。 */
-    const output = Array.isArray(result.output) ? result.output : [];
+    /** 摘要请求选项（按模式组装）。 */
+    const options = buildSummaryOptions(
+      session,
+      instruction,
+      contextText,
+      maxTokens,
+      mode,
+      target,
+      signal,
+    );
+    /** 流收集器（文本/usage/finish）。 */
+    const collector = new StreamCollector();
+    for await (const chunk of ctx.llm.stream(options)) collector.push(chunk);
     /** 拼接、去标签、去首尾空白的摘要文本。 */
-    const text = blocksToText(output)
+    const text = collector.text
       .trim()
       .replace(new RegExp(`</?${HISTORY_TAG}>`, 'g'), '')
       .trim();
-    if (result.stopReason !== 'completed' || text.length === 0) {
+    /** 终止原因（仅 stop 视为完成）。 */
+    const finish = collector.finish;
+    if (finish.kind !== 'stop' || text.length === 0) {
       ctx.logger.warn(
         'dsh-plugin-om: 摘要未完成（' +
-          (result.stopReason === 'completed' ? '无输出' : String(result.stopReason)) +
+          (finish.kind === 'stop' ? '无输出' : String(finish.kind)) +
           '），忽略本次摘要',
       );
       return null;
     }
-    /** fork 子会话的 token usage（归入主会话记录；无则省略）。 */
-    const usage = extractSubagentUsage(run.localAgent);
+    /** 摘要请求的 token usage（归入主会话记录；无则省略）。 */
+    const usage = collector.usage;
     return { text, ...(usage === undefined ? {} : { usage }) };
   } catch (error) {
     /** 错误信息（统一为字符串）。 */
     const message = error instanceof Error ? error.message : String(error);
-    ctx.logger.warn(`dsh-plugin-om: 摘要子代理失败: ${message}，忽略`);
+    ctx.logger.warn(`dsh-plugin-om: 摘要调用失败: ${message}，忽略`);
     return null;
-  } finally {
-    if (run && typeof run.dispose === 'function') {
-      try {
-        await run.dispose();
-      } catch {
-        /* dispose 失败忽略 */
-      }
-    }
   }
 }
