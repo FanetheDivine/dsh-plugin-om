@@ -14,12 +14,6 @@ import { assertNonEmptyString, assertNumber, fail, isRecord } from './utils.ts';
  */
 export type SummaryMode = 'fork' | 'new' | 'disable';
 
-/**
- * 摘要模式环境变量名（缺省 fork）。
- * 取值：fork / new / disable；兼容旧值 prefix（→fork）、system（→new）。
- */
-export const SUMMARY_MODE_ENV = 'DSH_OM_SUMMARY_MODE';
-
 /** 插件配置项（全部可选覆盖，未给出或留空的键用默认值）。 */
 export type PluginConfig = {
   /** 压力阈值比例：压力 ≥ 窗口 × 该比例时触发自动压缩。 */
@@ -30,19 +24,28 @@ export type PluginConfig = {
   compressMaxTokens: number;
   /** 压缩边界：其后不压缩消息数下限（正整数，尾部保留）。 */
   tailMessageCount: number;
-  /** 摘要模式（由环境变量 SUMMARY_MODE_ENV 决定，缺省 fork）。 */
+  /** 摘要模式（缺省 fork；非法值在插件加载时报错）。 */
   summaryMode: SummaryMode;
+  /** 步骤级（debug）日志开关：true 强制开启、false 强制关闭；缺省按 NODE_ENV !== 'production' 判定。 */
+  debug: boolean;
+  /** 是否注册 recall 工具（缺省 true；false 时不注册）。 */
+  recallEnabled: boolean;
+  /** 是否注册 recall-semantic 工具（缺省 true；false 时不注册、不触发模型下载）。 */
+  semanticRecallEnabled: boolean;
   /** 语义召回嵌入模型目录（默认插件打包的本地模型；可指向自定义模型目录）。 */
   modelDir: string;
 };
 
-/** 默认配置（冻结对象，resolveConfig 合并的基底；summaryMode 由环境变量在解析时决定）。 */
+/** 默认配置（冻结对象，resolveConfig 合并的基底；debug 缺省值在解析时按 NODE_ENV 判定）。 */
 export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   thresholdRatio: 0.5,
   historyMergeRatio: 0.2,
   compressMaxTokens: 4096,
   tailMessageCount: 10,
   summaryMode: 'fork',
+  debug: false,
+  recallEnabled: true,
+  semanticRecallEnabled: true,
   modelDir: BUNDLED_MODEL_DIR,
 });
 
@@ -52,6 +55,10 @@ const CONFIG_KEYS = new Set<string>([
   'historyMergeRatio',
   'compressMaxTokens',
   'tailMessageCount',
+  'summaryMode',
+  'debug',
+  'recallEnabled',
+  'semanticRecallEnabled',
   'modelDir',
 ]);
 
@@ -75,23 +82,27 @@ function normalizeConfigInput(raw: unknown): Record<string, unknown> {
 }
 
 /**
- * 解析摘要模式环境变量：缺省 / 空串回退 fork；'new' 切换 new 模式、'disable' 关闭自动压缩；
- * 兼容旧值 'prefix'（→fork）、'system'（→new）；其余值抛错（环境变量配置错误须立即可见）。
+ * 解析摘要模式配置值：缺省 / 空串回退 fork；仅接受 'fork'/'new'/'disable'；
+ * 其余值抛错（配置错误须立即可见）。
  */
-export function resolveSummaryModeFromEnv(env: Record<string, string | undefined>): SummaryMode {
-  /** 环境变量原始值（trim 后判定）。 */
-  const raw = env[SUMMARY_MODE_ENV]?.trim();
-  if (raw === undefined || raw === '') return 'fork';
+export function resolveSummaryMode(raw: unknown): SummaryMode {
+  if (raw === undefined || raw === null) return 'fork';
+  if (typeof raw === 'string' && raw.trim() === '') return 'fork';
   if (raw === 'fork' || raw === 'new' || raw === 'disable') return raw;
-  if (raw === 'prefix') return 'fork'; // 旧值兼容（prefix → fork）
-  if (raw === 'system') return 'new'; // 旧值兼容（system → new）
-  fail(`${SUMMARY_MODE_ENV} must be "fork", "new" or "disable"`);
+  fail('config summaryMode must be "fork", "new" or "disable"');
+}
+
+/** 解析布尔配置值：缺省 / null / 空串回退默认值；必须为 boolean 否则抛错。 */
+function resolveBoolean(name: string, raw: unknown, defaultValue: boolean): boolean {
+  if (raw === undefined || raw === null) return defaultValue;
+  if (typeof raw === 'string' && raw.trim() === '') return defaultValue;
+  if (typeof raw === 'boolean') return raw;
+  fail(`config ${name} must be a boolean`);
 }
 
 /**
  * 解析合并配置：校验未知键与数值/字符串类型，返回冻结的完整配置。
  * 允许所有配置留空——缺省 / null / 空串的键回退默认值，未给出的键亦取默认值。
- * summaryMode 由环境变量 SUMMARY_MODE_ENV 决定（不随 preset 配置）。
  */
 export function resolveConfig(raw?: unknown): Readonly<PluginConfig> {
   /** 原始输入（留空视为空对象）。 */
@@ -109,8 +120,18 @@ export function resolveConfig(raw?: unknown): Readonly<PluginConfig> {
     assertNumber(key, value, { integer });
     config[key] = value as number;
   }
-  /** 摘要模式（环境变量覆盖默认值）。 */
-  config.summaryMode = resolveSummaryModeFromEnv(process.env);
+  /** 摘要模式（缺省 fork；非法值报错）。 */
+  config.summaryMode = resolveSummaryMode(input.summaryMode);
+  /** 步骤级日志开关（缺省按 NODE_ENV !== 'production' 判定）。 */
+  config.debug = resolveBoolean('debug', input.debug, process.env.NODE_ENV !== 'production');
+  /** recall 工具开关（缺省启用）。 */
+  config.recallEnabled = resolveBoolean('recallEnabled', input.recallEnabled, true);
+  /** recall-semantic 工具开关（缺省启用）。 */
+  config.semanticRecallEnabled = resolveBoolean(
+    'semanticRecallEnabled',
+    input.semanticRecallEnabled,
+    true,
+  );
   /** modelDir 原始值（留空回退默认；非空串必须为字符串）。 */
   const modelDir = input.modelDir;
   if (modelDir !== undefined && modelDir !== null) {

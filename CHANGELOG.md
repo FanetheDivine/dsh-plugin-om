@@ -1,5 +1,8 @@
 # Changelog
 
+- feat: 环境变量改为 config 配置键——DSH_OM_SUMMARY_MODE → summaryMode、DSH_OM_DEBUG → debug、OM_RECALL_ENABLED → recallEnabled、OM_SEMANTIC_RECALL_ENABLED → semanticRecallEnabled（缺省语义不变：summaryMode 缺省 fork、debug 缺省按 NODE_ENV、recall 开关缺省启用）；移除环境变量读取与 envFlagEnabled；README 环境变量章节改为配置项表述，示例改为 cordis.patch.yml 配置
+- docs: 删除 README 中「recall 工具」「recall-semantic 工具」两节文档（工具注册与实现保留，配置开关见插件配置项）
+- feat: 移除 summaryMode 旧值 prefix/system 兼容（仅接受 fork/new/disable，非法值在插件加载时报错）
 - feat: fork 模式输入从尾部之前实际截断（tailMessageCount 尾部不注入请求，提示词不再含尾部范围规则）
 - feat: 摘要模式改名 fork/new 并新增 disable（DSH_OM_SUMMARY_MODE=fork|new|disable，兼容旧值 prefix/system；disable 关闭自动压缩，recall 工具仍独立开关）
 - feat: 摘要提示词重构——fork 声明停止任务/禁止工具、new 仅说明总结日志；总结范围 = 上一个 <om-history> 之后到现在，用户消息完整保留原文，AI 消息模块化压缩（目的相同、关联度高的连续行为聚合）；倾向于新消息、旧消息一句话带过、新旧冲突强调新消息不动旧条目；尾部不压缩、不进日志

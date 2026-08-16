@@ -1,6 +1,5 @@
 /**
- * 摘要调用（OM 观察/反思）：直连 ctx.llm.stream()，由配置 summaryMode（环境变量
- * DSH_OM_SUMMARY_MODE）控制模式——
+ * 摘要调用（OM 观察/反思）：直连 ctx.llm.stream()，由配置 summaryMode 控制模式——
  *  - fork（缺省）：fork 会话风格——复用主会话请求前缀。system/tools 取自主会话
  *    requestHeader()，messages = 主会话完整派生历史（从尾部之前实际截断，尾部不注入）
  *    + 末尾追加一条指令 user 消息，充分利用 provider 前缀缓存（与宿主 compaction-basic
@@ -358,12 +357,13 @@ export async function runSummarySubagent(
   mode: SummaryMode,
   tailCount: number,
   target: RoutedTarget,
+  debug: boolean,
   signal?: AbortSignal,
 ): Promise<SummarySubagentResult | null> {
   /** 当前会话。 */
   const session = agent.session;
   /** 插件日志门面（失败日志始终输出）。 */
-  const logger = makeLogger(ctx);
+  const logger = makeLogger(ctx, debug);
   /** 最后一次失败的原因（error=调用异常 / finish=未完成原因；最终失败日志使用）。 */
   let lastFailure: AttemptFailure = {};
   for (let attempt = 1; attempt <= SUMMARY_MAX_ATTEMPTS; attempt += 1) {

@@ -1,6 +1,6 @@
 // dsh-plugin-om 单元测试（vitest）：配置校验 / 消息索引 /
 // OM 两级压缩（观察/反思 fork 摘要）/ recall（范围+拒绝+参数校验）/ apply 接线。
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 // 隔离 apply 的模型下载编排：ensureModelReady 打桩为"就绪"，避免单测触发真实下载/网络
 vi.mock('../src/embedding.ts', async (importOriginal) => {
@@ -21,17 +21,11 @@ import {
   measureUncompressedTokens,
   scanInterruptions,
 } from '../src/compress.ts';
-import { resolveConfig, resolveSummaryModeFromEnv, SUMMARY_MODE_ENV } from '../src/config.ts';
-import {
-  HISTORY_TAG,
-  PLUGIN_LABEL,
-  RECALL_ENABLED_ENV,
-  SEMANTIC_RECALL_ENABLED_ENV,
-} from '../src/constants.ts';
+import { resolveConfig, resolveSummaryMode } from '../src/config.ts';
+import { HISTORY_TAG, PLUGIN_LABEL } from '../src/constants.ts';
 import { cosineSimilarity, ensureModelReady } from '../src/embedding.ts';
 import { apply, inject, name } from '../src/index.ts';
 import { indexMessages, messageIdOfEvent } from '../src/log-index.ts';
-import { stepLogEnabled } from '../src/logger.ts';
 import { buildRecallTool, parseRecallArgs } from '../src/recall.ts';
 import {
   buildSemanticRecallTool,
@@ -50,7 +44,6 @@ import {
   renderMessages,
 } from '../src/summarize.ts';
 import type { Session, SessionEvent } from '../src/types.ts';
-import { envFlagEnabled } from '../src/utils.ts';
 import {
   buildToolCallFlow,
   makeCtx,
@@ -144,6 +137,9 @@ describe('配置校验 resolveConfig', () => {
     expect(d.compressMaxTokens).toBe(4096);
     expect(d.tailMessageCount).toBe(10);
     expect(d.summaryMode).toBe('fork');
+    expect(d.debug).toBe(process.env.NODE_ENV !== 'production'); // 缺省按 NODE_ENV 判定
+    expect(d.recallEnabled).toBe(true);
+    expect(d.semanticRecallEnabled).toBe(true);
     expect(d).not.toHaveProperty('summaryMaxChars');
     expect(d).not.toHaveProperty('recallMaxMessages');
     expect(d).not.toHaveProperty('auto');
@@ -172,6 +168,8 @@ describe('配置校验 resolveConfig', () => {
       expect(d.compressMaxTokens).toBe(4096);
       expect(d.tailMessageCount).toBe(10);
       expect(d.summaryMode).toBe('fork');
+      expect(d.recallEnabled).toBe(true);
+      expect(d.semanticRecallEnabled).toBe(true);
     }
   });
 
@@ -202,63 +200,85 @@ describe('配置校验 resolveConfig', () => {
     expect(() => resolveConfig({ tailTokenBudgetRatio: 0.1 })).toThrow();
     expect(() => resolveConfig({ auto: false })).toThrow();
     expect(() => resolveConfig({ evalEnabled: false })).toThrow();
+    expect(() => resolveConfig({ envDebug: true })).toThrow(); // 环境变量名不再是配置键
   });
 });
 
-describe('步骤级日志开关 stepLogEnabled', () => {
-  it('缺省：非 production（dev/test/未设置）输出，production 隐藏', () => {
-    expect(stepLogEnabled({})).toBe(true);
-    expect(stepLogEnabled({ NODE_ENV: 'development' })).toBe(true);
-    expect(stepLogEnabled({ NODE_ENV: 'test' })).toBe(true);
-    expect(stepLogEnabled({ NODE_ENV: 'production' })).toBe(false);
-  });
-
-  it('DSH_OM_DEBUG=true 强制开启（含 production）', () => {
-    expect(stepLogEnabled({ NODE_ENV: 'production', DSH_OM_DEBUG: 'true' })).toBe(true);
-    expect(stepLogEnabled({ NODE_ENV: 'development', DSH_OM_DEBUG: 'true' })).toBe(true);
-  });
-
-  it('DSH_OM_DEBUG=false 强制关闭（含 dev）', () => {
-    expect(stepLogEnabled({ NODE_ENV: 'development', DSH_OM_DEBUG: 'false' })).toBe(false);
-    expect(stepLogEnabled({ NODE_ENV: 'test', DSH_OM_DEBUG: 'false' })).toBe(false);
-  });
-});
-
-describe('摘要模式 resolveSummaryModeFromEnv', () => {
-  it('缺省 / 空串 / fork 回退 fork', () => {
-    expect(resolveSummaryModeFromEnv({})).toBe('fork');
-    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: '' })).toBe('fork');
-    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: '   ' })).toBe('fork');
-    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'fork' })).toBe('fork');
-  });
-
-  it("'new' 切换 new 模式、'disable' 关闭自动压缩", () => {
-    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'new' })).toBe('new');
-    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'disable' })).toBe('disable');
-  });
-
-  it('旧值兼容：prefix→fork、system→new', () => {
-    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'prefix' })).toBe('fork');
-    expect(resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'system' })).toBe('new');
-  });
-
-  it('非法值抛错并指出环境变量名', () => {
-    expect(() => resolveSummaryModeFromEnv({ [SUMMARY_MODE_ENV]: 'bogus' })).toThrow(
-      /DSH_OM_SUMMARY_MODE/,
-    );
-  });
-
-  it('resolveConfig 读取环境变量（设置后清理，不泄漏到其他用例）', () => {
-    const prev = process.env[SUMMARY_MODE_ENV];
+describe('debug 配置键', () => {
+  it('缺省：按 NODE_ENV !== production 判定（dev/test 输出，production 隐藏）', () => {
+    const prev = process.env.NODE_ENV;
     try {
-      process.env[SUMMARY_MODE_ENV] = 'new';
-      expect(resolveConfig({}).summaryMode).toBe('new');
-      delete process.env[SUMMARY_MODE_ENV];
-      expect(resolveConfig({}).summaryMode).toBe('fork');
+      process.env.NODE_ENV = 'production';
+      expect(resolveConfig({}).debug).toBe(false);
+      process.env.NODE_ENV = 'test';
+      expect(resolveConfig({}).debug).toBe(true);
+      delete process.env.NODE_ENV;
+      expect(resolveConfig({}).debug).toBe(true);
     } finally {
-      if (prev === undefined) delete process.env[SUMMARY_MODE_ENV];
-      else process.env[SUMMARY_MODE_ENV] = prev;
+      if (prev === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = prev;
     }
+  });
+
+  it('true 强制开启（含 production）、false 强制关闭（含 dev）', () => {
+    const prev = process.env.NODE_ENV;
+    try {
+      process.env.NODE_ENV = 'production';
+      expect(resolveConfig({ debug: true }).debug).toBe(true);
+      process.env.NODE_ENV = 'test';
+      expect(resolveConfig({ debug: false }).debug).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = prev;
+    }
+  });
+
+  it('非 boolean 值抛错；留空回退默认', () => {
+    expect(() => resolveConfig({ debug: 'true' })).toThrow(/debug/);
+    expect(() => resolveConfig({ debug: 1 })).toThrow(/debug/);
+    expect(resolveConfig({ debug: null }).debug).toBe(process.env.NODE_ENV !== 'production');
+    expect(resolveConfig({ debug: '' }).debug).toBe(process.env.NODE_ENV !== 'production');
+  });
+});
+
+describe('摘要模式 resolveSummaryMode / summaryMode 配置键', () => {
+  it('缺省 / null / 空串 / fork 回退 fork', () => {
+    expect(resolveSummaryMode(undefined)).toBe('fork');
+    expect(resolveSummaryMode(null)).toBe('fork');
+    expect(resolveSummaryMode('')).toBe('fork');
+    expect(resolveSummaryMode('   ')).toBe('fork');
+    expect(resolveSummaryMode('fork')).toBe('fork');
+    expect(resolveConfig({}).summaryMode).toBe('fork');
+    expect(resolveConfig({ summaryMode: null }).summaryMode).toBe('fork');
+    expect(resolveConfig({ summaryMode: '' }).summaryMode).toBe('fork');
+  });
+
+  it("'new' 切换 new 模式、'disable' 关闭自动压缩（config 键）", () => {
+    expect(resolveSummaryMode('new')).toBe('new');
+    expect(resolveSummaryMode('disable')).toBe('disable');
+    expect(resolveConfig({ summaryMode: 'new' }).summaryMode).toBe('new');
+    expect(resolveConfig({ summaryMode: 'disable' }).summaryMode).toBe('disable');
+  });
+
+  it('非法值抛错并指出配置键', () => {
+    expect(() => resolveSummaryMode('bogus')).toThrow(/summaryMode/);
+    expect(() => resolveConfig({ summaryMode: 'bogus' })).toThrow(/summaryMode/);
+  });
+});
+
+describe('recallEnabled / semanticRecallEnabled 配置键', () => {
+  it('缺省启用（true）；false 禁用；留空回退默认', () => {
+    expect(resolveConfig({}).recallEnabled).toBe(true);
+    expect(resolveConfig({}).semanticRecallEnabled).toBe(true);
+    expect(resolveConfig({ recallEnabled: false }).recallEnabled).toBe(false);
+    expect(resolveConfig({ semanticRecallEnabled: false }).semanticRecallEnabled).toBe(false);
+    expect(resolveConfig({ recallEnabled: null }).recallEnabled).toBe(true);
+    expect(resolveConfig({ semanticRecallEnabled: '' }).semanticRecallEnabled).toBe(true);
+  });
+
+  it('非 boolean 值抛错', () => {
+    expect(() => resolveConfig({ recallEnabled: 'false' })).toThrow(/recallEnabled/);
+    expect(() => resolveConfig({ semanticRecallEnabled: 0 })).toThrow(/semanticRecallEnabled/);
   });
 });
 
@@ -778,7 +798,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     };
   }
 
-  /** 提取摘要指令文本（prefix 模式为最后一条消息；system 模式为 system 字段）。 */
+  /** 提取摘要指令文本（fork 模式为最后一条消息；new 模式为 system 字段）。 */
   function instructionText(options: ReturnType<typeof summaryOptions>): string {
     if (options.system !== undefined) return options.system;
     const last = options.messages?.at(-1);
@@ -825,7 +845,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(nextCalled).toBe(true); // 阻塞执行后放行
     expect(ctx._llmCalls).toHaveLength(1);
     const options = summaryOptions(ctx);
-    // prefix 模式：persona 并入指令（最后一条 user 消息）；mock requestHeader 无 system
+    // fork 模式：persona 并入指令（最后一条 user 消息）；mock requestHeader 无 system
     const instruction = instructionText(options);
     expect(instruction.startsWith(OBSERVER_PERSONA)).toBe(true);
     expect(options.system).toBeUndefined();
@@ -1182,14 +1202,7 @@ describe('apply 接线（OM 观察压缩）', () => {
       ],
     });
     const ctx = makeCtx({ resolveModelInfo: async () => ({ context: { contextWindow: 8 } }) });
-    const prev = process.env[SUMMARY_MODE_ENV];
-    try {
-      process.env[SUMMARY_MODE_ENV] = 'disable';
-      apply(ctx, {});
-    } finally {
-      if (prev === undefined) delete process.env[SUMMARY_MODE_ENV];
-      else process.env[SUMMARY_MODE_ENV] = prev;
-    }
+    apply(ctx, { summaryMode: 'disable' });
     // 工具注册不受影响（recall 独立开关）
     expect(ctx._registeredTools.some((t) => t.name === 'recall')).toBe(true);
     await runPreStep(ctx, session);
@@ -1212,7 +1225,7 @@ describe('apply 接线（OM 反思压缩）', () => {
     );
   }
 
-  /** 提取摘要指令文本（prefix 模式为最后一条消息的文本）。 */
+  /** 提取摘要指令文本（fork 模式为最后一条消息的文本）。 */
   function instructionText(options: unknown): string {
     const o = options as {
       messages?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
@@ -1459,7 +1472,7 @@ describe('OM 摘要 token 归入主会话（compaction/summary.usage）', () => 
   });
 });
 
-describe('摘要请求形态（prefix / system 双模式）', () => {
+describe('摘要请求形态（fork / new 双模式）', () => {
   async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
     const preStepListeners = ctx._onCallbacks.get('agent/pre-step');
     await preStepListeners?.[0]?.(
@@ -1468,7 +1481,7 @@ describe('摘要请求形态（prefix / system 双模式）', () => {
     );
   }
 
-  /** 带 requestHeader system/tools 的会话（prefix 模式前缀对齐断言用）。 */
+  /** 带 requestHeader system/tools 的会话（fork 模式前缀对齐断言用）。 */
   function sessionWithHeader() {
     return makeSession({
       events: buildToolCallFlow({
@@ -1507,21 +1520,14 @@ describe('摘要请求形态（prefix / system 双模式）', () => {
     expect(String(last?.content?.[0]?.text ?? '')).toContain(OBSERVER_PERSONA);
   });
 
-  it('new 模式（DSH_OM_SUMMARY_MODE=new）：指令作为 system，输入 = 被压缩消息（XML 包裹，不含尾部）', async () => {
+  it('new 模式（summaryMode=new）：指令作为 system，输入 = 被压缩消息（XML 包裹，不含尾部）', async () => {
     const session = sessionWithHeader();
     const ctx = makeCtx({
       resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
       llmStream: [{ type: 'text-delta', text: '<om-history>\nOBSERVED-PASS\n</om-history>' }],
     });
-    const prev = process.env[SUMMARY_MODE_ENV];
-    try {
-      process.env[SUMMARY_MODE_ENV] = 'new';
-      apply(ctx, { tailMessageCount: 1 });
-      await runPreStep(ctx, session);
-    } finally {
-      if (prev === undefined) delete process.env[SUMMARY_MODE_ENV];
-      else process.env[SUMMARY_MODE_ENV] = prev;
-    }
+    apply(ctx, { summaryMode: 'new', tailMessageCount: 1 });
+    await runPreStep(ctx, session);
     const options = ctx._llmCalls[0]?.options as {
       system?: string;
       messages?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
@@ -2176,122 +2182,65 @@ describe('recall-semantic 工具', () => {
   });
 });
 
-// 环境变量开关判定：OM_RECALL_ENABLED / OM_SEMANTIC_RECALL_ENABLED
-// 控制 recall / recall-semantic 工具是否注册（=false 禁用，其余取值启用；缺省启用）。
-describe('envFlagEnabled', () => {
-  it("值 === 'false' 时禁用，其余取值（未设置/空串/true/1/FALSE）启用", () => {
-    const key = 'OM_TEST_FLAG';
-    try {
-      delete process.env[key];
-      expect(envFlagEnabled(key)).toBe(true);
-      process.env[key] = 'false';
-      expect(envFlagEnabled(key)).toBe(false);
-      process.env[key] = 'true';
-      expect(envFlagEnabled(key)).toBe(true);
-      process.env[key] = '1';
-      expect(envFlagEnabled(key)).toBe(true);
-      process.env[key] = '';
-      expect(envFlagEnabled(key)).toBe(true);
-      process.env[key] = 'FALSE';
-      expect(envFlagEnabled(key)).toBe(true);
-    } finally {
-      delete process.env[key];
-    }
-  });
-});
-
-// apply 接线（环境变量开关）：两个环境变量独立控制 recall / recall-semantic 工具注册，
-// 缺省启用；=false 禁用；不影响压缩接线。
-describe('apply 接线（环境变量开关）', () => {
-  /** 涉及的两个环境变量名。 */
-  const envKeys = [RECALL_ENABLED_ENV, SEMANTIC_RECALL_ENABLED_ENV];
-  /** 原始环境变量快照（afterEach 恢复，避免污染其他用例）。 */
-  const saved = new Map<string, string | undefined>();
-
-  beforeEach(() => {
-    saved.clear();
-    for (const key of envKeys) saved.set(key, process.env[key]);
-  });
-
-  afterEach(() => {
-    for (const key of envKeys) {
-      const value = saved.get(key);
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  });
-
+// apply 接线（工具注册开关）：recallEnabled / semanticRecallEnabled 配置键
+// 独立控制 recall / recall-semantic 工具注册，缺省启用；false 禁用；不影响压缩接线。
+describe('apply 接线（recallEnabled / semanticRecallEnabled）', () => {
   /** 已注册工具名集合。 */
   function registeredNames(ctx: ReturnType<typeof makeCtx>): string[] {
     return ctx._registeredTools.map((t) => t.name).filter((n): n is string => n !== undefined);
   }
 
-  it('缺省（未设置）两个工具都注册', () => {
-    for (const key of envKeys) delete process.env[key];
+  it('缺省两个工具都注册', () => {
     const ctx = makeCtx();
     apply(ctx, {});
     expect(registeredNames(ctx)).toEqual(expect.arrayContaining(['recall', 'recall-semantic']));
   });
 
-  it('OM_RECALL_ENABLED=false 仅禁用 recall，recall-semantic 仍注册', () => {
-    for (const key of envKeys) delete process.env[key];
-    process.env[RECALL_ENABLED_ENV] = 'false';
+  it('recallEnabled=false 仅禁用 recall，recall-semantic 仍注册', () => {
     const ctx = makeCtx();
-    apply(ctx, {});
+    apply(ctx, { recallEnabled: false });
     const names = registeredNames(ctx);
     expect(names).not.toContain('recall');
     expect(names).toContain('recall-semantic');
   });
 
-  it('OM_SEMANTIC_RECALL_ENABLED=false 仅禁用 recall-semantic，recall 仍注册', () => {
-    for (const key of envKeys) delete process.env[key];
-    process.env[SEMANTIC_RECALL_ENABLED_ENV] = 'false';
+  it('semanticRecallEnabled=false 仅禁用 recall-semantic，recall 仍注册', () => {
     const ctx = makeCtx();
-    apply(ctx, {});
+    apply(ctx, { semanticRecallEnabled: false });
     const names = registeredNames(ctx);
     expect(names).toContain('recall');
     expect(names).not.toContain('recall-semantic');
   });
 
   it('两个开关都=false 时两个工具都不注册，压缩接线不受影响', () => {
-    for (const key of envKeys) delete process.env[key];
-    process.env[RECALL_ENABLED_ENV] = 'false';
-    process.env[SEMANTIC_RECALL_ENABLED_ENV] = 'false';
     const ctx = makeCtx();
-    apply(ctx, {});
+    apply(ctx, { recallEnabled: false, semanticRecallEnabled: false });
     const names = registeredNames(ctx);
     expect(names).not.toContain('recall');
     expect(names).not.toContain('recall-semantic');
-    // env 开关只控制 recall 工具注册，agent/pre-step 压缩监听始终注册
+    // 工具注册开关只控制 recall 工具，agent/pre-step 压缩监听始终注册
     expect(ctx._onCallbacks.has('agent/pre-step')).toBe(true);
   });
 
-  it('非 false 取值（true/1/空串）均视为启用', () => {
-    for (const value of ['true', '1', '']) {
-      for (const key of envKeys) delete process.env[key];
-      for (const key of envKeys) process.env[key] = value;
-      const ctx = makeCtx();
-      apply(ctx, {});
-      expect(registeredNames(ctx)).toEqual(expect.arrayContaining(['recall', 'recall-semantic']));
-    }
+  it('recallEnabled=true / semanticRecallEnabled=true 显式启用', () => {
+    const ctx = makeCtx();
+    apply(ctx, { recallEnabled: true, semanticRecallEnabled: true });
+    expect(registeredNames(ctx)).toEqual(expect.arrayContaining(['recall', 'recall-semantic']));
   });
 
-  it('env 启用：apply 触发模型后台预热下载（ensureModelReady 被调用）', () => {
+  it('启用：apply 触发模型后台预热下载（ensureModelReady 被调用）', () => {
     const mockEnsure = ensureModelReady as unknown as ReturnType<typeof vi.fn>;
     mockEnsure.mockClear();
-    for (const key of envKeys) delete process.env[key];
     const ctx = makeCtx();
     apply(ctx, {});
     expect(mockEnsure).toHaveBeenCalled();
   });
 
-  it('OM_SEMANTIC_RECALL_ENABLED=false：不触发模型下载', () => {
+  it('semanticRecallEnabled=false：不触发模型下载', () => {
     const mockEnsure = ensureModelReady as unknown as ReturnType<typeof vi.fn>;
     mockEnsure.mockClear();
-    for (const key of envKeys) delete process.env[key];
-    process.env[SEMANTIC_RECALL_ENABLED_ENV] = 'false';
     const ctx = makeCtx();
-    apply(ctx, {});
+    apply(ctx, { semanticRecallEnabled: false });
     expect(mockEnsure).not.toHaveBeenCalled();
   });
 });
