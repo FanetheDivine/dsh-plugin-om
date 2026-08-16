@@ -13,10 +13,11 @@ whenToUse: 需求，缺陷，worktree，dsh-plugin-om
 ## 1. 创建 worktree
 
 - 在**项目文件夹的上级（平行）位置**创建 git worktree，分支名用 kebab-case 概括需求/缺陷，基于最新基线（如 `origin/main`）。
+- 以 --no-track 方式创建新分支
 - 原工作区保持干净；后续的探索、确认、编码全部在 worktree 内进行。
 
 ```sh
-git -C <项目根> worktree add ../<分支名> -b <分支名> origin/main
+git -C <项目根> worktree add ../<分支名> -b <分支名> origin/main --no-track
 ```
 
 在worktree下载依赖
