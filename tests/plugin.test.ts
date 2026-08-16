@@ -31,6 +31,7 @@ import {
 import { cosineSimilarity, ensureModelReady } from '../src/embedding.ts';
 import { apply, inject, name } from '../src/index.ts';
 import { indexMessages, messageIdOfEvent } from '../src/log-index.ts';
+import { stepLogEnabled } from '../src/logger.ts';
 import { buildRecallTool, parseRecallArgs } from '../src/recall.ts';
 import {
   buildSemanticRecallTool,
@@ -152,11 +153,11 @@ describe('配置校验 resolveConfig', () => {
     expect(c.historyMergeRatio).toBe(0.3);
   });
 
-  it('tailMessageCount 校验：默认 10，正整数可覆盖，非正整数抛错', () => {
+  it('tailMessageCount 校验：默认 10，任意数值可覆盖（不做区间限制），非整数抛错', () => {
     expect(resolveConfig({}).tailMessageCount).toBe(10);
     expect(resolveConfig({ tailMessageCount: 3 }).tailMessageCount).toBe(3);
-    expect(() => resolveConfig({ tailMessageCount: 0 })).toThrow();
-    expect(() => resolveConfig({ tailMessageCount: 2.5 })).toThrow();
+    expect(resolveConfig({ tailMessageCount: 0 }).tailMessageCount).toBe(0); // 无区间限制
+    expect(() => resolveConfig({ tailMessageCount: 2.5 })).toThrow(); // 仍校验整数
   });
 
   it('整份配置留空（undefined/null/空串/空白串）时全部用默认值', () => {
@@ -182,19 +183,41 @@ describe('配置校验 resolveConfig', () => {
     expect(mixed2.tailMessageCount).toBe(3);
   });
 
-  it('未知键与越界数值抛错', () => {
+  it('未知键抛错；数值键不做区间限制（越界值按原样接受）', () => {
     expect(() => resolveConfig([])).toThrow(); // 空数组不是对象
     expect(() => resolveConfig('0.5')).toThrow(); // 非空字符串不是对象
     expect(() => resolveConfig({ badKey: 1 })).toThrow();
-    expect(() => resolveConfig({ thresholdRatio: 2 })).toThrow();
+    // 阈值不再校验 0.01-1 区间：任意数值（调试场景）按原样接受
+    expect(resolveConfig({ thresholdRatio: 2 }).thresholdRatio).toBe(2);
+    expect(resolveConfig({ historyMergeRatio: 0 }).historyMergeRatio).toBe(0);
+    expect(resolveConfig({ historyMergeRatio: 2 }).historyMergeRatio).toBe(2);
+    expect(resolveConfig({ compressMaxTokens: 0 }).compressMaxTokens).toBe(0);
+    expect(() => resolveConfig({ thresholdRatio: '0.5' })).toThrow(); // 非数值仍抛错
     expect(() => resolveConfig({ summaryMaxChars: 100 })).toThrow();
-    expect(() => resolveConfig({ historyMergeRatio: 0 })).toThrow(); // 仍校验区间
-    expect(() => resolveConfig({ historyMergeRatio: 2 })).toThrow();
     expect(() => resolveConfig({ recallMaxMessages: 10 })).toThrow();
     expect(() => resolveConfig({ tailMessageBudget: 50 })).toThrow();
     expect(() => resolveConfig({ tailTokenBudgetRatio: 0.1 })).toThrow();
     expect(() => resolveConfig({ auto: false })).toThrow();
     expect(() => resolveConfig({ evalEnabled: false })).toThrow();
+  });
+});
+
+describe('步骤级日志开关 stepLogEnabled', () => {
+  it('缺省：非 production（dev/test/未设置）输出，production 隐藏', () => {
+    expect(stepLogEnabled({})).toBe(true);
+    expect(stepLogEnabled({ NODE_ENV: 'development' })).toBe(true);
+    expect(stepLogEnabled({ NODE_ENV: 'test' })).toBe(true);
+    expect(stepLogEnabled({ NODE_ENV: 'production' })).toBe(false);
+  });
+
+  it('DSH_OM_DEBUG=true 强制开启（含 production）', () => {
+    expect(stepLogEnabled({ NODE_ENV: 'production', DSH_OM_DEBUG: 'true' })).toBe(true);
+    expect(stepLogEnabled({ NODE_ENV: 'development', DSH_OM_DEBUG: 'true' })).toBe(true);
+  });
+
+  it('DSH_OM_DEBUG=false 强制关闭（含 dev）', () => {
+    expect(stepLogEnabled({ NODE_ENV: 'development', DSH_OM_DEBUG: 'false' })).toBe(false);
+    expect(stepLogEnabled({ NODE_ENV: 'test', DSH_OM_DEBUG: 'false' })).toBe(false);
   });
 });
 
@@ -780,12 +803,17 @@ describe('apply 接线（OM 观察压缩）', () => {
     });
     apply(ctx, { tailMessageCount: 1 });
     await runPreStep(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(1); // 摘要调用已发出
+    expect(ctx._llmCalls).toHaveLength(3); // 无输出视为失败，重试共 3 次
     // 摘要无输出：不写任何 compaction 生命周期事件，也无部分替换
     expect(session.events.some((e) => e.type === 'compaction/start')).toBe(false);
     expect(session.events.some((e) => e.type === 'compaction/summary')).toBe(false);
     expect(session.events.some((e) => e.type === 'compaction/end')).toBe(false);
     expect(latestHistoryText(session)).toBe(''); // 无部分替换
+    // 失败日志始终输出（含尝试次数与重试耗尽说明）
+    const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
+    expect(warns.some((w) => w.includes('摘要未完成（第 1/3 次，无输出），将重试'))).toBe(true);
+    expect(warns.some((w) => w.includes('重试耗尽，忽略本次摘要'))).toBe(true);
+    expect(warns.some((w) => w.includes('摘要调用最终失败（已尝试 3 次'))).toBe(true);
   });
 
   it('摘要流非 stop 结束（max-tokens）视为未完成，不产生替换', async () => {
@@ -807,9 +835,110 @@ describe('apply 接线（OM 观察压缩）', () => {
     });
     apply(ctx, { tailMessageCount: 1 });
     await runPreStep(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(1);
+    expect(ctx._llmCalls).toHaveLength(3); // 非 stop 结束视为失败，重试共 3 次
     expect(session.events.some((e) => e.type === 'compaction/start')).toBe(false);
     expect(latestHistoryText(session)).toBe('');
+  });
+
+  it('摘要失败重试：前两次抛异常，第三次成功并正常压缩', async () => {
+    const session = makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
+    });
+    // 可重入迭代器：每次 stream 调用按尝试次数产出——第 1/2 次抛异常，第 3 次正常输出
+    let attempts = 0;
+    const ctx = makeCtx({
+      resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
+      llmStream: {
+        [Symbol.iterator]() {
+          attempts += 1;
+          const current = attempts;
+          return (function* () {
+            if (current <= 2) throw new Error(`模拟第 ${current} 次失败`);
+            yield { type: 'text-delta', text: 'retried-ok' };
+          })();
+        },
+      },
+    });
+    apply(ctx, { tailMessageCount: 1 });
+    await runPreStep(ctx, session);
+    expect(ctx._llmCalls).toHaveLength(3); // 首次 + 2 次重试
+    expect(latestHistoryText(session)).toContain('retried-ok');
+    expect(session.events.some((e) => e.type === 'compaction/start')).toBe(true);
+    // 失败日志始终输出（含尝试次数与重试提示）
+    const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
+    expect(
+      warns.some((w) => w.includes('摘要调用失败（第 1/3 次，模拟第 1 次失败），将重试')),
+    ).toBe(true);
+    expect(
+      warns.some((w) => w.includes('摘要调用失败（第 2/3 次，模拟第 2 次失败），将重试')),
+    ).toBe(true);
+  });
+
+  it('摘要失败重试耗尽：三次均抛异常，不产生替换，记录最终失败', async () => {
+    const session = makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
+    });
+    const ctx = makeCtx({
+      resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
+      llmStream: {
+        [Symbol.iterator]() {
+          return {
+            next() {
+              throw new Error('总是失败');
+            },
+          };
+        },
+      },
+    });
+    apply(ctx, { tailMessageCount: 1 });
+    await runPreStep(ctx, session);
+    expect(ctx._llmCalls).toHaveLength(3);
+    expect(session.events.some((e) => e.type === 'compaction/start')).toBe(false);
+    expect(latestHistoryText(session)).toBe('');
+    const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
+    expect(warns.some((w) => w.includes('摘要调用失败（第 3/3 次，总是失败），重试耗尽'))).toBe(
+      true,
+    );
+    expect(
+      warns.some((w) => w.includes('摘要调用最终失败（已尝试 3 次，最后错误：总是失败）')),
+    ).toBe(true);
+  });
+
+  it('流程逐步日志：dev 环境 step（debug）日志覆盖关键步骤', async () => {
+    const session = makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
+    });
+    const ctx = observeCtx('OBSERVED');
+    apply(ctx, { tailMessageCount: 1 });
+    await runPreStep(ctx, session);
+    const steps = ctx._loggerCalls
+      .filter((c) => c.level === 'debug')
+      .map((c) => String(c.args[0] ?? ''));
+    expect(steps.some((s) => s.includes('观察检查'))).toBe(true);
+    expect(steps.some((s) => s.includes('触发压缩'))).toBe(true);
+    expect(steps.some((s) => s.includes('压缩区间'))).toBe(true);
+    expect(steps.some((s) => s.includes('摘要调用开始（第 1/3 次'))).toBe(true);
+    expect(steps.some((s) => s.includes('摘要调用成功'))).toBe(true);
+    expect(steps.some((s) => s.includes('观察提交：追加 compaction/start'))).toBe(true);
+    expect(steps.some((s) => s.includes('观察 pass 结束'))).toBe(true);
   });
 
   it('中断标记（aborted）进入观察指令', async () => {
@@ -944,13 +1073,22 @@ describe('apply 接线（OM 反思压缩）', () => {
         }),
       ],
     });
-    // 生成器按次 yield：第一次 stream 调用消费 REFLECTED，第二次消费 OBSERVED
+    // 可重入迭代器：每次 stream 调用产出一条文本——第 1 次（反思）REFLECTED，第 2 次（观察）OBSERVED
+    let streamCalls = 0;
     const ctx = makeCtx({
       resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
-      llmStream: (function* () {
-        yield { type: 'text-delta', text: 'REFLECTED' };
-        yield { type: 'text-delta', text: 'OBSERVED' };
-      })(),
+      llmStream: {
+        [Symbol.iterator]() {
+          streamCalls += 1;
+          const current = streamCalls;
+          return (function* () {
+            yield {
+              type: 'text-delta',
+              text: current === 1 ? 'REFLECTED' : 'OBSERVED',
+            };
+          })();
+        },
+      },
     });
     apply(ctx, { tailMessageCount: 1 });
     await runPreStep(ctx, session);

@@ -198,12 +198,17 @@ export function makeCtx({ llmStream, resolveModelInfo, pruner }: MockCtxOptions 
   const sections: unknown[] = [];
   /** 摘要 llm.stream 调用记录（测试据此断言 options/system/messages/顺序）。 */
   const llmCalls: Array<{ options: unknown }> = [];
+  /** 日志调用记录（debug/info/warn；测试据此断言步骤日志与失败日志）。 */
+  const loggerCalls: Array<{ level: 'debug' | 'info' | 'warn'; args: unknown[] }> = [];
   const logger = {
-    info: () => {
-      /* 静默 */
+    debug: (...args: unknown[]) => {
+      loggerCalls.push({ level: 'debug', args });
     },
-    warn: () => {
-      /* 静默 */
+    info: (...args: unknown[]) => {
+      loggerCalls.push({ level: 'info', args });
+    },
+    warn: (...args: unknown[]) => {
+      loggerCalls.push({ level: 'warn', args });
     },
   };
   const meter = makeMeter();
@@ -248,12 +253,14 @@ export function makeCtx({ llmStream, resolveModelInfo, pruner }: MockCtxOptions 
     _registeredTools: registeredTools,
     _sections: sections,
     _llmCalls: llmCalls,
+    _loggerCalls: loggerCalls,
   };
   return ctx as unknown as Context & {
     _onCallbacks: Map<string, ((...args: unknown[]) => unknown)[]>;
     _registeredTools: Array<{ name?: string }>;
     _sections: Array<{ name?: string }>;
     _llmCalls: Array<{ options: unknown }>;
+    _loggerCalls: Array<{ level: 'debug' | 'info' | 'warn'; args: unknown[] }>;
   };
 }
 

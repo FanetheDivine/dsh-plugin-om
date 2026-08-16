@@ -96,6 +96,8 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 | `tailMessageCount`  | `10`     | 尾部保留的不压缩消息条数（同时作为摘要模型的参考尾部）                     |
 | `modelDir`          | 打包模型 | recall-semantic 嵌入模型目录（默认插件内打包的本地模型；可指向自定义目录）。onnx 缺失时运行时自动下载到该目录 |
 
+> 数值键（`thresholdRatio` / `historyMergeRatio` / `compressMaxTokens` / `tailMessageCount`）**不做取值区间限制**（如阈值不再限定 0.01–1）：用户提供的值按原样接受（仅校验为有限数，整数键另校验整数性），便于调试时设置任意值。
+
 ### 摘要模式（环境变量）
 
 摘要调用由环境变量 `DSH_OM_SUMMARY_MODE` 控制（缺省 `prefix`；非法值在插件加载时报错）：
@@ -109,14 +111,21 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 | ---------------------------- | ---- | -------------------------------------------------------- |
 | `OM_RECALL_ENABLED`          | 启用 | 是否注册 `recall` 工具（值恰为 `false` 时禁用）          |
 | `OM_SEMANTIC_RECALL_ENABLED` | 启用 | 是否注册 `recall-semantic` 工具（值恰为 `false` 时禁用；启用且模型缺失时才触发后台模型下载） |
+| `DSH_OM_DEBUG`               | dev  | 压缩流程步骤级（debug）日志开关：值恰为 `true` 强制开启、`false` 强制关闭；缺省按 `NODE_ENV !== 'production'` 判定（dev/test 输出，生产隐藏）。**失败日志不受此开关影响，始终输出** |
 
-取值规则：值**恰为** `false` 时禁用对应工具（不注册；`recall-semantic` 禁用时嵌入模型不会加载、也不会触发模型下载），其余取值（含未设置 / 空串 / `true` / `1` 等）均启用。两个开关相互独立，只影响工具注册，不影响压缩接线。
+取值规则：`OM_RECALL_ENABLED` / `OM_SEMANTIC_RECALL_ENABLED` 值**恰为** `false` 时禁用对应工具（不注册；`recall-semantic` 禁用时嵌入模型不会加载、也不会触发模型下载），其余取值（含未设置 / 空串 / `true` / `1` 等）均启用。两个开关相互独立，只影响工具注册，不影响压缩接线。
 
-示例（禁用 recall-semantic，保留 recall）：
+示例（禁用 recall-semantic，保留 recall；生产环境强制输出步骤日志）：
 
 ```sh
 OM_SEMANTIC_RECALL_ENABLED=false dsh web
+DSH_OM_DEBUG=true dsh web
 ```
+
+### 日志与摘要重试
+
+- 压缩流程（路由 / 模型容量 / 阈值判定 / 区间计算 / 摘要调用 / 提交各步）逐步输出步骤级日志（`debug` 级，dev 环境默认可见，见 `DSH_OM_DEBUG`）。
+- 摘要调用失败（抛异常 / 空输出 / 非 `stop` 结束）均记录日志并**自动重试，总共最多尝试 3 次**；每次失败记录尝试次数与原因，重试耗尽后记录最终失败日志。失败日志不受 dev 开关影响，始终输出。
 
 ## recall 工具
 
