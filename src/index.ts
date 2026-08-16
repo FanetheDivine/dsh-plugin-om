@@ -5,8 +5,8 @@
  * 模块：
  *  - recall.ts  recall({ start_id, end_id?, offset? }) 工具：按 message_id 回看原始会话
  *  - compress.ts 自动压缩（OM 观察/反思两级阈值）：pre-step 阻塞串行执行——
- *    反思（摘要 ≥ 窗口 × historyMergeRatio 时 fork 精简合并 <om-history>）、
- *    观察（未压缩消息 ≥ 窗口 × thresholdRatio 时 fork 压缩为观察日志并追加）
+ *    反思（摘要 ≥ 窗口 × historyMergeRatio 时摘要调用精简合并 <om-history>）、
+ *    观察（未压缩消息 ≥ 窗口 × thresholdRatio 时摘要调用压缩为观察日志并追加）
  *
  * 约束：不引入自定义会话事件类型——压缩复用宿主已知的 compaction/* 生命周期事件
  * （start/summary/end）与 checkpoint 标记，结果写入消息记录与轨迹。

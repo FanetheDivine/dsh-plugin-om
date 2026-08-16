@@ -36,7 +36,11 @@ export function toolResultBlock(callId: string, content: unknown[], isError = fa
 interface MockSessionOptions {
   events?: SessionEvent[];
   surfaceNodes?: number[];
-  requestHeaderValue?: { config: { provider: string; model: string } };
+  requestHeaderValue?: {
+    config: { provider: string; model: string };
+    system?: string;
+    tools?: unknown[];
+  };
   /** 会话创建元数据（子代理会话传 { origin: 'subagent' }）。 */
   header?: { origin?: 'subagent' };
 }
@@ -89,6 +93,18 @@ export function makeSession({
       }
       if (event.type === 'tool/result') return event.data.message;
       return null;
+    },
+    deriveMessages() {
+      return nodes
+        .map((seq) => {
+          const event = log[seq];
+          if (!event) return null;
+          if (event.type === 'user/message') return event.data;
+          if (event.type === 'assistant/message') return event.data.message;
+          if (event.type === 'tool/result') return event.data.message;
+          return null;
+        })
+        .filter((message) => message !== null);
     },
     append(type: string, data: unknown, opts: Record<string, unknown> = {}) {
       const seq = log.length;
@@ -169,24 +185,19 @@ export function makeMeter() {
 }
 
 interface MockCtxOptions {
-  llmStream?: AsyncGenerator<{ type?: string; text?: string }>;
-  subagentStart?: (provider: string, request: unknown) => Promise<unknown>;
+  /** 摘要流 chunk（text-delta / usage / finish；缺省单条 text-delta）。 */
+  llmStream?: Iterable<unknown> | AsyncIterable<unknown>;
   resolveModelInfo?: (provider: string, model: string) => Promise<unknown>;
   pruner?: unknown;
 }
 
 /** 可编程 ctx 模拟（回调由测试注入）。 */
-export function makeCtx({
-  llmStream,
-  subagentStart,
-  resolveModelInfo,
-  pruner,
-}: MockCtxOptions = {}) {
+export function makeCtx({ llmStream, resolveModelInfo, pruner }: MockCtxOptions = {}) {
   const onCallbacks = new Map<string, ((...args: unknown[]) => unknown)[]>();
   const registeredTools: unknown[] = [];
   const sections: unknown[] = [];
-  /** 摘要/评估 fork 调用记录（测试据此断言 persona/prompt/顺序）。 */
-  const subagentCalls: Array<{ provider: string; request: unknown }> = [];
+  /** 摘要 llm.stream 调用记录（测试据此断言 options/system/messages/顺序）。 */
+  const llmCalls: Array<{ options: unknown }> = [];
   const logger = {
     info: () => {
       /* 静默 */
@@ -214,9 +225,9 @@ export function makeCtx({
           ? resolveModelInfo(provider, model)
           : { context: { contextWindow: 100000 } },
       stream: async function* (options: unknown) {
+        llmCalls.push({ options });
         if (llmStream) yield* llmStream;
         else yield { type: 'text-delta', text: '合并后的历史条目' };
-        void options;
       },
     },
     tokenMeter: meter,
@@ -230,35 +241,19 @@ export function makeCtx({
       return () => true;
     },
     get(name: string) {
-      if (name === 'subagents') {
-        return {
-          getProvider: (n: string) => (n === 'fork' ? {} : undefined),
-          start: async (provider: string, request: unknown) => {
-            subagentCalls.push({ provider, request });
-            if (subagentStart) return subagentStart(provider, request);
-            return {
-              result: Promise.resolve({
-                output: [textBlock('我编写了测试代码；产物符合预期；下一步继续任务')],
-                stopReason: 'completed',
-              }),
-              dispose: async () => {},
-            };
-          },
-        };
-      }
       if (name === 'toolResultPruner') return pruner;
       return undefined;
     },
     _onCallbacks: onCallbacks,
     _registeredTools: registeredTools,
     _sections: sections,
-    _subagentCalls: subagentCalls,
+    _llmCalls: llmCalls,
   };
   return ctx as unknown as Context & {
     _onCallbacks: Map<string, ((...args: unknown[]) => unknown)[]>;
     _registeredTools: Array<{ name?: string }>;
     _sections: Array<{ name?: string }>;
-    _subagentCalls: Array<{ provider: string; request: unknown }>;
+    _llmCalls: Array<{ options: unknown }>;
   };
 }
 
