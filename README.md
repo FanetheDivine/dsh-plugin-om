@@ -104,7 +104,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 ### 摘要模式
 
-摘要调用由配置键 `summaryMode` 控制（缺省 `fork`；非法值在插件加载时报错；旧值 `prefix` / `system` 仍兼容，分别视为 `fork` / `new`）：
+摘要调用由配置键 `summaryMode` 控制（缺省 `fork`；非法值在插件加载时报错）：
 
 - `fork`（缺省）：fork 会话风格——复用主会话请求前缀——`system`/`tools` 取自主会话上次请求，`messages` = 完整派生历史**从尾部之前实际截断**（尾部 `tailMessageCount` 条不注入、不进日志）+ 末尾追加指令 user 消息，充分利用 provider 前缀缓存（与宿主 `compaction-basic` 同款策略）。
 - `new`：新开会话风格——指令（persona + 规则）作为 system 提示词，只注入本次要压缩的消息作为 user 消息输入模型压缩（不注入旧压缩日志、不注入尾部）。

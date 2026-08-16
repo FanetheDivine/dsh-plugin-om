@@ -260,11 +260,6 @@ describe('摘要模式 resolveSummaryMode / summaryMode 配置键', () => {
     expect(resolveConfig({ summaryMode: 'disable' }).summaryMode).toBe('disable');
   });
 
-  it('旧值兼容：prefix→fork、system→new（待移除）', () => {
-    expect(resolveSummaryMode('prefix')).toBe('fork');
-    expect(resolveSummaryMode('system')).toBe('new');
-  });
-
   it('非法值抛错并指出配置键', () => {
     expect(() => resolveSummaryMode('bogus')).toThrow(/summaryMode/);
     expect(() => resolveConfig({ summaryMode: 'bogus' })).toThrow(/summaryMode/);
@@ -803,7 +798,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     };
   }
 
-  /** 提取摘要指令文本（prefix 模式为最后一条消息；system 模式为 system 字段）。 */
+  /** 提取摘要指令文本（fork 模式为最后一条消息；new 模式为 system 字段）。 */
   function instructionText(options: ReturnType<typeof summaryOptions>): string {
     if (options.system !== undefined) return options.system;
     const last = options.messages?.at(-1);
@@ -850,7 +845,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(nextCalled).toBe(true); // 阻塞执行后放行
     expect(ctx._llmCalls).toHaveLength(1);
     const options = summaryOptions(ctx);
-    // prefix 模式：persona 并入指令（最后一条 user 消息）；mock requestHeader 无 system
+    // fork 模式：persona 并入指令（最后一条 user 消息）；mock requestHeader 无 system
     const instruction = instructionText(options);
     expect(instruction.startsWith(OBSERVER_PERSONA)).toBe(true);
     expect(options.system).toBeUndefined();
@@ -1230,7 +1225,7 @@ describe('apply 接线（OM 反思压缩）', () => {
     );
   }
 
-  /** 提取摘要指令文本（prefix 模式为最后一条消息的文本）。 */
+  /** 提取摘要指令文本（fork 模式为最后一条消息的文本）。 */
   function instructionText(options: unknown): string {
     const o = options as {
       messages?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
@@ -1477,7 +1472,7 @@ describe('OM 摘要 token 归入主会话（compaction/summary.usage）', () => 
   });
 });
 
-describe('摘要请求形态（prefix / system 双模式）', () => {
+describe('摘要请求形态（fork / new 双模式）', () => {
   async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
     const preStepListeners = ctx._onCallbacks.get('agent/pre-step');
     await preStepListeners?.[0]?.(
@@ -1486,7 +1481,7 @@ describe('摘要请求形态（prefix / system 双模式）', () => {
     );
   }
 
-  /** 带 requestHeader system/tools 的会话（prefix 模式前缀对齐断言用）。 */
+  /** 带 requestHeader system/tools 的会话（fork 模式前缀对齐断言用）。 */
   function sessionWithHeader() {
     return makeSession({
       events: buildToolCallFlow({

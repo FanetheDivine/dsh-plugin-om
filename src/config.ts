@@ -82,15 +82,13 @@ function normalizeConfigInput(raw: unknown): Record<string, unknown> {
 }
 
 /**
- * 解析摘要模式配置值：缺省 / 空串回退 fork；'fork'/'new'/'disable' 直接返回；
- * 兼容旧值 'prefix'（→fork）、'system'（→new）；其余值抛错（配置错误须立即可见）。
+ * 解析摘要模式配置值：缺省 / 空串回退 fork；仅接受 'fork'/'new'/'disable'；
+ * 其余值抛错（配置错误须立即可见）。
  */
 export function resolveSummaryMode(raw: unknown): SummaryMode {
   if (raw === undefined || raw === null) return 'fork';
   if (typeof raw === 'string' && raw.trim() === '') return 'fork';
   if (raw === 'fork' || raw === 'new' || raw === 'disable') return raw;
-  if (raw === 'prefix') return 'fork'; // 旧值兼容（prefix → fork）
-  if (raw === 'system') return 'new'; // 旧值兼容（system → new）
   fail('config summaryMode must be "fork", "new" or "disable"');
 }
 
