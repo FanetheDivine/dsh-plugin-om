@@ -119,9 +119,12 @@ describe('sharedModelDir（跨版本共享默认目录）', () => {
   it('DSH_HOME 已设置：以 $DSH_HOME 为根（空白视为未设置）', () => {
     const prev = process.env.DSH_HOME;
     try {
-      process.env.DSH_HOME = 'E:/custom-home';
+      // tmpdir() 在 win32/posix 均为绝对路径：作为 DSH_HOME 测试值不依赖盘符，
+      // path.resolve 在两端平台都能原样归一化（避免 Windows 专属路径在 Linux CI 解析到 CWD）。
+      const customHome = path.join(tmpdir(), 'custom-home');
+      process.env.DSH_HOME = customHome;
       expect(sharedModelDir()).toBe(
-        path.join('E:/custom-home', 'plugin-data', 'dsh-plugin-om', 'models', EMBEDDING_MODEL_ID),
+        path.join(customHome, 'plugin-data', 'dsh-plugin-om', 'models', EMBEDDING_MODEL_ID),
       );
       process.env.DSH_HOME = '   ';
       expect(sharedModelDir()).not.toContain('custom-home');
