@@ -117,11 +117,11 @@ export function buildReflectPrompt(mode: SummaryMode): string {
   const framing =
     mode === 'new'
       ? [
-          '下方的消息记录包含当前的 <om-history> 压缩日志（最后一次 <om-history> 块）。',
+          '下方的消息记录包含当前的 <om-history> 压缩日志（全部 <om-history> 块）。',
           '只对这份压缩日志做精简合并；不要涉及日志之外的消息。',
         ]
       : [
-          '上方的消息记录是主会话的完整历史，其中包含当前的 <om-history> 压缩日志（最后一次 <om-history> 块）。',
+          '上方的消息记录是主会话的完整历史，其中包含当前的 <om-history> 压缩日志（全部 <om-history> 块）。',
           '只对这份压缩日志做精简合并；不要涉及日志之外的消息。',
         ];
   return [
@@ -152,7 +152,7 @@ export function buildReflectPrompt(mode: SummaryMode): string {
     '</assistant>',
     `</${HISTORY_TAG}>`,
     '',
-    `【说明】你的合并结果会替换当前的 <${HISTORY_TAG}> 块内容。`,
+    `【说明】你的合并结果会替换全部 <${HISTORY_TAG}> 块。`,
   ].join('\n');
 }
 

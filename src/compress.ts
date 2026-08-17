@@ -24,7 +24,7 @@
  * 仅主会话生效。
  */
 import { COMPACT_CHECKPOINT_PLUGIN, HISTORY_TAG, PLUGIN_LABEL } from './constants.ts';
-import { indexCompleteMessages, surfaceIndexOf } from './log-index.ts';
+import { indexCompleteMessages } from './log-index.ts';
 import { makeLogger } from './logger.ts';
 import {
   buildObservePrompt,
@@ -93,18 +93,6 @@ export function measureUncompressedTokens(session: Session, meter: TokenEstimato
     total += message ? meter.estimateMessage(message) : 0;
   }
   return total;
-}
-
-/** 定位日志中最后一次 <om-history> 压缩日志（内文 + 事件 seq）；无则 undefined。 */
-export function findLatestHistory(session: Session): { text: string; seq: number } | undefined {
-  /** 会话事件（仅追加，从后向前扫描）。 */
-  const events = session.events;
-  for (let seq = events.length - 1; seq >= 0; seq -= 1) {
-    /** <om-history> 内文（非压缩日志消息时为 undefined）。 */
-    const text = historyTextOf(events[seq]);
-    if (text !== undefined) return { text, seq };
-  }
-  return undefined;
 }
 
 /**
@@ -271,8 +259,8 @@ function appendHistoryMessage(
 }
 
 /**
- * 反思：摘要 tokens ≥ 窗口 × historyMergeRatio 时，摘要调用精简合并摘要，
- * 替换单个 <om-history> 节点。失败不产生部分替换。
+ * 反思：全部 <om-history> 块 tokens 合计 ≥ 窗口 × historyMergeRatio 时，摘要调用
+ * 精简合并，把整个块区段替换为一条更紧凑的摘要。失败不产生部分替换。
  */
 export async function reflectPass(
   ctx: Context,
@@ -287,30 +275,37 @@ export async function reflectPass(
   /** 插件日志门面。 */
   const logger = makeLogger(ctx, config.debug);
   logger.step(`反思检查（窗口 ${window} × historyMergeRatio ${config.historyMergeRatio}）`);
-  /** 当前摘要（最后一次 <om-history>；无则跳过）。 */
-  const history = findLatestHistory(session);
-  if (!history) {
+  /** 全部 <om-history> 块（头部连续区段；无则跳过）。 */
+  const blocks = listHistoryBlocks(session);
+  if (blocks.length === 0) {
     logger.step('反思：无 <om-history> 压缩日志，跳过');
     return;
   }
   /** 反思阈值（窗口 × historyMergeRatio 向下取整）。 */
   const threshold = Math.floor(window * config.historyMergeRatio);
-  /** 摘要 token 估算。 */
-  const tokens = estimateTextTokens(history.text);
+  /** 全部块 token 估算合计（摘要总长）。 */
+  const tokens = blocks.reduce((total, block) => total + estimateTextTokens(block.text), 0);
   if (tokens < threshold) {
     logger.step(`反思：摘要 ${tokens} tokens < 阈值 ${threshold}，跳过`);
     return;
   }
-  logger.step(`反思：摘要 ${tokens} tokens ≥ 阈值 ${threshold}，触发精简合并`);
-  /** 摘要节点须仍在表层才可替换。 */
-  if (surfaceIndexOf([...session.surface.nodes], history.seq) === -1) {
-    logger.step('反思：摘要节点已不在表层，跳过');
+  logger.step(
+    `反思：摘要 ${tokens} tokens ≥ 阈值 ${threshold}，触发精简合并（${blocks.length} 个块）`,
+  );
+  /** 块区段首尾（listHistoryBlocks 只收集表层节点，天然在表层）。 */
+  const first = blocks[0];
+  const last = blocks[blocks.length - 1];
+  if (first === undefined || last === undefined) {
+    logger.step('反思：块区段缺失，跳过');
     return;
   }
+  /** 被替换块区段的 seq 列表。 */
+  const blockSeqs = blocks.map((block) => block.seq);
   /** 反思指令（persona + 规则主体）。 */
   const instruction = `${REFLECTOR_PERSONA}\n\n${buildReflectPrompt(config.summaryMode)}`;
-  /** new 模式的渲染输入（当前 <om-history> 内文）。 */
-  const contextText = config.summaryMode === 'new' ? history.text : undefined;
+  /** new 模式的渲染输入（全部 <om-history> 块内文）。 */
+  const contextText =
+    config.summaryMode === 'new' ? blocks.map((block) => block.text).join('\n') : undefined;
   /** 反思摘要结果（null 表示失败/跳过）。 */
   const summaryResult = await runSummarySubagent(
     ctx,
@@ -343,29 +338,31 @@ export async function reflectPass(
     const summarySeq = appendCompactionSummary(session, {
       lifecycle,
       summary: report,
-      shadowedRange: { start: history.seq, end: history.seq },
-      shadowedSeqs: [history.seq],
+      shadowedRange: { start: first.seq, end: last.seq },
+      shadowedSeqs: blockSeqs,
       shadowedTokenCount: tokens,
       provider: target.provider,
       model: target.model,
       maxTokens: config.compressMaxTokens,
       ...(summaryResult.usage === undefined ? {} : { usage: summaryResult.usage }),
     });
-    logger.step('反思提交：替换 <om-history> 摘要节点');
+    logger.step('反思提交：替换整个 <om-history> 块区段为合并摘要');
     appendHistoryMessage(
       session,
       report,
-      [summarySeq, history.seq],
+      [summarySeq, ...blockSeqs],
       {
         op: 'replace',
-        start: history.seq,
-        end: history.seq,
+        start: first.seq,
+        end: last.seq,
       },
       lifecycle.compactionId,
     );
     logger.step('反思提交：追加 compaction/end');
     appendCompactionEnd(session, lifecycle);
-    logger.info(`反思完成（摘要 ${tokens} tokens ≥ 阈值 ${threshold}，替换摘要节点）`);
+    logger.info(
+      `反思完成（摘要 ${tokens} tokens ≥ 阈值 ${threshold}，合并 ${blocks.length} 个块为一条）`,
+    );
   } catch (error) {
     /** 提交失败信息（统一字符串）。 */
     const message = error instanceof Error ? error.message : String(error);

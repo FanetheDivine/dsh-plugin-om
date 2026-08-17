@@ -14,7 +14,6 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
 import {
   computeCompressRange,
   estimateTextTokens,
-  findLatestHistory,
   isPairBalancedAfter,
   listHistoryBlocks,
   measureUncompressedTokens,
@@ -618,8 +617,8 @@ describe('配对平衡 isPairBalancedAfter', () => {
   });
 });
 
-describe('历史提取 listHistoryBlocks / findLatestHistory', () => {
-  it('listHistoryBlocks 按表层顺序收集头部连续区段的全部 <om-history> 块', () => {
+describe('历史提取 listHistoryBlocks', () => {
+  it('listHistoryBlocks 按表层顺序收集头部连续区段的全部 <om-history> 块（tip 属性保留在文本中）', () => {
     const session = makeSession({
       events: [historyMessage('块1'), historyMessage('块2', 'history-2')],
     });
@@ -627,6 +626,7 @@ describe('历史提取 listHistoryBlocks / findLatestHistory', () => {
     expect(blocks.map((b) => b.seq)).toEqual([0, 1]);
     expect(blocks[0]?.text).toContain('块1');
     expect(blocks[1]?.text).toContain('块2');
+    expect(blocks[0]?.text.startsWith(`<${HISTORY_TAG} tip="${HISTORY_TIP}">`)).toBe(true);
   });
 
   it('listHistoryBlocks 头部区段到第一个非压缩日志消息即结束', () => {
@@ -658,33 +658,6 @@ describe('历史提取 listHistoryBlocks / findLatestHistory', () => {
     ).toEqual([]);
   });
 
-  it('findLatestHistory 取日志中最后一次 <om-history>', () => {
-    const second = historyMessage('新任务', 'history-msg-2');
-    const session = makeSession({
-      events: [
-        historyMessage('旧任务'),
-        ...buildToolCallFlow({ code: 'a()', description: '任务A', callId: 'c1', resultText: 'r1' }),
-        second,
-      ],
-    });
-    const found = findLatestHistory(session);
-    expect(found?.seq).toBeGreaterThan(0);
-    expect(found?.text).toContain('新任务');
-    expect(found?.text.startsWith(`<${HISTORY_TAG} tip="${HISTORY_TIP}">`)).toBe(true); // tip 属性保留
-    expect(
-      findLatestHistory(
-        makeSession({
-          events: buildToolCallFlow({
-            code: 'a()',
-            description: '任务A',
-            callId: 'c1',
-            resultText: 'r1',
-          }),
-        }),
-      ),
-    ).toBeUndefined();
-  });
-
   it('D：旧格式注入前缀句（含行内 <om-history>）不影响定位——从真实块开始提取', () => {
     // 旧版本注入消息 = 前缀句 + 真实 <om-history> 块；前缀句里的（<om-history>）会抢先命中裸 indexOf，
     // 修复后应从块前换行定位到真实块，不残留前缀句片段
@@ -704,15 +677,17 @@ describe('历史提取 listHistoryBlocks / findLatestHistory', () => {
         } as unknown as SessionEvent,
       ],
     });
-    const found = findLatestHistory(session);
-    expect(found?.seq).toBe(0);
-    expect(found?.text.startsWith('<om-history>')).toBe(true); // 从真实块开始
-    expect(found?.text).not.toContain('为已确立背景'); // 不残留前缀句尾部
-    expect(found?.text).toContain('旧任务内容');
+    const blocks = listHistoryBlocks(session);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.seq).toBe(0);
+    expect(blocks[0]?.text.startsWith('<om-history>')).toBe(true); // 从真实块开始
+    expect(blocks[0]?.text).not.toContain('为已确立背景'); // 不残留前缀句尾部
+    expect(blocks[0]?.text).toContain('旧任务内容');
   });
 
   it('D：不通过文本含 <om-history> 判定摘要——普通用户消息即使含标签也不算摘要', () => {
-    // 普通用户消息（非插件 source）文本里恰好含 <om-history>，不应被识别为压缩日志
+    // 普通用户消息（非插件 source）文本里恰好含 <om-history>，不应被识别为压缩日志；
+    // listHistoryBlocks 只收集头部连续区段，头部为普通消息时区段为空
     const session = makeSession({
       events: [
         {
@@ -725,11 +700,25 @@ describe('历史提取 listHistoryBlocks / findLatestHistory', () => {
         historyMessage('真正的旧任务', 'history-real'),
       ],
     });
-    // findLatestHistory 只命中插件 source 的 historyMessage，不含普通用户消息
-    const found = findLatestHistory(session);
-    expect(found?.seq).toBe(1);
-    expect(found?.text).toContain('真正的旧任务');
-    // 普通用户消息（含标签文本）不被识别为摘要
+    expect(listHistoryBlocks(session)).toEqual([]);
+    // 头部为真实压缩日志、其后为普通消息时，只收集头部块（不误收普通消息）
+    const realFirst = makeSession({
+      events: [
+        historyMessage('真正的旧任务', 'history-real'),
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('请解释一下 <om-history> 标签的含义')],
+            id: 'user-fake',
+          }),
+        } as unknown as SessionEvent,
+      ],
+    });
+    const blocks = listHistoryBlocks(realFirst);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.seq).toBe(0);
+    expect(blocks[0]?.text).toContain('真正的旧任务');
+    // 只有普通用户消息（含标签文本）时不被识别为摘要
     const onlyFake = makeSession({
       events: [
         {
@@ -741,7 +730,7 @@ describe('历史提取 listHistoryBlocks / findLatestHistory', () => {
         } as unknown as SessionEvent,
       ],
     });
-    expect(findLatestHistory(onlyFake)).toBeUndefined();
+    expect(listHistoryBlocks(onlyFake)).toEqual([]);
   });
 
   it('D：measureUncompressedTokens 将含 <om-history> 文本的普通消息计入未压缩', () => {
@@ -855,7 +844,7 @@ describe('反思提示词 buildReflectPrompt', () => {
     expect(prompt).toContain('（略）');
     expect(prompt).toContain('index 不重新编号'); // 合并不重排，全局稳定
     expect(prompt).toContain('index/start/end 必须连续');
-    expect(prompt).toContain('替换当前的 <om-history> 块内容');
+    expect(prompt).toContain('替换全部 <om-history> 块');
     expect(prompt).toContain('保留新条目');
     expect(prompt).not.toContain('message_id');
   });
@@ -1386,9 +1375,9 @@ describe('apply 接线（OM 反思压缩）', () => {
     return String(last?.content?.[0]?.text ?? '');
   }
 
-  it('摘要超反思阈值：摘要调用精简合并并替换单个 <om-history> 节点', async () => {
-    // 摘要 40 字符 ≈ 10 tokens；window 16 × 0.2 = 3.2 → 触发反思
-    // 未压缩消息 ≈ 6 tokens < 16 × 0.5 = 8 → 观察不触发
+  it('摘要超反思阈值：摘要调用精简合并并把整个块区段替换为一条', async () => {
+    // 单块摘要（X*40 + tip 标签约 26 tokens）；window 16 × 0.2 = 3 → 触发反思；
+    // 表层节点数 < tailMessageCount（默认 10）→ 观察不触发
     const session = makeSession({
       events: [
         historyMessage('X'.repeat(40)),
@@ -1410,9 +1399,45 @@ describe('apply 接线（OM 反思压缩）', () => {
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(1);
     expect(instructionText(ctx._llmCalls[0]?.options).startsWith(REFLECTOR_PERSONA)).toBe(true);
-    expect(session.surface.nodes.length).toBe(before); // 单节点替换，节点数不变
+    expect(session.surface.nodes.length).toBe(before); // 单块区段替换，节点数不变
     expect(latestHistoryText(session)).toContain('REFLECTED');
     expect(latestHistoryText(session)).not.toContain('X'.repeat(40)); // 旧摘要被替换
+  });
+
+  it('多块反思：按全部块总长触发，把整个块区段合并为一条', async () => {
+    // 两个块（各 X*40，含 tip 标签约 26 tokens，合计约 52）≥ 窗口 16 × 0.2 = 3 → 触发反思
+    const session = makeSession({
+      events: [
+        historyMessage('X'.repeat(40), 'h1'),
+        historyMessage('Y'.repeat(40), 'h2'),
+        ...buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+          withTurnEnd: true,
+        }),
+      ],
+    });
+    const before = session.surface.nodes.length;
+    const ctx = makeCtx({
+      resolveModelInfo: async () => ({ context: { contextWindow: 16 } }),
+      llmStream: [{ type: 'text-delta', text: '<om-history>\nMERGED-REPORT\n</om-history>' }],
+    });
+    apply(ctx, {});
+    await runPreStep(ctx, session);
+    expect(ctx._llmCalls).toHaveLength(1);
+    expect(instructionText(ctx._llmCalls[0]?.options).startsWith(REFLECTOR_PERSONA)).toBe(true);
+    expect(session.surface.nodes.length).toBe(before - 1); // 两块合并为一条
+    expect(latestHistoryText(session)).toContain('MERGED');
+    expect(latestHistoryText(session)).not.toContain('X'.repeat(40)); // 全部旧块被替换
+    expect(latestHistoryText(session)).not.toContain('Y'.repeat(40));
+    // 合并替换整个块区段（遮蔽两块）
+    const { summary } = compactionLifecycle(session);
+    const summaryEvent = session.events[summary];
+    if (summaryEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
+    expect(summaryEvent.data.shadowedRange).toEqual({ start: 0, end: 1 });
+    expect(summaryEvent.data.shadowedSeqs).toEqual([0, 1]);
   });
 
   it('先反思后观察串行：反思合并旧块，观察在其后追加独立新块', async () => {
