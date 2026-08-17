@@ -20,7 +20,7 @@ import {
   measureUncompressedTokens,
 } from '../src/compress.ts';
 import { resolveConfig, resolveSummaryMode } from '../src/config.ts';
-import { HISTORY_TAG, PLUGIN_LABEL } from '../src/constants.ts';
+import { HISTORY_TAG, HISTORY_TIP, PLUGIN_LABEL } from '../src/constants.ts';
 import { cosineSimilarity, ensureModelReady, sharedModelDir } from '../src/embedding.ts';
 import { apply, inject, name } from '../src/index.ts';
 import {
@@ -66,7 +66,7 @@ function latestHistoryText(session: Session): string {
       String(
         ((e.data as { content?: unknown[] }).content?.[0] as { text?: string } | undefined)?.text ??
           '',
-      ).includes(`<${HISTORY_TAG}>`),
+      ).includes(`<${HISTORY_TAG}`), // 兼容带 tip 属性的开标签（<om-history tip="…">）
   );
   const text = String(
     (
@@ -75,7 +75,7 @@ function latestHistoryText(session: Session): string {
         | undefined
     )?.text ?? '',
   );
-  return text.replace(new RegExp(`</?${HISTORY_TAG}>`, 'g'), '').trim();
+  return text.replace(new RegExp(`</?${HISTORY_TAG}[^>]*>`, 'g'), '').trim();
 }
 
 /** 定位一次压缩的 compaction 生命周期事件下标（start/summary/替换消息/end；缺省 -1）。 */
@@ -101,12 +101,12 @@ function checkpointSourceOf(event: SessionEvent | undefined) {
   return event.data.source as { kind?: string; plugin?: string; compactionId?: string } | undefined;
 }
 
-/** 构造 <om-history> 压缩日志消息（插件自产 user/message，seq 从 0 起）。 */
+/** 构造 <om-history> 压缩日志消息（插件自产 user/message，seq 从 0 起；与真实消息一致：无前缀句，tip 属性在开标签上）。 */
 function historyMessage(inner: string, id = 'history-msg'): SessionEvent {
   return {
     type: 'user/message',
     data: makeMessage({
-      content: [textBlock(`<${HISTORY_TAG}>\n${inner}\n</${HISTORY_TAG}>`)],
+      content: [textBlock(`<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${inner}\n</${HISTORY_TAG}>`)],
       source: { kind: 'plugin', plugin: PLUGIN_LABEL },
       id,
     }),
@@ -670,6 +670,7 @@ describe('历史提取 listHistoryBlocks / findLatestHistory', () => {
     const found = findLatestHistory(session);
     expect(found?.seq).toBeGreaterThan(0);
     expect(found?.text).toContain('新任务');
+    expect(found?.text.startsWith(`<${HISTORY_TAG} tip="${HISTORY_TIP}">`)).toBe(true); // tip 属性保留
     expect(
       findLatestHistory(
         makeSession({
@@ -682,6 +683,32 @@ describe('历史提取 listHistoryBlocks / findLatestHistory', () => {
         }),
       ),
     ).toBeUndefined();
+  });
+
+  it('D：旧格式注入前缀句（含行内 <om-history>）不影响定位——从真实块开始提取', () => {
+    // 旧版本注入消息 = 前缀句 + 真实 <om-history> 块；前缀句里的（<om-history>）会抢先命中裸 indexOf，
+    // 修复后应从块前换行定位到真实块，不残留前缀句片段
+    const session = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [
+              textBlock(
+                '以下是过往会话的压缩日志（<om-history>），为已确立背景：直接继续，不要复述。\n\n<om-history>\n旧任务内容\n</om-history>',
+              ),
+            ],
+            source: { kind: 'plugin', plugin: 'compact', compactionId: 'legacy-1' },
+            id: 'legacy-history',
+          }),
+        } as unknown as SessionEvent,
+      ],
+    });
+    const found = findLatestHistory(session);
+    expect(found?.seq).toBe(0);
+    expect(found?.text.startsWith('<om-history>')).toBe(true); // 从真实块开始
+    expect(found?.text).not.toContain('为已确立背景'); // 不残留前缀句尾部
+    expect(found?.text).toContain('旧任务内容');
   });
 
   it('D：不通过文本含 <om-history> 判定摘要——普通用户消息即使含标签也不算摘要', () => {
@@ -847,7 +874,7 @@ describe('摘要日志提取 extractSummaryLog', () => {
     return `<om-history>\n${inner}\n</om-history>`;
   }
 
-  it('合法块：取首个 <om-history> 到最后一个 </om-history>（含首尾），插入格式说明注释', () => {
+  it('合法块：取首个 <om-history> 到最后一个 </om-history>（含首尾），开标签带 tip 属性，块顶插入格式说明注释', () => {
     const raw = [
       '前置说明不要',
       block('<user_message index="0">\n请帮我完成一个任务\n</user_message>'),
@@ -855,22 +882,25 @@ describe('摘要日志提取 extractSummaryLog', () => {
     ].join('\n');
     const out = extractSummaryLog(raw);
     expect(out).not.toBeNull();
-    expect(out?.startsWith('<om-history>')).toBe(true);
+    expect(out?.startsWith(`<${HISTORY_TAG} tip="${HISTORY_TIP}">`)).toBe(true);
     expect(out?.endsWith('</om-history>')).toBe(true);
-    // 格式说明注释插在首个 <om-history> 之后
-    expect(out).toContain(`<om-history>\n${HISTORY_FORMAT_NOTE}`);
+    // tip 属性即对 AI 的提醒；格式说明注释插在带 tip 的开标签之后（块顶）
+    expect(out).toContain(`<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${HISTORY_FORMAT_NOTE}`);
     expect(out).toContain('<user_message index="0">');
     expect(out).not.toContain('前置说明不要');
     expect(out).not.toContain('尾部多余文字');
   });
 
-  it('多块输出：跨首个 <om-history> 到最后一个 </om-history> 整体截取', () => {
+  it('多块输出：跨首个 <om-history> 到最后一个 </om-history> 整体截取（首个开标签带 tip）', () => {
     const raw = [block('第一块'), block('第二块')].join('\n');
     const out = extractSummaryLog(raw);
     expect(out).not.toBeNull();
     expect(out).toContain('第一块');
     expect(out).toContain('第二块');
-    expect((out?.match(/<om-history>/g) ?? []).length).toBe(2);
+    // 两个开标签：首个带 tip，第二个保持模型输出格式
+    expect((out?.match(/<om-history[^>]*>/g) ?? []).length).toBe(2);
+    expect(out).toContain(`<${HISTORY_TAG} tip="${HISTORY_TIP}">`);
+    expect(out).toContain('\n<om-history>\n第二块');
   });
 
   it('找不到标签 / 顺序颠倒返回 null', () => {
@@ -1024,13 +1054,13 @@ describe('apply 接线（OM 观察压缩）', () => {
     const session = makeSession({
       events: [historyMessage('user_message message_id:old-u text:旧任务'), ...flowEvents],
     });
-    // window 11 + historyMergeRatio 2：观察阈值 1 ≤ 未压缩 6 tokens（触发）；
-    // 反思阈值 22 > 旧摘要（含标签约 15 tokens，不触发）——隔离观察路径验证增量追加
+    // window 11 + historyMergeRatio 3：观察阈值 1 ≤ 未压缩 6 tokens（触发）；
+    // 反思阈值 33 > 旧摘要（含 tip 开标签约 26 tokens，不触发）——隔离观察路径验证增量追加
     const ctx = observeCtx(
       '<om-history>\ntoolcall message_id:result-c1 summary:新内容\n</om-history>',
       11,
     );
-    apply(ctx, { tailMessageCount: 1, historyMergeRatio: 2 });
+    apply(ctx, { tailMessageCount: 1, historyMergeRatio: 3 });
     await runPreStep(ctx, session);
     // 表层中的压缩日志消息：旧块（seq 0，保留） + 新块（独立消息，替换新消息区间）
     const historyMsgs = session.surface.nodes
@@ -1535,8 +1565,8 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
         },
       ],
     });
-    // historyMergeRatio 2：反思阈值 22 > 旧摘要（含标签约 15 tokens）——隔离观察路径
-    apply(ctx, { tailMessageCount: 1, historyMergeRatio: 2 });
+    // historyMergeRatio 3：反思阈值 33 > 旧摘要（含 tip 开标签约 26 tokens）——隔离观察路径
+    apply(ctx, { tailMessageCount: 1, historyMergeRatio: 3 });
     await runPreStep(ctx, session);
     const { start, summary } = compactionLifecycle(session);
     expect(start).not.toBe(-1);

@@ -66,8 +66,11 @@ function historyTextOf(event: SessionEvent | undefined): string | undefined {
     return undefined;
   /** 消息纯文本。 */
   const text = blocksToText(event.data.content);
-  /** 首个 <om-history> 的位置（日志文本起点；无则整段视为日志）。 */
-  const start = text.indexOf(`<${HISTORY_TAG}>`);
+  /** 日志文本起点：优先块前换行定位（旧格式注入前缀句含行内 <om-history>，裸 indexOf 会抢先
+   *  命中前缀里的标签），回退首个开标签；无则整段视为日志。 */
+  const tag = `<${HISTORY_TAG}>`;
+  const newlineStart = text.indexOf(`\n${tag}`);
+  const start = newlineStart === -1 ? text.indexOf(tag) : newlineStart + 1;
   return start === -1 ? text : text.slice(start);
 }
 
@@ -256,20 +259,12 @@ function appendHistoryMessage(
   surfaceOp: { op: 'replace'; start: number; end: number },
   compactionId: CompactionId,
 ): void {
-  /** 压缩替换消息（内容已含 <om-history> 标签块，不再额外包裹；source 标记宿主 checkpoint 供 UI 关联）。 */
+  /** 压缩替换消息（内容即 <om-history> 标签块，不再附加前缀句；对 AI 的提醒在块开标签 tip 属性上；
+   *  source 标记宿主 checkpoint 供 UI 关联）。 */
   const message = {
     id: uuid(),
     role: 'user',
-    content: [
-      {
-        type: 'text',
-        text: [
-          '以下是过往会话的压缩日志（<om-history>），为已确立背景：直接继续，不要复述。',
-          '',
-          content,
-        ].join('\n'),
-      },
-    ],
+    content: [{ type: 'text', text: content }],
     source: { kind: 'plugin', plugin: COMPACT_CHECKPOINT_PLUGIN, compactionId },
   } as unknown as UserMessage; // id 为品牌类型 MessageId，插件自产消息由 session.append 运行时校验
   session.append('user/message', message, { surfaceOp, sourceEventSeqs });
