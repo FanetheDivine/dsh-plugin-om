@@ -16,7 +16,7 @@
 
 import type { FinishReason, GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
 import type { SummaryMode } from './config.ts';
-import { HISTORY_TAG, PLUGIN_LABEL } from './constants.ts';
+import { HISTORY_TAG, HISTORY_TIP, PLUGIN_LABEL } from './constants.ts';
 import { indexCompleteMessages, renderCompleteMessage } from './log-index.ts';
 import { makeLogger } from './logger.ts';
 import type { Agent, Context, Session, TokenUsage, UserMessage } from './types.ts';
@@ -117,11 +117,11 @@ export function buildReflectPrompt(mode: SummaryMode): string {
   const framing =
     mode === 'new'
       ? [
-          '下方的消息记录包含当前的 <om-history> 压缩日志（最后一次 <om-history> 块）。',
+          '下方的消息记录包含当前的 <om-history> 压缩日志（全部 <om-history> 块）。',
           '只对这份压缩日志做精简合并；不要涉及日志之外的消息。',
         ]
       : [
-          '上方的消息记录是主会话的完整历史，其中包含当前的 <om-history> 压缩日志（最后一次 <om-history> 块）。',
+          '上方的消息记录是主会话的完整历史，其中包含当前的 <om-history> 压缩日志（全部 <om-history> 块）。',
           '只对这份压缩日志做精简合并；不要涉及日志之外的消息。',
         ];
   return [
@@ -152,7 +152,7 @@ export function buildReflectPrompt(mode: SummaryMode): string {
     '</assistant>',
     `</${HISTORY_TAG}>`,
     '',
-    `【说明】你的合并结果会替换当前的 <${HISTORY_TAG}> 块内容。`,
+    `【说明】你的合并结果会替换全部 <${HISTORY_TAG}> 块。`,
   ].join('\n');
 }
 
@@ -300,13 +300,16 @@ export const HISTORY_FORMAT_NOTE =
  *  - 取首个 <om-history> 到最后一个 </om-history>（含两个首尾）切为日志；
  *  - 找不到、顺序颠倒（首个开标签在最后一个闭标签之后）或中间内容长度 < MIN_HISTORY_LENGTH
  *    视为不合法（返回 null，调用方按失败重试）；
- *  - 产出后在首个 <om-history> 后插入格式说明注释（HISTORY_FORMAT_NOTE）。
+ *  - 产出后把首个开标签改写为带 tip 属性的版本（对 AI 的提醒），并在其后插入
+ *    格式说明注释（HISTORY_FORMAT_NOTE，块顶）。
  */
 export function extractSummaryLog(raw: string): string | null {
-  /** 开标签。 */
+  /** 开标签（模型输出格式）。 */
   const openTag = `<${HISTORY_TAG}>`;
   /** 闭标签。 */
   const closeTag = `</${HISTORY_TAG}>`;
+  /** 带 tip 属性的开标签（插件产出格式）。 */
+  const openTagWithTip = `<${HISTORY_TAG} tip="${HISTORY_TIP}">`;
   /** 首个开标签位置（无则 -1）。 */
   const open = raw.indexOf(openTag);
   /** 最后一个闭标签位置（无则 -1）。 */
@@ -317,7 +320,10 @@ export function extractSummaryLog(raw: string): string | null {
   if (inner.trim().length < MIN_HISTORY_LENGTH) return null;
   /** 完整日志块（含两个首尾）。 */
   const block = raw.slice(open, close + closeTag.length);
-  return block.replace(openTag, `${openTag}\n${HISTORY_FORMAT_NOTE}`);
+  /** 首个开标签改写为带 tip 版本，块顶紧跟格式说明注释。 */
+  return block
+    .replace(openTag, openTagWithTip)
+    .replace(openTagWithTip, `${openTagWithTip}\n${HISTORY_FORMAT_NOTE}`);
 }
 
 /** 单次摘要最多尝试次数（首次 + 失败重试，总上限；失败/未完成均重试）。 */
