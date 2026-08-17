@@ -137,9 +137,9 @@ function twoCallFlow(): SessionEvent[] {
 describe('配置校验 resolveConfig', () => {
   it('默认值正确（historyMergeRatio 默认 0.2）', () => {
     const d = resolveConfig({});
-    expect(d.thresholdRatio).toBe(0.5);
+    expect(d.thresholdRatio).toBe(0.1);
     expect(d.historyMergeRatio).toBe(0.2);
-    expect(d.compressMaxTokens).toBe(4096);
+    expect(d.compressMaxTokens).toBe(10000);
     expect(d.tailMessageCount).toBe(10);
     expect(d.summaryMode).toBe('fork');
     expect(d.debug).toBe(process.env.NODE_ENV !== 'production'); // 缺省按 NODE_ENV 判定
@@ -169,9 +169,9 @@ describe('配置校验 resolveConfig', () => {
     const empty = [undefined, null, '', '   '];
     for (const raw of empty) {
       const d = resolveConfig(raw);
-      expect(d.thresholdRatio).toBe(0.5);
+      expect(d.thresholdRatio).toBe(0.1);
       expect(d.historyMergeRatio).toBe(0.2);
-      expect(d.compressMaxTokens).toBe(4096);
+      expect(d.compressMaxTokens).toBe(10000);
       expect(d.tailMessageCount).toBe(10);
       expect(d.summaryMode).toBe('fork');
       expect(d.recallEnabled).toBe(true);
@@ -180,13 +180,13 @@ describe('配置校验 resolveConfig', () => {
   });
 
   it('单项留空（null/空串/undefined）该键用默认值，其余覆盖项仍生效', () => {
-    expect(resolveConfig({ thresholdRatio: null }).thresholdRatio).toBe(0.5);
-    expect(resolveConfig({ thresholdRatio: '' }).thresholdRatio).toBe(0.5);
+    expect(resolveConfig({ thresholdRatio: null }).thresholdRatio).toBe(0.1);
+    expect(resolveConfig({ thresholdRatio: '' }).thresholdRatio).toBe(0.1);
     const mixed = resolveConfig({ thresholdRatio: undefined, historyMergeRatio: 0.3 });
-    expect(mixed.thresholdRatio).toBe(0.5);
+    expect(mixed.thresholdRatio).toBe(0.1);
     expect(mixed.historyMergeRatio).toBe(0.3);
     const mixed2 = resolveConfig({ compressMaxTokens: null, tailMessageCount: 3 });
-    expect(mixed2.compressMaxTokens).toBe(4096);
+    expect(mixed2.compressMaxTokens).toBe(10000);
     expect(mixed2.tailMessageCount).toBe(3);
   });
 
@@ -942,7 +942,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     const instruction = instructionText(options);
     expect(instruction.startsWith(OBSERVER_PERSONA)).toBe(true);
     expect(options.system).toBeUndefined();
-    expect(options.maxTokens).toBe(4096); // compressMaxTokens 默认
+    expect(options.maxTokens).toBe(10000); // compressMaxTokens 默认
 
     const historyText = latestHistoryText(session);
     // 新格式：<user_message index> 完整原文 + <assistant start..end> 聚合模块；格式说明注释在块首
@@ -1456,7 +1456,7 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
     expect(summaryEvent.data.shadowedSeqs).toEqual([0]);
     expect(summaryEvent.data.provider).toBe('test');
     expect(summaryEvent.data.model).toBe('test-model');
-    expect(summaryEvent.data.maxTokens).toBe(4096); // compressMaxTokens 默认
+    expect(summaryEvent.data.maxTokens).toBe(10000); // compressMaxTokens 默认
     // summary 内容 = 合并后摘要
     const summaryText = summaryEvent.data.summary
       .map((block) => (block.type === 'text' ? block.text : ''))
