@@ -85,9 +85,8 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 ### 依赖策略
 
-- 复用dsh宿主提供的依赖，如 cordis / dsh-tools / zod 等
-- 例外：recall-semantic 的本地嵌入需要运行时依赖 `@huggingface/transformers`（transformers.js v4 + onnxruntime-node），模型小文件（config/tokenizer 等）随 npm 包分发（`models/`），onnx 二进制不随包分发（见下）
-- 模型二进制：量化 ONNX 约 113MB，超过 GitHub 单文件 100MB 限制，**不进入 git 仓库，也不随 npm 包分发**（`package.json` 的 `files` 以 `!models/*/onnx/*.onnx` 排除，见 `tests/package-pack.test.ts`）。改为**运行时按需下载**：仅当配置键 `semanticRecallEnabled` 启用且共享目录 `$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>/onnx/model_quantized.onnx` 缺失时，插件 apply 后台自动从 HuggingFace（[Xenova 转换仓库](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2)）下载到该共享目录（不阻塞；下载开始/结束经 console 与插件日志输出，失败仅记日志并附带设置 `HF_ENDPOINT=https://hf-mirror.com` 的镜像建议，下次调用自动重试；未就绪时 `recall-semantic` 工具返回文案告知模型）；共享目录跨插件版本复用，升级/重装插件不重复下载，随包小文件（config/tokenizer 等）缺失时自动从插件包复制补齐（离线可用）；本地开发也可用 `pnpm run download:model` 手动预下载到同一共享目录（已存在则跳过，`--force` 强制重下）；直连 `huggingface.co` 受限时设置环境变量 `HF_ENDPOINT=https://hf-mirror.com` 走镜像
+- dsh宿主提供的依赖，直接复用即可，如 cordis / dsh-tools / zod 等
+- 向量模型模型二进制：量化 ONNX 约 113MB，启用语义召回时下载，位置`$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>/onnx/model_quantized.onnx`。下载失败可以设置`HF_ENDPOINT=https://hf-mirror.com`
 
 ## 插件配置项
 
