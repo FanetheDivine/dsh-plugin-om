@@ -74,9 +74,14 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 ## 工作原理
 
 1. 在未压缩的消息到达观察阈值后，进行摘要
-2. 将新生成摘要追加到已有摘要后
-3. 如果摘要总长到达反思阈值，对其本身进行摘要
+2. 将新生成摘要追加到已有摘要后（每条压缩日志是独立的消息/块，旧块原地保留）
+3. 如果摘要总长到达反思阈值，对其本身进行摘要（把全部 <om-history> 块合并为一条）
 4. 提供recall/recall-semantic两个tool进行检索
+
+### 压缩日志块结构
+
+- 观察压缩只精确替换被压缩的新消息区间：旧 <om-history> 块保留为独立消息，新观察日志作为新块追加在其后（多块并存按序排列），历史不会随压缩次数膨胀；反思合并时才把多个块合并为一条更紧凑的摘要
+- 块开标签带 `tip` 属性（对 AI 的提醒："当前块是历史消息的压缩产物，不要复述"）；块顶为构成逻辑注释（完整消息三类与 index 定义），消息正文不再附加前缀句
 
 ### 注意
 
@@ -93,7 +98,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 | 键                      | 默认     | 含义                                                                                                                                                                         |
 | ----------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `thresholdRatio`        | `0.1`    | 观察阈值：未压缩消息 ≥ 窗口 × 该比例触发压缩                                                                                                                                 |
-| `historyMergeRatio`     | `0.2`    | 反思阈值：摘要 ≥ 窗口 × 该比例触发精简合并                                                                                                                                   |
+| `historyMergeRatio`     | `0.2`    | 反思阈值：全部 <om-history> 块总长 ≥ 窗口 × 该比例触发精简合并                                                                                                                                   |
 | `compressMaxTokens`     | `10000`  | 单次摘要（观察/反思调用）生成上限                                                                                                                                            |
 | `tailMessageCount`      | `10`     | 尾部保留的不压缩消息条数（不压缩、不被替换、不进摘要日志）                                                                                                                   |
 | `modelDir`              | 共享目录 | recall-semantic 嵌入模型目录（默认 `$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>`，跨插件版本共享；小文件随包分发并在缺失时自动补齐，onnx 缺失且启用语义召回时运行时自动下载到该目录；可指向自定义目录） |
@@ -141,7 +146,7 @@ src/
 │   │                └─▶ model-download.ts          # 模型下载原语（URL/跳过判定/原子落盘；dev CLI 复用）
 │   └─ ④ 事件接线（仅主会话生效）
 │        └─ ctx.on('agent/pre-step') → compress.ts  # maybeCompress：两级压缩阻塞串行（先反思后观察；turn 中间即可触发）
-│              ├─ reflectPass → summarize.ts        # 摘要 ≥ 窗口 × historyMergeRatio：摘要调用精简合并 <om-history>
+│              ├─ reflectPass → summarize.ts        # 全部 <om-history> 块总长 ≥ 窗口 × historyMergeRatio：摘要调用合并整个块区段
 │              ├─ observePass  → summarize.ts       # 未压缩消息 ≥ 窗口 × thresholdRatio：摘要调用观察日志 → 追加 + 替换
 │              └─ 提交          → compress.ts        # compaction/start → summary → 替换消息(checkpoint) → end；usage 归入主会话
 ├── constants.ts              # 共享常量（PLUGIN_LABEL / HISTORY_TAG / COMPACT_CHECKPOINT_PLUGIN）
