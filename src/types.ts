@@ -67,15 +67,15 @@ export type MessageIndex = {
 };
 
 /**
- * 一条完整消息：摘要日志与 recall 共用的定位单位，分三类——
- * user（用户消息）、assistant（AI 文本）、toolcall（单个工具调用及其结果）。
- * index 从 0 起、按日志顺序递增、只追加不重排 → 会话内全局稳定
- * （压缩后旧摘要条目引用的 index 仍然有效）；插件自产消息不占位。
+ * 一条完整消息：摘要日志与 recall 共用的定位单位——
+ * user（用户消息）、assistant（模型输出文本）、toolcall（具有 result 的工具调用；
+ * 未闭合/无 result 的 tool-call 不占位）。index 从 0 起、按日志顺序递增、只追加不重排
+ * → 会话内全局稳定（压缩后旧摘要条目引用的 index 仍然有效）；插件自产消息不占位。
  */
 export type CompleteMessage = {
   /** 完整消息序号（0 起，全局稳定）。 */
   index: number;
-  /** 类别：user=用户消息；assistant=AI 文本；toolcall=单个工具调用及其结果。 */
+  /** 类别：user=用户消息；assistant=模型输出文本；toolcall=具有 result 的工具调用。 */
   type: 'user' | 'assistant' | 'toolcall';
   /** 关联的消息事件 seq（user/assistant=1 个；toolcall=assistant 消息 + 结果）。 */
   seqs: number[];

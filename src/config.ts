@@ -9,12 +9,14 @@ import { isRecord } from './utils.ts';
 export type PluginConfig = {
   /** 压力阈值比例：压力 ≥ 窗口 × 该比例时触发自动压缩。 */
   thresholdRatio: number;
-  /** 反思阈值比例：摘要（<om-history> 内容）≥ 窗口 × 该比例时由反思摘要调用精简合并。 */
+  /** 反思阈值比例：摘要（<history> 内容）≥ 窗口 × 该比例时由反思摘要调用精简合并。 */
   historyMergeRatio: number;
   /** 单次摘要（合并调用）生成上限（LLM maxTokens）。 */
   compressMaxTokens: number;
   /** 压缩边界：其后不压缩消息数下限（正整数，尾部保留）。 */
   tailMessageCount: number;
+  /** 摘要调用失败后的最大重试次数（不含首次尝试；总尝试次数 = 该值 + 1，默认 11）。 */
+  compressRetryCount: number;
   /** 是否启用 OM 自动压缩（观察/反思）：false 时关闭自动压缩（recall 工具不受影响）。 */
   omEnabled: boolean;
   /** 步骤级（debug）日志开关：true 强制开启、false 强制关闭；缺省按 NODE_ENV !== 'production' 判定。 */
@@ -33,6 +35,7 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   historyMergeRatio: 0.2,
   compressMaxTokens: 10000,
   tailMessageCount: 10,
+  compressRetryCount: 10,
   omEnabled: true,
   debug: false,
   recallEnabled: true,
@@ -41,7 +44,12 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
 });
 
 /** 数值配置键（仅接受有限数；整数键另校验整数性，不做取值区间限制）。 */
-type NumberKey = 'thresholdRatio' | 'historyMergeRatio' | 'compressMaxTokens' | 'tailMessageCount';
+type NumberKey =
+  | 'thresholdRatio'
+  | 'historyMergeRatio'
+  | 'compressMaxTokens'
+  | 'tailMessageCount'
+  | 'compressRetryCount';
 
 /** 数值键校验参数表：键名 + [integer]。不限制取值区间——用户提供的值按原样接受（便于调试）。 */
 const NUMBER_KEYS: Array<[NumberKey, boolean]> = [
@@ -49,6 +57,7 @@ const NUMBER_KEYS: Array<[NumberKey, boolean]> = [
   ['historyMergeRatio', false],
   ['compressMaxTokens', true],
   ['tailMessageCount', true],
+  ['compressRetryCount', true],
 ];
 
 /** 归一化原始配置输入：缺省 / null / 空串（含空白串）/ 非对象 视为空对象（全部用默认值）。 */
