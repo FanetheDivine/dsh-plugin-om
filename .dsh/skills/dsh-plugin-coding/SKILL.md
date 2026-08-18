@@ -1,12 +1,10 @@
 ---
-name: coding-steps
-description: 需求，缺陷，worktree，dsh-plugin-om
-whenToUse: 需求，缺陷，worktree，dsh-plugin-om
+name: dsh-plugin-coding
+description: 需求，缺陷，worktree，dsh，plugin
+whenToUse: 需求，缺陷，worktree，dsh，plugin
 ---
 
-# coding-steps
-
-适用于 `dsh-plugin-om` 项目的工作流
+# dsh-plugin-coding
 
 接到需求或缺陷任务后，按以下步骤执行，不要跳过、合并或随意更改顺序。
 
