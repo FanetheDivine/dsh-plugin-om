@@ -1,6 +1,6 @@
 /**
  * 零依赖工具函数：不 import 任何运行时包，保证单文件打包与任意位置挂载。
- * 主要服务于配置校验、文本呈现与主会话判定。
+ * 主要服务于文本呈现、主会话判定与路由解析。
  */
 import type { Message } from '@deepseek-ai/dsh-llm';
 import type { Session } from './types.ts';
@@ -8,39 +8,6 @@ import type { Session } from './types.ts';
 /** 判断值是否为普通对象：typeof object 且非 null 且非数组（类型收窄用）。 */
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** 抛出带插件前缀的错误（never 返回：调用后控制流终止）。 */
-export function fail(message: string): never {
-  throw new Error(`dsh-plugin-om: ${message}`);
-}
-
-/** 数值配置项的取值约束（assertNumber 的可选参数）。不做区间限制——用户提供的值按原样接受。 */
-export type NumberConstraints = {
-  /** 是否必须为整数，默认 false。 */
-  integer?: boolean;
-};
-
-/**
- * 校验配置数值：必须是有限数（可选整数约束），不限制取值区间；
- * 不满足时抛出带插件前缀的错误。
- */
-export function assertNumber(
-  name: string,
-  value: unknown,
-  { integer = false }: NumberConstraints = {},
-): void {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    fail(`config ${name} must be a finite number`);
-  }
-  if (integer && !Number.isInteger(value)) fail(`config ${name} must be an integer`);
-}
-
-/** 校验配置字符串：必须是非空（含非空白）字符串，否则抛出带插件前缀的错误。 */
-export function assertNonEmptyString(name: string, value: unknown): void {
-  if (typeof value !== 'string' || value.trim() === '') {
-    fail(`config ${name} must be a non-empty string`);
-  }
 }
 
 /** 生成 uuid：优先 crypto.randomUUID，回退为时间戳+随机串拼接（保证唯一性）。 */

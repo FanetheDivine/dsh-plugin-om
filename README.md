@@ -102,20 +102,18 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 | `compressMaxTokens`     | `10000`  | 单次摘要（观察/反思调用）生成上限                                                                                                                                            |
 | `tailMessageCount`      | `10`     | 尾部保留的不压缩消息条数（不压缩、不被替换、不进摘要日志）                                                                                                                   |
 | `modelDir`              | 共享目录 | recall-semantic 嵌入模型目录（默认 `$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>`，跨插件版本共享；小文件随包分发并在缺失时自动补齐，onnx 缺失且启用语义召回时运行时自动下载到该目录；可指向自定义目录） |
-| `summaryMode`           | `fork`   | 摘要模式：`fork`（缺省）/ `new` / `disable`（关闭自动压缩）；非法值在插件加载时报错（见[摘要模式](#摘要模式)）                                                               |
+| `omEnabled`            | `true`   | 是否启用 OM 自动压缩（观察/反思）；`false` 时关闭自动压缩，recall/recall-semantic 不受影响。`omEnabled` 替代原 `summaryMode`（见[摘要方式](#摘要方式)）                    |
 | `debug`                 | dev      | 压缩流程步骤级（debug）日志开关：`true` 强制开启、`false` 强制关闭；缺省按 `NODE_ENV !== 'production'` 判定（dev/test 输出，生产隐藏）。**失败日志不受此开关影响，始终输出** |
 | `recallEnabled`         | `true`   | 是否注册 `recall` 工具（`false` 时禁用，不注册）                                                                                                                             |
 | `semanticRecallEnabled` | `true`   | 是否注册 `recall-semantic` 工具（`false` 时禁用，不注册、不触发模型下载）                                                                                                    |
 
 > 不建议将thresholdRatio设置的过高，越早OM收益越高，且当前的机制需要模型对消息计数，过多的消息会导致历史混乱
 
-### 摘要模式
+### 关于配置项变更的说明
 
-摘要调用由配置键 `summaryMode` 控制：
+配置键 `omEnabled` 替代了原 `summaryMode`：现在只能通过 `omEnabled` 开启或关闭 OM。
 
-- `fork`：从需要压缩的位置fork会话，复用前缀缓存，要求摘要
-- `new`：开启一个新会话，输入需要压缩的会话，要求摘要
-- `disable`：关闭OM。recall/recall-semantic 按「完整消息 index」检索（index 从 0 起、会话内全局稳定，模型可感知并可与摘要日志条目互相对应）
+现在消息调用会固定新开会话，而取消了fork主会话的链路。fork 方式虽然能复用前缀缓存，但需要模型自行对消息计数，会导致严重的索引异常。
 
 ## npm 命令
 
@@ -137,7 +135,7 @@ cordis.patch.yml              # bundle patch：dsh plugin add 后作为组合层
 src/
 ├── index.ts                   # 打包入口（tsdown entry），导出 name / inject / apply
 │   apply(ctx, config) 三条主线（标注对应实现文件）：
-│   ├─ ① resolveConfig(config) ──▶ config.ts        # 配置默认值合并 + 逐键校验（留空回退默认，冻结返回）
+│   ├─ ① resolveConfig(config) ──▶ config.ts        # 配置默认值合并 + 宽松校验（未知键忽略、非法值回退默认，冻结返回）
 │   ├─ ② recallEnabled 时 ctx.tools.register(buildRecallTool(() => ctx.get('toolResultPruner')))
 │   │      └─▶ recall.ts                            # recall 工具：按完整消息 index 回看区间（超大结果由 pruner 裁剪）
 │   ├─ ③ semanticRecallEnabled 时 ctx.tools.register(buildSemanticRecallTool({ getPruner, modelStatus, embedder }))
@@ -151,19 +149,19 @@ src/
 │              └─ 提交          → compress.ts        # compaction/start → summary → 替换消息(checkpoint) → end；usage 归入主会话
 ├── constants.ts              # 共享常量（PLUGIN_LABEL / HISTORY_TAG / COMPACT_CHECKPOINT_PLUGIN）
 ├── types.ts                  # type-only：宿主类型再导出 + 领域类型（MessageNode / MessageIndex）
-├── config.ts                 # 配置默认值 / 校验（缺省、null、空串回退默认值；数值键/布尔键/summaryMode/modelDir）
+├── config.ts                 # 配置默认值 / 宽松合并（缺省、null、空串回退默认值；未知键忽略、非法值回退默认；数值键/布尔键/omEnabled/modelDir）
 ├── utils.ts                  # 零依赖工具函数（配置校验 / 文本渲染 / 主会话判定 / 路由解析）
 ├── log-index.ts              # 完整消息索引（index 定位 user/assistant/toolcall 三类完整消息；recall 与摘要共用）
 ├── embedding.ts              # 本地 ONNX 嵌入（@huggingface/transformers + 本地模型；共享目录解析 / 小文件补齐 / 运行时按需下载编排 / 懒加载 / 批量 / cosine）
 ├── model-download.ts          # 模型下载原语（modelSourceUrl / needsDownload / 原子落盘 / 开始结束日志与失败镜像建议；运行时与 dev CLI 共用）
-├── summarize.ts              # 观察/反思 persona + 提示词 + 直连 ctx.llm.stream() 摘要（fork/new 双模式；extractSummaryLog 提取校验；流式 usage 归入主会话）
+├── summarize.ts              # 观察/反思 persona + 提示词 + 直连 ctx.llm.stream() 摘要（new 方式：指令作 system、输入为渲染消息；extractSummaryLog 提取校验；流式 usage 归入主会话）
 ├── recall.ts                 # recall 工具
 ├── semantic-recall.ts        # recall-semantic 工具（query 语义检索 + 区间限定 + 回退全量 + 匹配说明）
 └── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / source 标记判定摘要消息 / compaction/* 生命周期事件 + checkpoint 替换）
 models/
 └── paraphrase-multilingual-MiniLM-L12-v2/   # 嵌入模型目录（小文件随包分发；onnx 二进制不随包分发、由运行时按需下载到跨版本共享目录，不进 git）
 scripts/                      # release-archive.mjs（CHANGELOG 归档）/ download-model.mjs（开发手动预下载 CLI）
-tests/                        # vitest 单元测试（146 例）
+tests/                        # vitest 单元测试（144 例）
 .dsh/skills/                  # 项目级 skill（feature-defect-workflow：需求/缺陷完成工作流）
 ```
 

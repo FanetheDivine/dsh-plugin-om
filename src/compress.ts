@@ -1,12 +1,13 @@
 /**
  * 自动压缩（OM 观察/反思两级阈值，思路参考 Mastra Observational Memory）：
  *  - 观察：未压缩消息 tokens ≥ 窗口 × thresholdRatio → 直连 ctx.llm.stream() 摘要
- *    （fork 模式复用主会话请求前缀缓存；new 模式指令作为 system）把未压缩消息压缩为
- *    观察日志，作为独立的新 <om-history> 块，只精确替换被压缩的新消息区间（旧块
- *    原地保留，多块并存按序排列；不再把旧+新合并进一条消息）；
+ *    （new 方式：指令作为 system、被压缩消息渲染为输入）把未压缩消息压缩为观察日志，
+ *    作为独立的新 <om-history> 块，只精确替换被压缩的新消息区间（旧块原地保留，
+ *    多块并存按序排列；不再把旧+新合并进一条消息）；
  *  - 反思：全部 <om-history> 块 tokens 合计 ≥ 窗口 × historyMergeRatio（默认 0.2）→
  *    同上摘要调用精简合并，把整个块区段合并为一条更紧凑的摘要。
  * 两级检查在 pre-step 阻塞串行执行（先反思后观察），避免压缩失败或重复压缩。
+ * 自动压缩由配置键 omEnabled 开关（false 时关闭；recall 工具不受影响）。
  *
  * 压缩结果写入宿主 compaction/* 生命周期事件（compaction/start → compaction/summary →
  * 替换 <om-history> 消息 → compaction/end），使消息记录（聊天视图压缩卡片）与轨迹视图
@@ -16,11 +17,10 @@
  * （失败不产生任何日志变更）。
  *
  * 观察区间：pre-step 触发时日志 call-result 完备，区间不再受 turn/end 封顶——头部 →
- * 表层长度-1-tailCount（尾部保留 config.tailMessageCount 条不压缩，作为摘要模型的
- * 参考尾部），当前 turn 中已完备的消息同样可压缩；区间终点回退到 tool-call/result
- * 配对平衡点（不切段）。
+ * 表层长度-1-tailCount（尾部保留 config.tailMessageCount 条不压缩），当前 turn 中已
+ * 完备的消息同样可压缩；区间终点回退到 tool-call/result 配对平衡点（不切段）。
  * 观察摘要的条目用「完整消息」index 定位（三类定义见 log-index.ts）：新消息起始 index
- * 由插件从日志计算后注入提示词，new 模式输入按完整消息渲染绝对 index。
+ * 由插件从日志计算后注入提示词，输入按完整消息渲染绝对 index。
  * 仅主会话生效。
  */
 import { COMPACT_CHECKPOINT_PLUGIN, HISTORY_TAG, PLUGIN_LABEL } from './constants.ts';
@@ -302,10 +302,9 @@ export async function reflectPass(
   /** 被替换块区段的 seq 列表。 */
   const blockSeqs = blocks.map((block) => block.seq);
   /** 反思指令（persona + 规则主体）。 */
-  const instruction = `${REFLECTOR_PERSONA}\n\n${buildReflectPrompt(config.summaryMode)}`;
-  /** new 模式的渲染输入（全部 <om-history> 块内文）。 */
-  const contextText =
-    config.summaryMode === 'new' ? blocks.map((block) => block.text).join('\n') : undefined;
+  const instruction = `${REFLECTOR_PERSONA}\n\n${buildReflectPrompt()}`;
+  /** 渲染输入（全部 <om-history> 块内文）。 */
+  const contextText = blocks.map((block) => block.text).join('\n');
   /** 反思摘要结果（null 表示失败/跳过）。 */
   const summaryResult = await runSummarySubagent(
     ctx,
@@ -313,8 +312,6 @@ export async function reflectPass(
     instruction,
     contextText,
     config.compressMaxTokens,
-    config.summaryMode,
-    0, // 反思注入完整历史（尾部不裁剪；只精简合并日志本身）
     target,
     config.debug,
     signal,
@@ -429,8 +426,6 @@ export async function observePass(
     logger.step('观察：区间内无新消息（全部为压缩日志块），跳过');
     return;
   }
-  /** 实际保留的参考尾部条数（配对回退可能多于 tailCount；fork 输入从尾部之前实际截断）。 */
-  const actualTailCount = surface.length - range.shadowedSeqs.length;
   /** 被替换 seq 集合（计算新消息起始 index）。 */
   const shadowedSet = new Set(replaceSeqs);
   /** 压缩区间内第一个完整消息的 index（新消息起始编号；区间内无完整消息则 0）。 */
@@ -438,18 +433,16 @@ export async function observePass(
     indexCompleteMessages(session).find((cm) => cm.seqs.every((seq) => shadowedSet.has(seq)))
       ?.index ?? 0;
   logger.step(
-    `观察：保留旧块 ${blocks.length} 条，替换新消息 [${replaceSeqs[0]}..${range.end}]（${replaceSeqs.length} 条），实际保留尾部 ${actualTailCount} 条（不压缩、不进日志），新消息起始 index ${startIndex}`,
+    `观察：保留旧块 ${blocks.length} 条，替换新消息 [${replaceSeqs[0]}..${range.end}]（${replaceSeqs.length} 条），尾部保留 ${tailCount} 条（不压缩、不进日志），新消息起始 index ${startIndex}`,
   );
   /** 观察指令（persona + 规则主体）。 */
   const prompt = buildObservePrompt({
     startIndex,
     hasOldHistory: blocks.length > 0,
-    mode: config.summaryMode,
   });
   const instruction = `${OBSERVER_PERSONA}\n\n${prompt}`;
-  /** new 模式的渲染输入：本次要压缩的完整消息（含绝对 index；不含尾部，插件自产消息不占位）。 */
-  const contextText =
-    config.summaryMode === 'new' ? renderMessages(session, replaceSeqs) : undefined;
+  /** 渲染输入：本次要压缩的完整消息（含绝对 index；不含尾部，插件自产消息不占位）。 */
+  const contextText = renderMessages(session, replaceSeqs);
   /** 观察摘要结果（null 表示失败/跳过）。 */
   const summaryResult = await runSummarySubagent(
     ctx,
@@ -457,8 +450,6 @@ export async function observePass(
     instruction,
     contextText,
     config.compressMaxTokens,
-    config.summaryMode,
-    actualTailCount, // fork 输入从尾部之前实际截断（new 模式输入本身不含尾部）
     target,
     config.debug,
     signal,
@@ -541,9 +532,9 @@ export async function maybeCompress(
   const session = agent.session;
   /** 插件日志门面。 */
   const logger = makeLogger(ctx, config.debug);
-  /** disable 模式：关闭自动压缩（观察/反思均不触发，recall 工具不受影响）。 */
-  if (config.summaryMode === 'disable') {
-    logger.step('summaryMode=disable，跳过压缩');
+  /** omEnabled=false：关闭自动压缩（观察/反思均不触发，recall 工具不受影响）。 */
+  if (!config.omEnabled) {
+    logger.step('omEnabled=false，跳过压缩');
     return;
   }
   /** 会话路由目标（未路由无法查询容量）。 */

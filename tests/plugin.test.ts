@@ -1,5 +1,5 @@
 // dsh-plugin-om 单元测试（vitest）：配置校验 / 消息索引 /
-// OM 两级压缩（观察/反思 fork 摘要）/ recall（范围+拒绝+参数校验）/ apply 接线。
+// OM 两级压缩（观察/反思 new 摘要）/ recall（范围+拒绝+参数校验）/ apply 接线。
 import { describe, expect, it, vi } from 'vitest';
 
 // 隔离 apply 的模型下载编排：ensureModelReady 打桩为"就绪"，避免单测触发真实下载/网络
@@ -18,7 +18,7 @@ import {
   listHistoryBlocks,
   measureUncompressedTokens,
 } from '../src/compress.ts';
-import { resolveConfig, resolveSummaryMode } from '../src/config.ts';
+import { resolveConfig } from '../src/config.ts';
 import { HISTORY_TAG, HISTORY_TIP, PLUGIN_LABEL } from '../src/constants.ts';
 import { cosineSimilarity, ensureModelReady, sharedModelDir } from '../src/embedding.ts';
 import { apply, inject, name } from '../src/index.ts';
@@ -140,11 +140,12 @@ describe('配置校验 resolveConfig', () => {
     expect(d.historyMergeRatio).toBe(0.2);
     expect(d.compressMaxTokens).toBe(10000);
     expect(d.tailMessageCount).toBe(10);
-    expect(d.summaryMode).toBe('fork');
+    expect(d.omEnabled).toBe(true); // 缺省启用 OM
     expect(d.debug).toBe(process.env.NODE_ENV !== 'production'); // 缺省按 NODE_ENV 判定
     expect(d.recallEnabled).toBe(true);
     expect(d.semanticRecallEnabled).toBe(true);
     expect(d.modelDir).toBe(sharedModelDir()); // 默认跨版本共享目录
+    expect(d).not.toHaveProperty('summaryMode'); // summaryMode 已移除
     expect(d).not.toHaveProperty('summaryMaxChars');
     expect(d).not.toHaveProperty('recallMaxMessages');
     expect(d).not.toHaveProperty('auto');
@@ -157,11 +158,11 @@ describe('配置校验 resolveConfig', () => {
     expect(c.historyMergeRatio).toBe(0.3);
   });
 
-  it('tailMessageCount 校验：默认 10，任意数值可覆盖（不做区间限制），非整数抛错', () => {
+  it('tailMessageCount：默认 10，任意数值可覆盖（不做区间限制），非整数回退默认', () => {
     expect(resolveConfig({}).tailMessageCount).toBe(10);
     expect(resolveConfig({ tailMessageCount: 3 }).tailMessageCount).toBe(3);
     expect(resolveConfig({ tailMessageCount: 0 }).tailMessageCount).toBe(0); // 无区间限制
-    expect(() => resolveConfig({ tailMessageCount: 2.5 })).toThrow(); // 仍校验整数
+    expect(resolveConfig({ tailMessageCount: 2.5 }).tailMessageCount).toBe(10); // 非整数回退默认
   });
 
   it('整份配置留空（undefined/null/空串/空白串）时全部用默认值', () => {
@@ -172,7 +173,7 @@ describe('配置校验 resolveConfig', () => {
       expect(d.historyMergeRatio).toBe(0.2);
       expect(d.compressMaxTokens).toBe(10000);
       expect(d.tailMessageCount).toBe(10);
-      expect(d.summaryMode).toBe('fork');
+      expect(d.omEnabled).toBe(true);
       expect(d.recallEnabled).toBe(true);
       expect(d.semanticRecallEnabled).toBe(true);
     }
@@ -189,23 +190,29 @@ describe('配置校验 resolveConfig', () => {
     expect(mixed2.tailMessageCount).toBe(3);
   });
 
-  it('未知键抛错；数值键不做区间限制（越界值按原样接受）', () => {
-    expect(() => resolveConfig([])).toThrow(); // 空数组不是对象
-    expect(() => resolveConfig('0.5')).toThrow(); // 非空字符串不是对象
-    expect(() => resolveConfig({ badKey: 1 })).toThrow();
-    // 阈值不再校验 0.01-1 区间：任意数值（调试场景）按原样接受
+  it('宽松校验：未知键忽略、不合法值回退默认（不影响插件加载）', () => {
+    expect(resolveConfig([])).toEqual(resolveConfig({})); // 空数组不是对象，回归默认
+    expect(resolveConfig('0.5')).toEqual(resolveConfig({})); // 非空字符串不是对象，回归默认
+    expect(resolveConfig({ badKey: 1 })).toEqual(resolveConfig({})); // 未知键忽略
+    // 阈值不做 0.01-1 区间限制：任意数值（调试场景）按原样接受
     expect(resolveConfig({ thresholdRatio: 2 }).thresholdRatio).toBe(2);
     expect(resolveConfig({ historyMergeRatio: 0 }).historyMergeRatio).toBe(0);
     expect(resolveConfig({ historyMergeRatio: 2 }).historyMergeRatio).toBe(2);
     expect(resolveConfig({ compressMaxTokens: 0 }).compressMaxTokens).toBe(0);
-    expect(() => resolveConfig({ thresholdRatio: '0.5' })).toThrow(); // 非数值仍抛错
-    expect(() => resolveConfig({ summaryMaxChars: 100 })).toThrow();
-    expect(() => resolveConfig({ recallMaxMessages: 10 })).toThrow();
-    expect(() => resolveConfig({ tailMessageBudget: 50 })).toThrow();
-    expect(() => resolveConfig({ tailTokenBudgetRatio: 0.1 })).toThrow();
-    expect(() => resolveConfig({ auto: false })).toThrow();
-    expect(() => resolveConfig({ evalEnabled: false })).toThrow();
-    expect(() => resolveConfig({ envDebug: true })).toThrow(); // 环境变量名不再是配置键
+    expect(resolveConfig({ thresholdRatio: '0.5' }).thresholdRatio).toBe(0.1); // 非数值回退默认
+    expect(resolveConfig({ compressMaxTokens: 2.5 }).compressMaxTokens).toBe(10000); // 非整数回退默认
+    // 全部未知键被忽略 → 结果等于默认配置
+    expect(
+      resolveConfig({
+        summaryMaxChars: 100,
+        recallMaxMessages: 10,
+        tailMessageBudget: 50,
+        tailTokenBudgetRatio: 0.1,
+        auto: false,
+        evalEnabled: false,
+        envDebug: true, // 环境变量名不再是配置键
+      }),
+    ).toEqual(resolveConfig({}));
   });
 });
 
@@ -238,36 +245,36 @@ describe('debug 配置键', () => {
     }
   });
 
-  it('非 boolean 值抛错；留空回退默认', () => {
-    expect(() => resolveConfig({ debug: 'true' })).toThrow(/debug/);
-    expect(() => resolveConfig({ debug: 1 })).toThrow(/debug/);
+  it('非 boolean 值回退默认；留空回退默认', () => {
+    expect(resolveConfig({ debug: 'true' }).debug).toBe(process.env.NODE_ENV !== 'production');
+    expect(resolveConfig({ debug: 1 }).debug).toBe(process.env.NODE_ENV !== 'production');
     expect(resolveConfig({ debug: null }).debug).toBe(process.env.NODE_ENV !== 'production');
     expect(resolveConfig({ debug: '' }).debug).toBe(process.env.NODE_ENV !== 'production');
   });
 });
 
-describe('摘要模式 resolveSummaryMode / summaryMode 配置键', () => {
-  it('缺省 / null / 空串 / fork 回退 fork', () => {
-    expect(resolveSummaryMode(undefined)).toBe('fork');
-    expect(resolveSummaryMode(null)).toBe('fork');
-    expect(resolveSummaryMode('')).toBe('fork');
-    expect(resolveSummaryMode('   ')).toBe('fork');
-    expect(resolveSummaryMode('fork')).toBe('fork');
-    expect(resolveConfig({}).summaryMode).toBe('fork');
-    expect(resolveConfig({ summaryMode: null }).summaryMode).toBe('fork');
-    expect(resolveConfig({ summaryMode: '' }).summaryMode).toBe('fork');
+describe('omEnabled 配置键', () => {
+  it('缺省启用（true）；留空（null/空串）回退默认', () => {
+    expect(resolveConfig({}).omEnabled).toBe(true);
+    expect(resolveConfig({ omEnabled: null }).omEnabled).toBe(true);
+    expect(resolveConfig({ omEnabled: '' }).omEnabled).toBe(true);
+    expect(resolveConfig({ omEnabled: '   ' }).omEnabled).toBe(true);
   });
 
-  it("'new' 切换 new 模式、'disable' 关闭自动压缩（config 键）", () => {
-    expect(resolveSummaryMode('new')).toBe('new');
-    expect(resolveSummaryMode('disable')).toBe('disable');
-    expect(resolveConfig({ summaryMode: 'new' }).summaryMode).toBe('new');
-    expect(resolveConfig({ summaryMode: 'disable' }).summaryMode).toBe('disable');
+  it('true / false 显式开关', () => {
+    expect(resolveConfig({ omEnabled: true }).omEnabled).toBe(true);
+    expect(resolveConfig({ omEnabled: false }).omEnabled).toBe(false);
   });
 
-  it('非法值抛错并指出配置键', () => {
-    expect(() => resolveSummaryMode('bogus')).toThrow(/summaryMode/);
-    expect(() => resolveConfig({ summaryMode: 'bogus' })).toThrow(/summaryMode/);
+  it('不合法值回退默认（true）', () => {
+    expect(resolveConfig({ omEnabled: 'false' }).omEnabled).toBe(true); // 字符串不合法
+    expect(resolveConfig({ omEnabled: 0 }).omEnabled).toBe(true);
+    expect(resolveConfig({ omEnabled: 'bogus' }).omEnabled).toBe(true);
+  });
+
+  it('summaryMode 不再是配置键（忽略、回归默认）', () => {
+    expect(resolveConfig({ summaryMode: 'new' }).omEnabled).toBe(true); // 未知键忽略
+    expect(resolveConfig({ summaryMode: 'fork' })).not.toHaveProperty('summaryMode');
   });
 });
 
@@ -281,9 +288,9 @@ describe('recallEnabled / semanticRecallEnabled 配置键', () => {
     expect(resolveConfig({ semanticRecallEnabled: '' }).semanticRecallEnabled).toBe(true);
   });
 
-  it('非 boolean 值抛错', () => {
-    expect(() => resolveConfig({ recallEnabled: 'false' })).toThrow(/recallEnabled/);
-    expect(() => resolveConfig({ semanticRecallEnabled: 0 })).toThrow(/semanticRecallEnabled/);
+  it('非 boolean 值回退默认（启用）', () => {
+    expect(resolveConfig({ recallEnabled: 'false' }).recallEnabled).toBe(true);
+    expect(resolveConfig({ semanticRecallEnabled: 0 }).semanticRecallEnabled).toBe(true);
   });
 });
 
@@ -752,14 +759,19 @@ describe('历史提取 listHistoryBlocks', () => {
 });
 
 describe('观察提示词 buildObservePrompt', () => {
-  it('任务声明/完整消息与 index/模块压缩规则/起始编号/输出格式/追加说明（不含对照表与尾部规则）', () => {
+  it('任务声明（new 方式）/完整消息与 index/模块压缩规则/起始编号/输出格式/追加说明', () => {
     const prompt = buildObservePrompt({
       startIndex: 8,
       hasOldHistory: true,
-      mode: 'fork',
     });
-    // fork 模式：停止任务/禁止工具声明
-    expect(prompt).toContain('停止一切现有任务，禁止调用任何工具');
+    // 始终以 new 方式开启观察：仅说明总结日志（无停止任务声明、不复用主会话历史）
+    expect(prompt).toContain('将过往消息总结为一份日志。');
+    expect(prompt).not.toContain('停止一切现有任务');
+    // 上下文定位：下方消息即压缩对象（不含旧日志/尾部）
+    expect(prompt).toContain('下方的消息记录是本次要压缩的全部消息');
+    expect(prompt).toContain('不含旧压缩日志、不含尾部');
+    expect(prompt).toContain('追加到已有压缩日志之后');
+    expect(prompt).not.toContain('上方的消息记录是主会话的完整历史');
     // 完整消息与 index：三类定义 + 起始编号（仅定义与 index，无「共用定位单位」表述）
     expect(prompt).toContain('完整消息分三类');
     expect(prompt).toContain('用户消息占一条');
@@ -794,41 +806,25 @@ describe('观察提示词 buildObservePrompt', () => {
     expect(prompt).toContain('追加到上一次压缩产物');
     expect(prompt).not.toContain('对照表');
     expect(prompt).not.toContain('message_id');
-    // fork 模式：引用上方完整会话记录；尾部不写进提示词（输入已从尾部之前实际截断）
-    expect(prompt).toContain('上方的消息记录是主会话的完整历史');
-    expect(prompt).toContain('最后一次 <om-history> 块之后的全部消息；只对这些消息做压缩');
-    expect(prompt).not.toContain('尾部');
   });
 
   it('首次压缩（无旧摘要）表述为第一条日志', () => {
     const prompt = buildObservePrompt({
       startIndex: 0,
       hasOldHistory: false,
-      mode: 'fork',
     });
     expect(prompt).toContain('第一条 <om-history> 压缩日志');
     expect(prompt).not.toContain('追加到上一次压缩产物');
   });
-
-  it('new 模式：只说明总结日志 + 下方消息即压缩对象（不含旧日志/尾部）', () => {
-    const prompt = buildObservePrompt({
-      startIndex: 0,
-      hasOldHistory: false,
-      mode: 'new',
-    });
-    // new 模式：仅说明总结日志（无停止任务声明）
-    expect(prompt).toContain('将过往消息总结为一份日志。');
-    expect(prompt).not.toContain('停止一切现有任务');
-    expect(prompt).toContain('下方的消息记录是本次要压缩的全部消息');
-    expect(prompt).toContain('不含旧压缩日志、不含尾部');
-    expect(prompt).toContain('追加到已有压缩日志之后');
-  });
 });
 
 describe('反思提示词 buildReflectPrompt', () => {
-  it('精简合并规则：声明/本指令不入日志/模块划分与输出/用户消息保留要点与 index/连续/可写（略）/XML 输出', () => {
-    const prompt = buildReflectPrompt('fork');
-    expect(prompt).toContain('停止一切现有任务，禁止调用任何工具');
+  it('精简合并规则（new 方式）：仅说明总结日志 + 下方日志即压缩对象 + 模块划分与输出/用户消息保留要点与 index/连续/可写（略）/XML 输出', () => {
+    const prompt = buildReflectPrompt();
+    // new 方式声明：仅说明总结日志（无停止任务声明）
+    expect(prompt).toContain('将当前压缩日志精简合并为一份更紧凑的日志。');
+    expect(prompt).not.toContain('停止一切现有任务');
+    expect(prompt).toContain('下方的消息记录包含当前的 <om-history> 压缩日志');
     expect(prompt).toContain('精简合并');
     expect(prompt).toContain('当前消息仅作为指令，**不得**进入日志');
     expect(prompt).toContain('<user_message index="(index)">');
@@ -847,13 +843,6 @@ describe('反思提示词 buildReflectPrompt', () => {
     expect(prompt).toContain('替换全部 <om-history> 块');
     expect(prompt).toContain('保留新条目');
     expect(prompt).not.toContain('message_id');
-  });
-
-  it('new 模式定位下方的 <om-history> 压缩日志（仅说明总结日志）', () => {
-    const prompt = buildReflectPrompt('new');
-    expect(prompt).toContain('将当前压缩日志精简合并为一份更紧凑的日志。');
-    expect(prompt).not.toContain('停止一切现有任务');
-    expect(prompt).toContain('下方的消息记录包含当前的 <om-history> 压缩日志');
   });
 });
 
@@ -934,11 +923,9 @@ describe('apply 接线（OM 观察压缩）', () => {
     };
   }
 
-  /** 提取摘要指令文本（fork 模式为最后一条消息；new 模式为 system 字段）。 */
+  /** 提取摘要指令文本（new 方式：指令在 system 字段）。 */
   function instructionText(options: ReturnType<typeof summaryOptions>): string {
-    if (options.system !== undefined) return options.system;
-    const last = options.messages?.at(-1);
-    return String(last?.content?.[0]?.text ?? '');
+    return String(options.system ?? '');
   }
 
   /** 返回固定观察报告的 ctx（默认 window 8：观察阈值 4 tokens，必然触发）。 */
@@ -981,10 +968,10 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(nextCalled).toBe(true); // 阻塞执行后放行
     expect(ctx._llmCalls).toHaveLength(1);
     const options = summaryOptions(ctx);
-    // fork 模式：persona 并入指令（最后一条 user 消息）；mock requestHeader 无 system
+    // new 方式：persona + 提示词并入 system；输入为被压缩消息（user 消息）
     const instruction = instructionText(options);
     expect(instruction.startsWith(OBSERVER_PERSONA)).toBe(true);
-    expect(options.system).toBeUndefined();
+    expect(options.system).toBe(instruction);
     expect(options.maxTokens).toBe(10000); // compressMaxTokens 默认
 
     const historyText = latestHistoryText(session);
@@ -1329,7 +1316,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(session.surface.nodes.length).toBe(3);
   });
 
-  it('disable 模式：关闭自动压缩（无摘要调用、无替换、recall 工具仍注册）', async () => {
+  it('omEnabled=false：关闭自动压缩（无摘要调用、无替换、recall 工具仍注册）', async () => {
     const session = makeSession({
       events: [
         historyMessage('旧任务'),
@@ -1343,7 +1330,7 @@ describe('apply 接线（OM 观察压缩）', () => {
       ],
     });
     const ctx = makeCtx({ resolveModelInfo: async () => ({ context: { contextWindow: 8 } }) });
-    apply(ctx, { summaryMode: 'disable' });
+    apply(ctx, { omEnabled: false });
     // 工具注册不受影响（recall 独立开关）
     expect(ctx._registeredTools.some((t) => t.name === 'recall')).toBe(true);
     await runPreStep(ctx, session);
@@ -1352,7 +1339,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(session.events.some((e) => e.type === 'compaction/start')).toBe(false);
     expect(session.surface.nodes.length).toBe(4); // 旧日志 + flow 3 条
     const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
-    expect(steps.some((s) => s.includes('summaryMode=disable，跳过压缩'))).toBe(true);
+    expect(steps.some((s) => s.includes('omEnabled=false，跳过压缩'))).toBe(true);
   });
 });
 
@@ -1366,13 +1353,10 @@ describe('apply 接线（OM 反思压缩）', () => {
     );
   }
 
-  /** 提取摘要指令文本（fork 模式为最后一条消息的文本）。 */
+  /** 提取摘要指令文本（new 方式：指令在 system 字段）。 */
   function instructionText(options: unknown): string {
-    const o = options as {
-      messages?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
-    };
-    const last = o.messages?.at(-1);
-    return String(last?.content?.[0]?.text ?? '');
+    const o = options as { system?: string };
+    return String(o.system ?? '');
   }
 
   it('摘要超反思阈值：摘要调用精简合并并把整个块区段替换为一条', async () => {
@@ -1669,7 +1653,7 @@ describe('OM 摘要 token 归入主会话（compaction/summary.usage）', () => 
   });
 });
 
-describe('摘要请求形态（fork / new 双模式）', () => {
+describe('摘要请求形态（new 方式）', () => {
   async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
     const preStepListeners = ctx._onCallbacks.get('agent/pre-step');
     await preStepListeners?.[0]?.(
@@ -1678,7 +1662,7 @@ describe('摘要请求形态（fork / new 双模式）', () => {
     );
   }
 
-  /** 带 requestHeader system/tools 的会话（fork 模式前缀对齐断言用）。 */
+  /** 带 requestHeader system/tools 的会话（断言摘要不复用主会话请求前缀）。 */
   function sessionWithHeader() {
     return makeSession({
       events: buildToolCallFlow({
@@ -1696,40 +1680,23 @@ describe('摘要请求形态（fork / new 双模式）', () => {
     });
   }
 
-  it('fork 模式（缺省）：system/tools 复用主会话请求头，messages 从尾部之前实际截断', async () => {
-    const session = sessionWithHeader();
-    const ctx = makeCtx({ resolveModelInfo: async () => ({ context: { contextWindow: 8 } }) });
-    apply(ctx, { tailMessageCount: 1 });
-    await runPreStep(ctx, session);
-    const options = ctx._llmCalls[0]?.options as {
-      system?: string;
-      tools?: unknown[];
-      messages?: Array<{ role?: string; content?: Array<{ type?: string; text?: string }> }>;
-    };
-    expect(options?.system).toBe('主会话系统提示词');
-    expect(options?.tools).toEqual([{ name: 'run_code' }]);
-    // fork 从尾部之前截断：派生历史 3 条 - 尾部 2 条（assistant+result）= 1 条 + 指令
-    expect(options?.messages).toHaveLength(2);
-    const first = options?.messages?.[0];
-    expect(String(first?.content?.[0]?.text ?? '')).toContain('请帮我完成一个任务'); // 仅被压缩的 user 消息
-    const last = options?.messages?.at(-1);
-    expect(last?.role).toBe('user');
-    expect(String(last?.content?.[0]?.text ?? '')).toContain(OBSERVER_PERSONA);
-  });
-
-  it('new 模式（summaryMode=new）：指令作为 system，输入 = 被压缩消息（XML 包裹，不含尾部）', async () => {
+  it('始终以 new 方式开启观察：指令作为 system，输入 = 被压缩消息（XML 包裹，不含尾部）', async () => {
     const session = sessionWithHeader();
     const ctx = makeCtx({
       resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
       llmStream: [{ type: 'text-delta', text: '<om-history>\nOBSERVED-PASS\n</om-history>' }],
     });
-    apply(ctx, { summaryMode: 'new', tailMessageCount: 1 });
+    apply(ctx, { tailMessageCount: 1 });
     await runPreStep(ctx, session);
     const options = ctx._llmCalls[0]?.options as {
       system?: string;
+      tools?: unknown[];
       messages?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
     };
+    // new 方式：不复用主会话 requestHeader（system/tools 前缀不沿用）
     expect(options?.system?.startsWith(OBSERVER_PERSONA)).toBe(true);
+    expect(options?.system).not.toContain('主会话系统提示词');
+    expect(options?.tools).toBeUndefined();
     const input = String(options?.messages?.[0]?.content?.[0]?.text ?? '');
     // 输入 = 被压缩区间 [0]（tailCount=1 配对回退）的完整消息渲染（带绝对 index），不含分段标签与尾部
     expect(input).toContain('<user_message index="0">');

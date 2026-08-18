@@ -42,7 +42,7 @@ export function apply(ctx: Context, config?: unknown): void {
   /** 插件日志门面（step=debug 按配置 debug 开关输出；info/warn 始终输出）。 */
   const logger = makeLogger(ctx, resolved.debug);
   logger.step(
-    `apply 启动：thresholdRatio=${String(resolved.thresholdRatio)} historyMergeRatio=${String(resolved.historyMergeRatio)} compressMaxTokens=${String(resolved.compressMaxTokens)} tailMessageCount=${String(resolved.tailMessageCount)} summaryMode=${resolved.summaryMode} debug=${String(resolved.debug)}`,
+    `apply 启动：thresholdRatio=${String(resolved.thresholdRatio)} historyMergeRatio=${String(resolved.historyMergeRatio)} compressMaxTokens=${String(resolved.compressMaxTokens)} tailMessageCount=${String(resolved.tailMessageCount)} omEnabled=${String(resolved.omEnabled)} debug=${String(resolved.debug)}`,
   );
 
   // recall 工具（code 呈现下即 SDK 绑定 tools.recall(...)）；输出 token 由

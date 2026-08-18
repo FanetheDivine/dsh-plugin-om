@@ -287,7 +287,7 @@ export function buildToolCallFlow({
   callId: string;
   resultText: string;
   isError?: boolean;
-  /** 是否在流末尾追加 turn/end（fork seed 截断于此，压缩需模拟真实日志）。 */
+  /** 是否在流末尾追加 turn/end（压缩需模拟真实日志）。 */
   withTurnEnd?: boolean;
   /** turn/end 的结束原因（默认 completed；中断测试传 aborted/interrupted）。 */
   turnEndReason?: { kind: string; reason?: { kind?: string } };
@@ -349,32 +349,4 @@ export function buildToolCallFlow({
     } as unknown as SessionEvent);
   }
   return events;
-}
-
-/** 构造 fork 子会话（模拟 run.localAgent.session）：seed 前缀 + 子会话自身 usage 消息。 */
-export function makeForkChildSession(usage?: unknown, seedCount = 1): Session {
-  const events: SessionEvent[] = [];
-  for (let i = 0; i < seedCount; i += 1) {
-    events.push({
-      type: 'user/message',
-      data: makeMessage({ content: [textBlock(`seed-${i}`)], id: `seed-${i}` }),
-    } as SessionEvent);
-  }
-  if (usage !== undefined) {
-    events.push({
-      type: 'assistant/message',
-      data: {
-        turn: 1,
-        step: 1,
-        message: makeMessage({
-          role: 'assistant',
-          content: [textBlock('摘要')],
-          id: 'child-summary',
-        }),
-        usage,
-      },
-    } as unknown as SessionEvent);
-  }
-  const session = makeSession({ events });
-  return { ...session, firstLiveSeq: seedCount } as unknown as Session;
 }
