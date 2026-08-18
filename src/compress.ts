@@ -1,36 +1,36 @@
 /**
  * 自动压缩（OM 观察/反思两级阈值，思路参考 Mastra Observational Memory）：
  *  - 观察：未压缩消息 tokens ≥ 窗口 × thresholdRatio → 直连 ctx.llm.stream() 摘要
- *    （new 方式：指令作为 system、被压缩消息渲染为输入）把未压缩消息压缩为观察日志，
- *    作为独立的新 <om-history> 块，只精确替换被压缩的新消息区间（旧块原地保留，
- *    多块并存按序排列；不再把旧+新合并进一条消息）；
- *  - 反思：全部 <om-history> 块 tokens 合计 ≥ 窗口 × historyMergeRatio（默认 0.2）→
- *    同上摘要调用精简合并，把整个块区段合并为一条更紧凑的摘要。
+ *    （new 方式：共享提示词作为 system、被压缩消息渲染为 <history> 块输入）把未压缩消息
+ *    压缩为观察日志，作为独立的新 <history> 块，只精确替换被压缩的新消息区间（旧块原地
+ *    保留，多块并存按序排列；不再把旧+新合并进一条消息）；
+ *  - 反思：全部 <history> 块 tokens 合计 ≥ 窗口 × historyMergeRatio（默认 0.2）→
+ *    同上摘要调用精简合并（输入为多个块拼接，共用同一套提示词），把整个块区段合并为一条。
  * 两级检查在 pre-step 阻塞串行执行（先反思后观察），避免压缩失败或重复压缩。
  * 自动压缩由配置键 omEnabled 开关（false 时关闭；recall 工具不受影响）。
  *
+ * 压缩边界（historySection）：消息列表中最后一个合法的 <history> 块（source 为插件）
+ * 之后的消息视为未压缩；其前（含自身）视为已压缩，不重复压缩、不计入观察阈值。
+ *
  * 压缩结果写入宿主 compaction/* 生命周期事件（compaction/start → compaction/summary →
- * 替换 <om-history> 消息 → compaction/end），使消息记录（聊天视图压缩卡片）与轨迹视图
+ * 替换 <history> 消息 → compaction/end），使消息记录（聊天视图压缩卡片）与轨迹视图
  * 可见；compaction/summary 同时承担影子价格认领（shadowedTokenCount），不再单独发
  * compaction/prune。替换消息的 source 使用宿主 checkpoint 标记（plugin: 'compact' +
  * compactionId），UI 据此关联 summary 与替换消息。生命周期事件在摘要成功后才写入
  * （失败不产生任何日志变更）。
  *
- * 观察区间：pre-step 触发时日志 call-result 完备，区间不再受 turn/end 封顶——头部 →
+ * 观察区间：pre-step 触发时日志 call-result 完备，区间不再受 turn/end 封顶——压缩边界 →
  * 表层长度-1-tailCount（尾部保留 config.tailMessageCount 条不压缩），当前 turn 中已
  * 完备的消息同样可压缩；区间终点回退到 tool-call/result 配对平衡点（不切段）。
- * 观察摘要的条目用「完整消息」index 定位（三类定义见 log-index.ts）：新消息起始 index
- * 由插件从日志计算后注入提示词，输入按完整消息渲染绝对 index。
- * 仅主会话生效。
+ * 摘要输出的 <history> 块经连续性校验（无 reasoning、index/start/end 连续且覆盖预期
+ * 区间），失败按 config.compressRetryCount 重试。仅主会话生效。
  */
 import { COMPACT_CHECKPOINT_PLUGIN, HISTORY_TAG, PLUGIN_LABEL } from './constants.ts';
 import { indexCompleteMessages } from './log-index.ts';
 import { makeLogger } from './logger.ts';
 import {
-  buildObservePrompt,
-  buildReflectPrompt,
-  OBSERVER_PERSONA,
-  REFLECTOR_PERSONA,
+  buildHistoryPrompt,
+  parseHistoryEntries,
   renderMessages,
   runSummarySubagent,
 } from './summarize.ts';
@@ -52,10 +52,25 @@ export function estimateTextTokens(text: string): number {
 }
 
 /**
- * 判定消息是否为本插件的压缩日志消息并提取日志文本（D：不通过文本含 <om-history> 判断，
+ * 反思输入块引用的最大完整消息 index（解析全部条目取最大 end；无条目返回 -1）。
+ * 反思输出必须覆盖输入引用的完整 index 区间（0..max），连续性校验据此约束。
+ */
+function reflectExpectedEnd(contextText: string): number {
+  /** 最大 end（无条目保持 -1）。 */
+  let max = -1;
+  for (const e of parseHistoryEntries(contextText)) {
+    /** 当前条目上界（模块 end 或单条 index）。 */
+    const hi = e.kind === 'assistant' && e.end !== undefined ? e.end : (e.index ?? 0);
+    if (hi > max) max = hi;
+  }
+  return max;
+}
+
+/**
+ * 判定消息是否为本插件的压缩日志消息并提取日志文本（不通过文本含标签判断，
  * 改用 source 标记——plugin 为宿主 checkpoint 标记 'compact' 或插件标识 'dsh-plugin-om'）。
- * 日志文本取首个 <om-history> 起的内容（含标签与格式说明注释，多块拼接时返回全部块）；
- * 非压缩日志消息返回 undefined。
+ * 仅当消息文本含 <history> 开标签（含带 tip 属性版本）时视为压缩日志，返回整段文本；
+ * 其余消息返回 undefined（旧格式 <om-history> 块按「不兼容，干净切换」视为普通消息）。
  */
 function historyTextOf(event: SessionEvent | undefined): string | undefined {
   if (event?.type !== 'user/message') return undefined;
@@ -66,29 +81,36 @@ function historyTextOf(event: SessionEvent | undefined): string | undefined {
     return undefined;
   /** 消息纯文本。 */
   const text = blocksToText(event.data.content);
-  /** 日志文本起点：优先块前换行定位（旧格式注入前缀句含行内 <om-history>，裸 indexOf 会抢先
-   *  命中前缀里的标签），回退首个开标签；无则整段视为日志。 */
-  const tag = `<${HISTORY_TAG}>`;
-  const newlineStart = text.indexOf(`\n${tag}`);
-  const start = newlineStart === -1 ? text.indexOf(tag) : newlineStart + 1;
-  return start === -1 ? text : text.slice(start);
+  /** 首个 <history 出现位置（无则非压缩日志）。 */
+  const idx = text.indexOf(`<${HISTORY_TAG}`);
+  if (idx === -1) return undefined;
+  /** 开标签校验：<history> 或 <history tip=…>（排除 </history> 等）。 */
+  const rest = text.slice(idx + HISTORY_TAG.length + 1);
+  if (!rest.startsWith('>') && !rest.startsWith(' tip=')) return undefined;
+  return text;
 }
 
 /** token 估算器的结构类型（仅需 estimateMessage；避免依赖完整 TokenMeter 接口）。 */
 export type TokenEstimator = { estimateMessage(message: unknown): number };
 
 /**
- * 未压缩消息 token 估算：表层节点合计，不含 <om-history> 摘要节点
- * （观察阈值衡量对象）。
+ * 未压缩消息 token 估算：最后一个 <history> 块之后的表层节点合计
+ * （其前含自身视为已压缩，不计入观察阈值衡量对象；无压缩日志时计全部）。
  */
 export function measureUncompressedTokens(session: Session, meter: TokenEstimator): number {
+  /** 压缩边界（最后一个 history 块的 seq；无则 undefined）。 */
+  const { boundarySeq } = historySection(session);
   /** token 合计。 */
   let total = 0;
+  /** 是否已越过压缩边界（开始计入）。 */
+  let measuring = boundarySeq === undefined;
   for (const seq of session.surface.nodes) {
-    /** 当前表层事件（摘要节点不计入未压缩消息）。 */
-    const event = session.events[seq];
-    if (historyTextOf(event) !== undefined) continue;
+    if (!measuring) {
+      if (seq === boundarySeq) measuring = true;
+      continue;
+    }
     /** 事件对应的消息（用于 token 估算）。 */
+    const event = session.events[seq];
     const message = event ? session.deriveEventMessage(event) : null;
     total += message ? meter.estimateMessage(message) : 0;
   }
@@ -129,43 +151,54 @@ export function computeCompressRange(
   /** 当前表层节点（按日志顺序）。 */
   const surface = [...session.surface.nodes];
   if (surface.length === 0) return undefined;
+  /** 压缩边界（最后一个 <history> 块；其前含自身已压缩，起点在其后）。 */
+  const { boundarySeq } = historySection(session);
+  /** 区间起点表层下标（无压缩日志时为 0）。 */
+  const startIdx = boundarySeq === undefined ? 0 : surface.indexOf(boundarySeq) + 1;
+  if (startIdx >= surface.length) return undefined;
   /** 区间末表层节点下标（尾部保留 tailCount 条不压缩）。 */
   let endIdx = surface.length - 1 - tailCount;
-  if (endIdx < 0) return undefined;
+  if (endIdx < startIdx) return undefined;
   /** 区间终点回退到配对平衡点（不切断 tool-call/result 配对）。 */
-  while (endIdx >= 0) {
+  while (endIdx >= startIdx) {
     /** 当前候选终点节点（表层节点序列稠密，防御性判空）。 */
     const node = surface[endIdx];
     if (node === undefined || isPairBalancedAfter(session, node)) break;
     endIdx -= 1;
   }
-  if (endIdx < 0) return undefined;
-  /** 区间起点（表层首节点，含旧 <om-history> 时一并合并）。 */
-  const start = surface[0];
+  if (endIdx < startIdx) return undefined;
+  /** 区间起点（压缩边界后的首个节点）。 */
+  const start = surface[startIdx];
   /** 区间终点（表层节点 seq）。 */
   const end = surface[endIdx];
   if (start === undefined || end === undefined) return undefined;
-  /** 被遮蔽的表层 seq 列表。 */
-  const shadowedSeqs = surface.slice(0, endIdx + 1);
+  /** 被遮蔽的表层 seq 列表（仅未压缩新消息，不含旧压缩日志块）。 */
+  const shadowedSeqs = surface.slice(startIdx, endIdx + 1);
   return { start, end, shadowedSeqs };
 }
 
 /**
- * 收集表层中全部 <om-history> 压缩日志（内文 + seq，按表层顺序）。
- * 压缩日志消息始终位于表层头部连续区段（每次观察在旧块之后替换新消息区间，
- * 反思把整个块区段合并为一条），因此表层中所有压缩日志即头部区段；
- * 头部区段后即结束扫描（不遍历尾部消息）。
+ * 压缩边界（historySection）：扫描表层全部节点，收集所有合法 <history> 压缩日志块
+ * （内文 + seq，按表层顺序），并以最后一个块的 seq 作为压缩边界——
+ * 边界之后的消息视为未压缩；其前（含边界自身）视为已压缩（不重复压缩、不计入观察阈值）。
+ * 无压缩日志时 blocks 为空、boundarySeq 为 undefined（全部视为未压缩）。
  */
-export function listHistoryBlocks(session: Session): Array<{ text: string; seq: number }> {
+export function historySection(session: Session): {
+  blocks: Array<{ text: string; seq: number }>;
+  boundarySeq: number | undefined;
+} {
   /** 收集结果（按表层顺序）。 */
-  const out: Array<{ text: string; seq: number }> = [];
+  const blocks: Array<{ text: string; seq: number }> = [];
+  /** 最后一个压缩日志块的 seq（无则 undefined）。 */
+  let boundarySeq: number | undefined;
   for (const seq of session.surface.nodes) {
-    /** <om-history> 内文（非压缩日志消息时为 undefined）。 */
+    /** <history> 内文（非压缩日志消息时为 undefined）。 */
     const text = historyTextOf(session.events[seq]);
-    if (text === undefined) break;
-    out.push({ text, seq });
+    if (text === undefined) continue;
+    blocks.push({ text, seq });
+    boundarySeq = seq;
   }
-  return out;
+  return { blocks, boundarySeq };
 }
 
 /** 当前打开中的 turn 号（最近 turn/start 且未被 turn/end 关闭）；无则 null（跨轮次场景）。 */
@@ -197,7 +230,7 @@ function appendCompactionStart(session: Session, lifecycle: CompactionLifecycle)
 
 /**
  * 追加 compaction/summary（log-only，承担影子价格认领：紧随其后的替换消息消费 claim）。
- * summary 为完整合并后的 <om-history> 内文；usage 由摘要调用提取（无则省略）。
+ * summary 为完整合并后的 <history> 内文；usage 由摘要调用提取（无则省略）。
  */
 function appendCompactionSummary(
   session: Session,
@@ -239,7 +272,7 @@ function appendCompactionEnd(
   }).seq;
 }
 
-/** 追加 <om-history> 压缩日志消息（surfaceOp 替换遮蔽区间，source 为宿主 checkpoint 标记）。 */
+/** 追加 <history> 压缩日志消息（surfaceOp 替换遮蔽区间，source 为宿主 checkpoint 标记）。 */
 function appendHistoryMessage(
   session: Session,
   content: string,
@@ -247,7 +280,7 @@ function appendHistoryMessage(
   surfaceOp: { op: 'replace'; start: number; end: number },
   compactionId: CompactionId,
 ): void {
-  /** 压缩替换消息（内容即 <om-history> 标签块，不再附加前缀句；对 AI 的提醒在块开标签 tip 属性上；
+  /** 压缩替换消息（内容即 <history> 标签块，不再附加前缀句；对 AI 的提醒在块开标签 tip 属性上；
    *  source 标记宿主 checkpoint 供 UI 关联）。 */
   const message = {
     id: uuid(),
@@ -259,8 +292,9 @@ function appendHistoryMessage(
 }
 
 /**
- * 反思：全部 <om-history> 块 tokens 合计 ≥ 窗口 × historyMergeRatio 时，摘要调用
- * 精简合并，把整个块区段替换为一条更紧凑的摘要。失败不产生部分替换。
+ * 反思：全部 <history> 块 tokens 合计 ≥ 窗口 × historyMergeRatio 时，摘要调用
+ * 精简合并（多个块拼接为输入，与观察共用同一套提示词），把整个块区段替换为一条
+ * 更紧凑的摘要。失败不产生部分替换。
  */
 export async function reflectPass(
   ctx: Context,
@@ -275,10 +309,10 @@ export async function reflectPass(
   /** 插件日志门面。 */
   const logger = makeLogger(ctx, config.debug);
   logger.step(`反思检查（窗口 ${window} × historyMergeRatio ${config.historyMergeRatio}）`);
-  /** 全部 <om-history> 块（头部连续区段；无则跳过）。 */
-  const blocks = listHistoryBlocks(session);
+  /** 全部 <history> 压缩日志块（按表层顺序；无则跳过）。 */
+  const { blocks } = historySection(session);
   if (blocks.length === 0) {
-    logger.step('反思：无 <om-history> 压缩日志，跳过');
+    logger.step('反思：无 <history> 压缩日志，跳过');
     return;
   }
   /** 反思阈值（窗口 × historyMergeRatio 向下取整）。 */
@@ -292,7 +326,7 @@ export async function reflectPass(
   logger.step(
     `反思：摘要 ${tokens} tokens ≥ 阈值 ${threshold}，触发精简合并（${blocks.length} 个块）`,
   );
-  /** 块区段首尾（listHistoryBlocks 只收集表层节点，天然在表层）。 */
+  /** 块区段首尾（historySection 只收集表层节点，天然在表层）。 */
   const first = blocks[0];
   const last = blocks[blocks.length - 1];
   if (first === undefined || last === undefined) {
@@ -301,10 +335,12 @@ export async function reflectPass(
   }
   /** 被替换块区段的 seq 列表。 */
   const blockSeqs = blocks.map((block) => block.seq);
-  /** 反思指令（persona + 规则主体）。 */
-  const instruction = `${REFLECTOR_PERSONA}\n\n${buildReflectPrompt()}`;
-  /** 渲染输入（全部 <om-history> 块内文）。 */
+  /** 共享提示词（观察/反思同一套）。 */
+  const instruction = buildHistoryPrompt();
+  /** 渲染输入（全部 <history> 块拼接）。 */
   const contextText = blocks.map((block) => block.text).join('\n');
+  /** 反思输出应覆盖输入块引用的全部 index（解析输入条目取最大 end；无条目则只校验起点）。 */
+  const expectedEnd = reflectExpectedEnd(contextText);
   /** 反思摘要结果（null 表示失败/跳过）。 */
   const summaryResult = await runSummarySubagent(
     ctx,
@@ -315,6 +351,10 @@ export async function reflectPass(
     target,
     config.debug,
     signal,
+    {
+      maxAttempts: config.compressRetryCount + 1,
+      expected: expectedEnd < 0 ? { start: 0 } : { start: 0, end: expectedEnd },
+    },
   );
   if (summaryResult === null || summaryResult.text.trim().length === 0) {
     logger.step('反思：摘要调用失败/无输出，不产生替换');
@@ -343,7 +383,7 @@ export async function reflectPass(
       maxTokens: config.compressMaxTokens,
       ...(summaryResult.usage === undefined ? {} : { usage: summaryResult.usage }),
     });
-    logger.step('反思提交：替换整个 <om-history> 块区段为合并摘要');
+    logger.step('反思提交：替换整个 <history> 块区段为合并摘要');
     appendHistoryMessage(
       session,
       report,
@@ -394,54 +434,51 @@ export async function observePass(
   );
   /** 观察阈值（窗口 × thresholdRatio 向下取整）。 */
   const threshold = Math.floor(window * config.thresholdRatio);
-  /** 未压缩消息 token 估算（不含 <om-history> 摘要节点）。 */
+  /** 未压缩消息 token 估算（最后一个 <history> 块之后；其前视为已压缩）。 */
   const uncompressedTokens = measureUncompressedTokens(session, ctx.tokenMeter);
   if (uncompressedTokens < threshold) {
     logger.step(`观察：未压缩消息 ${uncompressedTokens} tokens < 阈值 ${threshold}，跳过`);
     return;
   }
   logger.step(`观察：未压缩消息 ${uncompressedTokens} tokens ≥ 阈值 ${threshold}，触发压缩`);
-  /** 观察压缩区间（尾部保留 tailCount 条不压缩；无可行区间则跳过）。 */
+  /** 观察压缩区间（压缩边界之后；尾部保留 tailCount 条不压缩；无可行区间则跳过）。 */
   const range = computeCompressRange(session, tailCount);
   if (!range) {
-    logger.step('观察：无可行压缩区间（表层过短或配对无法平衡），跳过');
+    logger.step('观察：无可行压缩区间（边界后消息过短或配对无法平衡），跳过');
     return;
   }
   logger.step(
     `观察：压缩区间 [${range.start}..${range.end}]，遮蔽 ${range.shadowedSeqs.length} 个表层节点`,
   );
-  /** 当前表层节点（按日志顺序）。 */
-  const surface = [...session.surface.nodes];
-  /** 头部 <om-history> 块区段（旧摘要；多块并存：保留不替换、不进新消息遮蔽）。 */
-  const blocks = listHistoryBlocks(session);
-  /** 区间终点在表层中的位置。 */
-  const endIdx = surface.indexOf(range.end);
-  /** 被替换的新消息区段起点（头部块区段之后）。 */
-  const startIdx = blocks.length;
-  /** 实际被替换的新消息表层节点（旧块不进入遮蔽、不被重写）。 */
-  const replaceSeqs = surface.slice(startIdx, endIdx + 1);
+  /** 旧压缩日志块（保留不替换、不进新消息遮蔽）。 */
+  const { blocks } = historySection(session);
+  /** 实际被替换的新消息表层节点（压缩边界之后；旧块不进入遮蔽、不被重写）。 */
+  const replaceSeqs = range.shadowedSeqs;
   /** 替换区间起点（首个新消息节点；区间内全部为块时无新消息可压缩）。 */
   const replaceStart = replaceSeqs[0];
   if (replaceStart === undefined) {
     logger.step('观察：区间内无新消息（全部为压缩日志块），跳过');
     return;
   }
-  /** 被替换 seq 集合（计算新消息起始 index）。 */
+  /** 被替换 seq 集合（计算新消息 index 覆盖区间）。 */
   const shadowedSet = new Set(replaceSeqs);
-  /** 压缩区间内第一个完整消息的 index（新消息起始编号；区间内无完整消息则 0）。 */
-  const startIndex =
-    indexCompleteMessages(session).find((cm) => cm.seqs.every((seq) => shadowedSet.has(seq)))
-      ?.index ?? 0;
-  logger.step(
-    `观察：保留旧块 ${blocks.length} 条，替换新消息 [${replaceSeqs[0]}..${range.end}]（${replaceSeqs.length} 条），尾部保留 ${tailCount} 条（不压缩、不进日志），新消息起始 index ${startIndex}`,
+  /** 压缩区间内的完整消息（连续性校验的预期覆盖区间）。 */
+  const inRangeCms = indexCompleteMessages(session).filter((cm) =>
+    cm.seqs.every((seq) => shadowedSet.has(seq)),
   );
-  /** 观察指令（persona + 规则主体）。 */
-  const prompt = buildObservePrompt({
-    startIndex,
-    hasOldHistory: blocks.length > 0,
-  });
-  const instruction = `${OBSERVER_PERSONA}\n\n${prompt}`;
-  /** 渲染输入：本次要压缩的完整消息（含绝对 index；不含尾部，插件自产消息不占位）。 */
+  if (inRangeCms.length === 0) {
+    logger.step('观察：区间内无完整消息，跳过');
+    return;
+  }
+  /** 新消息起始/结束完整消息 index（模型输入携带绝对 index，校验按此区间约束）。 */
+  const startIndex = inRangeCms[0]?.index ?? 0;
+  const endIndex = inRangeCms[inRangeCms.length - 1]?.index ?? startIndex;
+  logger.step(
+    `观察：保留旧块 ${blocks.length} 条，替换新消息 [${replaceSeqs[0]}..${range.end}]（${replaceSeqs.length} 条），尾部保留 ${tailCount} 条（不压缩、不进日志），新消息 index ${startIndex}..${endIndex}`,
+  );
+  /** 共享提示词（观察/反思同一套）。 */
+  const instruction = buildHistoryPrompt();
+  /** 渲染输入：本次要压缩的完整消息（合法 <history> 块，含绝对 index；不含尾部，插件自产消息不占位）。 */
   const contextText = renderMessages(session, replaceSeqs);
   /** 观察摘要结果（null 表示失败/跳过）。 */
   const summaryResult = await runSummarySubagent(
@@ -453,6 +490,7 @@ export async function observePass(
     target,
     config.debug,
     signal,
+    { maxAttempts: config.compressRetryCount + 1, expected: { start: startIndex, end: endIndex } },
   );
   if (summaryResult === null || summaryResult.text.trim().length === 0) {
     logger.step('观察：摘要调用失败/无输出，不产生替换');
@@ -489,7 +527,7 @@ export async function observePass(
       maxTokens: config.compressMaxTokens,
       ...(summaryResult.usage === undefined ? {} : { usage: summaryResult.usage }),
     });
-    logger.step('观察提交：替换被压缩新消息区间为 <om-history>（旧块保留）');
+    logger.step('观察提交：替换被压缩新消息区间为 <history>（旧块保留）');
     appendHistoryMessage(
       session,
       report,
