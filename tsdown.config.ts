@@ -14,8 +14,9 @@ export default defineConfig({
   deps: {
     // npm imports stay external: the running harness supplies its own instances.
     neverBundle: true,
-    // 需要打包进产物的依赖白名单（当前为空；将来如需打包某个依赖，加入此数组即可）。
-    alwaysBundle: [],
+    // 需要打包进产物的依赖白名单（当前仅 @xmldom/xmldom——history 块 XML 构建/校验所需）。
+    alwaysBundle: ['@xmldom/xmldom'],
+    onlyBundle: ['@xmldom/xmldom'],
   },
   fixedExtension: true,
   dts: false,

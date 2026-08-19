@@ -13,6 +13,8 @@
  */
 
 import type { FinishReason, GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
+import type { Document, Element } from '@xmldom/xmldom';
+import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import {
   COMPLETE_MESSAGE_DEFINITION,
   HISTORY_TAG,
@@ -47,6 +49,7 @@ export function buildHistoryPrompt(): string {
     '- 将具有关联性的 <assistant> 消息按内在逻辑连贯性划分为连续模块，聚合为 <assistant start="" end=""> 块：块内描述模块的目的、行为与结果，最后一个模块额外给出`下一步计划`；涉及的具体文件保留在模块内容中，多个前缀相同的路径合并简写。',
     '- 单条重要的完整消息以 <assistant index=""> 单独呈现，内容不受限制。',
     '- 条目按 index 顺序覆盖本次压缩的全部完整消息：index/start/end 必须连续（区间内 index 连续、相邻条目相接），不跳号、不重叠、不遗漏。',
+    '- 条目内容为合法 XML 文本：特殊字符保持转义形式（如 & → &amp;、< → &lt;），用户消息原文的转义形式原样保留，不要反转义。',
     '',
     '【输出格式】只输出一个 <history> 包裹的合法 XML 日志块（不要解释、不要复述规则）：',
     `<${HISTORY_TAG}>`,
@@ -65,20 +68,23 @@ export function buildHistoryPrompt(): string {
   ].join('\n');
 }
 
-/** 渲染用户消息条目：文本块原样拼接；图片/文件等非文本块以注释补充（说明传入了什么）。 */
-function renderUserEntry(session: Session, cm: CompleteMessage): string | null {
+/** 渲染用户消息条目（DOM 元素）：文本块原样；图片/文件等非文本块以注释补充（说明传入了什么）。 */
+function renderUserEntry(doc: Document, session: Session, cm: CompleteMessage): Element | null {
   /** 用户消息事件（seq 缺失则无法渲染）。 */
   const seq = cm.seqs[0];
   const event = seq === undefined ? undefined : session.events[seq];
   /** 派生的消息对象。 */
   const message = event ? session.deriveEventMessage(event) : null;
   if (!message || !Array.isArray(message.content)) return null;
-  /** 文本块拼接 + 非文本块注释。 */
-  const texts: string[] = [];
-  const notes: string[] = [];
+  /** user_message 元素（文本 + 注释）。 */
+  const el = doc.createElement('user_message');
+  el.setAttribute('index', String(cm.index));
+  /** 是否存在可输出内容（文本或注释）。 */
+  let hasContent = false;
   for (const block of message.content) {
     if (block.type === 'text') {
-      texts.push(String(block.text));
+      el.appendChild(doc.createTextNode(String(block.text)));
+      hasContent = true;
     } else if (block.type === 'image') {
       /** 图片附件元数据（名称 / 媒体类型 / 尺寸 / 字节数）。 */
       const ref = block.attachment as
@@ -90,15 +96,15 @@ function renderUserEntry(session: Session, cm: CompleteMessage): string | null {
       const meta = ref
         ? `（${String(ref.mediaType ?? '')} ${String(ref.width ?? '')}×${String(ref.height ?? '')}，${String(ref.bytes ?? '')} bytes）`
         : '';
-      notes.push(`<!-- 图片附件${name}${meta} -->`);
+      el.appendChild(doc.createComment(` 图片附件${name}${meta} `));
+      hasContent = true;
     } else {
-      notes.push(`<!-- ${String(block.type)} 块 -->`);
+      el.appendChild(doc.createComment(` ${String(block.type)} 块 `));
+      hasContent = true;
     }
   }
-  /** 条目正文（文本 + 注释）。 */
-  const body = [...texts, ...notes].join('\n');
-  if (body.trim() === '') return null;
-  return `<user_message index="${cm.index}">\n${body}\n</user_message>`;
+  if (!hasContent) return null;
+  return el;
 }
 
 /**
@@ -106,6 +112,7 @@ function renderUserEntry(session: Session, cm: CompleteMessage): string | null {
  *  - user → <user_message index="N">（文本原样 + 图片/文件注释）；
  *  - 每条 assistant 消息的 reasoning → <reasoning>（参考条目，产物中没有）；
  *  - assistant / toolcall → <assistant index="N">（模型输出文本 / toolcall&result 原样）。
+ * 文本经 XML 序列化自动转义（用户输入 / 文本 / reasoning 中的特殊字符不破坏 XML 合法性）。
  * 仅渲染 seqs 全部落在给定集合内的完整消息（插件自产消息天然不占位）。
  */
 export function renderMessages(session: Session, seqs: readonly number[]): string {
@@ -128,15 +135,17 @@ export function renderMessages(session: Session, seqs: readonly number[]): strin
   }
   /** 已输出 reasoning 的 assistant 消息 seq（每条消息的 reasoning 只输出一次）。 */
   const emittedReasoning = new Set<number>();
-  /** 渲染段缓冲区。 */
-  const parts: string[] = [];
+  /** DOM 文档（构建条目元素）。 */
+  const doc = new DOMParser().parseFromString(`<${HISTORY_TAG} />`, 'text/xml');
+  /** 顶层条目元素（按日志顺序）。 */
+  const entries: Element[] = [];
   for (const cm of indexCompleteMessages(session)) {
     if (!cm.seqs.every((seq) => shadowed.has(seq))) continue;
     if (cm.type === 'user') {
       /** 用户消息条目（无文本且无注释则跳过）。 */
-      const rendered = renderUserEntry(session, cm);
+      const rendered = renderUserEntry(doc, session, cm);
       if (rendered === null) continue;
-      parts.push(rendered);
+      entries.push(rendered);
     } else {
       // assistant / toolcall 条目：先输出所属 assistant 消息的 reasoning（参考用）
       /** 承载该条完整消息的 assistant seq（缺失则无 reasoning 可输出）。 */
@@ -145,15 +154,26 @@ export function renderMessages(session: Session, seqs: readonly number[]): strin
       const reasonings = callSeq === undefined ? undefined : reasoningBySeq.get(callSeq);
       if (callSeq !== undefined && reasonings !== undefined && !emittedReasoning.has(callSeq)) {
         emittedReasoning.add(callSeq);
-        for (const text of reasonings) parts.push(`<reasoning>\n${text}\n</reasoning>`);
+        for (const text of reasonings) {
+          /** reasoning 元素（文本自动转义）。 */
+          const re = doc.createElement('reasoning');
+          re.appendChild(doc.createTextNode(text));
+          entries.push(re);
+        }
       }
       /** 该条完整消息的文本（assistant=文本；toolcall=调用参数+结果，原样）。 */
       const text = renderCompleteMessage(session, cm);
       if (text.trim() === '') continue;
-      parts.push(`<assistant index="${cm.index}">\n${text}\n</assistant>`);
+      /** assistant 元素（文本自动转义）。 */
+      const el = doc.createElement('assistant');
+      el.setAttribute('index', String(cm.index));
+      el.appendChild(doc.createTextNode(text));
+      entries.push(el);
     }
   }
-  return `<${HISTORY_TAG}>\n${parts.join('\n')}\n</${HISTORY_TAG}>`;
+  /** XML 序列化器（文本/注释自动转义）。 */
+  const serializer = new XMLSerializer();
+  return `<${HISTORY_TAG}>\n${entries.map((el) => serializer.serializeToString(el)).join('\n')}\n</${HISTORY_TAG}>`;
 }
 
 /** 摘要调用结果：文本 + 可选 token usage（摘要请求自身消耗，随 compaction/summary 归入主会话记录）。 */
@@ -252,27 +272,99 @@ export type HistoryEntryRange = {
   end?: number;
 };
 
+/** 解析后的 history 块结构（条目 + 是否含 reasoning）。 */
+type ParsedHistoryBlock = {
+  entries: HistoryEntryRange[];
+  hasReasoning: boolean;
+};
+
+/** 读取元素整数属性（非负整数；缺失 / 非数字返回 undefined）。 */
+function intAttr(el: Element, name: string): number | undefined {
+  /** 属性原始值（缺失为 null）。 */
+  const raw = el.getAttribute(name);
+  if (raw === null || raw === '') return undefined;
+  if (!/^\d+$/.test(raw)) return undefined;
+  return Number(raw);
+}
+
 /**
- * 解析 history 块内的条目：<user_message index="N"> / <assistant index="N"> /
- * <assistant start="A" end="B">。仅提取不校验顺序（连续性由 historyContinuity 校验）。
+ * 用 XML 解析器解析一个 <history> 块（结构合法性校验）：
+ *  - 非法 XML（标签不匹配 / 未闭合 / 多根等）→ null；
+ *  - 根节点必须是 <history>；
+ *  - 顶层只允许 user_message / assistant 条目元素（其余元素类型视为不合法）；
+ *  - 出现 <reasoning> 元素时标记 hasReasoning（产物不允许）。
+ * 条目按文档顺序提取（index / start / end 属性缺失或不合法 → 不合法）。
+ */
+function parseHistoryBlock(xml: string): ParsedHistoryBlock | null {
+  /** DOM 文档（解析失败抛错）。 */
+  let doc: Document;
+  try {
+    doc = new DOMParser().parseFromString(xml, 'text/xml');
+  } catch {
+    return null;
+  }
+  /** 根节点（必须为 <history>）。 */
+  const root = doc.documentElement;
+  if (!root || root.nodeName !== HISTORY_TAG) return null;
+  /** 条目缓冲区。 */
+  const entries: HistoryEntryRange[] = [];
+  /** 是否含 reasoning 元素。 */
+  let hasReasoning = false;
+  /** 根的子节点。 */
+  const children = root.childNodes;
+  for (let i = 0; i < children.length; i += 1) {
+    /** 当前子节点（跳过文本与注释）。 */
+    const node = children[i];
+    if (!node || node.nodeType !== 1) continue;
+    /** 子元素（节点类型收窄）。 */
+    const el = node as unknown as Element;
+    /** 元素标签名。 */
+    const tag = el.nodeName;
+    if (tag === 'reasoning') {
+      hasReasoning = true;
+      continue;
+    }
+    if (tag === 'user_message') {
+      /** index 属性（缺失/非法 → 不合法）。 */
+      const index = intAttr(el, 'index');
+      if (index === undefined) return null;
+      entries.push({ kind: 'user', index });
+    } else if (tag === 'assistant') {
+      /** 单条 index 或模块 start..end（二选一）。 */
+      const index = intAttr(el, 'index');
+      if (index !== undefined) {
+        entries.push({ kind: 'assistant', index });
+      } else {
+        const start = intAttr(el, 'start');
+        const end = intAttr(el, 'end');
+        if (start === undefined || end === undefined) return null;
+        entries.push({ kind: 'assistant', start, end });
+      }
+    } else {
+      // 未定义的元素类型 → 不合法
+      return null;
+    }
+  }
+  return { entries, hasReasoning };
+}
+
+/**
+ * 解析文本中全部 <history> 块内的条目（反思输入为多个块拼接：逐块解析提取）。
+ * 非法块（结构错误 / 根非 history）跳过；仅提取不校验顺序（连续性由 historyContinuity 校验）。
  */
 export function parseHistoryEntries(text: string): HistoryEntryRange[] {
   /** 条目缓冲区。 */
   const out: HistoryEntryRange[] = [];
-  /** 单条（index）与模块（start..end）按文本顺序统一匹配。 */
-  const entryRe = /<(user_message|assistant)\s+(?:index="(\d+)"|start="(\d+)"\s+end="(\d+)")/g;
-  for (const m of text.matchAll(entryRe)) {
-    /** 条目类别（user_message=用户消息，assistant=模型输出）。 */
-    const kind = m[1] === 'user_message' ? 'user' : 'assistant';
-    if (m[2] !== undefined) {
-      out.push({ kind, index: Number(m[2]) });
-    } else {
-      out.push({ kind, start: Number(m[3]), end: Number(m[4]) });
-    }
+  /** 逐块提取（块内文本经转义，不影响标签匹配）。 */
+  const blockRe = /<history[\s\S]*?<\/history>/g;
+  for (const m of text.matchAll(blockRe)) {
+    /** 单块解析结果（非法块跳过）。 */
+    const parsed = parseHistoryBlock(m[0]);
+    if (parsed === null) continue;
+    out.push(...parsed.entries);
   }
   return out;
 }
-
 /**
  * 校验条目 index/start/end 连续性：每条给出覆盖区间 [lo, hi]（单条 index 为自身），
  * 按块内出现顺序，相邻条目必须首尾相接（后一条 lo = 前一条 hi + 1），返回整体覆盖区间；
@@ -313,6 +405,7 @@ export type SummaryValidationRange = { start?: number; end?: number };
  *  - 取首个 <history> 到最后一个 </history>（含两个首尾）切为日志；
  *  - 找不到、顺序颠倒（首个开标签在最后一个闭标签之后）或中间内容长度 < MIN_HISTORY_LENGTH
  *    视为不合法（返回 null，调用方按失败重试）；
+ *  - 用 XML 解析器校验结构合法性（非法 XML / 多块输出 / 根非 <history> → 不合法）；
  *  - 产物不允许包含 <reasoning> 块（仅作参考）；
  *  - index/start/end 连续性校验（historyContinuity + 与 expected 覆盖区间一致）；
  *  - 产出后把首个开标签改写为带 tip 属性的版本（对 AI 的提醒），并在其后插入
@@ -333,22 +426,25 @@ export function extractSummaryLog(raw: string, expected?: SummaryValidationRange
   /** 中间内容（开闭标签之间）。 */
   const inner = raw.slice(open + openTag.length, close);
   if (inner.trim().length < MIN_HISTORY_LENGTH) return null;
+  /** 完整日志块（含两个首尾）。 */
+  const block = raw.slice(open, close + closeTag.length);
+  // XML 结构合法性（非法 / 多块 / 根非 history → 不合法）
+  /** XML 解析结果。 */
+  const parsed = parseHistoryBlock(block);
+  if (parsed === null) return null;
   // 产物不允许包含 reasoning 块（仅作参考）
-  if (/<\/?reasoning\b/i.test(inner)) return null;
+  if (parsed.hasReasoning) return null;
   // index/start/end 连续性（区间内连续、相邻相接、不跳号不重叠）
   /** 条目覆盖区间。 */
-  const span = historyContinuity(parseHistoryEntries(inner));
+  const span = historyContinuity(parsed.entries);
   if (span === null) return null;
   if (expected?.start !== undefined && span.start !== expected.start) return null;
   if (expected?.end !== undefined && span.end !== expected.end) return null;
-  /** 完整日志块（含两个首尾）。 */
-  const block = raw.slice(open, close + closeTag.length);
   /** 首个开标签改写为带 tip 版本，块顶紧跟格式说明注释。 */
   return block
     .replace(openTag, openTagWithTip)
     .replace(openTagWithTip, `${openTagWithTip}\n${HISTORY_FORMAT_NOTE}`);
 }
-
 /** 摘要调用总尝试次数兜底（无 options.maxAttempts 时；实际由 config.compressRetryCount + 1 传入）。 */
 export const SUMMARY_DEFAULT_MAX_ATTEMPTS = 11;
 
