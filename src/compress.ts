@@ -153,7 +153,9 @@ export function computeCompressRange(
   if (surface.length === 0) return undefined;
   /** 压缩边界（最后一个 <history> 块；其前含自身已压缩，起点在其后）。 */
   const { boundarySeq } = historySection(session);
-  /** 区间起点表层下标（无压缩日志时为 0）。 */
+  /** 区间起点表层下标：无压缩日志时为 0；否则为压缩边界（最后一个 history 块）在表层
+   *  （消息日志顺序）中的后继第一条消息。注意不能按 seq 比较取「边界之后」——替换块是
+   *  追加到日志末尾的，其 seq 大于被遮蔽的消息；表层顺序才是消息的逻辑日志顺序。 */
   const startIdx = boundarySeq === undefined ? 0 : surface.indexOf(boundarySeq) + 1;
   if (startIdx >= surface.length) return undefined;
   /** 区间末表层节点下标（尾部保留 tailCount 条不压缩）。 */
