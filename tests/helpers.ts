@@ -232,11 +232,11 @@ export function makeCtx({ llmStream, resolveModelInfo, pruner }: MockCtxOptions 
       stream: async function* (options: unknown) {
         llmCalls.push({ options });
         if (llmStream) yield* llmStream;
-        // 缺省输出为合法 <om-history> 块（提取校验要求中间内容 ≥ 10 字符）
+        // 缺省输出为合法 <history> 块（提取校验要求：无 reasoning、index 连续、中间内容 ≥ 10 字符）
         else
           yield {
             type: 'text-delta',
-            text: '<om-history>\n合并后的历史条目内容\n</om-history>',
+            text: '<history>\n<user_message index="0">\n合并后的历史条目内容\n</user_message>\n</history>',
           };
       },
     },

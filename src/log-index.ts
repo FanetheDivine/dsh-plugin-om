@@ -4,10 +4,10 @@
  *
  * 完整消息是摘要日志与 recall 共用的定位单位，分三类：
  *  - user：用户消息（user/message）占一条；
- *  - assistant：AI 文本（assistant/message 中的文本块）占一条；
+ *  - assistant：模型输出文本（assistant/message 中的文本块）占一条；
  *  - toolcall：单个工具调用及其结果占一条（同一条 AI 消息里的文本与工具调用拆开，
- *    tool/result 按 source.callId 匹配其 tool-call）。
- * 插件自产消息（<om-history>、运行时快照等 source.kind === 'plugin'）不占 index。
+ *    tool/result 按 source.callId 匹配其 tool-call；未匹配的 result 独立成条，防御）。
+ * 插件自产消息（<history>、运行时快照等 source.kind === 'plugin'）不占 index。
  * index 从 0 起、按日志顺序递增、只追加不重排 → 会话内全局稳定，
  * 压缩后旧摘要条目引用的 index 仍然有效。
  */
@@ -74,6 +74,8 @@ export function indexMessages(session: Session): MessageIndex {
 /**
  * 完整消息索引：按日志顺序把消息事件折叠为完整消息序列（三类，见文件头）。
  * 工具调用结果按 source.callId 匹配其 tool-call 并入该条；未匹配的 result 独立成条（防御）。
+ * 插件在 agent/pre-step 触发压缩（日志 call-result 完备），因此压缩时不存在未闭合的
+ * tool-call；索引对未闭合调用不设特殊处理。
  */
 export function indexCompleteMessages(session: Session): CompleteMessage[] {
   /** 完整消息序列（index = 数组下标，0 起）。 */
@@ -87,7 +89,7 @@ export function indexCompleteMessages(session: Session): CompleteMessage[] {
     const event = events[seq];
     if (!event) continue;
     if (event.type === 'user/message') {
-      // 插件自产消息（<om-history>、运行时快照等）不占位
+      // 插件自产消息（<history>、运行时快照等）不占位
       /** 事件 source（插件消息标记）。 */
       const source = event.data.source as { kind?: string } | undefined;
       if (source?.kind === 'plugin') continue;

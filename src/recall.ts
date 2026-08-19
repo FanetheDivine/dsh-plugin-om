@@ -1,7 +1,7 @@
 /**
  * recall 工具：按「完整消息」序号（index）回看原始会话（start/end 为完整消息 index，
- * offset 为相对 start 的完整消息步数）。完整消息分三类（用户消息 / AI 文本 / 单个工具
- * 调用及其结果），各占一个 index（从 0 起、会话内全局稳定），与摘要日志条目同一套编号。
+ * offset 为相对 start 的完整消息步数）。完整消息即 `用户消息`，`模型输出文本`和`具有result的
+ * toolcall`；首条完整消息的 index 为 0，后续递增、会话内全局稳定，与摘要日志条目同一套编号。
  * recall 自身不设输出上限：超大的工具结果由 tool-result-pruner 裁剪（pruneContent），
  * 输出 token 由 pruner 配置控制。
  *
@@ -57,7 +57,7 @@ export function buildRecallTool(getPruner?: () => unknown): ToolDefinition {
   return {
     name: 'recall',
     description:
-      '根据完整消息序号（index），回看指定区间的过往消息。完整消息是定位单位，分三类：用户消息、AI 文本、单个工具调用及其结果（每个 tool-call 与其 result 一条），各占一个 index（从 0 起、会话内全局稳定）。start 必须传入，是区间的基准；end 和 offset 二选一：end 指定另一个边界（含两端，与 start 的位置关系不影响结果），offset 指定区间包含的完整消息数量（正数向后、负数向前）。',
+      '根据完整消息序号（index），回看指定区间的过往消息。`用户消息`，`模型输出文本`和`具有result的toolcall`被视作`完整消息`。首条`完整消息`的index是0，后续的index递增。start 必须传入，是区间的基准；end 和 offset 二选一：end 指定另一个边界（含两端，与 start 的位置关系不影响结果），offset 指定区间包含的完整消息数量（正数向后、负数向前）。',
     parameters: {
       start: {
         type: 'number',

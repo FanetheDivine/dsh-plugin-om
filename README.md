@@ -75,13 +75,18 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 1. 在未压缩的消息到达观察阈值后，进行摘要
 2. 将新生成摘要追加到已有摘要后（每条压缩日志是独立的消息/块，旧块原地保留）
-3. 如果摘要总长到达反思阈值，对其本身进行摘要（把全部 <om-history> 块合并为一条）
+3. 如果摘要总长到达反思阈值，对其本身进行摘要（把全部 <history> 块拼接合并为一条）
 4. 提供recall/recall-semantic两个tool进行检索
+
+观察与反思共用同一套系统提示词（buildHistoryPrompt）：输入与输出都是合法的 <history> 块（模型消息 + index 的表达形式），先定义块、要求压缩、再给出数据源（下方 <history> 消息记录）。
 
 ### 压缩日志块结构
 
-- 观察压缩只精确替换被压缩的新消息区间：旧 <om-history> 块保留为独立消息，新观察日志作为新块追加在其后（多块并存按序排列），历史不会随压缩次数膨胀；反思合并时才把多个块合并为一条更紧凑的摘要
-- 块开标签带 `tip` 属性（对 AI 的提醒："当前块是历史消息的压缩产物，不要复述"）；块顶为构成逻辑注释（完整消息三类与 index 定义），消息正文不再附加前缀句
+- 观察压缩只精确替换被压缩的新消息区间：旧 <history> 块保留为独立消息，新观察日志作为新块追加在其后（多块并存按序排列），历史不会随压缩次数膨胀；反思合并时才把多个块合并为一条更紧凑的摘要
+- 压缩边界：消息列表中最后一个合法的 <history> 块（source 为插件）之后的消息视为未压缩；其前（含自身）视为已压缩，不重复压缩、不计入观察阈值
+- 观察输入经 `@xmldom/xmldom` 构建为合法 <history> 块（用户消息文本/assistant 文本/reasoning 特殊字符自动转义，图片/文件以注释补充；assistant 文本与 toolcall&result 原样）
+- 输出经 `@xmldom/xmldom` 解析校验：结构合法（标签匹配/闭合/单块）、不含 <reasoning>、index/start/end 连续（与预期覆盖区间一致），失败按 `compressRetryCount` 重试
+- 块开标签带 `tip` 属性（对 AI 的提醒："当前块是历史消息的压缩产物，不要复述"）；块顶为构成逻辑注释（完整消息定义串 + 条目标签语义），消息正文不再附加前缀句
 
 ### 注意
 
@@ -91,6 +96,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 ### 依赖策略
 
 - dsh宿主提供的依赖，直接复用即可，如 cordis / dsh-tools / zod 等
+- `@xmldom/xmldom` 用于 <history> 块的 XML 构建（输入转义）与解析校验（输出结构合法性），经 tsdown `deps.alwaysBundle` 打包进 dist 产物
 - 向量模型模型二进制：量化 ONNX 约 113MB，启用语义召回时下载，位置`$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>/onnx/model_quantized.onnx`。下载失败可以设置`HF_ENDPOINT=https://hf-mirror.com`
 
 ## 插件配置项
@@ -98,9 +104,10 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 | 键                      | 默认     | 含义                                                                                                                                                                         |
 | ----------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `thresholdRatio`        | `0.1`    | 观察阈值：未压缩消息 ≥ 窗口 × 该比例触发压缩                                                                                                                                 |
-| `historyMergeRatio`     | `0.2`    | 反思阈值：全部 <om-history> 块总长 ≥ 窗口 × 该比例触发精简合并                                                                                                                                   |
+| `historyMergeRatio`     | `0.2`    | 反思阈值：全部 <history> 块总长 ≥ 窗口 × 该比例触发精简合并                                                                                                                                   |
 | `compressMaxTokens`     | `10000`  | 单次摘要（观察/反思调用）生成上限                                                                                                                                            |
 | `tailMessageCount`      | `10`     | 尾部保留的不压缩消息条数（不压缩、不被替换、不进摘要日志）                                                                                                                   |
+| `compressRetryCount`    | `10`     | 摘要调用失败后的最大重试次数（不含首次；总尝试次数 = 该值 + 1）                                                                                                              |
 | `modelDir`              | 共享目录 | recall-semantic 嵌入模型目录（默认 `$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>`，跨插件版本共享；小文件随包分发并在缺失时自动补齐，onnx 缺失且启用语义召回时运行时自动下载到该目录；可指向自定义目录） |
 | `omEnabled`            | `true`   | 是否启用 OM 自动压缩（观察/反思）；`false` 时关闭自动压缩，recall/recall-semantic 不受影响。`omEnabled` 替代原 `summaryMode`（见[摘要方式](#摘要方式)）                    |
 | `debug`                 | dev      | 压缩流程步骤级（debug）日志开关：`true` 强制开启、`false` 强制关闭；缺省按 `NODE_ENV !== 'production'` 判定（dev/test 输出，生产隐藏）。**失败日志不受此开关影响，始终输出** |
@@ -144,24 +151,24 @@ src/
 │   │                └─▶ model-download.ts          # 模型下载原语（URL/跳过判定/原子落盘；dev CLI 复用）
 │   └─ ④ 事件接线（仅主会话生效）
 │        └─ ctx.on('agent/pre-step') → compress.ts  # maybeCompress：两级压缩阻塞串行（先反思后观察；turn 中间即可触发）
-│              ├─ reflectPass → summarize.ts        # 全部 <om-history> 块总长 ≥ 窗口 × historyMergeRatio：摘要调用合并整个块区段
-│              ├─ observePass  → summarize.ts       # 未压缩消息 ≥ 窗口 × thresholdRatio：摘要调用观察日志 → 追加 + 替换
+│              ├─ reflectPass → summarize.ts        # 全部 <history> 块总长 ≥ 窗口 × historyMergeRatio：多块拼接 + 共享提示词合并整个块区段
+│              ├─ observePass  → summarize.ts       # 未压缩消息 ≥ 窗口 × thresholdRatio：渲染 <history> 输入 → 观察日志 → 追加 + 替换
 │              └─ 提交          → compress.ts        # compaction/start → summary → 替换消息(checkpoint) → end；usage 归入主会话
-├── constants.ts              # 共享常量（PLUGIN_LABEL / HISTORY_TAG / COMPACT_CHECKPOINT_PLUGIN）
+├── constants.ts              # 共享常量（PLUGIN_LABEL / HISTORY_TAG / HISTORY_TIP / COMPLETE_MESSAGE_DEFINITION / COMPACT_CHECKPOINT_PLUGIN）
 ├── types.ts                  # type-only：宿主类型再导出 + 领域类型（MessageNode / MessageIndex）
 ├── config.ts                 # 配置默认值 / 宽松合并（缺省、null、空串回退默认值；未知键忽略、非法值回退默认；数值键/布尔键/omEnabled/modelDir）
 ├── utils.ts                  # 零依赖工具函数（配置校验 / 文本渲染 / 主会话判定 / 路由解析）
-├── log-index.ts              # 完整消息索引（index 定位 user/assistant/toolcall 三类完整消息；recall 与摘要共用）
+├── log-index.ts              # 完整消息索引（index 定位 user/assistant/具有result的toolcall；未闭合 tool-call 不占位；recall 与摘要共用）
 ├── embedding.ts              # 本地 ONNX 嵌入（@huggingface/transformers + 本地模型；共享目录解析 / 小文件补齐 / 运行时按需下载编排 / 懒加载 / 批量 / cosine）
 ├── model-download.ts          # 模型下载原语（modelSourceUrl / needsDownload / 原子落盘 / 开始结束日志与失败镜像建议；运行时与 dev CLI 共用）
-├── summarize.ts              # 观察/反思 persona + 提示词 + 直连 ctx.llm.stream() 摘要（new 方式：指令作 system、输入为渲染消息；extractSummaryLog 提取校验；流式 usage 归入主会话）
+├── summarize.ts              # 共享提示词 buildHistoryPrompt（观察/反思同一套）+ renderMessages（@xmldom/xmldom 构建 <history> 块输入，自动转义）+ 直连 ctx.llm.stream() 摘要（new 方式：指令作 system、输入为渲染消息；extractSummaryLog 提取校验：XML 结构合法 / 无 reasoning / index 连续 / 覆盖区间；重试与流式 usage 归入主会话）
 ├── recall.ts                 # recall 工具
 ├── semantic-recall.ts        # recall-semantic 工具（query 语义检索 + 区间限定 + 回退全量 + 匹配说明）
 └── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / source 标记判定摘要消息 / compaction/* 生命周期事件 + checkpoint 替换）
 models/
 └── paraphrase-multilingual-MiniLM-L12-v2/   # 嵌入模型目录（小文件随包分发；onnx 二进制不随包分发、由运行时按需下载到跨版本共享目录，不进 git）
 scripts/                      # release-archive.mjs（CHANGELOG 归档）/ download-model.mjs（开发手动预下载 CLI）
-tests/                        # vitest 单元测试（144 例）
+tests/                        # vitest 单元测试（151 例）
 .dsh/skills/                  # 项目级 skill（feature-defect-workflow：需求/缺陷完成工作流）
 ```
 
