@@ -30,6 +30,7 @@ import { indexCompleteMessages } from './log-index.ts';
 import { makeLogger } from './logger.ts';
 import {
   buildHistoryPrompt,
+  legitimateSystemReminderBlocks,
   parseHistoryEntries,
   renderMessages,
   runSummarySubagent,
@@ -44,7 +45,7 @@ import type {
   TokenUsage,
   UserMessage,
 } from './types.ts';
-import { blocksToText, type RoutedTarget, routedTarget, uuid } from './utils.ts';
+import { blocksToText, isRecord, type RoutedTarget, routedTarget, uuid } from './utils.ts';
 
 /** 历史文本 token 估算：4 字符 ≈ 1 token（与宿主 dsh-token-meter 启发式一致）。 */
 export function estimateTextTokens(text: string): number {
@@ -95,8 +96,26 @@ function historyTextOf(event: SessionEvent | undefined): string | undefined {
 export type TokenEstimator = { estimateMessage(message: unknown): number };
 
 /**
+ * 消息文本中合法 <system-reminder> 块的 token 估算（4 字符 ≈ 1 token，与 estimateTextTokens
+ * 一致）：宿主注入的提醒不计入未压缩消息，避免推高观察阈值触发压缩。
+ */
+function systemReminderTokens(message: unknown): number {
+  /** 消息内容块（非记录或非数组则无文本可计）。 */
+  const content = isRecord(message) && Array.isArray(message.content) ? message.content : null;
+  if (!content) return 0;
+  /** token 合计。 */
+  let total = 0;
+  for (const block of content) {
+    if (!isRecord(block) || block.type !== 'text' || typeof block.text !== 'string') continue;
+    for (const sr of legitimateSystemReminderBlocks(block.text)) total += estimateTextTokens(sr);
+  }
+  return total;
+}
+
+/**
  * 未压缩消息 token 估算：最后一个 <history> 块之后的表层节点合计
  * （其前含自身视为已压缩，不计入观察阈值衡量对象；无压缩日志时计全部）。
+ * 用户消息中合法 <system-reminder> 块（宿主注入的提醒）的 token 扣除，不计入阈值。
  */
 export function measureUncompressedTokens(session: Session, meter: TokenEstimator): number {
   /** 压缩边界（最后一个 history 块的 seq；无则 undefined）。 */
@@ -113,7 +132,13 @@ export function measureUncompressedTokens(session: Session, meter: TokenEstimato
     /** 事件对应的消息（用于 token 估算）。 */
     const event = session.events[seq];
     const message = event ? session.deriveEventMessage(event) : null;
-    total += message ? meter.estimateMessage(message) : 0;
+    if (!message) continue;
+    /** 消息 token 估算（用户消息扣除其中合法 system-reminder 块，宿主提醒不计入未压缩消息）。 */
+    const tokens =
+      event?.type === 'user/message'
+        ? Math.max(0, meter.estimateMessage(message) - systemReminderTokens(message))
+        : meter.estimateMessage(message);
+    total += tokens;
   }
   return total;
 }
