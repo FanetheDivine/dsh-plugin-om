@@ -45,6 +45,7 @@ import {
   extractSummaryLog,
   HISTORY_FORMAT_NOTE,
   historyContinuity,
+  legitimateSystemReminderBlocks,
   parseHistoryEntries,
   renderMessages,
 } from '../src/summarize.ts';
@@ -532,6 +533,81 @@ describe('未压缩消息测量 measureUncompressedTokens', () => {
 
   it('空表层为 0', () => {
     expect(measureUncompressedTokens(makeSession(), makeMeter())).toBe(0);
+  });
+
+  it('用户消息中合法 <system-reminder> 块的 token 不计入未压缩消息', () => {
+    const reminder = '<system-reminder>\nworkspace instructions\n</system-reminder>';
+    const base = '任务开始';
+    const withReminder = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({ content: [textBlock(`${base}${reminder}`)], id: 'u-sr' }),
+        } as unknown as SessionEvent,
+      ],
+    });
+    const without = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({ content: [textBlock(base)], id: 'u-plain' }),
+        } as unknown as SessionEvent,
+      ],
+    });
+    const meter = makeMeter();
+    // 含合法 reminder 的消息与不含 reminder 的消息测量一致（reminder token 已扣除）
+    expect(measureUncompressedTokens(withReminder, meter)).toBe(
+      measureUncompressedTokens(without, meter),
+    );
+  });
+
+  it('整条消息仅为合法 reminder 时不计入（测量为 0）', () => {
+    const session = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('<system-reminder>\nnotice\n</system-reminder>')],
+            id: 'u-sr-only',
+          }),
+        } as unknown as SessionEvent,
+      ],
+    });
+    expect(measureUncompressedTokens(session, makeMeter())).toBe(0);
+  });
+
+  it('非法的 system-reminder 文本（内部标签不匹配）仍计入未压缩消息', () => {
+    const session = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('<system-reminder><inner></system-reminder>')],
+            id: 'u-sr-invalid',
+          }),
+        } as unknown as SessionEvent,
+      ],
+    });
+    const meter = makeMeter();
+    expect(measureUncompressedTokens(session, meter)).toBe(
+      estimateTextTokens('<system-reminder><inner></system-reminder>'),
+    );
+  });
+
+  it('用户消息中合法块内的裸 & 等宽容字符仍计入合法块并被扣除（xmldom 宽容解析）', () => {
+    const session = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('<system-reminder>a & b</system-reminder>')],
+            id: 'u-sr-lenient',
+          }),
+        } as unknown as SessionEvent,
+      ],
+    });
+    const meter = makeMeter();
+    expect(measureUncompressedTokens(session, meter)).toBe(0);
   });
 });
 
@@ -1935,6 +2011,88 @@ describe('消息渲染 renderMessages', () => {
     expect(text).toContain('<user_message index="1">');
     expect(text).toContain('再见');
     expect(text).not.toContain('区间外'); // 不在遮蔽集合内
+  });
+
+  it('用户消息中的合法 <system-reminder> 块整块原样保留（标签不转义），块外文本照常转义', () => {
+    const reminder = [
+      '<system-reminder>',
+      'The following workspace instructions may be relevant.',
+      'Instructions from: AGENTS.md',
+      '</system-reminder>',
+    ].join('\n');
+    const session = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({ content: [textBlock(`我的问题\n${reminder}\n请继续`)], id: 'u-sr' }),
+        } as unknown as SessionEvent,
+      ],
+    });
+    const text = renderMessages(session, [0]);
+    // 合法块：标签与内容均不转义，整块原样
+    expect(text).toContain('<system-reminder>');
+    expect(text).toContain('The following workspace instructions may be relevant.');
+    expect(text).toContain('Instructions from: AGENTS.md');
+    expect(text).toContain('</system-reminder>');
+    expect(text).not.toContain('&lt;system-reminder&gt;');
+    // 块外文本原样保留
+    expect(text).toContain('我的问题');
+    expect(text).toContain('请继续');
+  });
+
+  it('用户消息中非法 system-reminder 文本（缺闭标签 / 内容非法 XML）照常转义', () => {
+    // 缺闭标签：不是完整块 → 整体转义
+    const noClose = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('<system-reminder>no closing')],
+            id: 'u-sr1',
+          }),
+        } as unknown as SessionEvent,
+      ],
+    });
+    expect(renderMessages(noClose, [0])).toContain('&lt;system-reminder&gt;no closing');
+    // 内容非法 XML（内部标签不匹配，xmldom 抛错）：完整标签对但不合法 → 整体转义
+    const invalidContent = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('<system-reminder><inner></system-reminder>')],
+            id: 'u-sr2',
+          }),
+        } as unknown as SessionEvent,
+      ],
+    });
+    expect(renderMessages(invalidContent, [0])).toContain(
+      '&lt;system-reminder&gt;&lt;inner&gt;&lt;/system-reminder&gt;',
+    );
+  });
+});
+
+describe('合法 system-reminder 块提取 legitimateSystemReminderBlocks', () => {
+  it('完整开闭标签对且内容可被 XML 解析才算合法块', () => {
+    expect(legitimateSystemReminderBlocks('<system-reminder>\nhi\n</system-reminder>')).toEqual([
+      '<system-reminder>\nhi\n</system-reminder>',
+    ]);
+    // 裸 & 等宽容字符：xmldom 能解析 → 仍算合法块
+    expect(legitimateSystemReminderBlocks('<system-reminder>a & b</system-reminder>')).toEqual([
+      '<system-reminder>a & b</system-reminder>',
+    ]);
+    // 内部标签不匹配（xmldom 抛错）→ 不合法
+    expect(legitimateSystemReminderBlocks('<system-reminder><inner></system-reminder>')).toEqual(
+      [],
+    );
+    expect(legitimateSystemReminderBlocks('<system-reminder>no close')).toEqual([]);
+    expect(legitimateSystemReminderBlocks('plain text')).toEqual([]);
+    // 多个块依次提取
+    expect(
+      legitimateSystemReminderBlocks(
+        '<system-reminder>a</system-reminder> x <system-reminder>b</system-reminder>',
+      ),
+    ).toEqual(['<system-reminder>a</system-reminder>', '<system-reminder>b</system-reminder>']);
   });
 });
 

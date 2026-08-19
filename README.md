@@ -84,12 +84,13 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 - 观察压缩只精确替换被压缩的新消息区间：旧 <history> 块保留为独立消息，新观察日志作为新块追加在其后（多块并存按序排列），历史不会随压缩次数膨胀；反思合并时才把多个块合并为一条更紧凑的摘要
 - 压缩边界：消息列表中最后一个合法的 <history> 块（source 为插件，plugin 为插件标识 `dsh-plugin-om`；兼容旧日志的宿主 checkpoint 标记 `compact`）之后的消息视为未压缩；其前（含自身）视为已压缩，不重复压缩、不计入观察阈值
-- 观察输入经 `@xmldom/xmldom` 构建为合法 <history> 块（用户消息文本/assistant 文本/reasoning 特殊字符自动转义，图片/文件以注释补充；assistant 文本与 toolcall&result 原样）
+- 观察输入经 `@xmldom/xmldom` 构建为合法 <history> 块（用户消息文本/assistant 文本/reasoning 特殊字符自动转义，图片/文件以注释补充；assistant 文本与 toolcall&result 原样；用户消息中合法的 <system-reminder> 块——完整开闭标签对且内容可被 XML 解析——整块原样保留、不转义，非法片段照常转义）
 - 输出经 `@xmldom/xmldom` 解析校验：结构合法（标签匹配/闭合/单块）、不含 <reasoning>、index/start/end 连续（与预期覆盖区间一致），失败按 `compressRetryCount` 重试
 - 块开标签带 `tip` 属性（对 AI 的提醒："当前块是历史消息的压缩产物，不要复述"）；块顶为构成逻辑注释（完整消息定义串 + 条目标签语义），消息正文不再附加前缀句
 
 ### 注意
 
+- 未压缩消息的 token 统计排除用户消息中合法 <system-reminder> 块（宿主注入的工作区/会话提醒不计入观察阈值的触发量）
 - recall 不截断，建议保留 `tool-result-pruner`
 - recall-semantic 使用本地多语言嵌入模型（paraphrase-multilingual-MiniLM-L12-v2），
 
