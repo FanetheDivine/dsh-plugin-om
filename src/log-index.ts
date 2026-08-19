@@ -5,8 +5,8 @@
  * 完整消息是摘要日志与 recall 共用的定位单位，分三类：
  *  - user：用户消息（user/message）占一条；
  *  - assistant：模型输出文本（assistant/message 中的文本块）占一条；
- *  - toolcall：具有 result 的工具调用占一条（同一条 AI 消息里的文本与工具调用拆开，
- *    tool/result 按 source.callId 匹配其 tool-call；未闭合/无 result 的 tool-call 不占位）。
+ *  - toolcall：单个工具调用及其结果占一条（同一条 AI 消息里的文本与工具调用拆开，
+ *    tool/result 按 source.callId 匹配其 tool-call；未匹配的 result 独立成条，防御）。
  * 插件自产消息（<history>、运行时快照等 source.kind === 'plugin'）不占 index。
  * index 从 0 起、按日志顺序递增、只追加不重排 → 会话内全局稳定，
  * 压缩后旧摘要条目引用的 index 仍然有效。
@@ -74,12 +74,14 @@ export function indexMessages(session: Session): MessageIndex {
 /**
  * 完整消息索引：按日志顺序把消息事件折叠为完整消息序列（三类，见文件头）。
  * 工具调用结果按 source.callId 匹配其 tool-call 并入该条；未匹配的 result 独立成条（防御）。
+ * 插件在 agent/pre-step 触发压缩（日志 call-result 完备），因此压缩时不存在未闭合的
+ * tool-call；索引对未闭合调用不设特殊处理。
  */
 export function indexCompleteMessages(session: Session): CompleteMessage[] {
   /** 完整消息序列（index = 数组下标，0 起）。 */
   const cms: CompleteMessage[] = [];
-  /** 等待结果的 tool-call（callId → 承载调用的 assistant 消息 seq）。 */
-  const pending = new Map<string, number>();
+  /** 等待结果的 toolcall 完整消息（callId → cm）。 */
+  const pending = new Map<string, CompleteMessage>();
   /** 会话全部事件（仅追加）。 */
   const events = session.events;
   for (let seq = 0; seq < events.length; seq += 1) {
@@ -93,10 +95,10 @@ export function indexCompleteMessages(session: Session): CompleteMessage[] {
       if (source?.kind === 'plugin') continue;
       cms.push({ index: cms.length, type: 'user', seqs: [seq] });
     } else if (event.type === 'assistant/message') {
-      /** 助手消息（含文本 / reasoning / tool-call 块）。 */
+      /** 助手消息（含文本与 tool-call 块）。 */
       const message = event.data.message;
       if (!message || !Array.isArray(message.content)) continue;
-      // 文本与工具调用拆开：文本占一条；tool-call 仅登记待匹配（结果到达时并入为完整消息）
+      // 文本与工具调用拆开：文本占一条，每个 tool-call（及其结果）各占一条
       /** 是否存在文本块（有则先产出 assistant 条）。 */
       let hasText = false;
       for (const block of message.content) {
@@ -110,22 +112,25 @@ export function indexCompleteMessages(session: Session): CompleteMessage[] {
         if (block.type !== 'tool-call') continue;
         /** 工具调用 id（匹配 result 用）。 */
         const callId = String(block.id ?? '');
-        if (callId !== '') pending.set(callId, seq);
+        /** 本调用对应的完整消息（结果随后并入）。 */
+        const cm: CompleteMessage = {
+          index: cms.length,
+          type: 'toolcall',
+          seqs: [seq],
+          ...(callId === '' ? {} : { callId }),
+        };
+        cms.push(cm);
+        if (callId !== '') pending.set(callId, cm);
       }
     } else if (event.type === 'tool/result') {
       /** 结果消息的 source（callId 关联调用）。 */
       const source = event.data.message?.source as { callId?: unknown } | undefined;
       /** 关联的调用 id。 */
       const callId = String(source?.callId ?? '');
-      /** 匹配到的调用所在 assistant seq（无则 result 独立成条，防御）。 */
-      const callSeq = callId === '' ? undefined : pending.get(callId);
-      if (callSeq !== undefined) {
-        cms.push({
-          index: cms.length,
-          type: 'toolcall',
-          seqs: [callSeq, seq],
-          ...(callId === '' ? {} : { callId }),
-        });
+      /** 匹配到的 toolcall 完整消息（无则独立成条）。 */
+      const cm = callId === '' ? undefined : pending.get(callId);
+      if (cm) {
+        cm.seqs.push(seq);
         pending.delete(callId);
       } else {
         cms.push({
@@ -137,7 +142,6 @@ export function indexCompleteMessages(session: Session): CompleteMessage[] {
       }
     }
   }
-  // 未闭合（无 result）的 tool-call 不占位——与「具有result的toolcall」定义一致
   return cms;
 }
 

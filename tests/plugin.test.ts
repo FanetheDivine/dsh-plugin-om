@@ -408,32 +408,6 @@ describe('完整消息索引 indexCompleteMessages', () => {
     expect(cms[0]?.seqs).toEqual([0]);
   });
 
-  it('未闭合（无 result）的 tool-call 不占位（与「具有result的toolcall」定义一致）', () => {
-    const events = [
-      {
-        type: 'user/message',
-        data: makeMessage({ content: [textBlock('hi')], id: 'u' }),
-      },
-      {
-        type: 'assistant/message',
-        data: {
-          message: makeMessage({
-            role: 'assistant',
-            content: [textBlock('好的'), toolCallBlock('c-open', 'run_code', {})],
-            source: { kind: 'model', provider: 'p', model: 'm' },
-            id: 'a-open',
-          }),
-        },
-      },
-    ] as unknown as SessionEvent[];
-    const cms = indexCompleteMessages(makeSession({ events }));
-    // 只有 user 与 assistant 文本两条完整消息；未闭合的 tool-call 不占位
-    expect(cms.map((c) => [c.index, c.type])).toEqual([
-      [0, 'user'],
-      [1, 'assistant'],
-    ]);
-  });
-
   it('同一 assistant 消息含文本 + 多个 tool-call：文本 1 条 + 每调用 1 条', () => {
     const events = [
       {
@@ -839,8 +813,9 @@ describe('共享提示词 buildHistoryPrompt（观察/反思同一套）', () =>
 });
 
 describe('history 条目解析与连续性 parseHistoryEntries / historyContinuity', () => {
-  it('解析 user_message/assistant index 与 assistant start..end', () => {
+  it('解析 user_message/assistant index 与 assistant start..end（合法 <history> 块内）', () => {
     const text = [
+      '<history>',
       '<user_message index="0">',
       'x',
       '</user_message>',
@@ -850,6 +825,7 @@ describe('history 条目解析与连续性 parseHistoryEntries / historyContinui
       '<assistant index="3">',
       'y',
       '</assistant>',
+      '</history>',
     ].join('\n');
     expect(parseHistoryEntries(text)).toEqual([
       { kind: 'user', index: 0 },
@@ -921,19 +897,31 @@ describe('摘要日志提取 extractSummaryLog', () => {
     expect(out).not.toContain('尾部多余文字');
   });
 
-  it('多块输出：跨首个 <history> 到最后一个 </history> 整体截取（首个开标签带 tip）', () => {
+  it('多块输出视为不合法（输出必须是单个合法 <history> 块，XML 解析拒绝多根）', () => {
     const raw = [
       block('<user_message index="0">\nA\n</user_message>'),
       block('<user_message index="1">\nB\n</user_message>'),
     ].join('\n');
-    const out = extractSummaryLog(raw);
-    expect(out).not.toBeNull();
-    expect(out).toContain('A');
-    expect(out).toContain('B');
-    // 两个开标签：首个带 tip，第二个保持模型输出格式
-    expect((out?.match(new RegExp(`<${HISTORY_TAG}[^>]*>`, 'g')) ?? []).length).toBe(2);
-    expect(out).toContain(`<${HISTORY_TAG} tip="${HISTORY_TIP}">`);
-    expect(out).toContain(`\n<${HISTORY_TAG}>\n<user_message index="1">`);
+    expect(extractSummaryLog(raw)).toBeNull();
+  });
+
+  it('结构非法 XML（标签不匹配 / 未闭合 / 未知元素 / 裸 <）视为不合法', () => {
+    // 标签不匹配
+    expect(
+      extractSummaryLog('<history><user_message index="0">A</assistant></history>'),
+    ).toBeNull();
+    // 未闭合
+    expect(extractSummaryLog('<history><user_message index="0">A</user_message>')).toBeNull();
+    // 未知顶层元素类型
+    expect(
+      extractSummaryLog(
+        '<history><user_message index="0">A</user_message><unknown>x</unknown></history>',
+      ),
+    ).toBeNull();
+    // 文本中的裸 < / & 由解析器宽容处理（视为文本，不破坏结构）——输入侧由 XML 序列化转义兜底
+    expect(
+      extractSummaryLog('<history><user_message index="0">a < b & c</user_message></history>'),
+    ).not.toBeNull();
   });
 
   it('找不到标签 / 顺序颠倒返回 null', () => {
@@ -1914,8 +1902,8 @@ describe('消息渲染 renderMessages', () => {
     expect(text).toContain('看图说话');
     expect(text).toContain('<!-- 图片附件：图.png（image/png 800×600，1024 bytes） -->');
     expect(text).toContain('<!-- file 块 -->');
-    // reasoning 参考条目（产物中没有，但输入保留）；assistant 文本原样
-    expect(text).toContain('<reasoning>\n先看图再回答\n</reasoning>');
+    // reasoning 参考条目（产物中没有，但输入保留；DOM 序列化紧凑、文本自动转义）；assistant 文本原样
+    expect(text).toContain('<reasoning>先看图再回答</reasoning>');
     expect(text).toContain('<assistant index="1">');
     expect(text).toContain('这是答案');
     // reasoning 不是完整消息：不占 index（assistant 文本仍为 index 1）
