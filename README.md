@@ -84,8 +84,8 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 - 观察压缩只精确替换被压缩的新消息区间：旧 <history> 块保留为独立消息，新观察日志作为新块追加在其后（多块并存按序排列），历史不会随压缩次数膨胀；反思合并时才把多个块合并为一条更紧凑的摘要
 - 压缩边界：消息列表中最后一个合法的 <history> 块（source 为插件）之后的消息视为未压缩；其前（含自身）视为已压缩，不重复压缩、不计入观察阈值
-- 观察输入渲染为 <history> 块：用户消息文本原样（图片/文件以注释补充）；<reasoning> 仅作压缩参考（产物中没有）；assistant 文本与 toolcall&result 原样
-- 输出经连续性校验：合法 <history> 块、不含 <reasoning>、index/start/end 连续（与预期覆盖区间一致），失败按 `compressRetryCount` 重试
+- 观察输入经 `@xmldom/xmldom` 构建为合法 <history> 块（用户消息文本/assistant 文本/reasoning 特殊字符自动转义，图片/文件以注释补充；assistant 文本与 toolcall&result 原样）
+- 输出经 `@xmldom/xmldom` 解析校验：结构合法（标签匹配/闭合/单块）、不含 <reasoning>、index/start/end 连续（与预期覆盖区间一致），失败按 `compressRetryCount` 重试
 - 块开标签带 `tip` 属性（对 AI 的提醒："当前块是历史消息的压缩产物，不要复述"）；块顶为构成逻辑注释（完整消息定义串 + 条目标签语义），消息正文不再附加前缀句
 
 ### 注意
@@ -96,6 +96,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 ### 依赖策略
 
 - dsh宿主提供的依赖，直接复用即可，如 cordis / dsh-tools / zod 等
+- `@xmldom/xmldom` 用于 <history> 块的 XML 构建（输入转义）与解析校验（输出结构合法性），经 tsdown `deps.alwaysBundle` 打包进 dist 产物
 - 向量模型模型二进制：量化 ONNX 约 113MB，启用语义召回时下载，位置`$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>/onnx/model_quantized.onnx`。下载失败可以设置`HF_ENDPOINT=https://hf-mirror.com`
 
 ## 插件配置项
@@ -160,7 +161,7 @@ src/
 ├── log-index.ts              # 完整消息索引（index 定位 user/assistant/具有result的toolcall；未闭合 tool-call 不占位；recall 与摘要共用）
 ├── embedding.ts              # 本地 ONNX 嵌入（@huggingface/transformers + 本地模型；共享目录解析 / 小文件补齐 / 运行时按需下载编排 / 懒加载 / 批量 / cosine）
 ├── model-download.ts          # 模型下载原语（modelSourceUrl / needsDownload / 原子落盘 / 开始结束日志与失败镜像建议；运行时与 dev CLI 共用）
-├── summarize.ts              # 共享提示词 buildHistoryPrompt（观察/反思同一套）+ renderMessages（<history> 块输入）+ 直连 ctx.llm.stream() 摘要（new 方式：指令作 system、输入为渲染消息；extractSummaryLog 提取校验：无 reasoning / index 连续 / 覆盖区间；重试与流式 usage 归入主会话）
+├── summarize.ts              # 共享提示词 buildHistoryPrompt（观察/反思同一套）+ renderMessages（@xmldom/xmldom 构建 <history> 块输入，自动转义）+ 直连 ctx.llm.stream() 摘要（new 方式：指令作 system、输入为渲染消息；extractSummaryLog 提取校验：XML 结构合法 / 无 reasoning / index 连续 / 覆盖区间；重试与流式 usage 归入主会话）
 ├── recall.ts                 # recall 工具
 ├── semantic-recall.ts        # recall-semantic 工具（query 语义检索 + 区间限定 + 回退全量 + 匹配说明）
 └── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / source 标记判定摘要消息 / compaction/* 生命周期事件 + checkpoint 替换）
