@@ -15,7 +15,7 @@
  * 压缩结果写入宿主 compaction/* 生命周期事件（compaction/start → compaction/summary →
  * 替换 <history> 消息 → compaction/end），使消息记录（聊天视图压缩卡片）与轨迹视图
  * 可见；compaction/summary 同时承担影子价格认领（shadowedTokenCount），不再单独发
- * compaction/prune。替换消息的 source 使用宿主 checkpoint 标记（plugin: 'compact' +
+ * compaction/prune。替换消息的 source 使用插件标识（plugin: 'dsh-plugin-om' +
  * compactionId），UI 据此关联 summary 与替换消息。生命周期事件在摘要成功后才写入
  * （失败不产生任何日志变更）。
  *
@@ -68,7 +68,8 @@ function reflectExpectedEnd(contextText: string): number {
 
 /**
  * 判定消息是否为本插件的压缩日志消息并提取日志文本（不通过文本含标签判断，
- * 改用 source 标记——plugin 为宿主 checkpoint 标记 'compact' 或插件标识 'dsh-plugin-om'）。
+ * 改用 source 标记——plugin 为插件标识 'dsh-plugin-om'（兼容旧日志的宿主 checkpoint
+ * 标记 'compact'）。
  * 仅当消息文本含 <history> 开标签（含带 tip 属性版本）时视为压缩日志，返回整段文本；
  * 其余消息返回 undefined（旧格式 <om-history> 块按「不兼容，干净切换」视为普通消息）。
  */
@@ -274,7 +275,7 @@ function appendCompactionEnd(
   }).seq;
 }
 
-/** 追加 <history> 压缩日志消息（surfaceOp 替换遮蔽区间，source 为宿主 checkpoint 标记）。 */
+/** 追加 <history> 压缩日志消息（surfaceOp 替换遮蔽区间，source 标记插件自产 + compactionId 关联压缩生命周期）。 */
 function appendHistoryMessage(
   session: Session,
   content: string,
@@ -283,12 +284,12 @@ function appendHistoryMessage(
   compactionId: CompactionId,
 ): void {
   /** 压缩替换消息（内容即 <history> 标签块，不再附加前缀句；对 AI 的提醒在块开标签 tip 属性上；
-   *  source 标记宿主 checkpoint 供 UI 关联）。 */
+   *  source 标记插件标识（plugin: 'dsh-plugin-om'）+ compactionId 供 UI 关联）。 */
   const message = {
     id: uuid(),
     role: 'user',
     content: [{ type: 'text', text: content }],
-    source: { kind: 'plugin', plugin: COMPACT_CHECKPOINT_PLUGIN, compactionId },
+    source: { kind: 'plugin', plugin: PLUGIN_LABEL, compactionId },
   } as unknown as UserMessage; // id 为品牌类型 MessageId，插件自产消息由 session.append 运行时校验
   session.append('user/message', message, { surfaceOp, sourceEventSeqs });
 }

@@ -97,7 +97,7 @@ function compactionLifecycle(session: Session) {
   };
 }
 
-/** 提取 <history> 替换消息的 source（checkpoint 标记断言用）。 */
+/** 提取 <history> 替换消息的 source（来源标记断言用）。 */
 function checkpointSourceOf(event: SessionEvent | undefined) {
   if (event?.type !== 'user/message') return undefined;
   return event.data.source as { kind?: string; plugin?: string; compactionId?: string } | undefined;
@@ -1098,10 +1098,10 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(summaryText).toContain(
       'toolcall index:2 purpose:跑一下 summary:产物符合预期；下一步提交',
     );
-    // 替换消息 source = 宿主 checkpoint 标记（plugin: 'compact' + compactionId）
+    // 替换消息 source = 插件标识（plugin: PLUGIN_LABEL + compactionId）
     const source = checkpointSourceOf(replaceEvent);
     expect(source?.kind).toBe('plugin');
-    expect(source?.plugin).toBe('compact');
+    expect(source?.plugin).toBe(PLUGIN_LABEL);
     expect(source?.compactionId).toBe(compactionId);
     expect(session.surface.replaceGeneration).toBeGreaterThanOrEqual(1);
   });
@@ -1664,9 +1664,9 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
       .map((block) => (block.type === 'text' ? block.text : ''))
       .join('');
     expect(summaryText).toContain('REFLECTED');
-    // 替换消息 source = 宿主 checkpoint 标记
+    // 替换消息 source = 插件标识
     const source = checkpointSourceOf(replaceEvent);
-    expect(source?.plugin).toBe('compact');
+    expect(source?.plugin).toBe(PLUGIN_LABEL);
     expect(source?.compactionId).toBe(startEvent.data.compactionId);
   });
 
