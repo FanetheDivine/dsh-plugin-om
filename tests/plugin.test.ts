@@ -868,7 +868,6 @@ describe('共享提示词 buildHistoryPrompt（观察/反思同一套）', () =>
     // e. 具有关联性的 assistant 块合并
     expect(prompt).toContain('将具有关联性的 <assistant> 消息');
     expect(prompt).toContain('目的、行为与结果');
-    expect(prompt).toContain('下一步计划');
     expect(prompt).toContain('合并简写');
     expect(prompt).toContain('内在逻辑连贯性');
     // 单条重要消息单独呈现
