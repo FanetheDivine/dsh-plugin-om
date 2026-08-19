@@ -83,7 +83,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 ### 压缩日志块结构
 
 - 观察压缩只精确替换被压缩的新消息区间：旧 <history> 块保留为独立消息，新观察日志作为新块追加在其后（多块并存按序排列），历史不会随压缩次数膨胀；反思合并时才把多个块合并为一条更紧凑的摘要
-- 压缩边界：消息列表中最后一个合法的 <history> 块（source 为插件）之后的消息视为未压缩；其前（含自身）视为已压缩，不重复压缩、不计入观察阈值
+- 压缩边界：消息列表中最后一个合法的 <history> 块（source 为插件，plugin 为插件标识 `dsh-plugin-om`；兼容旧日志的宿主 checkpoint 标记 `compact`）之后的消息视为未压缩；其前（含自身）视为已压缩，不重复压缩、不计入观察阈值
 - 观察输入经 `@xmldom/xmldom` 构建为合法 <history> 块（用户消息文本/assistant 文本/reasoning 特殊字符自动转义，图片/文件以注释补充；assistant 文本与 toolcall&result 原样）
 - 输出经 `@xmldom/xmldom` 解析校验：结构合法（标签匹配/闭合/单块）、不含 <reasoning>、index/start/end 连续（与预期覆盖区间一致），失败按 `compressRetryCount` 重试
 - 块开标签带 `tip` 属性（对 AI 的提醒："当前块是历史消息的压缩产物，不要复述"）；块顶为构成逻辑注释（完整消息定义串 + 条目标签语义），消息正文不再附加前缀句
@@ -153,7 +153,7 @@ src/
 │        └─ ctx.on('agent/pre-step') → compress.ts  # maybeCompress：两级压缩阻塞串行（先反思后观察；turn 中间即可触发）
 │              ├─ reflectPass → summarize.ts        # 全部 <history> 块总长 ≥ 窗口 × historyMergeRatio：多块拼接 + 共享提示词合并整个块区段
 │              ├─ observePass  → summarize.ts       # 未压缩消息 ≥ 窗口 × thresholdRatio：渲染 <history> 输入 → 观察日志 → 追加 + 替换
-│              └─ 提交          → compress.ts        # compaction/start → summary → 替换消息(checkpoint) → end；usage 归入主会话
+│              └─ 提交          → compress.ts        # compaction/start → summary → 替换消息(source 插件标识 + compactionId) → end；usage 归入主会话
 ├── constants.ts              # 共享常量（PLUGIN_LABEL / HISTORY_TAG / HISTORY_TIP / COMPLETE_MESSAGE_DEFINITION / COMPACT_CHECKPOINT_PLUGIN）
 ├── types.ts                  # type-only：宿主类型再导出 + 领域类型（MessageNode / MessageIndex）
 ├── config.ts                 # 配置默认值 / 宽松合并（缺省、null、空串回退默认值；未知键忽略、非法值回退默认；数值键/布尔键/omEnabled/modelDir）
@@ -164,7 +164,7 @@ src/
 ├── summarize.ts              # 共享提示词 buildHistoryPrompt（观察/反思同一套）+ renderMessages（@xmldom/xmldom 构建 <history> 块输入，自动转义）+ 直连 ctx.llm.stream() 摘要（new 方式：指令作 system、输入为渲染消息；extractSummaryLog 提取校验：XML 结构合法 / 无 reasoning / index 连续 / 覆盖区间；重试与流式 usage 归入主会话）
 ├── recall.ts                 # recall 工具
 ├── semantic-recall.ts        # recall-semantic 工具（query 语义检索 + 区间限定 + 回退全量 + 匹配说明）
-└── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / source 标记判定摘要消息 / compaction/* 生命周期事件 + checkpoint 替换）
+└── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / source 标记判定摘要消息 / compaction/* 生命周期事件 + 替换消息 source 插件标识）
 models/
 └── paraphrase-multilingual-MiniLM-L12-v2/   # 嵌入模型目录（小文件随包分发；onnx 二进制不随包分发、由运行时按需下载到跨版本共享目录，不进 git）
 scripts/                      # release-archive.mjs（CHANGELOG 归档）/ download-model.mjs（开发手动预下载 CLI）
