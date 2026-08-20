@@ -1273,7 +1273,7 @@ describe('apply 接线（OM 观察压缩）', () => {
             source: { kind: 'agent-instructions', form: 'instructions' },
             id: 'sys-instr',
           }),
-        },
+        } as unknown as SessionEvent,
         ...buildToolCallFlow({
           code: 'runMe()',
           description: '跑一下',
@@ -1321,7 +1321,7 @@ describe('apply 接线（OM 观察压缩）', () => {
             source: { kind: 'agent-instructions', form: 'instructions' },
             id: 'sys-instr',
           }),
-        },
+        } as unknown as SessionEvent,
         ...buildToolCallFlow({
           code: 'runMe()',
           description: '跑一下',
