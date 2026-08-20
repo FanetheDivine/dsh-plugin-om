@@ -5,9 +5,10 @@
  * 输入与输出都是合法的 <history> 块（模型消息 + index 的表达形式），先定义块、要求压缩、
  * 再给出数据源（下方 <history> 消息记录）。
  *
- * 观察输入由 renderMessages 渲染为 <history> 块：用户消息文本原样（其中合法
- * <system-reminder> 块整块原样保留、不转义；图片/文件以注释补充）、
- * <reasoning> 参考条目（产物中没有）、assistant 文本与 toolcall&result 原样。
+ * 观察输入由 renderMessages 渲染为 <history> 块：用户消息文本原样（图片/文件以
+ * 注释补充）、系统消息（user_message 中非 kind:user 的部分）渲染为
+ * <sys type="KIND" index="N"> 空块（内容不进入输入）、<reasoning> 参考条目
+ * （产物中没有）、assistant 文本与 toolcall&result 原样。
  * 输出经 extractSummaryLog 校验：合法 <history> 块、不含 <reasoning>、index/start/end 连续
  * （与预期覆盖区间一致），失败按 config.compressRetryCount 重试。
  * token usage 从流式响应的 usage chunk 提取，归入主会话记录。仅主会话生效（index.ts 守卫）。
@@ -40,13 +41,14 @@ export function buildHistoryPrompt(): string {
     '- <history> 是历史消息的记录块：输入与输出都是合法的 <history> 块，块内条目是「模型消息 + index」的表达形式。',
     `- 完整消息：${COMPLETE_MESSAGE_DEFINITION}`,
     '- <user_message index="N">：用户消息条目（N 为该条完整消息的 index；文本原样，图片/文件等以注释补充）。',
-    '- <system-reminder>：可能出现在 <user_message> 内的提醒块（宿主注入），视为真实元素；压缩产物中保留其块结构与内容原样（标签不转义）。',
+    '- <sys type="(kind)" index="N">：系统消息条目（user_message 中非 kind:user 的部分，如宿主注入的上下文），块中为空，内容不进入压缩输入。',
     '- <reasoning>：模型的思考过程，仅作压缩参考，产物中不要出现。',
     '- <assistant index="N">：单条完整消息（模型输出文本，或 toolcall 及其 result）。',
     '- <assistant start="A" end="B">：多条连续完整消息聚合的模块（A/B 为模块首尾完整消息的 index）。',
     '',
     '【压缩要求】',
     '- 完整保留用户消息：<user_message> 条目逐条保留原文，不概括、不省略。',
+    '- 完整保留系统消息：<sys> 条目逐条原样保留（type 与 index 不变），块中为空，不概括、不省略、不填充内容。',
     '- <reasoning> 只作参考，输出产物中不包含 <reasoning> 块。',
     '- 将具有关联性的 <assistant> 消息按内在逻辑连贯性划分为连续模块，聚合为 <assistant start="" end=""> 块：块内描述模块的目的、行为与结果；涉及的具体文件保留在模块内容中，多个前缀相同的路径合并简写。',
     '- 单条重要的完整消息以 <assistant index=""> 单独呈现，内容不受限制。',
@@ -58,6 +60,7 @@ export function buildHistoryPrompt(): string {
     '<user_message index="(index)">',
     '(user 消息原文)',
     '</user_message>',
+    '<sys type="(kind)" index="(index)"></sys>',
     '<assistant start="(起始 index)" end="(结束 index)">',
     '(模块的目的、行为与结果摘要)',
     '</assistant>',
@@ -68,93 +71,6 @@ export function buildHistoryPrompt(): string {
     '',
     '【数据源】下方的 <history> 消息记录是本次要压缩的全部消息；压缩结果作为一个新的 <history> 块输出。',
   ].join('\n');
-}
-
-/** 合法 <system-reminder> 块匹配：完整开闭标签对（非贪婪最短闭合；不匹配缺闭标签的残缺文本）。 */
-const SYSTEM_REMINDER_RE = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
-
-/**
- * 解析 system-reminder 块（合法性判定）：块可被 XML 解析且根元素为 <system-reminder> 时
- * 视为合法块并返回其根元素；否则（缺闭标签 / 内容含非法字符等）返回 null，按普通文本处理。
- */
-function parseSystemReminder(block: string): Element | null {
-  try {
-    /** 块解析结果（非法 XML 抛错）。 */
-    const doc = new DOMParser().parseFromString(block, 'text/xml');
-    /** 根元素（必须为 system-reminder）。 */
-    const root = doc.documentElement;
-    return root && root.nodeName === 'system-reminder' ? root : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * 把解析出的 system-reminder 元素按原样复制进目标文档（标签与内容均不转义）：
- * xmldom 无 importNode，手动递归复制元素 / 文本 / CDATA / 注释节点。
- */
-function copySystemReminder(doc: Document, source: Element): Element {
-  /** 目标元素（同标签名）。 */
-  const el = doc.createElement(source.nodeName);
-  for (let i = 0; i < source.attributes.length; i += 1) {
-    /** 源属性（名称 + 值原样复制）。 */
-    const attr = source.attributes[i];
-    if (attr) el.setAttribute(attr.name, attr.value);
-  }
-  for (const child of Array.from(source.childNodes)) {
-    if (child.nodeType === 1) {
-      el.appendChild(copySystemReminder(doc, child as Element));
-    } else if (child.nodeType === 3) {
-      el.appendChild(doc.createTextNode(child.nodeValue ?? ''));
-    } else if (child.nodeType === 4) {
-      el.appendChild(doc.createCDATASection(child.nodeValue ?? ''));
-    } else if (child.nodeType === 8) {
-      el.appendChild(doc.createComment(child.nodeValue ?? ''));
-    }
-  }
-  return el;
-}
-
-/**
- * 追加用户文本到 user_message 元素：合法 <system-reminder> 块整块原样插入（不转义），
- * 其余文本按普通文本 XML 转义（createTextNode）。
- */
-function appendUserText(doc: Document, el: Element, text: string): void {
-  /** 已消费的文本位置。 */
-  let last = 0;
-  for (const m of text.matchAll(SYSTEM_REMINDER_RE)) {
-    /** 匹配起点（缺省 0）。 */
-    const start = m.index ?? 0;
-    /** 块前的普通文本（转义）。 */
-    if (start > last) el.appendChild(doc.createTextNode(text.slice(last, start)));
-    /** 块原文。 */
-    const block = m[0];
-    /** 合法判定（可被 XML 解析）。 */
-    const parsed = parseSystemReminder(block);
-    if (parsed !== null) {
-      el.appendChild(copySystemReminder(doc, parsed));
-    } else {
-      // 不合法块（内容非法 XML 等）按普通文本转义
-      el.appendChild(doc.createTextNode(block));
-    }
-    /** 消费位置推进到块尾。 */
-    last = start + block.length;
-  }
-  /** 末尾剩余普通文本（转义）。 */
-  if (last < text.length) el.appendChild(doc.createTextNode(text.slice(last)));
-}
-
-/**
- * 提取文本中全部合法的 <system-reminder> 块（完整开闭标签对且内容可被 XML 解析）；
- * 供渲染（原样插入）与未压缩消息测量（不计入）共用；不合法部分按普通文本处理。
- */
-export function legitimateSystemReminderBlocks(text: string): string[] {
-  /** 合法块缓冲区。 */
-  const out: string[] = [];
-  for (const m of text.matchAll(SYSTEM_REMINDER_RE)) {
-    if (parseSystemReminder(m[0]) !== null) out.push(m[0]);
-  }
-  return out;
 }
 
 /** 渲染用户消息条目（DOM 元素）：文本块原样；图片/文件等非文本块以注释补充（说明传入了什么）。 */
@@ -172,7 +88,8 @@ function renderUserEntry(doc: Document, session: Session, cm: CompleteMessage): 
   let hasContent = false;
   for (const block of message.content) {
     if (block.type === 'text') {
-      appendUserText(doc, el, String(block.text));
+      // 用户文本按普通文本 XML 转义（createTextNode；不再特殊保留 <system-reminder> 块）
+      el.appendChild(doc.createTextNode(String(block.text)));
       hasContent = true;
     } else if (block.type === 'image') {
       /** 图片附件元数据（名称 / 媒体类型 / 尺寸 / 字节数）。 */
@@ -198,11 +115,12 @@ function renderUserEntry(doc: Document, session: Session, cm: CompleteMessage): 
 
 /**
  * 渲染完整消息记录（观察输入，new 模式）：输出一个合法的 <history> 块——
- *  - user → <user_message index="N">（文本原样，其中合法 <system-reminder> 块整块原样保留、不转义；图片/文件注释）；
+ *  - user → <user_message index="N">（文本原样；图片/文件注释）；
+ *  - sys → <sys type="KIND" index="N"></sys>（系统消息空块，内容不进入压缩输入）；
  *  - 每条 assistant 消息的 reasoning → <reasoning>（参考条目，产物中没有）；
  *  - assistant / toolcall → <assistant index="N">（模型输出文本 / toolcall&result 原样）。
  * 文本经 XML 序列化自动转义（用户输入 / 文本 / reasoning 中的特殊字符不破坏 XML 合法性）。
- * 仅渲染 seqs 全部落在给定集合内的完整消息（插件自产消息天然不占位）。
+ * 仅渲染 seqs 全部落在给定集合内的完整消息（本插件自产消息天然不占位）。
  */
 export function renderMessages(session: Session, seqs: readonly number[]): string {
   /** 遮蔽 seq 集合。 */
@@ -230,6 +148,16 @@ export function renderMessages(session: Session, seqs: readonly number[]): strin
   const entries: Element[] = [];
   for (const cm of indexCompleteMessages(session)) {
     if (!cm.seqs.every((seq) => shadowed.has(seq))) continue;
+    if (cm.type === 'sys') {
+      // 系统消息：空块（仅 type 与 index；空文本节点保证序列化为 <sys ...></sys> 开闭形式）
+      /** sys 元素（type=source.kind，index=完整消息序号）。 */
+      const sysEl = doc.createElement('sys');
+      sysEl.setAttribute('type', cm.kind ?? '');
+      sysEl.setAttribute('index', String(cm.index));
+      sysEl.appendChild(doc.createTextNode(''));
+      entries.push(sysEl);
+      continue;
+    }
     if (cm.type === 'user') {
       /** 用户消息条目（无文本且无注释则跳过）。 */
       const rendered = renderUserEntry(doc, session, cm);
@@ -351,11 +279,11 @@ function buildSummaryOptions(
 export const MIN_HISTORY_LENGTH = 10;
 
 /** 产出日志后插入首个 <history> 后的格式说明（XML 注释，完整消息定义 + 条目标签语义）。 */
-export const HISTORY_FORMAT_NOTE = `<!-- 完整消息：${COMPLETE_MESSAGE_DEFINITION} <user_message index="N"> 与 <assistant index="N"> 表示单条完整消息，<assistant start="A" end="B"> 表示连续模块，start/end 是首尾完整消息的 index -->`;
+export const HISTORY_FORMAT_NOTE = `<!-- 完整消息：${COMPLETE_MESSAGE_DEFINITION} <user_message index="N"> 与 <assistant index="N"> 表示单条完整消息，<assistant start="A" end="B"> 表示连续模块，start/end 是首尾完整消息的 index；<sys type="KIND" index="N"> 表示系统消息，块中为空 -->`;
 
 /** history 块内条目（单条 index 或模块 start/end）。 */
 export type HistoryEntryRange = {
-  kind: 'user' | 'assistant';
+  kind: 'user' | 'assistant' | 'sys';
   index?: number;
   start?: number;
   end?: number;
@@ -380,7 +308,7 @@ function intAttr(el: Element, name: string): number | undefined {
  * 用 XML 解析器解析一个 <history> 块（结构合法性校验）：
  *  - 非法 XML（标签不匹配 / 未闭合 / 多根等）→ null；
  *  - 根节点必须是 <history>；
- *  - 顶层只允许 user_message / assistant 条目元素（其余元素类型视为不合法）；
+ *  - 顶层只允许 user_message / assistant / sys 条目元素（其余元素类型视为不合法）；
  *  - 出现 <reasoning> 元素时标记 hasReasoning（产物不允许）。
  * 条目按文档顺序提取（index / start / end 属性缺失或不合法 → 不合法）。
  */
@@ -418,6 +346,12 @@ function parseHistoryBlock(xml: string): ParsedHistoryBlock | null {
       const index = intAttr(el, 'index');
       if (index === undefined) return null;
       entries.push({ kind: 'user', index });
+    } else if (tag === 'sys') {
+      // 系统消息条目：必须带 index（type 为 source.kind，不参与连续性校验）
+      /** index 属性（缺失/非法 → 不合法）。 */
+      const index = intAttr(el, 'index');
+      if (index === undefined) return null;
+      entries.push({ kind: 'sys', index });
     } else if (tag === 'assistant') {
       /** 单条 index 或模块 start..end（二选一）。 */
       const index = intAttr(el, 'index');

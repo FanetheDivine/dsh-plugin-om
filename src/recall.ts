@@ -1,6 +1,7 @@
 /**
  * recall 工具：按「完整消息」序号（index）回看原始会话（start/end 为完整消息 index，
- * offset 为相对 start 的完整消息步数）。完整消息即 `用户消息`，`模型输出文本`和`具有result的
+ * offset 为相对 start 的完整消息步数）。完整消息即 `用户消息`（user_message 中 kind 为 user
+ * 的部分）、`系统消息`（user_message 中其余 kind 的部分）、`模型输出文本`和`具有result的
  * toolcall`；首条完整消息的 index 为 0，后续递增、会话内全局稳定，与摘要日志条目同一套编号。
  * recall 自身不设输出上限：超大的工具结果由 tool-result-pruner 裁剪（pruneContent），
  * 输出 token 由 pruner 配置控制。
@@ -10,6 +11,7 @@
  */
 
 import { z } from 'zod';
+import { COMPLETE_MESSAGE_DEFINITION } from './constants.ts';
 import { indexCompleteMessages, type PrunerLike, renderCompleteMessage } from './log-index.ts';
 import type { ToolDefinition, ToolRunContext } from './types.ts';
 import { isMainSession } from './utils.ts';
@@ -56,8 +58,7 @@ export function parseRecallArgs(raw: unknown): RecallArgs {
 export function buildRecallTool(getPruner?: () => unknown): ToolDefinition {
   return {
     name: 'recall',
-    description:
-      '根据完整消息序号（index），回看指定区间的过往消息。`用户消息`，`模型输出文本`和`具有result的toolcall`被视作`完整消息`。首条`完整消息`的index是0，后续的index递增。start 必须传入，是区间的基准；end 和 offset 二选一：end 指定另一个边界（含两端，与 start 的位置关系不影响结果），offset 指定区间包含的完整消息数量（正数向后、负数向前）。',
+    description: `根据完整消息序号（index），回看指定区间的过往消息。${COMPLETE_MESSAGE_DEFINITION} start 必须传入，是区间的基准；end 和 offset 二选一：end 指定另一个边界（含两端，与 start 的位置关系不影响结果），offset 指定区间包含的完整消息数量（正数向后、负数向前）。`,
     parameters: {
       start: {
         type: 'number',

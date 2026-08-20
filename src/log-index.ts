@@ -2,15 +2,18 @@
  * 会话日志索引：完整消息索引（index 定位完整消息，recall 与摘要共用同一套编号），
  * 以及表层节点定位辅助。事件日志仅追加（被遮蔽的事件仍可读，recall 依赖此性质）。
  *
- * 完整消息是摘要日志与 recall 共用的定位单位，分三类：
- *  - user：用户消息（user/message）占一条；
+ * 完整消息是摘要日志与 recall 共用的定位单位，分四类：
+ *  - user：用户消息（user/message 中 source.kind === 'user'）占一条；
+ *  - sys：系统消息（user/message 中其余 source.kind 的部分，如宿主注入的上下文）
+ *    占一条；压缩日志中以 <sys type="KIND" index="N"> 空块表示（内容不进入输入）；
  *  - assistant：模型输出文本（assistant/message 中的文本块）占一条；
  *  - toolcall：单个工具调用及其结果占一条（同一条 AI 消息里的文本与工具调用拆开，
  *    tool/result 按 source.callId 匹配其 tool-call；未匹配的 result 独立成条，防御）。
- * 插件自产消息（<history>、运行时快照等 source.kind === 'plugin'）不占 index。
+ * 本插件自产的压缩日志消息（source.kind === 'plugin' 且 plugin 为本插件标识）不占 index。
  * index 从 0 起、按日志顺序递增、只追加不重排 → 会话内全局稳定，
  * 压缩后旧摘要条目引用的 index 仍然有效。
  */
+import { isPluginOwnedSource } from './constants.ts';
 import type {
   CompleteMessage,
   Message,
@@ -72,7 +75,7 @@ export function indexMessages(session: Session): MessageIndex {
 }
 
 /**
- * 完整消息索引：按日志顺序把消息事件折叠为完整消息序列（三类，见文件头）。
+ * 完整消息索引：按日志顺序把消息事件折叠为完整消息序列（四类，见文件头）。
  * 工具调用结果按 source.callId 匹配其 tool-call 并入该条；未匹配的 result 独立成条（防御）。
  * 插件在 agent/pre-step 触发压缩（日志 call-result 完备），因此压缩时不存在未闭合的
  * tool-call；索引对未闭合调用不设特殊处理。
@@ -89,11 +92,20 @@ export function indexCompleteMessages(session: Session): CompleteMessage[] {
     const event = events[seq];
     if (!event) continue;
     if (event.type === 'user/message') {
-      // 插件自产消息（<history>、运行时快照等）不占位
-      /** 事件 source（插件消息标记）。 */
-      const source = event.data.source as { kind?: string } | undefined;
-      if (source?.kind === 'plugin') continue;
-      cms.push({ index: cms.length, type: 'user', seqs: [seq] });
+      // 本插件自产消息（<history> 压缩日志块等）不占位；kind:user 为用户消息，其余为系统消息
+      /** 事件 source（区分用户消息与宿主注入/插件消息）。 */
+      const source = event.data.source as { kind?: string; plugin?: string } | undefined;
+      if (isPluginOwnedSource(source)) continue;
+      if (source?.kind === 'user') {
+        cms.push({ index: cms.length, type: 'user', seqs: [seq] });
+      } else {
+        cms.push({
+          index: cms.length,
+          type: 'sys',
+          seqs: [seq],
+          ...(source?.kind === undefined ? {} : { kind: source.kind }),
+        });
+      }
     } else if (event.type === 'assistant/message') {
       /** 助手消息（含文本与 tool-call 块）。 */
       const message = event.data.message;
@@ -147,7 +159,7 @@ export function indexCompleteMessages(session: Session): CompleteMessage[] {
 
 /**
  * 渲染一条完整消息的文本（recall 输出 / new 模式输入共用）：
- *  - user：消息原文；
+ *  - user / sys：消息原文；
  *  - assistant：仅文本块；
  *  - toolcall：调用块（工具名 + 参数）+ 结果文本（pruner 裁剪超大结果）。
  */
@@ -156,8 +168,8 @@ export function renderCompleteMessage(
   cm: CompleteMessage,
   pruner?: PrunerLike,
 ): string {
-  if (cm.type === 'user') {
-    /** 用户消息事件（seq 缺失则无法渲染）。 */
+  if (cm.type === 'user' || cm.type === 'sys') {
+    /** 用户/系统消息事件（seq 缺失则无法渲染）。 */
     const seq = cm.seqs[0];
     const event = seq === undefined ? undefined : session.events[seq];
     /** 派生的消息对象。 */

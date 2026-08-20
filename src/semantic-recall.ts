@@ -1,6 +1,7 @@
 /**
  * recall-semantic 工具：按自然语言 query 对会话全部完整消息（含被压缩/遮蔽的）做语义
- * 检索，返回最匹配的完整消息与匹配说明。完整消息即 `用户消息`，`模型输出文本`和`具有result的
+ * 检索，返回最匹配的完整消息与匹配说明。完整消息即 `用户消息`（user_message 中 kind 为 user
+ * 的部分）、`系统消息`（user_message 中其余 kind 的部分）、`模型输出文本`和`具有result的
  * toolcall`；首条完整消息的 index 为 0，后续递增、会话内全局稳定。
  *
  * - 参数：query 必填；top_k（默认 3，1-10）；start/end/offset 限定检索区间
@@ -14,6 +15,7 @@
  */
 
 import { z } from 'zod';
+import { COMPLETE_MESSAGE_DEFINITION } from './constants.ts';
 import { cosineSimilarity, type EmbedFn, getEmbedder, type ModelStatus } from './embedding.ts';
 import { indexCompleteMessages, type PrunerLike, renderCompleteMessage } from './log-index.ts';
 import type { CompleteMessage, ToolDefinition, ToolRunContext } from './types.ts';
@@ -134,8 +136,7 @@ export function buildSemanticRecallTool(options?: {
   const embed: EmbedFn = options?.embedder ?? ((texts) => getEmbedder().then((fn) => fn(texts)));
   return {
     name: 'recall-semantic',
-    description:
-      '按语义（自然语言含义）在会话全部完整消息中检索：`用户消息`，`模型输出文本`和`具有result的toolcall`被视作`完整消息`。首条`完整消息`的index是0，后续的index递增。用一句话描述你要找的内容（可混用中英文与代码术语）。返回最匹配的若干条完整消息、index 与匹配说明；如需精确定位某个 index 周边的消息，请再用 recall 工具。',
+    description: `按语义（自然语言含义）在会话全部完整消息中检索：${COMPLETE_MESSAGE_DEFINITION} 用一句话描述你要找的内容（可混用中英文与代码术语）。返回最匹配的若干条完整消息、index 与匹配说明；如需精确定位某个 index 周边的消息，请再用 recall 工具。`,
     parameters: {
       query: {
         type: 'string',

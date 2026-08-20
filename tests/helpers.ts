@@ -17,7 +17,9 @@ export function makeMessage({
     id: id ?? `msg-${Math.random().toString(36).slice(2)}`,
     role,
     content,
-    ...(source ? { source } : {}),
+    // 与真实宿主一致：未显式标记来源的用户角色消息默认 source.kind === 'user'（用户消息）；
+    // 显式 source（宿主注入/插件/工具结果）原样保留（其中非 kind:user 的归为系统消息）
+    ...(source ? { source } : role === 'user' ? { source: { kind: 'user' } } : {}),
   };
 }
 
