@@ -6,7 +6,12 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!**/dist", "!**/models"]
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/models",
+      "!.dsh"
+    ]
   },
   "formatter": {
     "enabled": true,
@@ -21,7 +26,13 @@
       "preset": "recommended"
     }
   },
-  "assist": { "actions": { "source": { "organizeImports": "on" } } },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  },
   "javascript": {
     "formatter": {
       "quoteStyle": "single",
