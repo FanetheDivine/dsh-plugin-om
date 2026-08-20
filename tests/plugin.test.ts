@@ -45,7 +45,6 @@ import {
   extractSummaryLog,
   HISTORY_FORMAT_NOTE,
   historyContinuity,
-  legitimateSystemReminderBlocks,
   parseHistoryEntries,
   renderMessages,
 } from '../src/summarize.ts';
@@ -367,15 +366,15 @@ describe('完整消息索引 indexCompleteMessages', () => {
     expect(cms[5]?.seqs).toEqual([5, 7]); // assistant-c2 + result-c2（tool/call 为日志事件不入索引）
   });
 
-  it('插件自产 user 消息不占位（<history> 与运行时快照）', () => {
+  it('本插件自产消息不占位；其他插件/宿主注入的 user_message 为系统消息（sys）占位', () => {
     const session = makeSession({
       events: [
-        historyMessage('旧任务'),
+        historyMessage('旧任务'), // 本插件压缩日志（source.kind=plugin + plugin=dsh-plugin-om）不占位
         ...twoCallFlow(),
         {
           type: 'user/message',
           data: makeMessage({
-            content: [textBlock('运行时上下文快照')],
+            content: [textBlock('其他插件的运行时上下文快照')],
             source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' },
             id: 'snap',
           }),
@@ -383,8 +382,46 @@ describe('完整消息索引 indexCompleteMessages', () => {
       ],
     });
     const cms = indexCompleteMessages(session);
-    expect(cms).toHaveLength(6); // 仅两条流程的 6 条完整消息
+    // 两条流程 6 条 + 其他插件快照 1 条（系统消息）；本插件 <history> 块不占位
+    expect(cms).toHaveLength(7);
     expect(cms[0]?.type).toBe('user');
+    expect(cms[6]?.type).toBe('sys');
+    expect(cms[6]?.kind).toBe('plugin'); // sys.kind = source.kind（区分 kind:user 与其余）
+    expect(cms[6]?.seqs).toEqual([9]); // 快照事件 seq（history@0 + 两条流程 0..7 + 快照@9）
+  });
+
+  it('kind:user 归为用户消息；其余 kind 归为系统消息（sys 记录 kind）', () => {
+    const session = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('宿主注入的工作区指令')],
+            source: { kind: 'agent-instructions' },
+            id: 'sys-inst',
+          }),
+        } as unknown as SessionEvent,
+        {
+          type: 'user/message',
+          data: makeMessage({ content: [textBlock('用户直接输入')], id: 'u-direct' }),
+        } as unknown as SessionEvent,
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('技能目录')],
+            source: { kind: 'skill-catalog', form: 'catalog' },
+            id: 'sys-catalog',
+          }),
+        } as unknown as SessionEvent,
+      ],
+    });
+    const cms = indexCompleteMessages(session);
+    expect(cms.map((c) => [c.type, c.kind])).toEqual([
+      ['sys', 'agent-instructions'],
+      ['user', undefined],
+      ['sys', 'skill-catalog'],
+    ]);
+    expect(cms.map((c) => c.index)).toEqual([0, 1, 2]); // 系统消息也占 index
   });
 
   it('未匹配的 result 独立成条（防御）', () => {
@@ -503,6 +540,26 @@ describe('完整消息渲染 renderCompleteMessage', () => {
     expect(text).toContain('PRUNED');
     expect(text).not.toContain('X'.repeat(20000));
   });
+
+  it('sys=消息原文（recall 呈现系统消息原始内容）', () => {
+    const session = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('宿主注入的指令原文')],
+            source: { kind: 'agent-instructions' },
+            id: 'sys-1',
+          }),
+        } as unknown as SessionEvent,
+      ],
+    });
+    const cms = indexCompleteMessages(session);
+    const cm = cms[0];
+    if (!cm) throw new Error('缺少完整消息 0');
+    expect(cm.type).toBe('sys');
+    expect(renderCompleteMessage(session, cm)).toBe('宿主注入的指令原文');
+  });
 });
 
 describe('token 估算 estimateTextTokens', () => {
@@ -535,40 +592,36 @@ describe('未压缩消息测量 measureUncompressedTokens', () => {
     expect(measureUncompressedTokens(makeSession(), makeMeter())).toBe(0);
   });
 
-  it('用户消息中合法 <system-reminder> 块的 token 不计入未压缩消息', () => {
-    const reminder = '<system-reminder>\nworkspace instructions\n</system-reminder>';
-    const base = '任务开始';
-    const withReminder = makeSession({
-      events: [
-        {
-          type: 'user/message',
-          data: makeMessage({ content: [textBlock(`${base}${reminder}`)], id: 'u-sr' }),
-        } as unknown as SessionEvent,
-      ],
-    });
-    const without = makeSession({
-      events: [
-        {
-          type: 'user/message',
-          data: makeMessage({ content: [textBlock(base)], id: 'u-plain' }),
-        } as unknown as SessionEvent,
-      ],
-    });
+  it('系统消息（非 kind:user 的 user_message，如宿主注入上下文）不计入未压缩消息', () => {
+    const events = [
+      {
+        type: 'user/message',
+        data: makeMessage({
+          content: [textBlock('宿主注入的工作区指令，很长的一段说明')],
+          source: { kind: 'agent-instructions' },
+          id: 'sys-1',
+        }),
+      } as unknown as SessionEvent,
+      {
+        type: 'user/message',
+        data: makeMessage({ content: [textBlock('真正的用户请求')], id: 'u-1' }),
+      } as unknown as SessionEvent,
+    ];
+    const session = makeSession({ events });
     const meter = makeMeter();
-    // 含合法 reminder 的消息与不含 reminder 的消息测量一致（reminder token 已扣除）
-    expect(measureUncompressedTokens(withReminder, meter)).toBe(
-      measureUncompressedTokens(without, meter),
-    );
+    // 仅 kind:user 的用户消息计入；系统消息整条跳过
+    expect(measureUncompressedTokens(session, meter)).toBe(estimateTextTokens('真正的用户请求'));
   });
 
-  it('整条消息仅为合法 reminder 时不计入（测量为 0）', () => {
+  it('整条仅为系统消息时测量为 0', () => {
     const session = makeSession({
       events: [
         {
           type: 'user/message',
           data: makeMessage({
             content: [textBlock('<system-reminder>\nnotice\n</system-reminder>')],
-            id: 'u-sr-only',
+            source: { kind: 'agent-instructions' },
+            id: 'sys-only',
           }),
         } as unknown as SessionEvent,
       ],
@@ -576,38 +629,22 @@ describe('未压缩消息测量 measureUncompressedTokens', () => {
     expect(measureUncompressedTokens(session, makeMeter())).toBe(0);
   });
 
-  it('非法的 system-reminder 文本（内部标签不匹配）仍计入未压缩消息', () => {
+  it('用户消息中的 <system-reminder> 文本仍计入未压缩消息（不再特殊扣除）', () => {
     const session = makeSession({
       events: [
         {
           type: 'user/message',
           data: makeMessage({
-            content: [textBlock('<system-reminder><inner></system-reminder>')],
-            id: 'u-sr-invalid',
+            content: [textBlock('<system-reminder>\nworkspace instructions\n</system-reminder>')],
+            id: 'u-sr',
           }),
         } as unknown as SessionEvent,
       ],
     });
     const meter = makeMeter();
     expect(measureUncompressedTokens(session, meter)).toBe(
-      estimateTextTokens('<system-reminder><inner></system-reminder>'),
+      estimateTextTokens('<system-reminder>\nworkspace instructions\n</system-reminder>'),
     );
-  });
-
-  it('用户消息中合法块内的裸 & 等宽容字符仍计入合法块并被扣除（xmldom 宽容解析）', () => {
-    const session = makeSession({
-      events: [
-        {
-          type: 'user/message',
-          data: makeMessage({
-            content: [textBlock('<system-reminder>a & b</system-reminder>')],
-            id: 'u-sr-lenient',
-          }),
-        } as unknown as SessionEvent,
-      ],
-    });
-    const meter = makeMeter();
-    expect(measureUncompressedTokens(session, meter)).toBe(0);
   });
 });
 
@@ -858,6 +895,10 @@ describe('共享提示词 buildHistoryPrompt（观察/反思同一套）', () =>
     expect(prompt).toContain('<reasoning>');
     expect(prompt).toContain('<assistant index="N">');
     expect(prompt).toContain('<assistant start="A" end="B">');
+    // 系统消息条目（<sys> 空块：type=kind、index；块中为空）
+    expect(prompt).toContain('<sys type="(kind)" index="N">');
+    expect(prompt).toContain('系统消息');
+    expect(prompt).toContain('块中为空');
     // b. 要求压缩
     expect(prompt).toContain('把下方的 <history> 消息记录压缩');
     // c. 完整保留用户消息
@@ -875,9 +916,10 @@ describe('共享提示词 buildHistoryPrompt（观察/反思同一套）', () =>
     // f. index/start/end 必须连续
     expect(prompt).toContain('index/start/end 必须连续');
     expect(prompt).toContain('不跳号、不重叠、不遗漏');
-    // 输出格式：一个合法 <history> 块（无 reasoning）
+    // 输出格式：一个合法 <history> 块（无 reasoning），含 <sys> 空块示例
     expect(prompt).toContain('只输出一个 <history> 包裹的合法 XML 日志块');
     expect(prompt).toContain('<user_message index="(index)">');
+    expect(prompt).toContain('<sys type="(kind)" index="(index)"></sys>');
     expect(prompt).toContain('<assistant start="(起始 index)" end="(结束 index)">');
     expect(prompt).toContain('<assistant index="(index)">');
     // 数据源说明（先定义块、要求压缩、再给出数据源）
@@ -907,6 +949,33 @@ describe('history 条目解析与连续性 parseHistoryEntries / historyContinui
       { kind: 'assistant', start: 1, end: 2 },
       { kind: 'assistant', index: 3 },
     ]);
+  });
+
+  it('解析 sys 系统消息条目（index 参与连续性校验）', () => {
+    const text = [
+      '<history>',
+      '<sys type="agent-instructions" index="0"></sys>',
+      '<user_message index="1">',
+      'x',
+      '</user_message>',
+      '<assistant start="2" end="3">',
+      'm',
+      '</assistant>',
+      '</history>',
+    ].join('\n');
+    expect(parseHistoryEntries(text)).toEqual([
+      { kind: 'sys', index: 0 },
+      { kind: 'user', index: 1 },
+      { kind: 'assistant', start: 2, end: 3 },
+    ]);
+    // sys 按单条 index 参与连续性
+    expect(
+      historyContinuity([
+        { kind: 'sys', index: 0 },
+        { kind: 'user', index: 1 },
+        { kind: 'assistant', start: 2, end: 3 },
+      ]),
+    ).toEqual({ start: 0, end: 3 });
   });
 
   it('连续性：单条与模块按序相接（后一条 lo = 前一条 hi + 1）', () => {
@@ -970,6 +1039,18 @@ describe('摘要日志提取 extractSummaryLog', () => {
     expect(out).toContain('<user_message index="0">');
     expect(out).not.toContain('前置说明不要');
     expect(out).not.toContain('尾部多余文字');
+  });
+
+  it('含 <sys> 系统消息空块的日志合法（type/index 保留，连续性含 sys）', () => {
+    const raw = block(
+      '<sys type="agent-instructions" index="0"></sys>\n<user_message index="1">\nA\n</user_message>',
+    );
+    const out = extractSummaryLog(raw);
+    expect(out).not.toBeNull();
+    expect(out).toContain('<sys type="agent-instructions" index="0"></sys>');
+    expect(out).toContain('<user_message index="1">');
+    // 缺 index 的 <sys> 条目视为不合法
+    expect(extractSummaryLog(block('<sys type="agent-instructions"></sys>'))).toBeNull();
   });
 
   it('多块输出视为不合法（输出必须是单个合法 <history> 块，XML 解析拒绝多根）', () => {
@@ -1179,6 +1260,105 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(source?.plugin).toBe(PLUGIN_LABEL);
     expect(source?.compactionId).toBe(compactionId);
     expect(session.surface.replaceGeneration).toBeGreaterThanOrEqual(1);
+  });
+
+  it('系统消息参与压缩：输入渲染 <sys> 空块，模型输出必须保留 sys 条目', async () => {
+    const sysText = '遵循如下工作区指令：先阅读 README.md。';
+    const session = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock(sysText)],
+            source: { kind: 'agent-instructions', form: 'instructions' },
+            id: 'sys-instr',
+          }),
+        },
+        ...buildToolCallFlow({
+          code: 'runMe()',
+          description: '跑一下',
+          callId: 'c-eval',
+          resultText: 'done',
+          withTurnEnd: true,
+        }),
+      ],
+    });
+    const report = [
+      '<history>',
+      '<sys type="agent-instructions" index="0"></sys>',
+      '<user_message index="1">',
+      '请帮我完成一个任务',
+      '</user_message>',
+      '<assistant start="2" end="3">',
+      'toolcall index:3 purpose:跑一下 summary:产物符合预期',
+      '</assistant>',
+      '</history>',
+    ].join('\n');
+    const ctx = observeCtx(report);
+    apply(ctx, { tailMessageCount: 0 });
+    await runPreStep(ctx, session);
+    // 输入渲染：系统消息为 <sys> 空块（内容不进入压缩输入），用户消息 index 顺延为 1
+    const options = summaryOptions(ctx);
+    const input = (options.messages ?? [])
+      .flatMap((m) => (m.content ?? []).map((b) => (b.type === 'text' ? b.text : '')))
+      .join('');
+    expect(input).toContain('<sys type="agent-instructions" index="0"></sys>');
+    expect(input).not.toContain(sysText);
+    expect(input).toContain('<user_message index="1">');
+    // 模型输出保留 sys 条目 → 连续性校验通过，压缩成功；<history> 块含 sys 条目
+    expect(ctx._llmCalls).toHaveLength(1);
+    const historyText = latestHistoryText(session);
+    expect(historyText).toContain('<sys type="agent-instructions" index="0"></sys>');
+  });
+
+  it('系统消息缺失时压缩失败重试：模型输出缺 sys 条目 → 校验不通过，不产生替换', async () => {
+    const session = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('遵循如下工作区指令：先阅读 README.md。')],
+            source: { kind: 'agent-instructions', form: 'instructions' },
+            id: 'sys-instr',
+          }),
+        },
+        ...buildToolCallFlow({
+          code: 'runMe()',
+          description: '跑一下',
+          callId: 'c-eval',
+          resultText: 'done',
+          withTurnEnd: true,
+        }),
+      ],
+    });
+    // 模型输出遗漏 sys 条目（只覆盖 1..3）：与预期覆盖区间 0..3 不连续 → 校验失败
+    const report = [
+      '<history>',
+      '<user_message index="1">',
+      '请帮我完成一个任务',
+      '</user_message>',
+      '<assistant start="2" end="3">',
+      'toolcall index:3 purpose:跑一下 summary:产物符合预期',
+      '</assistant>',
+      '</history>',
+    ].join('\n');
+    const ctx = observeCtx(report);
+    apply(ctx, { tailMessageCount: 0 });
+    const initialNodes = session.surface.nodes.length;
+    await runPreStep(ctx, session);
+    // 校验失败按 compressRetryCount 重试后放弃：不追加、不替换
+    expect(ctx._llmCalls.length).toBeGreaterThan(1);
+    expect(session.surface.nodes.length).toBe(initialNodes);
+    expect(
+      session.events.filter(
+        (e) =>
+          e.type === 'user/message' &&
+          String(
+            ((e.data as { content?: unknown[] }).content?.[0] as { text?: string } | undefined)
+              ?.text ?? '',
+          ).includes(`<${HISTORY_TAG}`),
+      ),
+    ).toHaveLength(0);
   });
 
   it('增量追加：旧摘要消息原地保留，新观察日志作为独立消息只替换新消息区间', async () => {
@@ -2012,7 +2192,7 @@ describe('消息渲染 renderMessages', () => {
     expect(text).not.toContain('区间外'); // 不在遮蔽集合内
   });
 
-  it('用户消息中的合法 <system-reminder> 块整块原样保留（标签不转义），块外文本照常转义', () => {
+  it('用户消息中的 <system-reminder> 文本按普通文本转义（不再特殊保留）', () => {
     const reminder = [
       '<system-reminder>',
       'The following workspace instructions may be relevant.',
@@ -2028,19 +2208,18 @@ describe('消息渲染 renderMessages', () => {
       ],
     });
     const text = renderMessages(session, [0]);
-    // 合法块：标签与内容均不转义，整块原样
-    expect(text).toContain('<system-reminder>');
+    // 标签转义为实体，内容文本原样（普通字符不转义）
+    expect(text).toContain('&lt;system-reminder&gt;');
     expect(text).toContain('The following workspace instructions may be relevant.');
     expect(text).toContain('Instructions from: AGENTS.md');
-    expect(text).toContain('</system-reminder>');
-    expect(text).not.toContain('&lt;system-reminder&gt;');
+    expect(text).toContain('&lt;/system-reminder&gt;');
+    expect(text).not.toContain('<system-reminder>');
     // 块外文本原样保留
     expect(text).toContain('我的问题');
     expect(text).toContain('请继续');
   });
 
-  it('用户消息中非法 system-reminder 文本（缺闭标签 / 内容非法 XML）照常转义', () => {
-    // 缺闭标签：不是完整块 → 整体转义
+  it('含 <system-reminder> 标签的残缺/非法文本也整体转义（统一按文本处理）', () => {
     const noClose = makeSession({
       events: [
         {
@@ -2053,7 +2232,6 @@ describe('消息渲染 renderMessages', () => {
       ],
     });
     expect(renderMessages(noClose, [0])).toContain('&lt;system-reminder&gt;no closing');
-    // 内容非法 XML（内部标签不匹配，xmldom 抛错）：完整标签对但不合法 → 整体转义
     const invalidContent = makeSession({
       events: [
         {
@@ -2071,27 +2249,43 @@ describe('消息渲染 renderMessages', () => {
   });
 });
 
-describe('合法 system-reminder 块提取 legitimateSystemReminderBlocks', () => {
-  it('完整开闭标签对且内容可被 XML 解析才算合法块', () => {
-    expect(legitimateSystemReminderBlocks('<system-reminder>\nhi\n</system-reminder>')).toEqual([
-      '<system-reminder>\nhi\n</system-reminder>',
-    ]);
-    // 裸 & 等宽容字符：xmldom 能解析 → 仍算合法块
-    expect(legitimateSystemReminderBlocks('<system-reminder>a & b</system-reminder>')).toEqual([
-      '<system-reminder>a & b</system-reminder>',
-    ]);
-    // 内部标签不匹配（xmldom 抛错）→ 不合法
-    expect(legitimateSystemReminderBlocks('<system-reminder><inner></system-reminder>')).toEqual(
-      [],
-    );
-    expect(legitimateSystemReminderBlocks('<system-reminder>no close')).toEqual([]);
-    expect(legitimateSystemReminderBlocks('plain text')).toEqual([]);
-    // 多个块依次提取
-    expect(
-      legitimateSystemReminderBlocks(
-        '<system-reminder>a</system-reminder> x <system-reminder>b</system-reminder>',
-      ),
-    ).toEqual(['<system-reminder>a</system-reminder>', '<system-reminder>b</system-reminder>']);
+describe('系统消息渲染（<sys> 空块）', () => {
+  it('非 kind:user 的 user_message 渲染为 <sys type="KIND" index="N"></sys> 空块，内容不进入输入', () => {
+    const session = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('宿主注入的工作区指令，内容很长不需要进入压缩输入')],
+            source: { kind: 'agent-instructions' },
+            id: 's1',
+          }),
+        } as unknown as SessionEvent,
+        {
+          type: 'user/message',
+          data: makeMessage({ content: [textBlock('真正的用户消息')], id: 'u1' }),
+        } as unknown as SessionEvent,
+      ],
+    });
+    const text = renderMessages(session, [0, 1]);
+    // sys 空块：type=source.kind、index=完整消息序号；用户消息照常渲染
+    expect(text).toContain('<sys type="agent-instructions" index="0"></sys>');
+    expect(text).toContain('<user_message index="1">');
+    expect(text).toContain('真正的用户消息');
+    // 系统消息内容不进入压缩输入
+    expect(text).not.toContain('宿主注入的工作区指令');
+  });
+
+  it('无 source.kind 的 user_message 归为系统消息，渲染为 <sys type="" index="N"></sys>', () => {
+    const session = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: { id: 's0', role: 'user', content: [textBlock('x')] },
+        } as unknown as SessionEvent,
+      ],
+    });
+    expect(renderMessages(session, [0])).toContain('<sys type="" index="0"></sys>');
   });
 });
 
@@ -2119,6 +2313,30 @@ describe('recall 工具', () => {
     expect(span).toContain('secondCode()');
     expect(span).toContain('out1');
     expect(span).toContain('out2');
+  });
+
+  it('系统消息（sys）参与 index 并显示原文', async () => {
+    const session = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('宿主注入的工作区指令')],
+            source: { kind: 'agent-instructions' },
+            id: 'sys-inst',
+          }),
+        } as unknown as SessionEvent,
+        ...twoCallFlow(),
+      ],
+    });
+    const tool = buildRecallTool();
+    const exec = { agent: { session } };
+    // sys 占 index 0，后续两条流程从 index 1 起
+    const span = await tool.execute({ start: 0, end: 6 }, exec as never);
+    expect(String(span)).toContain('-- [index 0] sys --');
+    expect(String(span)).toContain('宿主注入的工作区指令'); // sys 显示原文
+    expect(String(span)).toContain('-- [index 1] user --');
+    expect(String(span)).toContain('-- [index 6] toolcall callId=c2 --');
   });
 
   it('offset 正数从 start 向后延伸', async () => {

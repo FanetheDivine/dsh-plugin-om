@@ -25,12 +25,11 @@
  * 摘要输出的 <history> 块经连续性校验（无 reasoning、index/start/end 连续且覆盖预期
  * 区间），失败按 config.compressRetryCount 重试。仅主会话生效。
  */
-import { COMPACT_CHECKPOINT_PLUGIN, HISTORY_TAG, PLUGIN_LABEL } from './constants.ts';
+import { HISTORY_TAG, isPluginOwnedSource, PLUGIN_LABEL } from './constants.ts';
 import { indexCompleteMessages } from './log-index.ts';
 import { makeLogger } from './logger.ts';
 import {
   buildHistoryPrompt,
-  legitimateSystemReminderBlocks,
   parseHistoryEntries,
   renderMessages,
   runSummarySubagent,
@@ -45,7 +44,7 @@ import type {
   TokenUsage,
   UserMessage,
 } from './types.ts';
-import { blocksToText, isRecord, type RoutedTarget, routedTarget, uuid } from './utils.ts';
+import { blocksToText, type RoutedTarget, routedTarget, uuid } from './utils.ts';
 
 /** 历史文本 token 估算：4 字符 ≈ 1 token（与宿主 dsh-token-meter 启发式一致）。 */
 export function estimateTextTokens(text: string): number {
@@ -76,11 +75,9 @@ function reflectExpectedEnd(contextText: string): number {
  */
 function historyTextOf(event: SessionEvent | undefined): string | undefined {
   if (event?.type !== 'user/message') return undefined;
-  /** 消息 source（插件自产消息的标记）。 */
+  /** 消息 source（本插件自产消息的标记；含兼容旧宿主 checkpoint 标记）。 */
   const source = event.data.source as { kind?: string; plugin?: string } | undefined;
-  if (source?.kind !== 'plugin') return undefined;
-  if (source.plugin !== COMPACT_CHECKPOINT_PLUGIN && source.plugin !== PLUGIN_LABEL)
-    return undefined;
+  if (!isPluginOwnedSource(source)) return undefined;
   /** 消息纯文本。 */
   const text = blocksToText(event.data.content);
   /** 首个 <history 出现位置（无则非压缩日志）。 */
@@ -96,26 +93,9 @@ function historyTextOf(event: SessionEvent | undefined): string | undefined {
 export type TokenEstimator = { estimateMessage(message: unknown): number };
 
 /**
- * 消息文本中合法 <system-reminder> 块的 token 估算（4 字符 ≈ 1 token，与 estimateTextTokens
- * 一致）：宿主注入的提醒不计入未压缩消息，避免推高观察阈值触发压缩。
- */
-function systemReminderTokens(message: unknown): number {
-  /** 消息内容块（非记录或非数组则无文本可计）。 */
-  const content = isRecord(message) && Array.isArray(message.content) ? message.content : null;
-  if (!content) return 0;
-  /** token 合计。 */
-  let total = 0;
-  for (const block of content) {
-    if (!isRecord(block) || block.type !== 'text' || typeof block.text !== 'string') continue;
-    for (const sr of legitimateSystemReminderBlocks(block.text)) total += estimateTextTokens(sr);
-  }
-  return total;
-}
-
-/**
  * 未压缩消息 token 估算：最后一个 <history> 块之后的表层节点合计
  * （其前含自身视为已压缩，不计入观察阈值衡量对象；无压缩日志时计全部）。
- * 用户消息中合法 <system-reminder> 块（宿主注入的提醒）的 token 扣除，不计入阈值。
+ * 系统消息（user/message 中非 kind:user 的部分，如宿主注入的上下文）不计入阈值。
  */
 export function measureUncompressedTokens(session: Session, meter: TokenEstimator): number {
   /** 压缩边界（最后一个 history 块的 seq；无则 undefined）。 */
@@ -133,12 +113,13 @@ export function measureUncompressedTokens(session: Session, meter: TokenEstimato
     const event = session.events[seq];
     const message = event ? session.deriveEventMessage(event) : null;
     if (!message) continue;
-    /** 消息 token 估算（用户消息扣除其中合法 system-reminder 块，宿主提醒不计入未压缩消息）。 */
-    const tokens =
-      event?.type === 'user/message'
-        ? Math.max(0, meter.estimateMessage(message) - systemReminderTokens(message))
-        : meter.estimateMessage(message);
-    total += tokens;
+    if (event?.type === 'user/message') {
+      /** 事件 source（区分用户消息与系统消息）。 */
+      const source = event.data.source as { kind?: string; plugin?: string } | undefined;
+      // 系统消息（宿主注入的上下文等，非 kind:user）不计入未压缩消息
+      if (source?.kind !== 'user') continue;
+    }
+    total += meter.estimateMessage(message);
   }
   return total;
 }
@@ -506,7 +487,7 @@ export async function observePass(
   );
   /** 共享提示词（观察/反思同一套）。 */
   const instruction = buildHistoryPrompt();
-  /** 渲染输入：本次要压缩的完整消息（合法 <history> 块，含绝对 index；不含尾部，插件自产消息不占位）。 */
+  /** 渲染输入：本次要压缩的完整消息（合法 <history> 块，含绝对 index；不含尾部；系统消息渲染为 <sys> 空块，本插件自产消息不占位）。 */
   const contextText = renderMessages(session, replaceSeqs);
   /** 观察摘要结果（null 表示失败/跳过）。 */
   const summaryResult = await runSummarySubagent(
