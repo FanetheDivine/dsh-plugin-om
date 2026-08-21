@@ -8,3 +8,6 @@ Thumbs.db
 
 # 大模型二进制（>100MB，超 GitHub 单文件限制）：构建/发布时由 scripts/download-model.mjs 下载
 models/*/onnx/*.onnx
+
+# pnpm pack 产物（构建输出，不入库）
+*.tgz

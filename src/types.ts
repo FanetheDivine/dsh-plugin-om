@@ -11,7 +11,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { CompactionId } from '@deepseek-ai/dsh-compaction';
 import type { ToolResultPruner } from '@deepseek-ai/dsh-compaction-tool-result-pruner';
 import type { Message, TokenUsage, UserMessage } from '@deepseek-ai/dsh-llm';
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session';
+import type { Session, SessionEvent, SessionEventMap } from '@deepseek-ai/dsh-session';
 import type { SubagentResult, SubagentRun, SubagentStartRequest } from '@deepseek-ai/dsh-subagent';
 import type { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import type { TokenMeter } from '@deepseek-ai/dsh-token-meter';
@@ -33,6 +33,7 @@ export type {
   Message,
   Session,
   SessionEvent,
+  SessionEventMap,
   SubagentResult,
   SubagentRun,
   SubagentStartRequest,
@@ -88,4 +89,15 @@ export type CompleteMessage = {
   seqs: number[];
   /** 工具调用 id（仅 toolcall 类；关联 tool/result 用）。 */
   callId?: string;
+};
+
+/**
+ * 插件扩展的 compaction/summary 载荷：宿主类型 + shadowedCharCount（压缩前字符数）。
+ * 宿主 append 不做 schema 剥离，扩展字段原样持久化；旧会话载荷可能缺失该字段，
+ * 客户端读取时按可选处理。宿主类型是 union（rawOutput 分支），无法直接声明合并，
+ * 故用交叉类型 + 读取处收窄。
+ */
+export type CompactionSummaryPayload = SessionEventMap['compaction/summary'] & {
+  /** 被压缩内容的字符数（压缩前文本长度合计；UI 标题统计用），旧载荷可能缺失。 */
+  shadowedCharCount?: number;
 };

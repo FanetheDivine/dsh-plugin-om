@@ -49,7 +49,7 @@ import {
   parseHistoryEntries,
   renderMessages,
 } from '../src/summarize.ts';
-import type { Session, SessionEvent } from '../src/types.ts';
+import type { CompactionSummaryPayload, Session, SessionEvent } from '../src/types.ts';
 import {
   buildToolCallFlow,
   makeCtx,
@@ -1261,6 +1261,9 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(source?.plugin).toBe(PLUGIN_LABEL);
     expect(source?.compactionId).toBe(compactionId);
     expect(session.surface.replaceGeneration).toBeGreaterThanOrEqual(1);
+    // 统计载荷：遮蔽节点 = 整条工具流（user/assistant/tool-result）；压缩前字符数 = 9+6+4（递归计入 tool-result 内嵌文本）
+    expect(summaryEvent.data.shadowedSeqs).toEqual([0, 1, 3]);
+    expect((summaryEvent.data as CompactionSummaryPayload).shadowedCharCount).toBe(19);
   });
 
   it('系统消息参与压缩：输入渲染 <sys> 空块，模型输出必须保留 sys 条目', async () => {
@@ -1781,6 +1784,7 @@ describe('apply 接线（OM 反思压缩）', () => {
     if (summaryEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
     expect(summaryEvent.data.shadowedRange).toEqual({ start: 0, end: 1 });
     expect(summaryEvent.data.shadowedSeqs).toEqual([0, 1]);
+    expect((summaryEvent.data as CompactionSummaryPayload).shadowedCharCount).toBe(80); // 两块 X*40 + Y*40
   });
 
   it('先反思后观察串行：反思合并旧块，观察在其后追加独立新块', async () => {
@@ -1912,6 +1916,7 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
     // 单节点替换：遮蔽区间为旧 <history> 节点
     expect(summaryEvent.data.shadowedRange).toEqual({ start: 0, end: 0 });
     expect(summaryEvent.data.shadowedSeqs).toEqual([0]);
+    expect((summaryEvent.data as CompactionSummaryPayload).shadowedCharCount).toBe(40); // 旧块文本 X*40
     expect(summaryEvent.data.provider).toBe('test');
     expect(summaryEvent.data.model).toBe('test-model');
     expect(summaryEvent.data.maxTokens).toBe(10000); // compressMaxTokens 默认
@@ -1961,6 +1966,7 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
     // 遮蔽数据 = 仅新消息区间（旧块 seq 0 保留、不计入遮蔽）
     expect(summaryEvent.data.shadowedRange).toEqual({ start: 1, end: 1 });
     expect(summaryEvent.data.shadowedSeqs).toEqual([1]);
+    expect((summaryEvent.data as CompactionSummaryPayload).shadowedCharCount).toBe(9); // 遮蔽仅新 user 消息「请帮我完成一个任务」
   });
 });
 

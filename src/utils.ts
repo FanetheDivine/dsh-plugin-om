@@ -30,6 +30,21 @@ export function blocksToText(blocks: unknown): string {
   return out.join('');
 }
 
+/** 消息内容的字符数：递归计入 text 块与 tool-result 内嵌文本（与宿主 token 估算口径一致）。 */
+export function textCharCount(message: Message | null | undefined): number {
+  if (!message || !Array.isArray(message.content)) return 0;
+  /** 累计字符数。 */
+  let total = 0;
+  for (const block of message.content) {
+    if (block.type === 'text') {
+      total += block.text.length;
+    } else if (block.type === 'tool-result') {
+      total += blocksToText(block.content).length;
+    }
+  }
+  return total;
+}
+
 /** 面向 recall 的完整消息呈现：text 原样；tool-call 展开（参数=代码）；tool-result 取文本。 */
 export function renderMessageText(message: Message | null | undefined): string {
   if (!message || !Array.isArray(message.content)) return '';
