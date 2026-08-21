@@ -332,7 +332,7 @@ function parseHistoryBlock(xml: string): ParsedHistoryBlock | null {
   for (let i = 0; i < children.length; i += 1) {
     /** 当前子节点（跳过文本与注释）。 */
     const node = children[i];
-    if (!node || node.nodeType !== 1) continue;
+    if (node?.nodeType !== 1) continue;
     /** 子元素（节点类型收窄）。 */
     const el = node as unknown as Element;
     /** 元素标签名。 */
