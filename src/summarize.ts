@@ -279,7 +279,7 @@ function buildSummaryOptions(
 export const MIN_HISTORY_LENGTH = 10;
 
 /** 产出日志后插入首个 <history> 后的格式说明（XML 注释，完整消息定义 + 条目标签语义）。 */
-export const HISTORY_FORMAT_NOTE = `<!-- 完整消息：${COMPLETE_MESSAGE_DEFINITION} <user_message index="N"> 与 <assistant index="N"> 表示单条完整消息，<assistant start="A" end="B"> 表示连续模块，start/end 是首尾完整消息的 index；<sys type="KIND" index="N"> 表示系统消息，块中为空 -->`;
+export const HISTORY_FORMAT_NOTE = `<!-- 完整消息：${COMPLETE_MESSAGE_DEFINITION} <TAG index="N">表示单条完整消息，<TAG start="A" end="B"> 表示连续模块，start/end 是首尾完整消息的 index；<sys type="KIND" index="N"> 表示被压缩的系统消息，块中为空 -->`;
 
 /** history 块内条目（单条 index 或模块 start/end）。 */
 export type HistoryEntryRange = {

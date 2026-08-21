@@ -120,8 +120,7 @@ export function matchExplanation(query: string, text: string, score: number): st
 }
 
 /** 模型未就绪时返回给模型的文案（告知即可；下载完成后无需另行通知，直接再次调用）。 */
-export const SEMANTIC_MODEL_NOT_READY_MESSAGE =
-  '语义检索暂不可用：本地嵌入模型尚未就绪（正在后台下载约 113MB；下载完成后无需提示，直接再次调用本工具即可。若下载失败，下次调用会自动重试）。可稍后重试，或先用 recall 工具按完整消息 index 精确检索。';
+export const SEMANTIC_MODEL_NOT_READY_MESSAGE = '语义检索暂不可用，本地向量模型尚未就绪。';
 
 /** 构建 recall-semantic 工具定义（embedder/modelStatus 可注入，测试传替身；缺省用本地模型）。 */
 export function buildSemanticRecallTool(options?: {
@@ -136,7 +135,7 @@ export function buildSemanticRecallTool(options?: {
   const embed: EmbedFn = options?.embedder ?? ((texts) => getEmbedder().then((fn) => fn(texts)));
   return {
     name: 'recall-semantic',
-    description: `按语义（自然语言含义）在会话全部完整消息中检索：${COMPLETE_MESSAGE_DEFINITION} 用一句话描述你要找的内容（可混用中英文与代码术语）。返回最匹配的若干条完整消息、index 与匹配说明；如需精确定位某个 index 周边的消息，请再用 recall 工具。`,
+    description: `${COMPLETE_MESSAGE_DEFINITION}此工具可以按自然语言含义，检索最符合的完整消息。默认在全消息范围搜索，可以指定区间。`,
     parameters: {
       query: {
         type: 'string',
@@ -150,16 +149,15 @@ export function buildSemanticRecallTool(options?: {
       },
       start: {
         type: 'number',
-        description:
-          '完整消息序号（index），可选。限定检索区间：以该条为基准边界（意义同 recall）。缺省检索全部消息。区间不合法（越界）时自动回退全量检索并在结果中说明。',
+        description: '完整消息序号（index），可选。作为基准边界，和end或offset配合，指定搜索区间。',
       },
       end: {
         type: 'number',
-        description: '与 offset 互斥，限定区间的另一个边界（含；意义同 recall）。',
+        description: '必须和start配合使用，与 offset 互斥，指定搜索区间的另一个边界。',
       },
       offset: {
         type: 'number',
-        description: '与 end 互斥。相对 start 的步数：正数向后、负数向前（意义同 recall）。',
+        description: '必须和start配合使用，与 end 互斥。相对 start 的步数：正数向后、负数向前。',
       },
     },
     output: {

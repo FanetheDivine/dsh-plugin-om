@@ -39,6 +39,7 @@ import {
   matchExplanation,
   parseSemanticRecallArgs,
   resolveSemanticRange,
+  SEMANTIC_MODEL_NOT_READY_MESSAGE,
 } from '../src/semantic-recall.ts';
 import {
   buildHistoryPrompt,
@@ -2872,8 +2873,7 @@ describe('recall-semantic 工具', () => {
     });
     const result = await tool.execute({ query: '数据库' }, { agent: { session } } as never);
     const out = String(result);
-    expect(out).toContain('尚未就绪');
-    expect(out).toContain('recall');
+    expect(out).toContain(SEMANTIC_MODEL_NOT_READY_MESSAGE);
     expect(embedded).toBe(false);
   });
 

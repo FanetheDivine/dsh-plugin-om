@@ -18,7 +18,7 @@ export const HISTORY_TIP = '当前块是历史消息的压缩产物，不要复�
  * 为系统消息，同样是一条完整消息。
  */
 export const COMPLETE_MESSAGE_DEFINITION =
-  '`用户消息`（user_message 中 kind 为 user 的部分），`系统消息`（user_message 中其余 kind 的部分），`模型输出文本`和`具有result的toolcall`被视作`完整消息`。首条`完整消息`的index是0，后续的index递增。';
+  '`完整消息`被定义为`用户消息`，`系统消息`，`模型输出文本`和`具有result的toolcall`的集合。首条`完整消息`的index是0，后续的index递增。';
 
 /** 判定 user/message 的 source 是否为本插件自产（压缩日志机制消息；含兼容旧宿主 checkpoint 标记 'compact'）。这类消息不占完整消息 index。 */
 export function isPluginOwnedSource(

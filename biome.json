@@ -6,12 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": [
-      "**",
-      "!**/dist",
-      "!**/models",
-      "!.dsh"
-    ]
+    "includes": ["**", "!**/dist", "!**/models", "!.dsh"]
   },
   "formatter": {
     "enabled": true,

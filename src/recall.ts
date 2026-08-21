@@ -58,21 +58,20 @@ export function parseRecallArgs(raw: unknown): RecallArgs {
 export function buildRecallTool(getPruner?: () => unknown): ToolDefinition {
   return {
     name: 'recall',
-    description: `根据完整消息序号（index），回看指定区间的过往消息。${COMPLETE_MESSAGE_DEFINITION} start 必须传入，是区间的基准；end 和 offset 二选一：end 指定另一个边界（含两端，与 start 的位置关系不影响结果），offset 指定区间包含的完整消息数量（正数向后、负数向前）。`,
+    description: `${COMPLETE_MESSAGE_DEFINITION}此工具可以精确查询完整消息。用index指定一个区间，返回区间内所有完整消息的内容。`,
     parameters: {
       start: {
         type: 'number',
-        description: '完整消息序号（index），区间的基准边界',
+        description: '完整消息序号（index），作为基准边界，和end或offset配合，指定区间',
         required: true,
       },
       end: {
         type: 'number',
-        description: '与 offset 互斥，指定区间的另一个边界（含）。与 start 的位置关系不影响结果。',
+        description: '与 offset 互斥，指定区间的另一个边界。',
       },
       offset: {
         type: 'number',
-        description:
-          '与 end 互斥，指定区间包含的完整消息数量。传入正数查看 start 之后的若干条，负数则是之前的。',
+        description: '与 end 互斥。相对 start 的步数：正数向后、负数向前。',
       },
     },
     output: {
