@@ -44,6 +44,8 @@ export interface OmCompactionChatData {
   readonly shadowedCharCount: number | null;
   /** 压缩后的字符数（摘要文本长度），summary 不可用或非法时为 null。 */
   readonly summaryCharCount: number | null;
+  /** 压缩后的估算 token 数（4 字符 ≈ 1 token，与服务端 estimateTextTokens 同一启发式），summary 不可用或非法时为 null。 */
+  readonly summaryTokenCount: number | null;
 }
 
 /** 压缩生命周期关联状态：summary / checkpoint 事件证据。 */
@@ -124,6 +126,7 @@ function compactSummaryData(summaryMatch: ConversationMatch | undefined): OmComp
     shadowedTokenCount,
     shadowedCharCount,
     summaryCharCount: summary === null ? null : summary.length,
+    summaryTokenCount: summary === null ? null : Math.ceil(summary.length / 4),
   };
 }
 

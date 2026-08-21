@@ -214,6 +214,7 @@ describe('omCompactionDefinition.buildViewNode', () => {
         shadowedTokenCount: 1234,
         shadowedCharCount: 5000,
         summaryCharCount: 16,
+        summaryTokenCount: 4,
       },
     });
   });
@@ -230,6 +231,7 @@ describe('omCompactionDefinition.buildViewNode', () => {
         shadowedTokenCount: null,
         shadowedCharCount: null,
         summaryCharCount: null,
+        summaryTokenCount: null,
       },
     });
   });
@@ -252,6 +254,7 @@ describe('omCompactionDefinition.buildViewNode', () => {
       shadowedTokenCount: 9,
       shadowedCharCount: 88,
       summaryCharCount: 1,
+      summaryTokenCount: 1,
     });
   });
 
@@ -273,6 +276,7 @@ describe('omCompactionDefinition.buildViewNode', () => {
       shadowedTokenCount: null,
       shadowedCharCount: null,
       summaryCharCount: null,
+      summaryTokenCount: null,
     });
   });
 
@@ -293,6 +297,7 @@ describe('omCompactionDefinition.buildViewNode', () => {
       shadowedTokenCount: 42,
       shadowedCharCount: null,
       summaryCharCount: 4,
+      summaryTokenCount: 1,
     });
   });
 });
