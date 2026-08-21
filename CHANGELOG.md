@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- chore: 升级 @deepseek-ai/dsh-* 依赖至 0.1.1-rc.1（rc.8→0.1.1-rc.1 对插件无破坏性变更，typecheck/lint/test/build 全绿）
 - fix: 修复 tsconfig.json 排除 src/client 导致编辑器与 `tsc --noEmit` 无法检查客户端类型的问题——基础 tsconfig 直接纳入 client（补 dom lib + react-jsx），删除冗余的 tsconfig.client.json，typecheck 简化为 `tsc --noEmit`
 - feat: 压缩卡片改用与宿主「上下文注入」卡片同款样式（DisclosureRow + IconBrowseOutline16 + 同款样式注入），标题统计补充压缩前后估算 token（压缩后按 4 字符 ≈ 1 token 客户端估算，与服务端 estimateTextTokens 同启发式）
 - feat: 压缩卡片标题直接展示「压缩前 N 条消息 · X 字符 → 压缩后 Y 字符」（服务端 compaction/summary 新增扩展字段 shadowedCharCount，宿主 append 原样持久化；旧载荷回落为 token 计数），摘要体改为代码块样式（缩小字号、代码背景与等宽字体、保留换行）
