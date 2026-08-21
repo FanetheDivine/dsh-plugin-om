@@ -183,6 +183,7 @@ describe('omCompactionDefinition.buildViewNode', () => {
         summary: [],
         shadowedSeqs: [],
         shadowedTokenCount: 0,
+        shadowedCharCount: 0,
       }),
     );
     expect(omCompactionDefinition.buildViewNode?.(contextOf([summary], { summary }))).toBeNull();
@@ -195,6 +196,7 @@ describe('omCompactionDefinition.buildViewNode', () => {
         summary: [{ type: 'text', text: '观察：模型停顿。反思：建议简化。' }],
         shadowedSeqs: [2, 3, 4],
         shadowedTokenCount: 1234,
+        shadowedCharCount: 5000,
       }),
     );
     const state = { summary, checkpoint };
@@ -210,6 +212,8 @@ describe('omCompactionDefinition.buildViewNode', () => {
         summaryEventSeq: 6,
         shadowedItemCount: 3,
         shadowedTokenCount: 1234,
+        shadowedCharCount: 5000,
+        summaryCharCount: 16,
       },
     });
   });
@@ -224,6 +228,8 @@ describe('omCompactionDefinition.buildViewNode', () => {
         summaryEventSeq: null,
         shadowedItemCount: null,
         shadowedTokenCount: null,
+        shadowedCharCount: null,
+        summaryCharCount: null,
       },
     });
   });
@@ -235,11 +241,18 @@ describe('omCompactionDefinition.buildViewNode', () => {
         summary: [{ type: 'text', text: 's' }],
         shadowedSeqs: [1],
         shadowedTokenCount: 9,
+        shadowedCharCount: 88,
       }),
     );
     const node = omCompactionDefinition.buildViewNode?.(contextOf([summary, checkpoint]));
     expect(node).not.toBeNull();
-    expect(node?.data).toMatchObject({ summary: 's', shadowedItemCount: 1, shadowedTokenCount: 9 });
+    expect(node?.data).toMatchObject({
+      summary: 's',
+      shadowedItemCount: 1,
+      shadowedTokenCount: 9,
+      shadowedCharCount: 88,
+      summaryCharCount: 1,
+    });
   });
 
   it('空文本与非法的统计字段回落为 null', () => {
@@ -249,6 +262,7 @@ describe('omCompactionDefinition.buildViewNode', () => {
         summary: [{ type: 'text', text: '   ' }],
         shadowedSeqs: [1, -2],
         shadowedTokenCount: -1,
+        shadowedCharCount: -3,
       }),
     );
     const state = { summary, checkpoint };
@@ -257,6 +271,28 @@ describe('omCompactionDefinition.buildViewNode', () => {
       summary: null,
       shadowedItemCount: null,
       shadowedTokenCount: null,
+      shadowedCharCount: null,
+      summaryCharCount: null,
+    });
+  });
+
+  it('旧载荷无 shadowedCharCount 时该字段回落为 null（其余统计保留）', () => {
+    const summary = matchOf(
+      lifecycle('compaction/summary', 6, {
+        compactionId: 'om-1',
+        summary: [{ type: 'text', text: '旧版摘要' }],
+        shadowedSeqs: [1, 2],
+        shadowedTokenCount: 42,
+      }),
+    );
+    const state = { summary, checkpoint };
+    const node = omCompactionDefinition.buildViewNode?.(contextOf([summary, checkpoint], state));
+    expect(node?.data).toMatchObject({
+      summary: '旧版摘要',
+      shadowedItemCount: 2,
+      shadowedTokenCount: 42,
+      shadowedCharCount: null,
+      summaryCharCount: 4,
     });
   });
 });

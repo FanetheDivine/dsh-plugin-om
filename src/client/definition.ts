@@ -18,6 +18,7 @@ import type { ChatNode, ChatNodeDataMap } from '@deepseek-ai/dsh-client-ui-conve
 import type {} from '@deepseek-ai/dsh-compaction/types';
 import type { SessionEvent } from '@deepseek-ai/dsh-session/types';
 import { PLUGIN_LABEL } from '../constants.ts';
+import type { CompactionSummaryPayload } from '../types.ts';
 
 /** 压缩卡片渲染器分发键（合并进 ChatNodeDataMap）。 */
 export const COMPACTION_CARD_KIND = 'om-compaction';
@@ -39,6 +40,10 @@ export interface OmCompactionChatData {
   readonly shadowedItemCount: number | null;
   /** 遮蔽的 token 数，summary 事件缺失或载荷非法时为 null。 */
   readonly shadowedTokenCount: number | null;
+  /** 压缩前的字符数（被压缩内容文本长度合计），载荷缺失或非法时为 null。 */
+  readonly shadowedCharCount: number | null;
+  /** 压缩后的字符数（摘要文本长度），summary 不可用或非法时为 null。 */
+  readonly summaryCharCount: number | null;
 }
 
 /** 压缩生命周期关联状态：summary / checkpoint 事件证据。 */
@@ -88,8 +93,10 @@ function compactSummaryData(summaryMatch: ConversationMatch | undefined): OmComp
   let summary: string | null = null;
   let shadowedItemCount: number | null = null;
   let shadowedTokenCount: number | null = null;
+  let shadowedCharCount: number | null = null;
   if (summaryMatch?.event.type === 'compaction/summary') {
-    const data = summaryMatch.event.data;
+    // 宿主载荷类型是 union 且不含插件扩展字段，读取处收窄为插件扩展类型
+    const data = summaryMatch.event.data as CompactionSummaryPayload;
     if (Array.isArray(data.summary)) {
       const text = data.summary.map((block) => (block.type === 'text' ? block.text : '')).join('');
       summary = text.trim() === '' ? null : text;
@@ -103,12 +110,20 @@ function compactSummaryData(summaryMatch: ConversationMatch | undefined): OmComp
       Number.isSafeInteger(data.shadowedTokenCount) && data.shadowedTokenCount >= 0
         ? data.shadowedTokenCount
         : null;
+    shadowedCharCount =
+      data.shadowedCharCount !== undefined &&
+      Number.isSafeInteger(data.shadowedCharCount) &&
+      data.shadowedCharCount >= 0
+        ? data.shadowedCharCount
+        : null;
   }
   return {
     summary,
     summaryEventSeq: summaryMatch?.event.seq ?? null,
     shadowedItemCount,
     shadowedTokenCount,
+    shadowedCharCount,
+    summaryCharCount: summary === null ? null : summary.length,
   };
 }
 

@@ -92,7 +92,8 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 插件自产的替换消息使用插件自身标记（source.plugin = `dsh-plugin-om`）；宿主 conversation UI 只识别内置的 `compact` 检查点，因此插件额外注册一个浏览器客户端 bundle（`src/client/`，经 `dsh.client` 声明、exports["./client"] → `dist/client.js`，由 dsh 客户端模块系统按 `/plugins/dsh-plugin-om/client.js` 加载），自行认领压缩生命周期事件与替换检查点，在消息列表渲染折叠式「已压缩」卡片：
 
-- 卡片默认折叠，展示「已压缩 N 条历史记录（约 M tokens）」（来自 `compaction/summary` 载荷的 shadowedSeqs / shadowedTokenCount）；点击展开显示压缩摘要文本
+- 卡片默认折叠，标题直接展示「压缩前 N 条消息 · X 字符 → 压缩后 Y 字符」（来自 `compaction/summary` 载荷的 shadowedSeqs / 插件扩展 shadowedCharCount 与摘要文本长度）；旧会话载荷缺少 shadowedCharCount 时回落为「已压缩 N 条历史记录（约 M tokens）」
+- 点击展开显示压缩摘要文本，按代码块样式呈现（缩小字号、代码背景与等宽字体、保留换行）
 - summary 事件落在当前加载窗口之外时卡片不可展开（不显示空内容）
 - 卡片只认领插件自产的检查点（source.plugin = `dsh-plugin-om`）；宿主 `compact` 检查点仍由宿主自己渲染，不会出现双卡片
 - 平台模块（react / cordis / ui-primitives / ui-slots 等）走宿主冻结模块表（保持 external），其余依赖内联进 bundle
@@ -179,7 +180,7 @@ src/
 src/client/
 ├── index.ts                   # 浏览器客户端入口（exports["./client"] → dist/client.js）：注入 slots/conversationEvents/locale，注册卡片定义与渲染器
 ├── definition.ts              # 压缩卡片业务定义：认领插件生命周期事件与替换检查点（source.plugin = dsh-plugin-om），聚合摘要卡片节点
-├── OmCompactionCard.tsx       # 折叠式压缩卡片渲染器（计数 + summary 展开，MarkdownText 渲染摘要）
+├── OmCompactionCard.tsx       # 折叠式压缩卡片渲染器（统计标题 + 代码块样式 summary 展开）
 └── locales.ts                 # om-compaction 命名空间字典（zh/en）与 LocaleNamespaceMap 声明合并
 models/
 └── paraphrase-multilingual-MiniLM-L12-v2/   # 嵌入模型目录（小文件随包分发；onnx 二进制不随包分发、由运行时按需下载到跨版本共享目录，不进 git）

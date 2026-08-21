@@ -37,6 +37,7 @@ import {
 import type {
   Agent,
   CompactionId,
+  CompactionSummaryPayload,
   Context,
   PluginConfig,
   Session,
@@ -44,7 +45,7 @@ import type {
   TokenUsage,
   UserMessage,
 } from './types.ts';
-import { blocksToText, type RoutedTarget, routedTarget, uuid } from './utils.ts';
+import { blocksToText, type RoutedTarget, routedTarget, textCharCount, uuid } from './utils.ts';
 
 /** 历史文本 token 估算：4 字符 ≈ 1 token（与宿主 dsh-token-meter 启发式一致）。 */
 export function estimateTextTokens(text: string): number {
@@ -87,6 +88,18 @@ function historyTextOf(event: SessionEvent | undefined): string | undefined {
   const rest = text.slice(idx + HISTORY_TAG.length + 1);
   if (!rest.startsWith('>') && !rest.startsWith(' tip=')) return undefined;
   return text;
+}
+/** 提取 <history> 块内文（去掉开/闭标签与首尾空白；非块文本原样返回）。 */
+function historyInnerText(text: string): string {
+  /** 闭标签。 */
+  const closeTag = `</${HISTORY_TAG}>`;
+  const close = text.lastIndexOf(closeTag);
+  if (close === -1) return text;
+  const open = text.indexOf(`<${HISTORY_TAG}`);
+  if (open === -1) return text;
+  const gt = text.indexOf('>', open);
+  if (gt === -1 || gt >= close) return text;
+  return text.slice(gt + 1, close).trim();
 }
 
 /** token 估算器的结构类型（仅需 estimateMessage；避免依赖完整 TokenMeter 接口）。 */
@@ -249,23 +262,28 @@ function appendCompactionSummary(
     shadowedRange: { start: number; end: number };
     shadowedSeqs: number[];
     shadowedTokenCount: number;
+    /** 被压缩内容的字符数（压缩前文本长度合计；UI 标题统计用）。 */
+    shadowedCharCount: number;
     provider: string;
     model: string;
     maxTokens: number;
     usage?: TokenUsage;
   },
 ): number {
-  return session.append('compaction/summary', {
+  /** summary 事件载荷（宿主类型 + 插件扩展 shadowedCharCount；宿主 append 不做 schema 剥离，扩展字段原样持久化）。 */
+  const payload: CompactionSummaryPayload = {
     compactionId: data.lifecycle.compactionId,
     summary: [{ type: 'text', text: data.summary }],
     shadowedRange: data.shadowedRange,
     shadowedSeqs: data.shadowedSeqs,
     shadowedTokenCount: data.shadowedTokenCount,
+    shadowedCharCount: data.shadowedCharCount,
     provider: data.provider,
     model: data.model,
     maxTokens: data.maxTokens,
     ...(data.usage === undefined ? {} : { usage: data.usage }),
-  }).seq;
+  };
+  return session.append('compaction/summary', payload).seq;
 }
 
 /** 追加 compaction/end（log-only，结束生命周期；error 记录失败原因）。 */
@@ -328,6 +346,11 @@ export async function reflectPass(
   const threshold = Math.floor(window * config.historyMergeRatio);
   /** 全部块 token 估算合计（摘要总长）。 */
   const tokens = blocks.reduce((total, block) => total + estimateTextTokens(block.text), 0);
+  /** 被压缩块区段的字符数合计（压缩前内文长度；UI 标题统计用，与观察路径一致只计内容不计标签）。 */
+  const shadowedCharCount = blocks.reduce(
+    (total, block) => total + historyInnerText(block.text).length,
+    0,
+  );
   if (tokens < threshold) {
     logger.step(`反思：摘要 ${tokens} tokens < 阈值 ${threshold}，跳过`);
     return;
@@ -387,6 +410,7 @@ export async function reflectPass(
       shadowedRange: { start: first.seq, end: last.seq },
       shadowedSeqs: blockSeqs,
       shadowedTokenCount: tokens,
+      shadowedCharCount,
       provider: target.provider,
       model: target.model,
       maxTokens: config.compressMaxTokens,
@@ -515,6 +539,14 @@ export async function observePass(
     const message = event ? session.deriveEventMessage(event) : null;
     return total + (message ? ctx.tokenMeter.estimateMessage(message) : 0);
   }, 0);
+  /** 被替换消息的字符数合计（压缩前文本长度；UI 标题统计用，递归计入 tool-result 内嵌文本）。 */
+  const shadowedCharCount = replaceSeqs.reduce((total, seq) => {
+    /** 当前表层事件。 */
+    const event = session.events[seq];
+    /** 事件对应的消息（取文本块字符数）。 */
+    const message = event ? session.deriveEventMessage(event) : null;
+    return total + (message ? textCharCount(message) : 0);
+  }, 0);
   /** 本次压缩生命周期（compactionId + 当前轮次；摘要成功后才写入日志）。 */
   const lifecycle: CompactionLifecycle = {
     compactionId: newCompactionId(),
@@ -531,6 +563,7 @@ export async function observePass(
       shadowedRange: { start: replaceStart, end: range.end },
       shadowedSeqs: replaceSeqs,
       shadowedTokenCount,
+      shadowedCharCount,
       provider: target.provider,
       model: target.model,
       maxTokens: config.compressMaxTokens,

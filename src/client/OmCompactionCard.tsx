@@ -11,7 +11,6 @@ import {
   IconApiOutline14,
   IconChevronDownOutline14,
   IconChevronRightOutline14,
-  MarkdownText,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots';
 import type { CSSProperties } from 'react';
@@ -23,21 +22,29 @@ export interface OmCompactionCardProps {
   readonly t: TranslateNS<'om-compaction'>;
 }
 
-/** 折叠式压缩卡片（计数 + summary 展开）。 */
+/** 折叠式压缩卡片（统计标题 + summary 代码块展开）。 */
 export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCompactionCardProps) {
   const [expanded, setExpanded] = useState(false);
   const { data } = node;
   const expandable = data.summary !== null;
   const open = expandable && expanded;
   const summary =
-    data.shadowedItemCount !== null && data.shadowedTokenCount !== null
-      ? t('compaction.completed', {
+    data.shadowedItemCount !== null &&
+    data.shadowedCharCount !== null &&
+    data.summaryCharCount !== null
+      ? t('compaction.stats', {
           items: data.shadowedItemCount,
-          tokens: data.shadowedTokenCount,
+          beforeChars: data.shadowedCharCount,
+          afterChars: data.summaryCharCount,
         })
-      : expandable
-        ? t('compaction.expand')
-        : t('compaction.unavailable');
+      : data.shadowedItemCount !== null && data.shadowedTokenCount !== null
+        ? t('compaction.completed', {
+            items: data.shadowedItemCount,
+            tokens: data.shadowedTokenCount,
+          })
+        : expandable
+          ? t('compaction.expand')
+          : t('compaction.unavailable');
   return (
     <div style={styles.row}>
       <button
@@ -61,11 +68,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCo
         <span style={styles.sep} aria-hidden />
         <span style={styles.summary}>{summary}</span>
       </button>
-      {open && data.summary !== null && (
-        <div style={styles.body}>
-          <MarkdownText text={data.summary} />
-        </div>
-      )}
+      {open && data.summary !== null && <pre style={styles.body}>{data.summary}</pre>}
     </div>
   );
 });
@@ -91,5 +94,19 @@ const styles: Record<string, CSSProperties> = {
   title: { fontWeight: 600 },
   sep: { flex: 1, borderTop: '1px solid var(--dsh-border, #e3e8ef)' },
   summary: { color: 'var(--dsh-fg-muted, #9aa4b2)', fontSize: 12 },
-  body: { padding: '6px 4px 10px', borderTop: '1px solid var(--dsh-border, #e3e8ef)' },
+  body: {
+    margin: '0 0 10px',
+    padding: '8px 12px',
+    background: 'var(--dsw-alias-markdown-code-block, #f6f8fa)',
+    color: 'var(--dsw-alias-label-secondary, #24292f)',
+    fontFamily:
+      'var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace)',
+    fontSize: 12,
+    lineHeight: 1.6,
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    borderRadius: 8,
+    border: '1px solid var(--dsh-border, #e3e8ef)',
+    overflowX: 'auto',
+  },
 };
