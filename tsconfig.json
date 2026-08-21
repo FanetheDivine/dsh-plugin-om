@@ -3,7 +3,7 @@
     "target": "es2024",
     "module": "esnext",
     "moduleResolution": "bundler",
-    "lib": ["es2024"],
+    "lib": ["es2024", "dom"],
     "types": ["node"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -15,11 +15,11 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "isolatedModules": true,
+    "jsx": "react-jsx",
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": true,
     "forceConsistentCasingInFileNames": true,
     "noEmit": true
   },
-  "include": ["src", "tests", "vitest.config.ts", "tsdown.config.ts"],
-  "exclude": ["src/client"]
+  "include": ["src", "tests", "vitest.config.ts", "tsdown.config.ts"]
 }

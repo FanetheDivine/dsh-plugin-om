@@ -56,7 +56,7 @@
     "download:model": "node scripts/download-model.mjs",
     "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run build",
     "release": "pnpm check && pnpm format && npm version patch && node scripts/release-archive.mjs && git push && git push --tags",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.client.json",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build:types": "tsc -p tsconfig.build.json",
     "lint": "biome check .",
