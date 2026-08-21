@@ -88,6 +88,15 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 - 输出经 `@xmldom/xmldom` 解析校验：结构合法（标签匹配/闭合/单块）、不含 <reasoning>、index/start/end 连续（与预期覆盖区间一致），失败按 `compressRetryCount` 重试
 - 块开标签带 `tip` 属性（对 AI 的提醒："当前块是历史消息的压缩产物，不要复述"）；块顶为构成逻辑注释（完整消息定义串 + 条目标签语义），消息正文不再附加前缀句
 
+### 压缩卡片（消息列表中的「已压缩」展示）
+
+插件自产的替换消息使用插件自身标记（source.plugin = `dsh-plugin-om`）；宿主 conversation UI 只识别内置的 `compact` 检查点，因此插件额外注册一个浏览器客户端 bundle（`src/client/`，经 `dsh.client` 声明、exports["./client"] → `dist/client.js`，由 dsh 客户端模块系统按 `/plugins/dsh-plugin-om/client.js` 加载），自行认领压缩生命周期事件与替换检查点，在消息列表渲染折叠式「已压缩」卡片：
+
+- 卡片默认折叠，展示「已压缩 N 条历史记录（约 M tokens）」（来自 `compaction/summary` 载荷的 shadowedSeqs / shadowedTokenCount）；点击展开显示压缩摘要文本
+- summary 事件落在当前加载窗口之外时卡片不可展开（不显示空内容）
+- 卡片只认领插件自产的检查点（source.plugin = `dsh-plugin-om`）；宿主 `compact` 检查点仍由宿主自己渲染，不会出现双卡片
+- 平台模块（react / cordis / ui-primitives / ui-slots 等）走宿主冻结模块表（保持 external），其余依赖内联进 bundle
+
 ### 注意
 
 - 未压缩消息的 token 统计排除系统消息（user_message 中 source.kind 非 user 的部分，如宿主注入的上下文；宿主注入的提醒不计入观察阈值的触发量）
@@ -98,6 +107,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 - dsh宿主提供的依赖，直接复用即可，如 cordis / dsh-tools / zod 等
 - `@xmldom/xmldom` 用于 <history> 块的 XML 构建（输入转义）与解析校验（输出结构合法性），经 tsdown `deps.alwaysBundle` 打包进 dist 产物
+- 浏览器客户端 bundle（`src/client/` → `dist/client.js`）复用宿主冻结模块表：react / cordis / @deepseek-ai/dsh-client-ui-primitives / dsh-client-ui-slots 等平台种子与 runtime/client 豁免保持 external，其余依赖内联；相关 @deepseek-ai/dsh-client-* 仅作 devDependencies（类型与构建期使用）
 - 向量模型模型二进制：量化 ONNX 约 113MB，启用语义召回时下载，位置`$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>/onnx/model_quantized.onnx`。下载失败可以设置`HF_ENDPOINT=https://hf-mirror.com`
 
 ## 插件配置项
@@ -166,10 +176,15 @@ src/
 ├── recall.ts                 # recall 工具
 ├── semantic-recall.ts        # recall-semantic 工具（query 语义检索 + 区间限定 + 回退全量 + 匹配说明）
 └── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / source 标记判定摘要消息 / compaction/* 生命周期事件 + 替换消息 source 插件标识）
+src/client/
+├── index.ts                   # 浏览器客户端入口（exports["./client"] → dist/client.js）：注入 slots/conversationEvents/locale，注册卡片定义与渲染器
+├── definition.ts              # 压缩卡片业务定义：认领插件生命周期事件与替换检查点（source.plugin = dsh-plugin-om），聚合摘要卡片节点
+├── OmCompactionCard.tsx       # 折叠式压缩卡片渲染器（计数 + summary 展开，MarkdownText 渲染摘要）
+└── locales.ts                 # om-compaction 命名空间字典（zh/en）与 LocaleNamespaceMap 声明合并
 models/
 └── paraphrase-multilingual-MiniLM-L12-v2/   # 嵌入模型目录（小文件随包分发；onnx 二进制不随包分发、由运行时按需下载到跨版本共享目录，不进 git）
 scripts/                      # release-archive.mjs（CHANGELOG 归档）/ download-model.mjs（开发手动预下载 CLI）
-tests/                        # vitest 单元测试（151 例）
+tests/                        # vitest 单元测试（服务端 src 各模块 + tests/client/ 客户端卡片定义）
 .dsh/skills/                  # 项目级 skill（feature-defect-workflow：需求/缺陷完成工作流）
 ```
 
