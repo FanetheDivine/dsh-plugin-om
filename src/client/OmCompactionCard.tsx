@@ -11,28 +11,25 @@
  * 事件；窗口裁剪把该事件留在窗外时，行不可展开而不是显示空内容。
  */
 
-import type { ChatNode } from "@deepseek-ai/dsh-client-ui-conversation/client";
-import {
-  DisclosureRow,
-  IconBrowseOutline16,
-} from "@deepseek-ai/dsh-client-ui-primitives";
-import type { TranslateNS } from "@deepseek-ai/dsh-client-ui-slots";
-import type { CSSProperties } from "react";
-import { memo, useState } from "react";
+import type { ChatNode } from '@deepseek-ai/dsh-client-ui-conversation/client';
+import { DisclosureRow, IconBrowseOutline16 } from '@deepseek-ai/dsh-client-ui-primitives';
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots';
+import type { CSSProperties } from 'react';
+import { memo, useState } from 'react';
 
 /** Keyed renderer props: 装配好的卡片节点 + 绑定 `om-compaction` 命名空间的 locale 座。 */
 export interface OmCompactionCardProps {
-  readonly node: ChatNode<"om-compaction">;
-  readonly t: TranslateNS<"om-compaction">;
+  readonly node: ChatNode<'om-compaction'>;
+  readonly t: TranslateNS<'om-compaction'>;
 }
 
 /** 卡片样式类名（与宿主 ContextInjectionRow.module.css 同款规则，见下方注册）。 */
 const css = {
-  root: "om-compaction-root",
-  chevron: "om-compaction-chevron",
-  sep: "om-compaction-sep",
-  summary: "om-compaction-summary",
-  body: "om-compaction-body",
+  root: 'om-compaction-root',
+  chevron: 'om-compaction-chevron',
+  sep: 'om-compaction-sep',
+  summary: 'om-compaction-summary',
+  body: 'om-compaction-body',
 } as const;
 
 /** 宿主 ContextInjectionRow.module.css 的规则（逐字一致，仅类名按插件前缀）。 */
@@ -47,20 +44,17 @@ const cardCss = `
 
 /** 注册卡片样式（与宿主 client bundle 同机制；无 document 的环境如 node 测试直接跳过）。 */
 if (
-  typeof document !== "undefined" &&
-  document.querySelector("style[data-dsh-plugin-om-card]") === null
+  typeof document !== 'undefined' &&
+  document.querySelector('style[data-dsh-plugin-om-card]') === null
 ) {
-  const tag = document.createElement("style");
-  tag.dataset.dshPluginOmCard = "true";
+  const tag = document.createElement('style');
+  tag.dataset.dshPluginOmCard = 'true';
   tag.textContent = cardCss;
   document.head.appendChild(tag);
 }
 
 /** 折叠式压缩卡片（统计标题行 + 代码块样式 summary 展开，同「上下文注入」卡片）。 */
-export const OmCompactionCard = memo(function OmCompactionCard({
-  node,
-  t,
-}: OmCompactionCardProps) {
+export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCompactionCardProps) {
   const [expanded, setExpanded] = useState(false);
   const { data } = node;
   const expandable = data.summary !== null;
@@ -71,7 +65,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({
     data.shadowedTokenCount !== null &&
     data.summaryCharCount !== null &&
     data.summaryTokenCount !== null
-      ? t("compaction.stats", {
+      ? t('compaction.stats', {
           items: data.shadowedItemCount,
           beforeChars: data.shadowedCharCount,
           beforeTokens: data.shadowedTokenCount,
@@ -79,20 +73,20 @@ export const OmCompactionCard = memo(function OmCompactionCard({
           afterTokens: data.summaryTokenCount,
         })
       : data.shadowedItemCount !== null && data.shadowedTokenCount !== null
-        ? t("compaction.completed", {
+        ? t('compaction.completed', {
             items: data.shadowedItemCount,
             tokens: data.shadowedTokenCount,
           })
         : expandable
-          ? t("compaction.expand")
-          : t("compaction.unavailable");
+          ? t('compaction.expand')
+          : t('compaction.unavailable');
   return (
     <div style={styles.row}>
       <DisclosureRow
         className={css.root}
         icon={<IconBrowseOutline16 size={14} />}
         chevronClassName={css.chevron}
-        title={t("compaction")}
+        title={t('compaction')}
         collapsedContent={
           <>
             <span className={css.sep} aria-hidden />
@@ -122,5 +116,5 @@ export const OmCompactionCard = memo(function OmCompactionCard({
 const styles: Record<string, CSSProperties> = {
   row: {},
   /** 摘要为 <history> 文本，保留换行（宿主 body 的白色空间由内容形态各自处理）。 */
-  body: { whiteSpace: "pre-wrap" },
+  body: { whiteSpace: 'pre-wrap' },
 };
