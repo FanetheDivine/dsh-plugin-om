@@ -100,4 +100,16 @@ export type CompleteMessage = {
 export type CompactionSummaryPayload = SessionEventMap['compaction/summary'] & {
   /** 被压缩内容的字符数（压缩前文本长度合计；UI 标题统计用），旧载荷可能缺失。 */
   shadowedCharCount?: number;
+  /** 摘要调用成功时的尝试次数（1 起；重试次数 = attemptCount - 1，UI 展示用），旧载荷可能缺失。 */
+  attemptCount?: number;
+};
+
+/**
+ * 插件扩展的 compaction/start 载荷：宿主类型 + phase（压缩 pass）。
+ * 宿主 append 不做 schema 剥离，扩展字段原样持久化；客户端读取时按可选处理，
+ * 缺失（旧版本会话）回落通用压缩中文案。
+ */
+export type CompactionStartPayload = SessionEventMap['compaction/start'] & {
+  /** 压缩 pass（观察/反思；UI 压缩中提示行区分文案）。 */
+  phase: 'observe' | 'reflect';
 };

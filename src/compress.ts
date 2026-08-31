@@ -16,8 +16,9 @@
  * 替换 <history> 消息 → compaction/end），使消息记录（聊天视图压缩卡片）与轨迹视图
  * 可见；compaction/summary 同时承担影子价格认领（shadowedTokenCount），不再单独发
  * compaction/prune。替换消息的 source 使用插件标识（plugin: 'dsh-plugin-om' +
- * compactionId），UI 据此关联 summary 与替换消息。生命周期事件在摘要成功后才写入
- * （失败不产生任何日志变更）。
+ * compactionId），UI 据此关联 summary 与替换消息。compaction/start 在摘要调用前追加
+ * （UI 压缩中提示行的开启标记，载荷带 phase 区分观察/反思）；摘要失败/无输出或提交
+ * 失败时追加 compaction/end(error) 结束生命周期（失败不产生替换消息）。
  *
  * 观察区间：pre-step 触发时日志 call-result 完备，区间不再受 turn/end 封顶——压缩边界 →
  * 表层长度-1-tailCount（尾部保留 config.tailMessageCount 条不压缩），当前 turn 中已
@@ -37,6 +38,7 @@ import {
 import type {
   Agent,
   CompactionId,
+  CompactionStartPayload,
   CompactionSummaryPayload,
   Context,
   PluginConfig,
@@ -246,8 +248,18 @@ type CompactionLifecycle = {
 };
 
 /** 追加 compaction/start（log-only：仅标记生命周期开始，不进入表层），返回事件 seq。 */
-function appendCompactionStart(session: Session, lifecycle: CompactionLifecycle): number {
-  return session.append('compaction/start', lifecycle).seq;
+function appendCompactionStart(
+  session: Session,
+  lifecycle: CompactionLifecycle,
+  phase: 'observe' | 'reflect',
+): number {
+  /** start 事件载荷（宿主类型 + 插件扩展 phase；宿主 append 不做 schema 剥离，扩展字段原样持久化）。 */
+  const payload: CompactionStartPayload = {
+    compactionId: lifecycle.compactionId,
+    turn: lifecycle.turn,
+    phase,
+  };
+  return session.append('compaction/start', payload).seq;
 }
 
 /**
@@ -267,10 +279,12 @@ function appendCompactionSummary(
     provider: string;
     model: string;
     maxTokens: number;
+    /** 摘要调用成功时的尝试次数（1 起；UI 重试次数 = 该值 - 1）。 */
+    attemptCount: number;
     usage?: TokenUsage;
   },
 ): number {
-  /** summary 事件载荷（宿主类型 + 插件扩展 shadowedCharCount；宿主 append 不做 schema 剥离，扩展字段原样持久化）。 */
+  /** summary 事件载荷（宿主类型 + 插件扩展 shadowedCharCount/attemptCount；宿主 append 不做 schema 剥离，扩展字段原样持久化）。 */
   const payload: CompactionSummaryPayload = {
     compactionId: data.lifecycle.compactionId,
     summary: [{ type: 'text', text: data.summary }],
@@ -281,6 +295,7 @@ function appendCompactionSummary(
     provider: data.provider,
     model: data.model,
     maxTokens: data.maxTokens,
+    attemptCount: data.attemptCount,
     ...(data.usage === undefined ? {} : { usage: data.usage }),
   };
   return session.append('compaction/summary', payload).seq;
@@ -373,6 +388,20 @@ export async function reflectPass(
   const contextText = blocks.map((block) => block.text).join('\n');
   /** 反思输出应覆盖输入块引用的全部 index（解析输入条目取最大 end；无条目则只校验起点）。 */
   const expectedEnd = reflectExpectedEnd(contextText);
+  /** 本次压缩生命周期（compactionId + 当前轮次；start 在摘要调用前开启，UI 压缩中提示）。 */
+  const lifecycle: CompactionLifecycle = {
+    compactionId: newCompactionId(),
+    turn: openTurnOf(session),
+  };
+  try {
+    logger.step('反思：追加 compaction/start（摘要调用前开启压缩中提示）');
+    appendCompactionStart(session, lifecycle, 'reflect');
+  } catch (error) {
+    /** 启动失败信息（统一字符串）。 */
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`反思压缩启动失败: ${message}`);
+    return;
+  }
   /** 反思摘要结果（null 表示失败/跳过）。 */
   const summaryResult = await runSummarySubagent(
     ctx,
@@ -389,19 +418,17 @@ export async function reflectPass(
     },
   );
   if (summaryResult === null || summaryResult.text.trim().length === 0) {
-    logger.step('反思：摘要调用失败/无输出，不产生替换');
+    logger.step('反思：摘要调用失败/无输出，追加 compaction/end(error)');
+    try {
+      appendCompactionEnd(session, lifecycle, '摘要调用失败/无输出');
+    } catch {
+      /* end 追加失败忽略（start 已记录，日志仍可诊断） */
+    }
     return;
   }
   /** 反思摘要文本。 */
   const report = summaryResult.text;
-  /** 本次压缩生命周期（compactionId + 当前轮次；摘要成功后才写入日志）。 */
-  const lifecycle: CompactionLifecycle = {
-    compactionId: newCompactionId(),
-    turn: openTurnOf(session),
-  };
   try {
-    logger.step('反思提交：追加 compaction/start');
-    appendCompactionStart(session, lifecycle);
     logger.step('反思提交：追加 compaction/summary（影子价格认领）');
     /** compaction/summary 事件 seq（承担影子价格认领，紧随其后的替换消息消费）。 */
     const summarySeq = appendCompactionSummary(session, {
@@ -414,6 +441,7 @@ export async function reflectPass(
       provider: target.provider,
       model: target.model,
       maxTokens: config.compressMaxTokens,
+      attemptCount: summaryResult.attemptCount,
       ...(summaryResult.usage === undefined ? {} : { usage: summaryResult.usage }),
     });
     logger.step('反思提交：替换整个 <history> 块区段为合并摘要');
@@ -513,6 +541,20 @@ export async function observePass(
   const instruction = buildHistoryPrompt();
   /** 渲染输入：本次要压缩的完整消息（合法 <history> 块，含绝对 index；不含尾部；系统消息渲染为 <sys> 空块，本插件自产消息不占位）。 */
   const contextText = renderMessages(session, replaceSeqs);
+  /** 本次压缩生命周期（compactionId + 当前轮次；start 在摘要调用前开启，UI 压缩中提示）。 */
+  const lifecycle: CompactionLifecycle = {
+    compactionId: newCompactionId(),
+    turn: openTurnOf(session),
+  };
+  try {
+    logger.step('观察：追加 compaction/start（摘要调用前开启压缩中提示）');
+    appendCompactionStart(session, lifecycle, 'observe');
+  } catch (error) {
+    /** 启动失败信息（统一字符串）。 */
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`观察压缩启动失败: ${message}`);
+    return;
+  }
   /** 观察摘要结果（null 表示失败/跳过）。 */
   const summaryResult = await runSummarySubagent(
     ctx,
@@ -526,7 +568,12 @@ export async function observePass(
     { maxAttempts: config.compressRetryCount + 1, expected: { start: startIndex, end: endIndex } },
   );
   if (summaryResult === null || summaryResult.text.trim().length === 0) {
-    logger.step('观察：摘要调用失败/无输出，不产生替换');
+    logger.step('观察：摘要调用失败/无输出，追加 compaction/end(error)');
+    try {
+      appendCompactionEnd(session, lifecycle, '摘要调用失败/无输出');
+    } catch {
+      /* end 追加失败忽略（start 已记录，日志仍可诊断） */
+    }
     return;
   }
   /** 观察摘要文本（独立新块；旧块保留，不再合并）。 */
@@ -547,14 +594,7 @@ export async function observePass(
     const message = event ? session.deriveEventMessage(event) : null;
     return total + (message ? textCharCount(message) : 0);
   }, 0);
-  /** 本次压缩生命周期（compactionId + 当前轮次；摘要成功后才写入日志）。 */
-  const lifecycle: CompactionLifecycle = {
-    compactionId: newCompactionId(),
-    turn: openTurnOf(session),
-  };
   try {
-    logger.step('观察提交：追加 compaction/start');
-    appendCompactionStart(session, lifecycle);
     logger.step('观察提交：追加 compaction/summary（影子价格认领）');
     /** compaction/summary 事件 seq（承担影子价格认领，紧随其后的替换消息消费）。 */
     const summarySeq = appendCompactionSummary(session, {
@@ -567,6 +607,7 @@ export async function observePass(
       provider: target.provider,
       model: target.model,
       maxTokens: config.compressMaxTokens,
+      attemptCount: summaryResult.attemptCount,
       ...(summaryResult.usage === undefined ? {} : { usage: summaryResult.usage }),
     });
     logger.step('观察提交：替换被压缩新消息区间为 <history>（旧块保留）');
