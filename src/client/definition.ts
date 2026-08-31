@@ -32,6 +32,10 @@ declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
 
 /** 压缩卡片载荷：摘要文本与遮蔽统计（seq/time 由节点本体提供，不重复存放）。 */
 export interface OmCompactionChatData {
+  /** 压缩进行中（compaction/start 已到、checkpoint/end 未到）：渲染为「正在压缩上下文…」提示行。 */
+  readonly running: boolean;
+  /** 压缩 pass（观察/反思；来自 start 事件载荷的插件扩展，缺失或非运行态为 null）。 */
+  readonly phase: 'observe' | 'reflect' | null;
   /** compaction/summary 的文本摘要；窗口裁剪把该事件留在窗外时为 null（卡片不可展开）。 */
   readonly summary: string | null;
   /** 已载入的 compaction/summary 事件 seq，窗外时为 null。 */
@@ -46,12 +50,16 @@ export interface OmCompactionChatData {
   readonly summaryCharCount: number | null;
   /** 压缩后的估算 token 数（4 字符 ≈ 1 token，与服务端 estimateTextTokens 同一启发式），summary 不可用或非法时为 null。 */
   readonly summaryTokenCount: number | null;
+  /** 摘要调用重试次数（= 载荷 attemptCount - 1；载荷缺失或非法时为 null）。 */
+  readonly retryCount: number | null;
 }
 
-/** 压缩生命周期关联状态：summary / checkpoint 事件证据。 */
+/** 压缩生命周期关联状态：summary / checkpoint / end 事件证据。 */
 interface OmCompactionState {
   readonly summary?: ConversationMatch;
   readonly checkpoint?: ConversationMatch;
+  /** compaction/end（成功与失败都会到达；无 checkpoint 的 end 表示压缩失败，撤回进行中提示行）。 */
+  readonly end?: ConversationMatch;
 }
 
 /**
@@ -96,6 +104,7 @@ function compactSummaryData(summaryMatch: ConversationMatch | undefined): OmComp
   let shadowedItemCount: number | null = null;
   let shadowedTokenCount: number | null = null;
   let shadowedCharCount: number | null = null;
+  let retryCount: number | null = null;
   if (summaryMatch?.event.type === 'compaction/summary') {
     // 宿主载荷类型是 union 且不含插件扩展字段，读取处收窄为插件扩展类型
     const data = summaryMatch.event.data as CompactionSummaryPayload;
@@ -118,8 +127,16 @@ function compactSummaryData(summaryMatch: ConversationMatch | undefined): OmComp
       data.shadowedCharCount >= 0
         ? data.shadowedCharCount
         : null;
+    retryCount =
+      data.attemptCount !== undefined &&
+      Number.isSafeInteger(data.attemptCount) &&
+      data.attemptCount >= 1
+        ? data.attemptCount - 1
+        : null;
   }
   return {
+    running: false,
+    phase: null,
     summary,
     summaryEventSeq: summaryMatch?.event.seq ?? null,
     shadowedItemCount,
@@ -127,18 +144,41 @@ function compactSummaryData(summaryMatch: ConversationMatch | undefined): OmComp
     shadowedCharCount,
     summaryCharCount: summary === null ? null : summary.length,
     summaryTokenCount: summary === null ? null : Math.ceil(summary.length / 4),
+    retryCount,
   };
 }
 
-/** 窗口只载入检查点（生命周期事件在窗外）时的回落证据扫描。 */
+/** 压缩进行中提示行的载荷（统计未就绪，全部为 null；phase 取自 start 事件载荷扩展，缺失回退 null）。 */
+function runningData(start: ConversationMatch | undefined): OmCompactionChatData {
+  /** start 事件载荷（phase 为插件扩展；非法值回退 null）。 */
+  const data = start?.event.data as { phase?: unknown } | undefined;
+  /** 合法 phase（观察/反思）。 */
+  const phase = data?.phase === 'observe' || data?.phase === 'reflect' ? data.phase : null;
+  return {
+    running: true,
+    phase,
+    summary: null,
+    summaryEventSeq: null,
+    shadowedItemCount: null,
+    shadowedTokenCount: null,
+    shadowedCharCount: null,
+    summaryCharCount: null,
+    summaryTokenCount: null,
+    retryCount: null,
+  };
+}
+
+/** 窗口只载入部分事件时的回落证据扫描（summary / 检查点 / end 各自独立）。 */
 function fallbackState(context: ConversationNodeContext<OmCompactionState>): OmCompactionState {
   const summary = context.matches.find((match) => match.event.type === 'compaction/summary');
   const checkpoint = context.matches.find(
     (match) => checkpointCompactionId(match.event) !== undefined,
   );
+  const end = context.matches.find((match) => match.event.type === 'compaction/end');
   return {
     ...(summary === undefined ? {} : { summary }),
     ...(checkpoint === undefined ? {} : { checkpoint }),
+    ...(end === undefined ? {} : { end }),
   };
 }
 
@@ -148,6 +188,7 @@ function chatNode<Kind extends keyof ChatNodeDataMap & string>(
   kind: Kind,
   anchorSeq: number,
   data: ChatNodeDataMap[Kind],
+  visibility: 'visible' | 'hidden' = 'visible',
 ): ChatNode<Kind> {
   return {
     key: context.key,
@@ -156,7 +197,7 @@ function chatNode<Kind extends keyof ChatNodeDataMap & string>(
     target: 'chat',
     anchorSeq,
     location: context.start?.location ?? context.matches[0]?.location ?? { kind: 'unresolved' },
-    visibility: 'visible',
+    visibility,
     data,
   };
 }
@@ -185,14 +226,39 @@ export const omCompactionDefinition: ConversationNodeDefinition<OmCompactionStat
   start: () => ({}),
   update: (context, match) => {
     if (match.event.type === 'compaction/summary') return { ...context.state, summary: match };
+    if (match.event.type === 'compaction/end') return { ...context.state, end: match };
     if (checkpointCompactionId(match.event) !== undefined)
       return { ...context.state, checkpoint: match };
     return context.state;
   },
   buildViewNode: (context) => {
     const state = context.state ?? fallbackState(context);
-    if (state.checkpoint === undefined) return null;
-    const data = compactSummaryData(state.summary);
-    return chatNode(context, COMPACTION_CARD_KIND, state.checkpoint.event.seq, data);
+    // 替换检查点已到达 → 压缩完成，渲染摘要卡片（摘要统计就绪）
+    if (state.checkpoint !== undefined) {
+      const data = compactSummaryData(state.summary);
+      return chatNode(context, COMPACTION_CARD_KIND, state.checkpoint.event.seq, data);
+    }
+    // end 已到达但无检查点 → 压缩失败/中止：撤回进行中提示行——
+    // 已物化节点不能撤回，以 hidden visibility 保留同一 key（聊天视图按可见节点过滤，行从消息流消失）
+    if (state.end !== undefined) {
+      const anchorSeq = context.start?.event.seq ?? state.end.event.seq;
+      return chatNode(
+        context,
+        COMPACTION_CARD_KIND,
+        anchorSeq,
+        runningData(context.start),
+        'hidden',
+      );
+    }
+    // start 已到、checkpoint/end 未到 → 压缩进行中，渲染「正在压缩上下文…」提示行
+    if (context.start !== undefined) {
+      return chatNode(
+        context,
+        COMPACTION_CARD_KIND,
+        context.start.event.seq,
+        runningData(context.start),
+      );
+    }
+    return null;
   },
 };
