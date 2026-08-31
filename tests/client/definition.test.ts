@@ -169,6 +169,14 @@ describe('omCompactionDefinition.update', () => {
     );
     expect(afterCheckpoint).toEqual({ summary, checkpoint });
   });
+
+  it('折叠 compaction/end 证据（压缩失败时撤回提示行）', () => {
+    const end = matchOf(
+      lifecycle('compaction/end', 9, { compactionId: 'om-1', error: '摘要调用失败/无输出' }),
+    );
+    const after = omCompactionDefinition.update({ ...contextOf([]), state: {} }, end);
+    expect(after).toEqual({ end });
+  });
 });
 
 describe('omCompactionDefinition.buildViewNode', () => {
@@ -197,6 +205,7 @@ describe('omCompactionDefinition.buildViewNode', () => {
         shadowedSeqs: [2, 3, 4],
         shadowedTokenCount: 1234,
         shadowedCharCount: 5000,
+        attemptCount: 1,
       }),
     );
     const state = { summary, checkpoint };
@@ -215,6 +224,9 @@ describe('omCompactionDefinition.buildViewNode', () => {
         shadowedCharCount: 5000,
         summaryCharCount: 16,
         summaryTokenCount: 4,
+        running: false,
+        phase: null,
+        retryCount: 0, // 首次尝试即成功
       },
     });
   });
@@ -299,5 +311,95 @@ describe('omCompactionDefinition.buildViewNode', () => {
       summaryCharCount: 4,
       summaryTokenCount: 1,
     });
+  });
+
+  it('start 已到、checkpoint/end 未到：渲染压缩中提示行（running + phase）', () => {
+    const start = matchOf(
+      lifecycle('compaction/start', 5, { compactionId: 'om-1', turn: 1, phase: 'observe' }),
+      'start',
+    );
+    const node = omCompactionDefinition.buildViewNode?.(contextOf([start], {}));
+    expect(node).not.toBeNull();
+    expect(node).toMatchObject({
+      kind: 'om-compaction',
+      target: 'chat',
+      anchorSeq: 5,
+      visibility: 'visible',
+      data: {
+        running: true,
+        phase: 'observe',
+        summary: null,
+        summaryEventSeq: null,
+        shadowedItemCount: null,
+        shadowedTokenCount: null,
+        shadowedCharCount: null,
+        summaryCharCount: null,
+        summaryTokenCount: null,
+        retryCount: null,
+      },
+    });
+  });
+
+  it('start 载荷缺 phase（旧版本会话）时 phase 回落为 null', () => {
+    const start = matchOf(
+      lifecycle('compaction/start', 5, { compactionId: 'om-1', turn: 1 }),
+      'start',
+    );
+    const node = omCompactionDefinition.buildViewNode?.(contextOf([start], {}));
+    expect(node?.data).toMatchObject({ running: true, phase: null });
+  });
+
+  it('end 无检查点（压缩失败）：以 hidden visibility 撤回提示行', () => {
+    const start = matchOf(
+      lifecycle('compaction/start', 5, { compactionId: 'om-1', turn: 1, phase: 'reflect' }),
+      'start',
+    );
+    const end = matchOf(
+      lifecycle('compaction/end', 9, { compactionId: 'om-1', error: '摘要调用失败/无输出' }),
+    );
+    const state = { end };
+    const node = omCompactionDefinition.buildViewNode?.(contextOf([start, end], state));
+    expect(node).not.toBeNull();
+    expect(node).toMatchObject({
+      kind: 'om-compaction',
+      anchorSeq: 5,
+      visibility: 'hidden',
+      data: { running: true, phase: 'reflect' },
+    });
+  });
+
+  it('summary 载荷 attemptCount 3 → retryCount 2', () => {
+    const summary = matchOf(
+      lifecycle('compaction/summary', 6, {
+        compactionId: 'om-1',
+        summary: [{ type: 'text', text: '重试后成功' }],
+        shadowedSeqs: [1],
+        shadowedTokenCount: 9,
+        shadowedCharCount: 88,
+        attemptCount: 3,
+      }),
+    );
+    const state = { summary, checkpoint };
+    const node = omCompactionDefinition.buildViewNode?.(contextOf([summary, checkpoint], state));
+    expect(node).not.toBeNull();
+    expect(node?.data).toMatchObject({
+      retryCount: 2,
+      running: false,
+      phase: null,
+    });
+  });
+
+  it('旧载荷无 attemptCount（首版插件）时 retryCount 为 null', () => {
+    const summary = matchOf(
+      lifecycle('compaction/summary', 6, {
+        compactionId: 'om-1',
+        summary: [{ type: 'text', text: '旧版摘要' }],
+        shadowedSeqs: [1, 2],
+        shadowedTokenCount: 42,
+      }),
+    );
+    const state = { summary, checkpoint };
+    const node = omCompactionDefinition.buildViewNode?.(contextOf([summary, checkpoint], state));
+    expect(node?.data).toMatchObject({ retryCount: null });
   });
 });

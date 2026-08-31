@@ -1247,6 +1247,9 @@ describe('apply 接线（OM 观察压缩）', () => {
     const compactionId = startEvent.data.compactionId;
     expect(summaryEvent.data.compactionId).toBe(compactionId);
     expect(endEvent.data.compactionId).toBe(compactionId);
+    // start 携带压缩阶段（UI 压缩中提示按阶段区分文案）；首次尝试即成功 → attemptCount=1
+    expect((startEvent.data as { phase?: string }).phase).toBe('observe');
+    expect((summaryEvent.data as CompactionSummaryPayload).attemptCount).toBe(1);
     // summary 内容 = 完整合并后的 <history> 内文（聊天卡片所见即所得）
     const summaryText = summaryEvent.data.summary
       .map((block) => (block.type === 'text' ? block.text : ''))
@@ -1451,10 +1454,13 @@ describe('apply 接线（OM 观察压缩）', () => {
     apply(ctx, { tailMessageCount: 1, compressRetryCount: 2 }); // 总尝试 3 次
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3); // 无输出视为失败，重试共 3 次
-    // 摘要无输出：不写任何 compaction 生命周期事件，也无部分替换
-    expect(session.events.some((e) => e.type === 'compaction/start')).toBe(false);
+    // 摘要无输出：start 在摘要调用前已开启（UI 压缩中提示），end(error) 关闭生命周期；
+    // 无 summary、无部分替换
+    expect(session.events.some((e) => e.type === 'compaction/start')).toBe(true);
     expect(session.events.some((e) => e.type === 'compaction/summary')).toBe(false);
-    expect(session.events.some((e) => e.type === 'compaction/end')).toBe(false);
+    const failEnd = session.events.findLast((e) => e.type === 'compaction/end');
+    if (failEnd?.type !== 'compaction/end') throw new Error('缺 end');
+    expect((failEnd.data as { error?: string }).error).toContain('摘要调用失败/无输出');
     expect(latestHistoryText(session)).toBe(''); // 无部分替换
     // 失败日志始终输出（含尝试次数与重试耗尽说明）
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
@@ -1483,7 +1489,10 @@ describe('apply 接线（OM 观察压缩）', () => {
     apply(ctx, { tailMessageCount: 1, compressRetryCount: 2 }); // 总尝试 3 次
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3); // 非 stop 结束视为失败，重试共 3 次
-    expect(session.events.some((e) => e.type === 'compaction/start')).toBe(false);
+    // start 提前开启、end(error) 关闭生命周期；无 summary、无替换
+    expect(session.events.some((e) => e.type === 'compaction/start')).toBe(true);
+    expect(session.events.some((e) => e.type === 'compaction/end')).toBe(true);
+    expect(session.events.some((e) => e.type === 'compaction/summary')).toBe(false);
     expect(latestHistoryText(session)).toBe('');
   });
 
@@ -1520,6 +1529,15 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(ctx._llmCalls).toHaveLength(3); // 首次 + 2 次重试
     expect(latestHistoryText(session)).toContain('retried-ok');
     expect(session.events.some((e) => e.type === 'compaction/start')).toBe(true);
+    // start 前置（压缩中提示）且携带阶段；summary 携带成功尝试次数（第 3 次成功）
+    const sIdx = session.events.findIndex((e) => e.type === 'compaction/start');
+    const sEvent = session.events[sIdx];
+    if (sEvent?.type !== 'compaction/start') throw new Error('缺 start');
+    expect((sEvent.data as { phase?: string }).phase).toBe('observe');
+    const smIdx = session.events.findIndex((e) => e.type === 'compaction/summary');
+    const smEvent = session.events[smIdx];
+    if (smEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
+    expect((smEvent.data as CompactionSummaryPayload).attemptCount).toBe(3);
     // 失败日志始终输出（含尝试次数与重试提示）
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
     expect(
@@ -1555,7 +1573,10 @@ describe('apply 接线（OM 观察压缩）', () => {
     apply(ctx, { tailMessageCount: 1, compressRetryCount: 2 }); // 总尝试 3 次
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3);
-    expect(session.events.some((e) => e.type === 'compaction/start')).toBe(false);
+    // start 提前开启、end(error) 关闭生命周期；无 summary、无替换
+    expect(session.events.some((e) => e.type === 'compaction/start')).toBe(true);
+    expect(session.events.some((e) => e.type === 'compaction/end')).toBe(true);
+    expect(session.events.some((e) => e.type === 'compaction/summary')).toBe(false);
     expect(latestHistoryText(session)).toBe('');
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
     expect(warns.some((w) => w.includes('摘要调用失败（第 3/3 次，总是失败），重试耗尽'))).toBe(
@@ -1589,7 +1610,9 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(steps.some((s) => s.includes('压缩区间'))).toBe(true);
     expect(steps.some((s) => s.includes('摘要调用开始（第 1/3 次'))).toBe(true);
     expect(steps.some((s) => s.includes('摘要调用成功'))).toBe(true);
-    expect(steps.some((s) => s.includes('观察提交：追加 compaction/start'))).toBe(true);
+    expect(
+      steps.some((s) => s.includes('观察：追加 compaction/start（摘要调用前开启压缩中提示）')),
+    ).toBe(true);
     expect(steps.some((s) => s.includes('观察 pass 结束'))).toBe(true);
   });
 
@@ -1913,6 +1936,9 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
     if (endEvent?.type !== 'compaction/end') throw new Error('缺 end');
     expect(summaryEvent.data.compactionId).toBe(startEvent.data.compactionId);
     expect(endEvent.data.compactionId).toBe(startEvent.data.compactionId);
+    // 反思压缩：start 携带 phase='reflect'（UI 压缩中提示按阶段区分）；首次成功 attemptCount=1
+    expect((startEvent.data as { phase?: string }).phase).toBe('reflect');
+    expect((summaryEvent.data as CompactionSummaryPayload).attemptCount).toBe(1);
     // 单节点替换：遮蔽区间为旧 <history> 节点
     expect(summaryEvent.data.shadowedRange).toEqual({ start: 0, end: 0 });
     expect(summaryEvent.data.shadowedSeqs).toEqual([0]);
