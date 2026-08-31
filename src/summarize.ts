@@ -197,6 +197,8 @@ export function renderMessages(session: Session, seqs: readonly number[]): strin
 export type SummarySubagentResult = {
   text: string;
   usage?: TokenUsage;
+  /** 成功时的尝试次数（1 起；1=首次即成功，>1 表示重试后成功；UI 重试次数 = 该值 - 1）。 */
+  attemptCount: number;
 };
 
 /** 流收集器：提取文本输出 + usage + finish（不依赖宿主 BlockAssembler，保持零运行时依赖）。 */
@@ -550,7 +552,7 @@ export async function runSummarySubagent(
             : `，input ${String(usage.inputTokens ?? '?')} / output ${String(usage.outputTokens ?? '?')} tokens`) +
           '）',
       );
-      return { text, ...(usage === undefined ? {} : { usage }) };
+      return { text, attemptCount: attempt, ...(usage === undefined ? {} : { usage }) };
     } catch (error) {
       /** 错误信息（统一为字符串）。 */
       const message = error instanceof Error ? error.message : String(error);

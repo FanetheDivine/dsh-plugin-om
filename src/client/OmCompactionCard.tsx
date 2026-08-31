@@ -57,8 +57,41 @@ if (
 export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCompactionCardProps) {
   const [expanded, setExpanded] = useState(false);
   const { data } = node;
+  // 压缩进行中：start 已到、checkpoint/end 未到 → 不可展开的「正在压缩上下文…」提示行
+  if (data.running) {
+    /** 提示行文案（按 phase 区分观察/反思；缺失回退通用文案）。 */
+    const runningLabel =
+      data.phase === 'observe'
+        ? t('compaction.running.observe')
+        : data.phase === 'reflect'
+          ? t('compaction.running.reflect')
+          : t('compaction.running');
+    return (
+      <div style={styles.row}>
+        <DisclosureRow
+          className={css.root}
+          icon={<IconBrowseOutline16 size={14} />}
+          title={t('compaction')}
+          open={false}
+          expandable={false}
+          onToggle={() => {
+            /* 进行中提示行不可展开 */
+          }}
+          collapsedContent={
+            <>
+              <span className={css.sep} aria-hidden />
+              <span className={css.summary} data-om-compaction-running>
+                {runningLabel}
+              </span>
+            </>
+          }
+        />
+      </div>
+    );
+  }
   const expandable = data.summary !== null;
   const open = expandable && expanded;
+  /** 统计行文案（重试次数仅在有重试时追加；retryCount 缺失视为未重试）。 */
   const stats =
     data.shadowedItemCount !== null &&
     data.shadowedCharCount !== null &&
@@ -80,6 +113,10 @@ export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCo
         : expandable
           ? t('compaction.expand')
           : t('compaction.unavailable');
+  const retry =
+    data.retryCount !== null && data.retryCount > 0
+      ? ` \u00b7 ${t('compaction.retries', { count: data.retryCount })}`
+      : '';
   return (
     <div style={styles.row}>
       <DisclosureRow
@@ -92,6 +129,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCo
             <span className={css.sep} aria-hidden />
             <span className={css.summary} data-om-compaction-summary>
               {stats}
+              {retry}
             </span>
           </>
         }

@@ -87,6 +87,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 - 观察输入经 `@xmldom/xmldom` 构建为合法 <history> 块（用户消息文本/assistant 文本/reasoning 特殊字符自动转义，图片/文件以注释补充；assistant 文本与 toolcall&result 原样；系统消息——user_message 中 source.kind 非 user 的部分，如宿主注入的上下文——渲染为 <sys type="KIND" index="N"></sys> 空块，内容不进入压缩输入）
 - 输出经 `@xmldom/xmldom` 解析校验：结构合法（标签匹配/闭合/单块）、不含 <reasoning>、index/start/end 连续（与预期覆盖区间一致），失败按 `compressRetryCount` 重试
 - 块开标签带 `tip` 属性（对 AI 的提醒："当前块是历史消息的压缩产物，不要复述"）；块顶为构成逻辑注释（完整消息定义串 + 条目标签语义），消息正文不再附加前缀句
+- 压缩生命周期：每次摘要调用前先追加 `compaction/start`（载荷带 `phase`：`observe`/观察 或 `reflect`/反思，客户端据此渲染「正在压缩上下文（观察/反思）…」提示行）；摘要成功提交 summary + 替换消息 + end，summary 载荷带 `attemptCount`（第几次尝试成功）；摘要失败或重试耗尽时追加 `compaction/end(error)` 关闭生命周期（不产生 summary/替换），客户端随之撤回提示行
 
 ### 压缩卡片（消息列表中的「已压缩」展示）
 
@@ -97,6 +98,8 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 - 点击展开显示压缩摘要文本，按代码块样式呈现（缩小字号、代码背景与等宽字体、保留换行）
 - summary 事件落在当前加载窗口之外时卡片不可展开（不显示空内容）
 - 卡片只认领插件自产的检查点（source.plugin = `dsh-plugin-om`）；宿主 `compact` 检查点仍由宿主自己渲染，不会出现双卡片
+- 压缩进行中（`compaction/start` 已到、summary/检查点未到）：渲染不可展开的「正在压缩上下文（观察/反思）…」提示行，按 start 载荷的 `phase` 区分文案（旧会话无 phase 时回落通用文案）；压缩失败收到 `compaction/end` 时以 hidden 可见性撤回提示行
+- summary 载荷带 `attemptCount`（第几次尝试成功）时，重试次数 > 0 在标题统计行追加「重试 N 次」（首次成功不显示；旧载荷无 attemptCount 时不显示）
 - 平台模块（react / cordis / ui-primitives / ui-slots 等）走宿主冻结模块表（保持 external），其余依赖内联进 bundle
 
 ### 注意
@@ -166,7 +169,7 @@ src/
 │        └─ ctx.on('agent/pre-step') → compress.ts  # maybeCompress：两级压缩阻塞串行（先反思后观察；turn 中间即可触发）
 │              ├─ reflectPass → summarize.ts        # 全部 <history> 块总长 ≥ 窗口 × historyMergeRatio：多块拼接 + 共享提示词合并整个块区段
 │              ├─ observePass  → summarize.ts       # 未压缩消息 ≥ 窗口 × thresholdRatio：渲染 <history> 输入 → 观察日志 → 追加 + 替换
-│              └─ 提交          → compress.ts        # compaction/start → summary → 替换消息(source 插件标识 + compactionId) → end；usage 归入主会话
+│              └─ 提交          → compress.ts        # compaction/start(摘要调用前，载荷 phase) → summary(attemptCount) → 替换消息(source 插件标识 + compactionId) → end；失败补 end(error)；usage 归入主会话
 ├── constants.ts              # 共享常量（PLUGIN_LABEL / HISTORY_TAG / HISTORY_TIP / COMPLETE_MESSAGE_DEFINITION / COMPACT_CHECKPOINT_PLUGIN）
 ├── types.ts                  # type-only：宿主类型再导出 + 领域类型（MessageNode / MessageIndex）
 ├── config.ts                 # 配置默认值 / 宽松合并（缺省、null、空串回退默认值；未知键忽略、非法值回退默认；数值键/布尔键/omEnabled/modelDir）
@@ -174,13 +177,13 @@ src/
 ├── log-index.ts              # 完整消息索引（index 定位 user/sys/assistant/具有result的toolcall；user_message 按 source.kind 分类：kind:user 为用户消息、其余为系统消息；本插件自产压缩日志消息不占位；未闭合 tool-call 不占位；recall 与摘要共用）
 ├── embedding.ts              # 本地 ONNX 嵌入（@huggingface/transformers + 本地模型；共享目录解析 / 小文件补齐 / 运行时按需下载编排 / 懒加载 / 批量 / cosine）
 ├── model-download.ts          # 模型下载原语（modelSourceUrl / needsDownload / 原子落盘 / 开始结束日志与失败镜像建议；运行时与 dev CLI 共用）
-├── summarize.ts              # 共享提示词 buildHistoryPrompt（观察/反思同一套）+ renderMessages（@xmldom/xmldom 构建 <history> 块输入：用户消息原样、系统消息渲染为 <sys> 空块、自动转义）+ 直连 ctx.llm.stream() 摘要（new 方式：指令作 system、输入为渲染消息；extractSummaryLog 提取校验：XML 结构合法 / 无 reasoning / index 连续 / 覆盖区间；重试与流式 usage 归入主会话）
+├── summarize.ts              # 共享提示词 buildHistoryPrompt（观察/反思同一套）+ renderMessages（@xmldom/xmldom 构建 <history> 块输入：用户消息原样、系统消息渲染为 <sys> 空块、自动转义）+ 直连 ctx.llm.stream() 摘要（new 方式：指令作 system、输入为渲染消息；extractSummaryLog 提取校验：XML 结构合法 / 无 reasoning / index 连续 / 覆盖区间；重试与流式 usage 归入主会话；成功返回 attemptCount 供卡片展示重试次数）
 ├── recall.ts                 # recall 工具
 ├── semantic-recall.ts        # recall-semantic 工具（query 语义检索 + 区间限定 + 回退全量 + 匹配说明）
-└── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / source 标记判定摘要消息 / compaction/* 生命周期事件 + 替换消息 source 插件标识）
+└── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / source 标记判定摘要消息 / compaction/* 生命周期事件：start 在摘要调用前追加并带 phase，失败补 end(error) + 替换消息 source 插件标识）
 src/client/
 ├── index.ts                   # 浏览器客户端入口（exports["./client"] → dist/client.js）：注入 slots/conversationEvents/locale，注册卡片定义与渲染器
-├── definition.ts              # 压缩卡片业务定义：认领插件生命周期事件与替换检查点（source.plugin = dsh-plugin-om），聚合摘要卡片节点
+├── definition.ts              # 压缩卡片业务定义：认领插件生命周期事件与替换检查点（source.plugin = dsh-plugin-om），聚合摘要卡片节点；start→压缩中提示行（running+phase）、end→hidden 撤回、summary→卡片（retryCount）
 ├── OmCompactionCard.tsx       # 与宿主「上下文注入」同款的折叠卡片渲染器（统计标题 + 代码块样式 summary 展开）
 └── locales.ts                 # om-compaction 命名空间字典（zh/en）与 LocaleNamespaceMap 声明合并
 models/
