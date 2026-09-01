@@ -13,7 +13,7 @@ export const zh = {
   compaction: '上下文已压缩',
   'compaction.completed': '已压缩 {items} 条历史记录（约 {tokens} tokens）',
   'compaction.stats':
-    '压缩前 {items} 条消息 · {beforeChars} 字符（约 {beforeTokens} tokens）→ 压缩后 {afterChars} 字符（约 {afterTokens} tokens）',
+    '{items} 条 · {beforeChars} 字符（{beforeTokens} tokens）→ {afterChars} 字符（{afterTokens} tokens）',
   'compaction.expand': '点击查看压缩摘要',
   'compaction.unavailable': '压缩摘要不可用',
   'compaction.running': '正在压缩上下文…',
@@ -27,7 +27,7 @@ export const en: Record<keyof typeof zh, string> = {
   compaction: 'Context compacted',
   'compaction.completed': 'Compacted {items} messages (~{tokens} tokens)',
   'compaction.stats':
-    '{items} messages · {beforeChars} chars (~{beforeTokens} tokens) before → {afterChars} chars (~{afterTokens} tokens) after',
+    '{items} msgs · {beforeChars} chars ({beforeTokens} tokens) → {afterChars} chars ({afterTokens} tokens)',
   'compaction.expand': 'Click to view summary',
   'compaction.unavailable': 'Summary unavailable',
   'compaction.running': 'Compressing context…',
