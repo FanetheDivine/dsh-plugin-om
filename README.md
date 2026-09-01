@@ -94,7 +94,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 插件自产的替换消息使用插件自身标记（source.plugin = `dsh-plugin-om`）；宿主 conversation UI 只识别内置的 `compact` 检查点，因此插件额外注册一个浏览器客户端 bundle（`src/client/`，经 `dsh.client` 声明、exports["./client"] → `dist/client.js`，由 dsh 客户端模块系统按 `/plugins/dsh-plugin-om/client.js` 加载），自行认领压缩生命周期事件与替换检查点，在消息列表渲染折叠式「已压缩」卡片：
 
 - 卡片默认折叠，采用与宿主「上下文注入」卡片同款样式：同一 DisclosureRow 外壳组件 + IconBrowseOutline16 图标，行内统计与展开体样式按宿主 ContextInjectionRow 的规则注入（插件 bundle 无法引用宿主编译期哈希的 CSS Module 类名，按宿主 client bundle 的同一机制注入 <style>），视觉一致
-- 标题直接展示「压缩前 N 条消息 · X 字符（约 A tokens）→ 压缩后 Y 字符（约 B tokens）」：压缩前字符数来自插件扩展 shadowedCharCount，压缩前 token 来自 shadowedTokenCount，压缩后字符数为摘要文本长度，压缩后 token 在客户端按 4 字符 ≈ 1 token 估算（与服务端 estimateTextTokens 同一启发式）；旧会话载荷缺少 shadowedCharCount 时回落为「已压缩 N 条历史记录（约 M tokens）」
+- 标题直接展示紧凑统计「N 条 · X 字符（A tokens）→ Y 字符（B tokens）」，数字按 k/w/M 单位化（≥1k 用 k、≥1w 用 w、≥1M 用 M，如 8.6k/3.5w/1.2M）：压缩前字符数来自插件扩展 shadowedCharCount，压缩前 token 来自 shadowedTokenCount，压缩后字符数为摘要文本长度，压缩后 token 在客户端按 4 字符 ≈ 1 token 估算（与服务端 estimateTextTokens 同一启发式）；旧会话载荷缺少 shadowedCharCount 时回落为「已压缩 N 条历史记录（约 M tokens）」
 - 点击展开显示压缩摘要文本，按代码块样式呈现（缩小字号、代码背景与等宽字体、保留换行）
 - summary 事件落在当前加载窗口之外时卡片不可展开（不显示空内容）
 - 卡片只认领插件自产的检查点（source.plugin = `dsh-plugin-om`）；宿主 `compact` 检查点仍由宿主自己渲染，不会出现双卡片
