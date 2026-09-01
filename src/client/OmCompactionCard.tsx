@@ -16,6 +16,7 @@ import { DisclosureRow, IconBrowseOutline16 } from '@deepseek-ai/dsh-client-ui-p
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots';
 import type { CSSProperties } from 'react';
 import { memo, useState } from 'react';
+import { formatCompactCount } from './format.ts';
 
 /** Keyed renderer props: 装配好的卡片节点 + 绑定 `om-compaction` 命名空间的 locale 座。 */
 export interface OmCompactionCardProps {
@@ -71,27 +72,19 @@ export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCo
         <DisclosureRow
           className={css.root}
           icon={<IconBrowseOutline16 size={14} />}
-          title={t('compaction')}
+          title={runningLabel}
           open={false}
           expandable={false}
           onToggle={() => {
             /* 进行中提示行不可展开 */
           }}
-          collapsedContent={
-            <>
-              <span className={css.sep} aria-hidden />
-              <span className={css.summary} data-om-compaction-running>
-                {runningLabel}
-              </span>
-            </>
-          }
         />
       </div>
     );
   }
   const expandable = data.summary !== null;
   const open = expandable && expanded;
-  /** 统计行文案（重试次数仅在有重试时追加；retryCount 缺失视为未重试）。 */
+  /** 统计行文案（数字按 k/w/M 单位化；重试次数仅在有重试时追加；retryCount 缺失视为未重试）。 */
   const stats =
     data.shadowedItemCount !== null &&
     data.shadowedCharCount !== null &&
@@ -99,16 +92,16 @@ export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCo
     data.summaryCharCount !== null &&
     data.summaryTokenCount !== null
       ? t('compaction.stats', {
-          items: data.shadowedItemCount,
-          beforeChars: data.shadowedCharCount,
-          beforeTokens: data.shadowedTokenCount,
-          afterChars: data.summaryCharCount,
-          afterTokens: data.summaryTokenCount,
+          items: formatCompactCount(data.shadowedItemCount),
+          beforeChars: formatCompactCount(data.shadowedCharCount),
+          beforeTokens: formatCompactCount(data.shadowedTokenCount),
+          afterChars: formatCompactCount(data.summaryCharCount),
+          afterTokens: formatCompactCount(data.summaryTokenCount),
         })
       : data.shadowedItemCount !== null && data.shadowedTokenCount !== null
         ? t('compaction.completed', {
-            items: data.shadowedItemCount,
-            tokens: data.shadowedTokenCount,
+            items: formatCompactCount(data.shadowedItemCount),
+            tokens: formatCompactCount(data.shadowedTokenCount),
           })
         : expandable
           ? t('compaction.expand')
