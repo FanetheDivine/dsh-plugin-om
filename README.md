@@ -79,7 +79,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 4. 提供recall/recall-semantic两个tool进行检索
 
 观察与反思共用同一套系统提示词（buildHistoryPrompt）：输入与输出都是合法的 <history> 块（模型消息 + index 的表达形式），先定义块、要求压缩、再给出数据源（下方 <history> 消息记录）。
-观察压缩按 `observeChunkTokens` 边界把未压缩消息分块（完整消息不跨块，thinking/text/toolcall&result 同块）并行摘要，各块合并为一个 <history> 块提交；提示词按块位次分档——前块要求简单摘要，最后一块要求「越往后越细」保留细节。
+观察压缩按 `observeChunkTokens` 边界把未压缩消息分块（完整消息不跨块，thinking/text/toolcall&result 同块）压缩摘要，最多 `observeChunkParallelism` 块同时进行、其余块排队，各块合并为一个 <history> 块提交；提示词按块位次分档——前块要求简单摘要，最后一块要求「越往后越细」保留细节。任一摘要请求遇 429 限流后，插件全局进入冷却期：后续所有摘要请求在 `rateLimitWaitMs` 内不会发出。
 
 ### 压缩日志块结构
 
@@ -125,6 +125,8 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 | `compressMaxTokens`     | `10000`  | 反思（合并调用）生成上限；观察分块用 `observeChunkMaxTokens`                                                                                                                  |
 | `observeChunkTokens`    | `30000`  | 观察分块 token 边界：未压缩消息按该边界拆分为多块并行压缩（完整消息不跨块）                                                                                                  |
 | `observeChunkMaxTokens` | `5000`   | 观察分块单块摘要的生成上限（每块独立调用）                                                                                                                                  |
+| `observeChunkParallelism` | `2`    | 观察分块压缩的最大并行数：同时进行的单块摘要调用上限，其余块排队（`1` 即串行）                                                                                              |
+| `rateLimitWaitMs`       | `60000`  | 遇 429 限流后，下一次摘要请求发出前至少等待的毫秒数（插件全局共享冷却期：任一请求遇 429 后，所有后续摘要请求——含并行中的其他块——都等满该时长；`0` 视为不限流）                |
 | `tailMessageCount`      | `10`     | 尾部保留的不压缩消息条数（不压缩、不被替换、不进摘要日志）                                                                                                                   |
 | `compressRetryCount`    | `10`     | 摘要调用失败后的最大重试次数（不含首次；总尝试次数 = 该值 + 1）                                                                                                              |
 | `modelDir`              | 共享目录 | recall-semantic 嵌入模型目录（默认 `$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>`，跨插件版本共享；小文件随包分发并在缺失时自动补齐，onnx 缺失且启用语义召回时运行时自动下载到该目录；可指向自定义目录） |
@@ -180,10 +182,11 @@ src/
 ├── log-index.ts              # 完整消息索引（index 定位 user/sys/assistant/具有result的toolcall；user_message 按 source.kind 分类：kind:user 为用户消息、其余为系统消息；本插件自产压缩日志消息不占位；未闭合 tool-call 不占位；recall 与摘要共用）
 ├── embedding.ts              # 本地 ONNX 嵌入（@huggingface/transformers + 本地模型；共享目录解析 / 小文件补齐 / 运行时按需下载编排 / 懒加载 / 批量 / cosine）
 ├── model-download.ts          # 模型下载原语（modelSourceUrl / needsDownload / 原子落盘 / 开始结束日志与失败镜像建议；运行时与 dev CLI 共用）
-├── summarize.ts              # 共享提示词 buildHistoryPrompt（观察/反思同一套；mode 控制摘要粒度：summary 简单摘要 / detailed 越往后越细）+ renderMessages（@xmldom/xmldom 构建 <history> 块输入：用户消息原样、系统消息渲染为 <sys> 空块、自动转义）+ 直连 ctx.llm.stream() 摘要（new 方式：指令作 system、输入为渲染消息；extractSummaryLog 提取校验：XML 结构合法 / 无 reasoning / index 连续 / 覆盖区间；重试与流式 usage 归入主会话；成功返回 attemptCount（尝试次数，载荷层换算为重试次数））
+├── summarize.ts              # 共享提示词 buildHistoryPrompt（观察/反思同一套；mode 控制摘要粒度：summary 简单摘要 / detailed 越往后越细）+ renderMessages（@xmldom/xmldom 构建 <history> 块输入：用户消息原样、系统消息渲染为 <sys> 空块、自动转义）+ 直连 ctx.llm.stream() 摘要（new 方式：指令作 system、输入为渲染消息；extractSummaryLog 提取校验：XML 结构合法 / 无 reasoning / index 连续 / 覆盖区间；重试与流式 usage 归入主会话；每次请求前过全局限流等待门 rate-limit.ts；成功返回 attemptCount（尝试次数，载荷层换算为重试次数））
+├── rate-limit.ts             # 全局限流门（插件进程级共享状态）：429 识别（isRateLimitError）/ 冷却期记录（noteRateLimit）/ 等待门（gateRateLimit：最近一次 429 + rateLimitWaitMs 之前不放行，等待期间中止立即放弃，新 429 顺延冷却期）
 ├── recall.ts                 # recall 工具
 ├── semantic-recall.ts        # recall-semantic 工具（query 语义检索 + 区间限定 + 回退全量 + 匹配说明）
-└── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / source 标记判定摘要消息 / 观察分块并行 chunkCompleteMessages + 合并 mergeChunkReports / compaction/* 生命周期事件：start 在摘要调用前追加并带 phase，失败补 end(error) + 替换消息 source 插件标识）
+└── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / source 标记判定摘要消息 / 观察分块经 runWithConcurrency 有界并发池逐块压缩 + 合并 mergeChunkReports / compaction/* 生命周期事件：start 在摘要调用前追加并带 phase，失败补 end(error) + 替换消息 source 插件标识）
 src/client/
 ├── index.ts                   # 浏览器客户端入口（exports["./client"] → dist/client.js）：注入 slots/conversationEvents/locale，注册卡片定义与渲染器
 ├── definition.ts              # 压缩卡片业务定义：认领插件生命周期事件与替换检查点（source.plugin = dsh-plugin-om），聚合摘要卡片节点；start→压缩中提示行（running+phase）、end→hidden 撤回、summary→卡片（retryCount）

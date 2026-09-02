@@ -178,6 +178,25 @@ describe('配置校验 resolveConfig', () => {
     expect(resolveConfig({ compressRetryCount: '5' }).compressRetryCount).toBe(10); // 非数值回退默认
   });
 
+  it('observeChunkParallelism：默认 2（观察分块最大并行数），整数可覆盖，非整数回退默认', () => {
+    expect(resolveConfig({}).observeChunkParallelism).toBe(2);
+    expect(resolveConfig({ observeChunkParallelism: 4 }).observeChunkParallelism).toBe(4);
+    expect(resolveConfig({ observeChunkParallelism: 1 }).observeChunkParallelism).toBe(1); // 1 即串行
+    expect(resolveConfig({ observeChunkParallelism: 0 }).observeChunkParallelism).toBe(0); // 无区间限制（运行时 clamp 为 1）
+    expect(resolveConfig({ observeChunkParallelism: 2.5 }).observeChunkParallelism).toBe(2); // 非整数回退默认
+    expect(resolveConfig({ observeChunkParallelism: '3' }).observeChunkParallelism).toBe(2); // 非数值回退默认
+    expect(resolveConfig({ observeChunkParallelism: null }).observeChunkParallelism).toBe(2); // 留空回退默认
+  });
+
+  it('rateLimitWaitMs：默认 60000（429 后下一次请求前至少等待的毫秒数），整数可覆盖，非整数回退默认', () => {
+    expect(resolveConfig({}).rateLimitWaitMs).toBe(60000);
+    expect(resolveConfig({ rateLimitWaitMs: 1000 }).rateLimitWaitMs).toBe(1000);
+    expect(resolveConfig({ rateLimitWaitMs: 0 }).rateLimitWaitMs).toBe(0); // 无区间限制（0 视为不限流）
+    expect(resolveConfig({ rateLimitWaitMs: 2.5 }).rateLimitWaitMs).toBe(60000); // 非整数回退默认
+    expect(resolveConfig({ rateLimitWaitMs: '1s' }).rateLimitWaitMs).toBe(60000); // 非数值回退默认
+    expect(resolveConfig({ rateLimitWaitMs: '' }).rateLimitWaitMs).toBe(60000); // 留空回退默认
+  });
+
   it('整份配置留空（undefined/null/空串/空白串）时全部用默认值', () => {
     const empty = [undefined, null, '', '   '];
     for (const raw of empty) {

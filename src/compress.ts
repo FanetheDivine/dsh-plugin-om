@@ -57,6 +57,35 @@ export function estimateTextTokens(text: string): number {
 }
 
 /**
+ * 有界并发池：最多 limit 个任务同时运行（limit 非法时按 1 处理），任务按 index 顺序
+ * 取用，结果数组与 items 按 index 对齐（任务自身以返回值表达失败，不在此抛出）。
+ * items 为空返回空数组。
+ */
+export async function runWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  task: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  /** 结果数组（按 index 对齐）。 */
+  const results = new Array<R>(items.length);
+  /** 下一个待处理任务的下标（worker 间共享取号）。 */
+  let next = 0;
+  /** worker 数量（clamp 到 [1, items.length]）。 */
+  const workerCount = Math.max(1, Math.min(Math.floor(limit), items.length));
+  /** 各 worker：循环取号执行任务直到取尽。 */
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (next < items.length) {
+      /** 本 worker 领取的任务下标。 */
+      const index = next;
+      next += 1;
+      results[index] = await task(items[index] as T, index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/**
  * 按 token 边界把完整消息序列分块（观察并行压缩用）：完整消息不跨块——
  * 一条完整消息（含其 thinking/text/toolcall&result 全部 seqs）必然整体落在同一块，
  * 单条超界的消息独立成块。空输入返回空数组。
@@ -501,6 +530,7 @@ export async function reflectPass(
     {
       maxAttempts: config.compressRetryCount + 1,
       expected: expectedEnd < 0 ? { start: 0 } : { start: 0, end: expectedEnd },
+      rateLimitWaitMs: config.rateLimitWaitMs,
     },
   );
   if (summaryResult === null || summaryResult.text.trim().length === 0) {
@@ -632,7 +662,7 @@ export async function observePass(
   );
   logger.step(
     `观察：${inRangeCms.length} 条完整消息按 ${config.observeChunkTokens} tokens 边界分为 ${chunks.length} 块` +
-      `（每块摘要 maxTokens ${config.observeChunkMaxTokens}，除最后一块外要求简单摘要）`,
+      `（最多 ${config.observeChunkParallelism} 块并行，每块摘要 maxTokens ${config.observeChunkMaxTokens}，除最后一块外要求简单摘要）`,
   );
   /** 本次压缩生命周期（compactionId + 当前轮次；start 在摘要调用前开启，UI 压缩中提示）。 */
   const lifecycle: CompactionLifecycle = {
@@ -648,9 +678,11 @@ export async function observePass(
     logger.warn(`观察压缩启动失败: ${message}`);
     return;
   }
-  /** 各块摘要结果（Promise.all 并行；null = 该块失败）。 */
-  const chunkResults = await Promise.all(
-    chunks.map(async (chunk, index) => {
+  /** 各块摘要结果（有界并发池，最多 observeChunkParallelism 块同时进行；null = 该块失败；结果按块顺序）。 */
+  const chunkResults = await runWithConcurrency(
+    chunks,
+    config.observeChunkParallelism,
+    async (chunk, index) => {
       /** 是否为最后一块（唯一要求「越往后越细」的块；其余块要求简单摘要）。 */
       const isLast = index === chunks.length - 1;
       /** 该块提示词（较早块简单摘要；最后一块越往后越细）。 */
@@ -672,9 +704,13 @@ export async function observePass(
         target,
         config.debug,
         signal,
-        { maxAttempts: config.compressRetryCount + 1, expected: { start, end } },
+        {
+          maxAttempts: config.compressRetryCount + 1,
+          expected: { start, end },
+          rateLimitWaitMs: config.rateLimitWaitMs,
+        },
       );
-    }),
+    },
   );
   /** 失败块（null 或空输出；任一失败则整体失败，不产生部分替换）。 */
   const failed = chunkResults.find((r) => r === null || r.text.trim().length === 0);

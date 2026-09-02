@@ -1,8 +1,9 @@
-// 观察分块单元测试：chunkCompleteMessages（token 边界切块 / 完整消息不跨块）与
-// mergeChunkReports（剥离外壳合并为单个 <history> 块，可再经 extractSummaryLog 校验）。
+// 观察分块单元测试：chunkCompleteMessages（token 边界切块 / 完整消息不跨块）、
+// mergeChunkReports（剥离外壳合并为单个 <history> 块，可再经 extractSummaryLog 校验）
+// 与 runWithConcurrency（有界并发池：并发上限 / 结果按 index 对齐）。
 import { describe, expect, it } from 'vitest';
 
-import { chunkCompleteMessages, mergeChunkReports } from '../src/compress.ts';
+import { chunkCompleteMessages, mergeChunkReports, runWithConcurrency } from '../src/compress.ts';
 import { indexCompleteMessages } from '../src/log-index.ts';
 import { extractSummaryLog } from '../src/summarize.ts';
 import type { SessionEvent } from '../src/types.ts';
@@ -137,5 +138,82 @@ describe('mergeChunkReports（分块摘要合并）', () => {
   it('无外壳的块原样保留', () => {
     const merged = mergeChunkReports(['<user_message index="0">', '内容占位', '</user_message>']);
     expect(merged).toContain('<user_message index="0">');
+  });
+});
+
+describe('runWithConcurrency（有界并发池）', () => {
+  /** 并发追踪器：记录当前活跃任务数与峰值。 */
+  function makeTracker() {
+    /** 当前活跃任务数。 */
+    let active = 0;
+    /** 活跃峰值（即观察到的最大并行数）。 */
+    let peak = 0;
+    return {
+      /** 任务进入（活跃 +1，更新峰值）。 */
+      enter() {
+        active += 1;
+        peak = Math.max(peak, active);
+      },
+      /** 任务退出（活跃 -1）。 */
+      exit() {
+        active -= 1;
+      },
+      /** 观察到的活跃峰值。 */
+      get peak(): number {
+        return peak;
+      },
+    };
+  }
+
+  it('结果按 index 对齐（完成顺序不影响结果顺序）', async () => {
+    // 各任务等待时长与其下标相反：先发起的后完成
+    const results = await runWithConcurrency([4, 3, 2, 1], 4, async (ms, index) => {
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      return index;
+    });
+    expect(results).toEqual([0, 1, 2, 3]);
+  });
+
+  it('并发数不超过 limit（峰值 = limit）', async () => {
+    const tracker = makeTracker();
+    await runWithConcurrency([10, 20, 30, 40, 50, 60], 2, async (ms) => {
+      tracker.enter();
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      tracker.exit();
+      return ms;
+    });
+    expect(tracker.peak).toBe(2);
+  });
+
+  it('limit 大于任务数时全部并行（峰值 = 任务数）', async () => {
+    const tracker = makeTracker();
+    await runWithConcurrency([10, 20, 30], 8, async (ms) => {
+      tracker.enter();
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      tracker.exit();
+      return ms;
+    });
+    expect(tracker.peak).toBe(3);
+  });
+
+  it('limit 为 0 或负数时按串行处理（峰值 = 1）', async () => {
+    const tracker = makeTracker();
+    await runWithConcurrency([1, 2, 3, 4], 0, async (n) => {
+      tracker.enter();
+      await new Promise((resolve) => setTimeout(resolve, n));
+      tracker.exit();
+      return n;
+    });
+    expect(tracker.peak).toBe(1);
+  });
+
+  it('空输入返回空数组', async () => {
+    const results = await runWithConcurrency([], 2, async (n: number) => n);
+    expect(results).toEqual([]);
+  });
+
+  it('任务返回 null 保留在结果中（失败由任务自身以返回值表达）', async () => {
+    const results = await runWithConcurrency([1, 2, 3], 2, async (n) => (n === 2 ? null : n));
+    expect(results).toEqual([1, null, 3]);
   });
 });
