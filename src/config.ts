@@ -17,6 +17,10 @@ export type PluginConfig = {
   observeChunkTokens: number;
   /** 观察分块单块摘要的生成上限（LLM maxTokens；每块独立调用）。 */
   observeChunkMaxTokens: number;
+  /** 观察分块压缩的最大并行数：同时进行的单块摘要调用上限，其余块排队（默认 2）。 */
+  observeChunkParallelism: number;
+  /** 遇 429 限流后，下一次摘要请求发出前至少等待的毫秒数（全局限流冷却期，默认 60000）。 */
+  rateLimitWaitMs: number;
   /** 压缩边界：其后不压缩消息数下限（正整数，尾部保留）。 */
   tailMessageCount: number;
   /** 摘要调用失败后的最大重试次数（不含首次尝试；总尝试次数 = 该值 + 1，默认 11）。 */
@@ -40,6 +44,8 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   compressMaxTokens: 10000,
   observeChunkTokens: 30000,
   observeChunkMaxTokens: 5000,
+  observeChunkParallelism: 2,
+  rateLimitWaitMs: 60000,
   tailMessageCount: 10,
   compressRetryCount: 10,
   omEnabled: true,
@@ -56,6 +62,8 @@ type NumberKey =
   | 'compressMaxTokens'
   | 'observeChunkTokens'
   | 'observeChunkMaxTokens'
+  | 'observeChunkParallelism'
+  | 'rateLimitWaitMs'
   | 'tailMessageCount'
   | 'compressRetryCount';
 
@@ -66,6 +74,8 @@ const NUMBER_KEYS: Array<[NumberKey, boolean]> = [
   ['compressMaxTokens', true],
   ['observeChunkTokens', true],
   ['observeChunkMaxTokens', true],
+  ['observeChunkParallelism', true],
+  ['rateLimitWaitMs', true],
   ['tailMessageCount', true],
   ['compressRetryCount', true],
 ];
