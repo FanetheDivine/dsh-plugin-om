@@ -3007,6 +3007,37 @@ describe('recall-semantic 工具', () => {
   });
 });
 
+describe('recall-semantic wire 参数 schema（由 zod 生成）', () => {
+  /** buildSemanticRecallTool().parameters：zod schema 经 toJSONSchema 生成的 wire JSON Schema。 */
+  const parameters = buildSemanticRecallTool().parameters;
+  /** properties（recall-semantic 的五个字段）。 */
+  const properties = parameters.properties as Record<
+    string,
+    { type?: string; description?: string; minimum?: number; maximum?: number }
+  >;
+
+  it('根为 type:object 的标准 JSON Schema，无 $schema/additionalProperties（官方 API 严格校验兼容）', () => {
+    expect(parameters.type).toBe('object');
+    expect(parameters).not.toHaveProperty('$schema');
+    expect(parameters).not.toHaveProperty('additionalProperties');
+  });
+
+  it('required 仅 query，字段类型正确（top_k 为 integer 且限定 1-10）', () => {
+    expect(parameters.required).toEqual(['query']);
+    expect(properties.query?.type).toBe('string');
+    expect(properties.start?.type).toBe('number');
+    expect(properties.end?.type).toBe('number');
+    expect(properties.offset?.type).toBe('number');
+    expect(properties.top_k?.type).toBe('integer');
+    expect(properties.top_k?.minimum).toBe(1);
+    expect(properties.top_k?.maximum).toBe(10);
+  });
+
+  it('query 描述含「不能为空」约束', () => {
+    expect(properties.query?.description).toContain('不能为空');
+  });
+});
+
 // apply 接线（工具注册开关）：recallEnabled / semanticRecallEnabled 配置键
 // 独立控制 recall / recall-semantic 工具注册，缺省启用；false 禁用；不影响压缩接线。
 describe('apply 接线（recallEnabled / semanticRecallEnabled）', () => {
