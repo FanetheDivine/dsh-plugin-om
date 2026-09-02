@@ -138,10 +138,10 @@ function twoCallFlow(): SessionEvent[] {
 }
 
 describe('配置校验 resolveConfig', () => {
-  it('默认值正确（historyMergeRatio 默认 0.2）', () => {
+  it('默认值正确（观察阈值 100000 tokens、反思阈值 30000 tokens）', () => {
     const d = resolveConfig({});
-    expect(d.thresholdRatio).toBe(0.1);
-    expect(d.historyMergeRatio).toBe(0.2);
+    expect(d.observeThresholdTokens).toBe(100000);
+    expect(d.reflectThresholdTokens).toBe(30000);
     expect(d.compressMaxTokens).toBe(10000);
     expect(d.tailMessageCount).toBe(10);
     expect(d.compressRetryCount).toBe(10); // 失败后最大重试次数（不含首次）
@@ -158,9 +158,9 @@ describe('配置校验 resolveConfig', () => {
   });
 
   it('覆盖项生效', () => {
-    const c = resolveConfig({ thresholdRatio: 0.7, historyMergeRatio: 0.3 });
-    expect(c.thresholdRatio).toBe(0.7);
-    expect(c.historyMergeRatio).toBe(0.3);
+    const c = resolveConfig({ observeThresholdTokens: 5000, reflectThresholdTokens: 3000 });
+    expect(c.observeThresholdTokens).toBe(5000);
+    expect(c.reflectThresholdTokens).toBe(3000);
   });
 
   it('tailMessageCount：默认 10，任意数值可覆盖（不做区间限制），非整数回退默认', () => {
@@ -182,8 +182,8 @@ describe('配置校验 resolveConfig', () => {
     const empty = [undefined, null, '', '   '];
     for (const raw of empty) {
       const d = resolveConfig(raw);
-      expect(d.thresholdRatio).toBe(0.1);
-      expect(d.historyMergeRatio).toBe(0.2);
+      expect(d.observeThresholdTokens).toBe(100000);
+      expect(d.reflectThresholdTokens).toBe(30000);
       expect(d.compressMaxTokens).toBe(10000);
       expect(d.tailMessageCount).toBe(10);
       expect(d.compressRetryCount).toBe(10);
@@ -194,11 +194,14 @@ describe('配置校验 resolveConfig', () => {
   });
 
   it('单项留空（null/空串/undefined）该键用默认值，其余覆盖项仍生效', () => {
-    expect(resolveConfig({ thresholdRatio: null }).thresholdRatio).toBe(0.1);
-    expect(resolveConfig({ thresholdRatio: '' }).thresholdRatio).toBe(0.1);
-    const mixed = resolveConfig({ thresholdRatio: undefined, historyMergeRatio: 0.3 });
-    expect(mixed.thresholdRatio).toBe(0.1);
-    expect(mixed.historyMergeRatio).toBe(0.3);
+    expect(resolveConfig({ observeThresholdTokens: null }).observeThresholdTokens).toBe(100000);
+    expect(resolveConfig({ observeThresholdTokens: '' }).observeThresholdTokens).toBe(100000);
+    const mixed = resolveConfig({
+      observeThresholdTokens: undefined,
+      reflectThresholdTokens: 3000,
+    });
+    expect(mixed.observeThresholdTokens).toBe(100000);
+    expect(mixed.reflectThresholdTokens).toBe(3000);
     const mixed2 = resolveConfig({ compressMaxTokens: null, tailMessageCount: 3 });
     expect(mixed2.compressMaxTokens).toBe(10000);
     expect(mixed2.tailMessageCount).toBe(3);
@@ -208,12 +211,14 @@ describe('配置校验 resolveConfig', () => {
     expect(resolveConfig([])).toEqual(resolveConfig({})); // 空数组不是对象，回归默认
     expect(resolveConfig('0.5')).toEqual(resolveConfig({})); // 非空字符串不是对象，回归默认
     expect(resolveConfig({ badKey: 1 })).toEqual(resolveConfig({})); // 未知键忽略
-    // 阈值不做 0.01-1 区间限制：任意数值（调试场景）按原样接受
-    expect(resolveConfig({ thresholdRatio: 2 }).thresholdRatio).toBe(2);
-    expect(resolveConfig({ historyMergeRatio: 0 }).historyMergeRatio).toBe(0);
-    expect(resolveConfig({ historyMergeRatio: 2 }).historyMergeRatio).toBe(2);
+    // 阈值不做取值区间限制：任意整数（调试场景）按原样接受
+    expect(resolveConfig({ observeThresholdTokens: 0 }).observeThresholdTokens).toBe(0);
+    expect(resolveConfig({ reflectThresholdTokens: 0 }).reflectThresholdTokens).toBe(0);
+    expect(resolveConfig({ reflectThresholdTokens: 2 }).reflectThresholdTokens).toBe(2);
     expect(resolveConfig({ compressMaxTokens: 0 }).compressMaxTokens).toBe(0);
-    expect(resolveConfig({ thresholdRatio: '0.5' }).thresholdRatio).toBe(0.1); // 非数值回退默认
+    expect(resolveConfig({ observeThresholdTokens: '0.5' }).observeThresholdTokens).toBe(100000); // 非数值回退默认
+    expect(resolveConfig({ observeThresholdTokens: 2.5 }).observeThresholdTokens).toBe(100000); // 非整数回退默认
+    expect(resolveConfig({ reflectThresholdTokens: 2.5 }).reflectThresholdTokens).toBe(30000); // 非整数回退默认
     expect(resolveConfig({ compressMaxTokens: 2.5 }).compressMaxTokens).toBe(10000); // 非整数回退默认
     // 全部未知键被忽略 → 结果等于默认配置
     expect(
@@ -1172,10 +1177,9 @@ describe('apply 接线（OM 观察压缩）', () => {
     return String(options.system ?? '');
   }
 
-  /** 返回固定观察报告的 ctx（默认 window 8：观察阈值 4 tokens，必然触发）。 */
-  function observeCtx(report: string, window = 8) {
+  /** 返回固定观察报告的 ctx（触发观察需在 apply 配置中设置 observeThresholdTokens）。 */
+  function observeCtx(report: string) {
     return makeCtx({
-      resolveModelInfo: async () => ({ context: { contextWindow: window } }),
       llmStream: [{ type: 'text-delta', text: report }],
     });
   }
@@ -1200,7 +1204,7 @@ describe('apply 接线（OM 观察压缩）', () => {
       '</history>',
     ].join('\n');
     const ctx = observeCtx(report);
-    apply(ctx, { tailMessageCount: 0 });
+    apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1 });
 
     expect(ctx._sections).toHaveLength(0);
     expect(ctx._registeredTools.some((t) => t.name === 'recall')).toBe(true);
@@ -1298,13 +1302,12 @@ describe('apply 接线（OM 观察压缩）', () => {
       '</history>',
     ].join('\n');
     const ctx = makeCtx({
-      resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
       llmStreamFactory: (callIndex) =>
         callIndex === 0
           ? [{ type: 'text-delta', text: report0 }]
           : [{ type: 'text-delta', text: report1 }],
     });
-    apply(ctx, { tailMessageCount: 0 });
+    apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1 });
     const nextCalled = await runPreStep(ctx, session);
     expect(nextCalled).toBe(true);
     // 两块并行调用：提示词分档（前块简单摘要 / 最后一块越往后越细），maxTokens 均为分块上限
@@ -1371,7 +1374,7 @@ describe('apply 接线（OM 观察压缩）', () => {
       '</history>',
     ].join('\n');
     const ctx = observeCtx(report);
-    apply(ctx, { tailMessageCount: 0 });
+    apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1 });
     await runPreStep(ctx, session);
     // 输入渲染：系统消息为 <sys> 空块（内容不进入压缩输入），用户消息 index 顺延为 1
     const options = summaryOptions(ctx);
@@ -1419,7 +1422,7 @@ describe('apply 接线（OM 观察压缩）', () => {
       '</history>',
     ].join('\n');
     const ctx = observeCtx(report);
-    apply(ctx, { tailMessageCount: 0 });
+    apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1 });
     const initialNodes = session.surface.nodes.length;
     await runPreStep(ctx, session);
     // 校验失败按 compressRetryCount 重试后放弃：不追加、不替换
@@ -1448,13 +1451,12 @@ describe('apply 接线（OM 观察压缩）', () => {
     const session = makeSession({
       events: [historyMessage('user_message message_id:old-u text:旧任务'), ...flowEvents],
     });
-    // window 11 + historyMergeRatio 3：观察阈值 1 ≤ 未压缩 6 tokens（触发）；
-    // 反思阈值 33 > 旧摘要（含 tip 开标签约 26 tokens，不触发）——隔离观察路径验证增量追加
+    // 观察阈值 1 tokens ≤ 未压缩 6 tokens（触发）；反思阈值 1000 > 旧摘要
+    // （含 tip 开标签约 26 tokens，不触发）——隔离观察路径验证增量追加
     const ctx = observeCtx(
       '<history>\n<user_message index="0">\n新内容\n</user_message>\n</history>',
-      11,
     );
-    apply(ctx, { tailMessageCount: 1, historyMergeRatio: 3 });
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1, reflectThresholdTokens: 1000 });
     await runPreStep(ctx, session);
     // 表层中的压缩日志消息：旧块（seq 0，保留） + 新块（独立消息，替换新消息区间）
     const historyMsgs = session.surface.nodes
@@ -1498,8 +1500,8 @@ describe('apply 接线（OM 观察压缩）', () => {
         withTurnEnd: true,
       }),
     });
-    const ctx = makeCtx({ resolveModelInfo: async () => ({ context: { contextWindow: 100000 } }) });
-    apply(ctx, {});
+    const ctx = makeCtx({});
+    apply(ctx, {}); // 默认观察阈值 100000 tokens，未达不压缩
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(0);
     expect(latestHistoryText(session)).toBe('');
@@ -1517,10 +1519,9 @@ describe('apply 接线（OM 观察压缩）', () => {
       }),
     });
     const ctx = makeCtx({
-      resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
       llmStream: [{ type: 'text-delta', text: '' }],
     });
-    apply(ctx, { tailMessageCount: 1, compressRetryCount: 2 }); // 总尝试 3 次
+    apply(ctx, { tailMessageCount: 1, compressRetryCount: 2, observeThresholdTokens: 1 }); // 总尝试 3 次
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3); // 无输出视为失败，重试共 3 次
     // 摘要无输出：start 在摘要调用前已开启（UI 压缩中提示），end(error) 关闭生命周期；
@@ -1549,13 +1550,12 @@ describe('apply 接线（OM 观察压缩）', () => {
       }),
     });
     const ctx = makeCtx({
-      resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
       llmStream: [
         { type: 'text-delta', text: '部分输出' },
         { type: 'finish', reason: { kind: 'max-tokens' } },
       ],
     });
-    apply(ctx, { tailMessageCount: 1, compressRetryCount: 2 }); // 总尝试 3 次
+    apply(ctx, { tailMessageCount: 1, compressRetryCount: 2, observeThresholdTokens: 1 }); // 总尝试 3 次
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3); // 非 stop 结束视为失败，重试共 3 次
     // start 提前开启、end(error) 关闭生命周期；无 summary、无替换
@@ -1578,7 +1578,6 @@ describe('apply 接线（OM 观察压缩）', () => {
     // 可重入迭代器：每次 stream 调用按尝试次数产出——第 1/2 次抛异常，第 3 次正常输出
     let attempts = 0;
     const ctx = makeCtx({
-      resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
       llmStream: {
         [Symbol.iterator]() {
           attempts += 1;
@@ -1593,7 +1592,7 @@ describe('apply 接线（OM 观察压缩）', () => {
         },
       },
     });
-    apply(ctx, { tailMessageCount: 1, compressRetryCount: 2 }); // 总尝试 3 次
+    apply(ctx, { tailMessageCount: 1, compressRetryCount: 2, observeThresholdTokens: 1 }); // 总尝试 3 次
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3); // 首次 + 2 次重试
     expect(latestHistoryText(session)).toContain('retried-ok');
@@ -1628,7 +1627,6 @@ describe('apply 接线（OM 观察压缩）', () => {
       }),
     });
     const ctx = makeCtx({
-      resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
       llmStream: {
         [Symbol.iterator]() {
           return {
@@ -1639,7 +1637,7 @@ describe('apply 接线（OM 观察压缩）', () => {
         },
       },
     });
-    apply(ctx, { tailMessageCount: 1, compressRetryCount: 2 }); // 总尝试 3 次
+    apply(ctx, { tailMessageCount: 1, compressRetryCount: 2, observeThresholdTokens: 1 }); // 总尝试 3 次
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3);
     // start 提前开启、end(error) 关闭生命周期；无 summary、无替换
@@ -1669,7 +1667,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     const ctx = observeCtx(
       '<history>\n<user_message index="0">\nOBSERVED-PASS\n</user_message>\n</history>',
     );
-    apply(ctx, { tailMessageCount: 1, compressRetryCount: 2 }); // 总尝试 3 次
+    apply(ctx, { tailMessageCount: 1, compressRetryCount: 2, observeThresholdTokens: 1 }); // 总尝试 3 次
     await runPreStep(ctx, session);
     const steps = ctx._loggerCalls
       .filter((c) => c.level === 'debug')
@@ -1698,7 +1696,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     const ctx = observeCtx(
       '<history>\n<user_message index="0">\n请帮我完成一个任务\n</user_message>\n</history>',
     );
-    apply(ctx, { tailMessageCount: 1 });
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStep(ctx, session);
     const instruction = instructionText(summaryOptions(ctx));
     expect(instruction).not.toContain('[interrupted]');
@@ -1727,7 +1725,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     const ctx = observeCtx(
       '<history>\n<user_message index="0">\nA-用户\n</user_message>\n<assistant start="1" end="3">\nA-模块摘要\n</assistant>\n</history>',
     );
-    apply(ctx, { tailMessageCount: 1 });
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStep(ctx, session);
     // 区间 [0..5]（回退到 user-c2@5 平衡点），尾部保留 assistant-c2/result-c2
     const nodes = session.surface.nodes;
@@ -1753,7 +1751,7 @@ describe('apply 接线（OM 观察压缩）', () => {
       }),
       header: { origin: 'subagent' },
     });
-    const ctx = makeCtx({ resolveModelInfo: async () => ({ context: { contextWindow: 8 } }) });
+    const ctx = makeCtx({});
     apply(ctx, {});
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(0);
@@ -1773,7 +1771,7 @@ describe('apply 接线（OM 观察压缩）', () => {
         }),
       ],
     });
-    const ctx = makeCtx({ resolveModelInfo: async () => ({ context: { contextWindow: 8 } }) });
+    const ctx = makeCtx({});
     apply(ctx, { omEnabled: false });
     // 工具注册不受影响（recall 独立开关）
     expect(ctx._registeredTools.some((t) => t.name === 'recall')).toBe(true);
@@ -1804,8 +1802,8 @@ describe('apply 接线（OM 反思压缩）', () => {
   }
 
   it('摘要超反思阈值：摘要调用精简合并并把整个块区段替换为一条', async () => {
-    // 单块摘要（X*40 + tip 标签约 26 tokens）；window 16 × 0.2 = 3 → 触发反思；
-    // 表层节点数 < tailMessageCount（默认 10）→ 观察不触发
+    // 单块摘要（X*40 + tip 标签约 26 tokens）；反思阈值 1 → 触发反思；
+    // 表层节点数 < tailMessageCount（默认 10）→ 观察不触发（观察阈值保持默认 100000）
     const session = makeSession({
       events: [
         historyMessage('X'.repeat(40)),
@@ -1820,7 +1818,6 @@ describe('apply 接线（OM 反思压缩）', () => {
     });
     const before = session.surface.nodes.length;
     const ctx = makeCtx({
-      resolveModelInfo: async () => ({ context: { contextWindow: 16 } }),
       llmStream: [
         {
           type: 'text-delta',
@@ -1828,7 +1825,7 @@ describe('apply 接线（OM 反思压缩）', () => {
         },
       ],
     });
-    apply(ctx, {});
+    apply(ctx, { reflectThresholdTokens: 1 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(1);
     expect(instructionText(ctx._llmCalls[0]?.options)).toBe(buildHistoryPrompt()); // 反思与观察共用同一套提示词
@@ -1838,7 +1835,7 @@ describe('apply 接线（OM 反思压缩）', () => {
   });
 
   it('多块反思：按全部块总长触发，把整个块区段合并为一条', async () => {
-    // 两个块（各 X*40，含 tip 标签约 26 tokens，合计约 52）≥ 窗口 16 × 0.2 = 3 → 触发反思
+    // 两个块（各 X*40，含 tip 标签约 26 tokens，合计约 52）≥ 反思阈值 1 → 触发反思
     const session = makeSession({
       events: [
         historyMessage('X'.repeat(40), 'h1'),
@@ -1854,7 +1851,6 @@ describe('apply 接线（OM 反思压缩）', () => {
     });
     const before = session.surface.nodes.length;
     const ctx = makeCtx({
-      resolveModelInfo: async () => ({ context: { contextWindow: 16 } }),
       llmStream: [
         {
           type: 'text-delta',
@@ -1862,7 +1858,7 @@ describe('apply 接线（OM 反思压缩）', () => {
         },
       ],
     });
-    apply(ctx, {});
+    apply(ctx, { reflectThresholdTokens: 1 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(1);
     expect(instructionText(ctx._llmCalls[0]?.options)).toBe(buildHistoryPrompt()); // 反思与观察共用同一套提示词
@@ -1880,7 +1876,7 @@ describe('apply 接线（OM 反思压缩）', () => {
   });
 
   it('先反思后观察串行：反思合并旧块，观察在其后追加独立新块', async () => {
-    // window 8：反思阈值 1（摘要约 13 tokens ✓），观察阈值 0（未压缩 6 tokens ✓）
+    // 反思阈值 1（摘要约 13 tokens ✓）、观察阈值 1（未压缩 6 tokens ✓）均触发
     const session = makeSession({
       events: [
         historyMessage('X'.repeat(40)),
@@ -1896,7 +1892,6 @@ describe('apply 接线（OM 反思压缩）', () => {
     // 可重入迭代器：每次 stream 调用产出一个合法 <history> 块——第 1 次（反思）REFLECTED，第 2 次（观察）OBSERVED
     let streamCalls = 0;
     const ctx = makeCtx({
-      resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
       llmStream: {
         [Symbol.iterator]() {
           streamCalls += 1;
@@ -1913,7 +1908,7 @@ describe('apply 接线（OM 反思压缩）', () => {
         },
       },
     });
-    apply(ctx, { tailMessageCount: 1 });
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1, reflectThresholdTokens: 1 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(2);
     const firstText = instructionText(ctx._llmCalls[0]?.options);
@@ -1967,7 +1962,7 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
   }
 
   it('反思压缩：单节点替换也写完整 compaction 生命周期（summary/遮蔽/provider/model）', async () => {
-    // 摘要 40 字符 ≈ 10 tokens；window 16 × 0.2 = 3.2 → 触发反思；观察不触发
+    // 摘要 40 字符 ≈ 10 tokens；反思阈值 1 → 触发反思；观察阈值保持默认不触发
     const session = makeSession({
       events: [
         historyMessage('X'.repeat(40)),
@@ -1981,7 +1976,6 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
       ],
     });
     const ctx = makeCtx({
-      resolveModelInfo: async () => ({ context: { contextWindow: 16 } }),
       llmStream: [
         {
           type: 'text-delta',
@@ -1989,7 +1983,7 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
         },
       ],
     });
-    apply(ctx, {});
+    apply(ctx, { reflectThresholdTokens: 1 });
     await runPreStep(ctx, session);
     const { start, summary, end, replace } = compactionLifecycle(session);
     expect(start).not.toBe(-1);
@@ -2038,7 +2032,6 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
       events: [historyMessage('user_message message_id:old-u text:旧任务'), ...flowEvents],
     });
     const ctx = makeCtx({
-      resolveModelInfo: async () => ({ context: { contextWindow: 11 } }),
       llmStream: [
         {
           type: 'text-delta',
@@ -2046,8 +2039,8 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
         },
       ],
     });
-    // historyMergeRatio 3：反思阈值 33 > 旧摘要（含 tip 开标签约 26 tokens）——隔离观察路径
-    apply(ctx, { tailMessageCount: 1, historyMergeRatio: 3 });
+    // 反思阈值 1000 > 旧摘要（含 tip 开标签约 26 tokens）——隔离观察路径
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1, reflectThresholdTokens: 1000 });
     await runPreStep(ctx, session);
     const { start, summary } = compactionLifecycle(session);
     expect(start).not.toBe(-1);
@@ -2074,7 +2067,7 @@ describe('OM 摘要 token 归入主会话（compaction/summary.usage）', () => 
     );
   }
 
-  /** 触发观察压缩的固定夹具（window 8：观察阈值 4 tokens 必触发）。 */
+  /** 触发观察压缩的固定夹具（观察阈值 1 tokens 必触发）。 */
   function sessionAndCtx(extra: Parameters<typeof makeCtx>[0] = {}) {
     const session = makeSession({
       events: buildToolCallFlow({
@@ -2085,11 +2078,8 @@ describe('OM 摘要 token 归入主会话（compaction/summary.usage）', () => 
         withTurnEnd: true,
       }),
     });
-    const ctx = makeCtx({
-      resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
-      ...extra,
-    });
-    apply(ctx, { tailMessageCount: 1 });
+    const ctx = makeCtx(extra);
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     return { session, ctx };
   }
 
@@ -2156,7 +2146,6 @@ describe('摘要请求形态（new 方式）', () => {
   it('始终以 new 方式开启观察：指令作为 system，输入 = 被压缩消息（XML 包裹，不含尾部）', async () => {
     const session = sessionWithHeader();
     const ctx = makeCtx({
-      resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
       llmStream: [
         {
           type: 'text-delta',
@@ -2164,7 +2153,7 @@ describe('摘要请求形态（new 方式）', () => {
         },
       ],
     });
-    apply(ctx, { tailMessageCount: 1 });
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStep(ctx, session);
     const options = ctx._llmCalls[0]?.options as {
       system?: string;

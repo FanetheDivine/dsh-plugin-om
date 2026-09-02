@@ -1,10 +1,10 @@
 /**
  * 自动压缩（OM 观察/反思两级阈值，思路参考 Mastra Observational Memory）：
- *  - 观察：未压缩消息 tokens ≥ 窗口 × thresholdRatio → 直连 ctx.llm.stream() 摘要
- *    （new 方式：共享提示词作为 system、被压缩消息渲染为 <history> 块输入）把未压缩消息
+ *  - 观察：未压缩消息 tokens ≥ observeThresholdTokens（默认 100000）→ 直连 ctx.llm.stream()
+ *    摘要（new 方式：共享提示词作为 system、被压缩消息渲染为 <history> 块输入）把未压缩消息
  *    压缩为观察日志，作为独立的新 <history> 块，只精确替换被压缩的新消息区间（旧块原地
  *    保留，多块并存按序排列；不再把旧+新合并进一条消息）；
- *  - 反思：全部 <history> 块 tokens 合计 ≥ 窗口 × historyMergeRatio（默认 0.2）→
+ *  - 反思：全部 <history> 块 tokens 合计 ≥ reflectThresholdTokens（默认 30000）→
  *    同上摘要调用精简合并（输入为多个块拼接，共用同一套提示词），把整个块区段合并为一条。
  * 两级检查在 pre-step 阻塞串行执行（先反思后观察），避免压缩失败或重复压缩。
  * 自动压缩由配置键 omEnabled 开关（false 时关闭；recall 工具不受影响）。
@@ -421,7 +421,7 @@ function appendHistoryMessage(
 }
 
 /**
- * 反思：全部 <history> 块 tokens 合计 ≥ 窗口 × historyMergeRatio 时，摘要调用
+ * 反思：全部 <history> 块 tokens 合计 ≥ reflectThresholdTokens 时，摘要调用
  * 精简合并（多个块拼接为输入，与观察共用同一套提示词），把整个块区段替换为一条
  * 更紧凑的摘要。失败不产生部分替换。
  */
@@ -429,7 +429,6 @@ export async function reflectPass(
   ctx: Context,
   agent: Agent,
   config: Readonly<PluginConfig>,
-  window: number,
   target: RoutedTarget,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -437,15 +436,15 @@ export async function reflectPass(
   const session = agent.session;
   /** 插件日志门面。 */
   const logger = makeLogger(ctx, config.debug);
-  logger.step(`反思检查（窗口 ${window} × historyMergeRatio ${config.historyMergeRatio}）`);
+  logger.step(`反思检查（反思阈值 ${config.reflectThresholdTokens} tokens）`);
   /** 全部 <history> 压缩日志块（按表层顺序；无则跳过）。 */
   const { blocks } = historySection(session);
   if (blocks.length === 0) {
     logger.step('反思：无 <history> 压缩日志，跳过');
     return;
   }
-  /** 反思阈值（窗口 × historyMergeRatio 向下取整）。 */
-  const threshold = Math.floor(window * config.historyMergeRatio);
+  /** 反思阈值（配置的绝对 token 数）。 */
+  const threshold = config.reflectThresholdTokens;
   /** 全部块 token 估算合计（摘要总长）。 */
   const tokens = blocks.reduce((total, block) => total + estimateTextTokens(block.text), 0);
   /** 被压缩块区段的字符数合计（压缩前内文长度；UI 标题统计用，与观察路径一致只计内容不计标签）。 */
@@ -561,14 +560,13 @@ export async function reflectPass(
 }
 
 /**
- * 观察：未压缩消息 tokens ≥ 窗口 × thresholdRatio 时，摘要调用把未压缩消息压缩为
+ * 观察：未压缩消息 tokens ≥ observeThresholdTokens 时，摘要调用把未压缩消息压缩为
  * 观察日志，追加到旧摘要并替换被压缩消息区间。失败不产生部分替换。
  */
 export async function observePass(
   ctx: Context,
   agent: Agent,
   config: Readonly<PluginConfig>,
-  window: number,
   tailCount: number,
   target: RoutedTarget,
   signal?: AbortSignal,
@@ -578,10 +576,10 @@ export async function observePass(
   /** 插件日志门面。 */
   const logger = makeLogger(ctx, config.debug);
   logger.step(
-    `观察检查（窗口 ${window} × thresholdRatio ${config.thresholdRatio}，尾部保留 ${tailCount} 条）`,
+    `观察检查（观察阈值 ${config.observeThresholdTokens} tokens，尾部保留 ${tailCount} 条）`,
   );
-  /** 观察阈值（窗口 × thresholdRatio 向下取整）。 */
-  const threshold = Math.floor(window * config.thresholdRatio);
+  /** 观察阈值（配置的绝对 token 数）。 */
+  const threshold = config.observeThresholdTokens;
   /** 未压缩消息 token 估算（最后一个 <history> 块之后；其前视为已压缩）。 */
   const uncompressedTokens = measureUncompressedTokens(session, ctx.tokenMeter);
   if (uncompressedTokens < threshold) {
@@ -786,27 +784,12 @@ export async function maybeCompress(
     return;
   }
   logger.step(`会话路由：provider ${target.provider}，model ${target.model}`);
-  /** 模型容量信息（contextWindow 决定两级阈值）。 */
-  let info: Awaited<ReturnType<typeof ctx.llm.resolveModelInfo>> | undefined;
-  try {
-    info = await ctx.llm.resolveModelInfo(target.provider, target.model, signal);
-  } catch (error) {
-    logger.warn(`解析模型容量失败: ${error instanceof Error ? error.message : String(error)}`);
-    return;
-  }
-  /** 模型上下文窗口大小（非法值视为无法压缩）。 */
-  const window = info.context?.contextWindow;
-  if (typeof window !== 'number' || !Number.isFinite(window) || window <= 0) {
-    logger.step(`模型上下文窗口非法（${String(window)}），跳过压缩`);
-    return;
-  }
-  logger.step(`模型上下文窗口 ${window} tokens，开始两级压缩（先反思后观察）`);
   /** 尾部保留条数（config.tailMessageCount，缺省 10）。 */
   const tailCount = config.tailMessageCount;
   // 先反思（压缩过往摘要），后观察（压缩新消息，有必要才做）
   logger.step('反思 pass 开始');
-  await reflectPass(ctx, agent, config, window, target, signal);
+  await reflectPass(ctx, agent, config, target, signal);
   logger.step('反思 pass 结束，观察 pass 开始');
-  await observePass(ctx, agent, config, window, tailCount, target, signal);
+  await observePass(ctx, agent, config, tailCount, target, signal);
   logger.step('观察 pass 结束，压缩流程完成');
 }

@@ -8,8 +8,8 @@
  *    按语义在全部完整消息（含被压缩/遮蔽）中检索，返回最匹配的完整消息与匹配说明
  *    （本地 ONNX embedding，模型随插件打包，懒加载）
  *  - compress.ts 自动压缩（OM 观察/反思两级阈值）：pre-step 阻塞串行执行——
- *    反思（摘要 ≥ 窗口 × historyMergeRatio 时摘要调用精简合并 <history>）、
- *    观察（未压缩消息 ≥ 窗口 × thresholdRatio 时摘要调用压缩为观察日志并追加）
+ *    反思（<history> 块 tokens 合计 ≥ reflectThresholdTokens 时摘要调用精简合并）、
+ *    观察（未压缩消息 tokens ≥ observeThresholdTokens 时摘要调用压缩为观察日志并追加）
  *
  * 约束：不引入自定义会话事件类型——压缩复用宿主已知的 compaction/* 生命周期事件
  * （start/summary/end）与 checkpoint 标记，结果写入消息记录与轨迹。
@@ -42,7 +42,7 @@ export function apply(ctx: Context, config?: unknown): void {
   /** 插件日志门面（step=debug 按配置 debug 开关输出；info/warn 始终输出）。 */
   const logger = makeLogger(ctx, resolved.debug);
   logger.step(
-    `apply 启动：thresholdRatio=${String(resolved.thresholdRatio)} historyMergeRatio=${String(resolved.historyMergeRatio)} compressMaxTokens=${String(resolved.compressMaxTokens)} tailMessageCount=${String(resolved.tailMessageCount)} omEnabled=${String(resolved.omEnabled)} debug=${String(resolved.debug)}`,
+    `apply 启动：observeThresholdTokens=${String(resolved.observeThresholdTokens)} reflectThresholdTokens=${String(resolved.reflectThresholdTokens)} compressMaxTokens=${String(resolved.compressMaxTokens)} tailMessageCount=${String(resolved.tailMessageCount)} omEnabled=${String(resolved.omEnabled)} debug=${String(resolved.debug)}`,
   );
 
   // recall 工具（code 呈现下即 SDK 绑定 tools.recall(...)）；输出 token 由

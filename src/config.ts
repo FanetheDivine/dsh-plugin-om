@@ -7,10 +7,10 @@ import { isRecord } from './utils.ts';
 
 /** 插件配置项（全部可选覆盖，未给出或留空的键用默认值）。 */
 export type PluginConfig = {
-  /** 压力阈值比例：压力 ≥ 窗口 × 该比例时触发自动压缩。 */
-  thresholdRatio: number;
-  /** 反思阈值比例：摘要（<history> 内容）≥ 窗口 × 该比例时由反思摘要调用精简合并。 */
-  historyMergeRatio: number;
+  /** 观察阈值（tokens）：未压缩消息 tokens ≥ 该值时触发观察压缩。 */
+  observeThresholdTokens: number;
+  /** 反思阈值（tokens）：全部 <history> 块 tokens 合计 ≥ 该值时由反思摘要调用精简合并。 */
+  reflectThresholdTokens: number;
   /** 单次摘要（合并调用）生成上限（LLM maxTokens）。 */
   compressMaxTokens: number;
   /** 观察分块 token 边界：未压缩消息按该边界拆分为多块并行压缩（完整消息不跨块）。 */
@@ -35,8 +35,8 @@ export type PluginConfig = {
 
 /** 默认配置（冻结对象，resolveConfig 合并的基底；debug 缺省值在解析时按 NODE_ENV 判定）。 */
 export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
-  thresholdRatio: 0.1,
-  historyMergeRatio: 0.2,
+  observeThresholdTokens: 100000,
+  reflectThresholdTokens: 30000,
   compressMaxTokens: 10000,
   observeChunkTokens: 30000,
   observeChunkMaxTokens: 5000,
@@ -51,8 +51,8 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
 
 /** 数值配置键（仅接受有限数；整数键另校验整数性，不做取值区间限制）。 */
 type NumberKey =
-  | 'thresholdRatio'
-  | 'historyMergeRatio'
+  | 'observeThresholdTokens'
+  | 'reflectThresholdTokens'
   | 'compressMaxTokens'
   | 'observeChunkTokens'
   | 'observeChunkMaxTokens'
@@ -61,8 +61,8 @@ type NumberKey =
 
 /** 数值键校验参数表：键名 + [integer]。不限制取值区间——用户提供的值按原样接受（便于调试）。 */
 const NUMBER_KEYS: Array<[NumberKey, boolean]> = [
-  ['thresholdRatio', false],
-  ['historyMergeRatio', false],
+  ['observeThresholdTokens', true],
+  ['reflectThresholdTokens', true],
   ['compressMaxTokens', true],
   ['observeChunkTokens', true],
   ['observeChunkMaxTokens', true],

@@ -33,7 +33,7 @@ dsh plugin --profile <profile> add dsh-plugin-om
 ```yaml
 - id: dsh-plugin-om
   config:
-    thresholdRatio: 0.2
+    observeThresholdTokens: 100000
     # 其他配置参考下文
 ```
 
@@ -69,7 +69,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 - 直接改`preset-agent`的定义(不推荐)
 - 定义不含`compaction-basic`的`preset-agent`
-- `compaction-basic`压缩阈值是80%上下文窗口，而只需要确保OM的配置中，`thresholdRatio`+`historyMergeRatio`<0.8，理论上没到强制摘要就会被OM压缩了(默认值满足这一条件)
+- `compaction-basic`压缩阈值是80%上下文窗口，而OM的观察阈值是绝对 token 数（默认 `observeThresholdTokens`=100000）：模型窗口小于该值/0.8（即 12.5 万 tokens）时宿主强制摘要会先于 OM 触发，需要把 `observeThresholdTokens` 调低到窗口的 0.8 以下
 
 ## 工作原理
 
@@ -120,8 +120,8 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 | 键                      | 默认     | 含义                                                                                                                                                                         |
 | ----------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `thresholdRatio`        | `0.1`    | 观察阈值：未压缩消息 ≥ 窗口 × 该比例触发压缩                                                                                                                                 |
-| `historyMergeRatio`     | `0.2`    | 反思阈值：全部 <history> 块总长 ≥ 窗口 × 该比例触发精简合并                                                                                                                                   |
+| `observeThresholdTokens` | `100000` | 观察阈值（tokens）：未压缩消息 token 估算 ≥ 该值时触发观察压缩                                                                                                              |
+| `reflectThresholdTokens` | `30000`  | 反思阈值（tokens）：全部 <history> 块 token 估算合计 ≥ 该值时触发精简合并                                                                                                            |
 | `compressMaxTokens`     | `10000`  | 反思（合并调用）生成上限；观察分块用 `observeChunkMaxTokens`                                                                                                                  |
 | `observeChunkTokens`    | `30000`  | 观察分块 token 边界：未压缩消息按该边界拆分为多块并行压缩（完整消息不跨块）                                                                                                  |
 | `observeChunkMaxTokens` | `5000`   | 观察分块单块摘要的生成上限（每块独立调用）                                                                                                                                  |
@@ -133,7 +133,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 | `recallEnabled`         | `true`   | 是否注册 `recall` 工具（`false` 时禁用，不注册）                                                                                                                             |
 | `semanticRecallEnabled` | `true`   | 是否注册 `recall-semantic` 工具（`false` 时禁用，不注册、不触发模型下载）                                                                                                    |
 
-> 不建议将thresholdRatio设置的过高，越早OM收益越高，且当前的机制需要模型对消息计数，过多的消息会导致历史混乱
+> 不建议将观察阈值设置得过高：越早 OM 收益越高，且当前的机制需要模型对消息计数，过多的消息会导致历史混乱
 
 ### 关于配置项变更的说明
 
@@ -170,8 +170,8 @@ src/
 │   │                └─▶ model-download.ts          # 模型下载原语（URL/跳过判定/原子落盘；dev CLI 复用）
 │   └─ ④ 事件接线（仅主会话生效）
 │        └─ ctx.on('agent/pre-step') → compress.ts  # maybeCompress：两级压缩阻塞串行（先反思后观察；turn 中间即可触发）
-│              ├─ reflectPass → summarize.ts        # 全部 <history> 块总长 ≥ 窗口 × historyMergeRatio：多块拼接 + 共享提示词合并整个块区段
-│              ├─ observePass  → summarize.ts       # 未压缩消息 ≥ 窗口 × thresholdRatio：渲染 <history> 输入 → 观察日志 → 追加 + 替换
+│              ├─ reflectPass → summarize.ts        # 全部 <history> 块 token 估算 ≥ reflectThresholdTokens：多块拼接 + 共享提示词合并整个块区段
+│              ├─ observePass  → summarize.ts       # 未压缩消息 token 估算 ≥ observeThresholdTokens：渲染 <history> 输入 → 观察日志 → 追加 + 替换
 │              └─ 提交          → compress.ts        # compaction/start(摘要调用前，载荷 phase) → summary(attemptCount) → 替换消息(source 插件标识 + compactionId) → end；失败补 end(error)；usage 归入主会话
 ├── constants.ts              # 共享常量（PLUGIN_LABEL / HISTORY_TAG / HISTORY_TIP / COMPLETE_MESSAGE_DEFINITION / COMPACT_CHECKPOINT_PLUGIN）
 ├── types.ts                  # type-only：宿主类型再导出 + 领域类型（MessageNode / MessageIndex）
