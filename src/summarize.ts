@@ -32,9 +32,11 @@ import { type RoutedTarget, uuid } from './utils.ts';
  * 共享压缩提示词（观察/反思同一套）：定义 history 块（模型消息 + index 的表达形式）、
  * 完整消息定义、要求压缩（完整保留用户消息 / reasoning 仅参考 / 关联 assistant 合并 /
  * index/start/end 连续）、输出格式（一个合法 <history> 块，无 reasoning）、数据源说明。
+ * mode 控制【摘要粒度】：无参为通用提示词（反思调用）；'summary' 要求简单摘要（较早分块）；
+ * 'detailed' 要求越往后越细（最后一块保留细节）。观察分块时除最后一块外均用 'summary'。
  */
-export function buildHistoryPrompt(): string {
-  return [
+export function buildHistoryPrompt(mode?: 'summary' | 'detailed'): string {
+  const lines: string[] = [
     '把下方的 <history> 消息记录压缩为一份更紧凑的 <history> 压缩日志。不用工具、不展示思考、不输出多余文字。',
     '',
     '【history 块定义】',
@@ -70,7 +72,18 @@ export function buildHistoryPrompt(): string {
     `</${HISTORY_TAG}>`,
     '',
     '【数据源】下方的 <history> 消息记录是本次要压缩的全部消息；压缩结果作为一个新的 <history> 块输出。',
-  ].join('\n');
+  ];
+  if (mode !== undefined) {
+    // 观察分块：较早块只要求简单摘要，最后一块「越往后越细」保留细节
+    const granularity =
+      mode === 'summary'
+        ? '【摘要粒度】本条为较早的消息，做简单摘要即可：概括要点，不必展开细节；但用户消息仍逐条保留原文，不概括、不省略。'
+        : '【摘要粒度】本条为最近的消息，越往后越细：靠近末尾的完整消息保留更多细节（关键文件、改动与结论），前面的可适当从简；但用户消息始终逐条保留原文，不概括、不省略。';
+    const marker = '【输出格式】只输出一个 <history> 包裹的合法 XML 日志块';
+    const markerIndex = lines.findIndex((line) => line.includes(marker));
+    if (markerIndex !== -1) lines.splice(markerIndex, 0, granularity);
+  }
+  return lines.join('\n');
 }
 
 /** 渲染用户消息条目（DOM 元素）：文本块原样；图片/文件等非文本块以注释补充（说明传入了什么）。 */
@@ -197,7 +210,7 @@ export function renderMessages(session: Session, seqs: readonly number[]): strin
 export type SummarySubagentResult = {
   text: string;
   usage?: TokenUsage;
-  /** 成功时的尝试次数（1 起；1=首次即成功，>1 表示重试后成功；UI 重试次数 = 该值 - 1）。 */
+  /** 成功时的尝试次数（1 起；1=首次即成功，>1 表示重试后成功；载荷层换算为重试次数 = 该值 - 1）。 */
   attemptCount: number;
 };
 

@@ -100,7 +100,7 @@ export type CompleteMessage = {
 export type CompactionSummaryPayload = SessionEventMap['compaction/summary'] & {
   /** 被压缩内容的字符数（压缩前文本长度合计；UI 标题统计用），旧载荷可能缺失。 */
   shadowedCharCount?: number;
-  /** 摘要调用成功时的尝试次数（1 起；重试次数 = attemptCount - 1，UI 展示用），旧载荷可能缺失。 */
+  /** 摘要重试次数（0 起；观察分块为各块重试之和，反思为尝试次数 - 1），旧载荷可能缺失。 */
   attemptCount?: number;
 };
 

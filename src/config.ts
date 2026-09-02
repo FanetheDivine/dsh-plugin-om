@@ -13,6 +13,10 @@ export type PluginConfig = {
   historyMergeRatio: number;
   /** 单次摘要（合并调用）生成上限（LLM maxTokens）。 */
   compressMaxTokens: number;
+  /** 观察分块 token 边界：未压缩消息按该边界拆分为多块并行压缩（完整消息不跨块）。 */
+  observeChunkTokens: number;
+  /** 观察分块单块摘要的生成上限（LLM maxTokens；每块独立调用）。 */
+  observeChunkMaxTokens: number;
   /** 压缩边界：其后不压缩消息数下限（正整数，尾部保留）。 */
   tailMessageCount: number;
   /** 摘要调用失败后的最大重试次数（不含首次尝试；总尝试次数 = 该值 + 1，默认 11）。 */
@@ -34,6 +38,8 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   thresholdRatio: 0.1,
   historyMergeRatio: 0.2,
   compressMaxTokens: 10000,
+  observeChunkTokens: 30000,
+  observeChunkMaxTokens: 5000,
   tailMessageCount: 10,
   compressRetryCount: 10,
   omEnabled: true,
@@ -48,6 +54,8 @@ type NumberKey =
   | 'thresholdRatio'
   | 'historyMergeRatio'
   | 'compressMaxTokens'
+  | 'observeChunkTokens'
+  | 'observeChunkMaxTokens'
   | 'tailMessageCount'
   | 'compressRetryCount';
 
@@ -56,6 +64,8 @@ const NUMBER_KEYS: Array<[NumberKey, boolean]> = [
   ['thresholdRatio', false],
   ['historyMergeRatio', false],
   ['compressMaxTokens', true],
+  ['observeChunkTokens', true],
+  ['observeChunkMaxTokens', true],
   ['tailMessageCount', true],
   ['compressRetryCount', true],
 ];

@@ -205,7 +205,7 @@ describe('omCompactionDefinition.buildViewNode', () => {
         shadowedSeqs: [2, 3, 4],
         shadowedTokenCount: 1234,
         shadowedCharCount: 5000,
-        attemptCount: 1,
+        attemptCount: 0, // 首次尝试即成功（载荷 attemptCount 即重试次数）
       }),
     );
     const state = { summary, checkpoint };
@@ -368,7 +368,7 @@ describe('omCompactionDefinition.buildViewNode', () => {
     });
   });
 
-  it('summary 载荷 attemptCount 3 → retryCount 2', () => {
+  it('summary 载荷 attemptCount 3 → retryCount 3', () => {
     const summary = matchOf(
       lifecycle('compaction/summary', 6, {
         compactionId: 'om-1',
@@ -383,7 +383,7 @@ describe('omCompactionDefinition.buildViewNode', () => {
     const node = omCompactionDefinition.buildViewNode?.(contextOf([summary, checkpoint], state));
     expect(node).not.toBeNull();
     expect(node?.data).toMatchObject({
-      retryCount: 2,
+      retryCount: 3,
       running: false,
       phase: null,
     });

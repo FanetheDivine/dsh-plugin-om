@@ -1214,9 +1214,9 @@ describe('apply 接线（OM 观察压缩）', () => {
     const options = summaryOptions(ctx);
     // new 方式：persona + 提示词并入 system；输入为被压缩消息（user 消息）
     const instruction = instructionText(options);
-    expect(instruction).toBe(buildHistoryPrompt()); // 共享提示词（观察/反思同一套）
+    expect(instruction).toBe(buildHistoryPrompt('detailed')); // 观察单块 = 最后一块：越往后越细
     expect(options.system).toBe(instruction);
-    expect(options.maxTokens).toBe(10000); // compressMaxTokens 默认
+    expect(options.maxTokens).toBe(5000); // observeChunkMaxTokens 默认
 
     const historyText = latestHistoryText(session);
     // 新格式：<user_message index> 完整原文 + <assistant start..end> 聚合模块；格式说明注释在块首
@@ -1247,9 +1247,9 @@ describe('apply 接线（OM 观察压缩）', () => {
     const compactionId = startEvent.data.compactionId;
     expect(summaryEvent.data.compactionId).toBe(compactionId);
     expect(endEvent.data.compactionId).toBe(compactionId);
-    // start 携带压缩阶段（UI 压缩中提示按阶段区分文案）；首次尝试即成功 → attemptCount=1
+    // start 携带压缩阶段（UI 压缩中提示按阶段区分文案）；首次尝试即成功 → attemptCount=0
     expect((startEvent.data as { phase?: string }).phase).toBe('observe');
-    expect((summaryEvent.data as CompactionSummaryPayload).attemptCount).toBe(1);
+    expect((summaryEvent.data as CompactionSummaryPayload).attemptCount).toBe(0);
     // summary 内容 = 完整合并后的 <history> 内文（聊天卡片所见即所得）
     const summaryText = summaryEvent.data.summary
       .map((block) => (block.type === 'text' ? block.text : ''))
@@ -1267,6 +1267,75 @@ describe('apply 接线（OM 观察压缩）', () => {
     // 统计载荷：遮蔽节点 = 整条工具流（user/assistant/tool-result）；压缩前字符数 = 9+6+4（递归计入 tool-result 内嵌文本）
     expect(summaryEvent.data.shadowedSeqs).toEqual([0, 1, 3]);
     expect((summaryEvent.data as CompactionSummaryPayload).shadowedCharCount).toBe(19);
+  });
+
+  it('大输入按 token 边界分块并行压缩：前块简单摘要、最后一块越往后越细，合并为一个 <history>', async () => {
+    // 4 条各 ~10k tokens（40k 字符）的用户消息 → 30k 边界 → 3+1 两块
+    const texts = ['A'.repeat(40000), 'B'.repeat(40000), 'C'.repeat(40000), 'D'.repeat(40000)];
+    const events = texts.map(
+      (text) =>
+        ({
+          type: 'user/message' as const,
+          data: makeMessage({ role: 'user', content: [textBlock(text)] }),
+        }) as unknown as SessionEvent,
+    );
+    const session = makeSession({ events });
+    const report0 = [
+      '<history>',
+      '<user_message index="0">',
+      '早块用户消息摘要内容',
+      '</user_message>',
+      '<assistant start="1" end="2">',
+      '早块行为摘要内容',
+      '</assistant>',
+      '</history>',
+    ].join('\n');
+    const report1 = [
+      '<history>',
+      '<user_message index="3">',
+      '最后块用户消息摘要内容',
+      '</user_message>',
+      '</history>',
+    ].join('\n');
+    const ctx = makeCtx({
+      resolveModelInfo: async () => ({ context: { contextWindow: 8 } }),
+      llmStreamFactory: (callIndex) =>
+        callIndex === 0
+          ? [{ type: 'text-delta', text: report0 }]
+          : [{ type: 'text-delta', text: report1 }],
+    });
+    apply(ctx, { tailMessageCount: 0 });
+    const nextCalled = await runPreStep(ctx, session);
+    expect(nextCalled).toBe(true);
+    // 两块并行调用：提示词分档（前块简单摘要 / 最后一块越往后越细），maxTokens 均为分块上限
+    expect(ctx._llmCalls).toHaveLength(2);
+    const opt0 = summaryOptions(ctx, 0);
+    const opt1 = summaryOptions(ctx, 1);
+    expect(String(opt0.system ?? '')).toContain('【摘要粒度】本条为较早的消息');
+    expect(String(opt0.system ?? '')).not.toContain('越往后越细');
+    expect(String(opt1.system ?? '')).toContain('越往后越细');
+    expect(opt0.maxTokens).toBe(5000);
+    expect(opt1.maxTokens).toBe(5000);
+    // 各块输入只含本块完整消息（块 1：index 0..2；块 2：index 3）
+    const input0 = String(opt0.messages?.[0]?.content?.[0]?.text ?? '');
+    const input1 = String(opt1.messages?.[0]?.content?.[0]?.text ?? '');
+    expect(input0).toContain('<user_message index="0">');
+    expect(input0).toContain('<user_message index="2">');
+    expect(input0).not.toContain('<user_message index="3">');
+    expect(input1).toContain('<user_message index="3">');
+    // 合并后的历史块包含两块内容，整体覆盖 index 0..3
+    const historyText = latestHistoryText(session);
+    expect(historyText).toContain('早块用户消息摘要内容');
+    expect(historyText).toContain('早块行为摘要内容');
+    expect(historyText).toContain('最后块用户消息摘要内容');
+    // compaction/summary：maxTokens 记录分块上限，attemptCount = 两块重试之和（均首次成功 → 0）
+    const { summary } = compactionLifecycle(session);
+    const summaryEvent = session.events[summary];
+    if (summaryEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
+    expect((summaryEvent.data as CompactionSummaryPayload).maxTokens).toBe(5000);
+    expect((summaryEvent.data as CompactionSummaryPayload).attemptCount).toBe(0);
+    // 替换后表层只剩压缩日志块
+    expect(session.surface.nodes.length).toBe(1);
   });
 
   it('系统消息参与压缩：输入渲染 <sys> 空块，模型输出必须保留 sys 条目', async () => {
@@ -1529,7 +1598,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(ctx._llmCalls).toHaveLength(3); // 首次 + 2 次重试
     expect(latestHistoryText(session)).toContain('retried-ok');
     expect(session.events.some((e) => e.type === 'compaction/start')).toBe(true);
-    // start 前置（压缩中提示）且携带阶段；summary 携带成功尝试次数（第 3 次成功）
+    // start 前置（压缩中提示）且携带阶段；summary 携带重试次数（第 3 次成功 → 2）
     const sIdx = session.events.findIndex((e) => e.type === 'compaction/start');
     const sEvent = session.events[sIdx];
     if (sEvent?.type !== 'compaction/start') throw new Error('缺 start');
@@ -1537,7 +1606,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     const smIdx = session.events.findIndex((e) => e.type === 'compaction/summary');
     const smEvent = session.events[smIdx];
     if (smEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
-    expect((smEvent.data as CompactionSummaryPayload).attemptCount).toBe(3);
+    expect((smEvent.data as CompactionSummaryPayload).attemptCount).toBe(2);
     // 失败日志始终输出（含尝试次数与重试提示）
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
     expect(
@@ -1849,9 +1918,9 @@ describe('apply 接线（OM 反思压缩）', () => {
     expect(ctx._llmCalls).toHaveLength(2);
     const firstText = instructionText(ctx._llmCalls[0]?.options);
     const secondText = instructionText(ctx._llmCalls[1]?.options);
-    // 两者共用同一套提示词；以输入（数据源）区分反思/观察
+    // 反思用通用提示词；观察（最后一块）用「越往后越细」；以输入（数据源）区分两者
     expect(firstText).toBe(buildHistoryPrompt());
-    expect(secondText).toBe(buildHistoryPrompt());
+    expect(secondText).toBe(buildHistoryPrompt('detailed'));
     const inputOf = (call: unknown) =>
       String(
         (call as { messages?: Array<{ content?: Array<{ type?: string; text?: string }> }> })
@@ -1936,9 +2005,9 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
     if (endEvent?.type !== 'compaction/end') throw new Error('缺 end');
     expect(summaryEvent.data.compactionId).toBe(startEvent.data.compactionId);
     expect(endEvent.data.compactionId).toBe(startEvent.data.compactionId);
-    // 反思压缩：start 携带 phase='reflect'（UI 压缩中提示按阶段区分）；首次成功 attemptCount=1
+    // 反思压缩：start 携带 phase='reflect'（UI 压缩中提示按阶段区分）；首次成功 attemptCount=0
     expect((startEvent.data as { phase?: string }).phase).toBe('reflect');
-    expect((summaryEvent.data as CompactionSummaryPayload).attemptCount).toBe(1);
+    expect((summaryEvent.data as CompactionSummaryPayload).attemptCount).toBe(0);
     // 单节点替换：遮蔽区间为旧 <history> 节点
     expect(summaryEvent.data.shadowedRange).toEqual({ start: 0, end: 0 });
     expect(summaryEvent.data.shadowedSeqs).toEqual([0]);
@@ -2102,8 +2171,8 @@ describe('摘要请求形态（new 方式）', () => {
       tools?: unknown[];
       messages?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
     };
-    // new 方式：不复用主会话 requestHeader（system/tools 前缀不沿用）；指令 = 共享提示词
-    expect(options?.system).toBe(buildHistoryPrompt());
+    // new 方式：不复用主会话 requestHeader（system/tools 前缀不沿用）；指令 = 观察最后一块提示词
+    expect(options?.system).toBe(buildHistoryPrompt('detailed'));
     expect(options?.system).not.toContain('主会话系统提示词');
     expect(options?.tools).toBeUndefined();
     const input = String(options?.messages?.[0]?.content?.[0]?.text ?? '');

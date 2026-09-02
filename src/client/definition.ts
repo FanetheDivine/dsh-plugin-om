@@ -50,7 +50,7 @@ export interface OmCompactionChatData {
   readonly summaryCharCount: number | null;
   /** 压缩后的估算 token 数（4 字符 ≈ 1 token，与服务端 estimateTextTokens 同一启发式），summary 不可用或非法时为 null。 */
   readonly summaryTokenCount: number | null;
-  /** 摘要调用重试次数（= 载荷 attemptCount - 1；载荷缺失或非法时为 null）。 */
+  /** 摘要调用重试次数（载荷 attemptCount 即重试次数；缺失或非法时为 null）。 */
   readonly retryCount: number | null;
 }
 
@@ -130,8 +130,8 @@ function compactSummaryData(summaryMatch: ConversationMatch | undefined): OmComp
     retryCount =
       data.attemptCount !== undefined &&
       Number.isSafeInteger(data.attemptCount) &&
-      data.attemptCount >= 1
-        ? data.attemptCount - 1
+      data.attemptCount >= 0
+        ? data.attemptCount
         : null;
   }
   return {

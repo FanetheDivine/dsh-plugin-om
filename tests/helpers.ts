@@ -189,12 +189,22 @@ export function makeMeter() {
 interface MockCtxOptions {
   /** 摘要流 chunk（text-delta / usage / finish；缺省单条 text-delta）。 */
   llmStream?: Iterable<unknown> | AsyncIterable<unknown>;
+  /** 按调用序号返回摘要流（多块并行压缩时各块返回不同流；优先级高于 llmStream）。 */
+  llmStreamFactory?: (
+    callIndex: number,
+    options: unknown,
+  ) => Iterable<unknown> | AsyncIterable<unknown>;
   resolveModelInfo?: (provider: string, model: string) => Promise<unknown>;
   pruner?: unknown;
 }
 
 /** 可编程 ctx 模拟（回调由测试注入）。 */
-export function makeCtx({ llmStream, resolveModelInfo, pruner }: MockCtxOptions = {}) {
+export function makeCtx({
+  llmStream,
+  llmStreamFactory,
+  resolveModelInfo,
+  pruner,
+}: MockCtxOptions = {}) {
   const onCallbacks = new Map<string, ((...args: unknown[]) => unknown)[]>();
   const registeredTools: unknown[] = [];
   const sections: unknown[] = [];
@@ -233,7 +243,8 @@ export function makeCtx({ llmStream, resolveModelInfo, pruner }: MockCtxOptions 
           : { context: { contextWindow: 100000 } },
       stream: async function* (options: unknown) {
         llmCalls.push({ options });
-        if (llmStream) yield* llmStream;
+        if (llmStreamFactory) yield* llmStreamFactory(llmCalls.length - 1, options);
+        else if (llmStream) yield* llmStream;
         // 缺省输出为合法 <history> 块（提取校验要求：无 reasoning、index 连续、中间内容 ≥ 10 字符）
         else
           yield {
