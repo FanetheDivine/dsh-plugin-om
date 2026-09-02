@@ -25,6 +25,12 @@ import {
 } from './constants.ts';
 import { indexCompleteMessages, renderCompleteMessage } from './log-index.ts';
 import { makeLogger } from './logger.ts';
+import {
+  gateRateLimit,
+  isRateLimitError,
+  noteRateLimit,
+  RATE_LIMIT_WAIT_MS_DEFAULT,
+} from './rate-limit.ts';
 import type { Agent, CompleteMessage, Context, Session, TokenUsage, UserMessage } from './types.ts';
 import { type RoutedTarget, uuid } from './utils.ts';
 
@@ -494,6 +500,9 @@ type AttemptFailure = { error?: string; finish?: string };
  * 失败（抛异常 / 空输出 / 非 stop 结束 / 校验不通过）均记录日志并重试，总共最多尝试
  * options.maxAttempts 次（默认 SUMMARY_DEFAULT_MAX_ATTEMPTS）；全部尝试失败返回 null
  * （不产生任何日志变更）。输出长度受 maxTokens 限制。
+ * 每次请求发出前先过全局限流等待门（gateRateLimit）：任一请求遇 429 后，后续所有
+ * 摘要请求（含并行中的其他调用方）在「最近一次 429 + options.rateLimitWaitMs」之前
+ * 不会发出（缺省 RATE_LIMIT_WAIT_MS_DEFAULT）。
  */
 export async function runSummarySubagent(
   ctx: Context,
@@ -504,7 +513,7 @@ export async function runSummarySubagent(
   target: RoutedTarget,
   debug: boolean,
   signal?: AbortSignal,
-  options?: { maxAttempts?: number; expected?: SummaryValidationRange },
+  options?: { maxAttempts?: number; expected?: SummaryValidationRange; rateLimitWaitMs?: number },
 ): Promise<SummarySubagentResult | null> {
   /** 当前会话。 */
   const session = agent.session;
@@ -518,6 +527,16 @@ export async function runSummarySubagent(
     if (signal?.aborted) {
       logger.warn(
         `摘要调用中止（第 ${attempt}/${maxAttempts} 次尝试前 signal 已中止），放弃本次摘要`,
+      );
+      return null;
+    }
+    /** 限流冷却时长（ms；调用方未传时用默认值）。 */
+    const rateLimitWaitMs = options?.rateLimitWaitMs ?? RATE_LIMIT_WAIT_MS_DEFAULT;
+    /** 限流等待门：处于 429 冷却期时等待到期限再发请求（等待期间中止则放弃）。 */
+    const gated = await gateRateLimit(rateLimitWaitMs, signal);
+    if (!gated) {
+      logger.warn(
+        `摘要调用中止（第 ${attempt}/${maxAttempts} 次尝试前限流等待被 signal 中止），放弃本次摘要`,
       );
       return null;
     }
@@ -569,6 +588,13 @@ export async function runSummarySubagent(
     } catch (error) {
       /** 错误信息（统一为字符串）。 */
       const message = error instanceof Error ? error.message : String(error);
+      if (isRateLimitError(message)) {
+        // 429 限流：记录冷却期起点，此后所有摘要请求（含并行中的其他块）发请求前先过等待门
+        noteRateLimit();
+        logger.warn(
+          `摘要调用触发限流（429，第 ${attempt}/${maxAttempts} 次），下一次请求前至少等待 ${rateLimitWaitMs}ms`,
+        );
+      }
       lastFailure = { error: message };
       logger.warn(
         `摘要调用失败（第 ${attempt}/${maxAttempts} 次，${message}）` +
