@@ -6,12 +6,14 @@
  * recall 自身不设输出上限：超大的工具结果由 tool-result-pruner 裁剪（pruneContent），
  * 输出 token 由 pruner 配置控制。
  *
- * 参数由 zod schema（recallArgsSchema）在 execute 入口校验：start 必填（number），
- * end/offset 至少提供一个；非法参数抛出可读错误。
+ * 参数由 zod schema（recallArgsSchema）统一描述：wire 参数 JSON Schema（根 type:'object'，
+ * 各字段描述来自 .describe()）直接发给模型，execute 入口再做运行时校验（start 必填；
+ * end/offset 至少提供一个；非法参数抛出可读错误）。
  */
 
 import { z } from 'zod';
 import { COMPLETE_MESSAGE_DEFINITION } from './constants.ts';
+import { parametersFromZod } from './json-schema.ts';
 import { indexCompleteMessages, type PrunerLike, renderCompleteMessage } from './log-index.ts';
 import type { ToolDefinition, ToolRunContext } from './types.ts';
 import { isMainSession } from './utils.ts';
@@ -19,12 +21,17 @@ import { isMainSession } from './utils.ts';
 /**
  * recall 工具参数 schema：start 必填（number）；end 与 offset 至少提供一个
  * （二者同时给出时 end 优先，与 execute 语义一致）；未知键自动剥离。
+ * 各字段描述经 .describe() 透传到 wire JSON Schema（生成见 json-schema.ts）。
  */
 export const recallArgsSchema = z
   .object({
-    start: z.number(),
-    end: z.number().optional(),
-    offset: z.number().optional(),
+    start: z
+      .number()
+      .describe(
+        '完整消息序号（index），作为基准边界，和 end 或 offset 配合，指定区间；end 与 offset 至少提供一个（同时给出时 end 优先）。',
+      ),
+    end: z.number().optional().describe('与 offset 互斥，指定区间的另一个边界。'),
+    offset: z.number().optional().describe('与 end 互斥。相对 start 的步数：正数向后、负数向前。'),
   })
   .refine((args) => args.end !== undefined || args.offset !== undefined, {
     message: 'end 与 offset 至少提供一个',
@@ -59,21 +66,7 @@ export function buildRecallTool(getPruner?: () => unknown): ToolDefinition {
   return {
     name: 'recall',
     description: `${COMPLETE_MESSAGE_DEFINITION}此工具可以精确查询完整消息。用index指定一个区间，返回区间内所有完整消息的内容。`,
-    parameters: {
-      start: {
-        type: 'number',
-        description: '完整消息序号（index），作为基准边界，和end或offset配合，指定区间',
-        required: true,
-      },
-      end: {
-        type: 'number',
-        description: '与 offset 互斥，指定区间的另一个边界。',
-      },
-      offset: {
-        type: 'number',
-        description: '与 end 互斥。相对 start 的步数：正数向后、负数向前。',
-      },
-    },
+    parameters: parametersFromZod(recallArgsSchema),
     output: {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: String(value) }],

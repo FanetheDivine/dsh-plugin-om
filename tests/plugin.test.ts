@@ -2592,6 +2592,34 @@ describe('recall 工具', () => {
   });
 });
 
+describe('recall wire 参数 schema（由 zod 生成）', () => {
+  /** buildRecallTool().parameters：zod schema 经 toJSONSchema 生成的 wire JSON Schema。 */
+  const parameters = buildRecallTool().parameters;
+  /** properties（recall 的三个字段）。 */
+  const properties = parameters.properties as Record<
+    string,
+    { type?: string; description?: string }
+  >;
+
+  it('根为 type:object 的标准 JSON Schema，无 $schema/additionalProperties（官方 API 严格校验兼容）', () => {
+    expect(parameters.type).toBe('object');
+    expect(parameters).not.toHaveProperty('$schema');
+    expect(parameters).not.toHaveProperty('additionalProperties');
+  });
+
+  it('properties 含 start/end/offset（number），required 仅 start', () => {
+    expect(properties.start?.type).toBe('number');
+    expect(properties.end?.type).toBe('number');
+    expect(properties.offset?.type).toBe('number');
+    expect(parameters.required).toEqual(['start']);
+  });
+
+  it('描述来自 .describe() 且透传 refine 约束说明', () => {
+    expect(properties.start?.description).toContain('end 与 offset 至少提供一个');
+    expect(properties.start?.description).toContain('end 优先');
+  });
+});
+
 describe('recall 参数校验（zod schema）', () => {
   it('合法参数通过解析（start 必填，end/offset 至少其一，可同时给出）', () => {
     expect(parseRecallArgs({ start: 0, offset: 2 })).toEqual({ start: 0, offset: 2 });
@@ -2995,6 +3023,37 @@ describe('recall-semantic 工具', () => {
     const out = String(await tool.execute({ query: '数据库' }, { agent: { session } } as never));
     expect(out).toContain('数据库配置');
     expect(out).toContain('index 0 user'); // m-db 为完整消息 index 0
+  });
+});
+
+describe('recall-semantic wire 参数 schema（由 zod 生成）', () => {
+  /** buildSemanticRecallTool().parameters：zod schema 经 toJSONSchema 生成的 wire JSON Schema。 */
+  const parameters = buildSemanticRecallTool().parameters;
+  /** properties（recall-semantic 的五个字段）。 */
+  const properties = parameters.properties as Record<
+    string,
+    { type?: string; description?: string; minimum?: number; maximum?: number }
+  >;
+
+  it('根为 type:object 的标准 JSON Schema，无 $schema/additionalProperties（官方 API 严格校验兼容）', () => {
+    expect(parameters.type).toBe('object');
+    expect(parameters).not.toHaveProperty('$schema');
+    expect(parameters).not.toHaveProperty('additionalProperties');
+  });
+
+  it('required 仅 query，字段类型正确（top_k 为 integer 且限定 1-10）', () => {
+    expect(parameters.required).toEqual(['query']);
+    expect(properties.query?.type).toBe('string');
+    expect(properties.start?.type).toBe('number');
+    expect(properties.end?.type).toBe('number');
+    expect(properties.offset?.type).toBe('number');
+    expect(properties.top_k?.type).toBe('integer');
+    expect(properties.top_k?.minimum).toBe(1);
+    expect(properties.top_k?.maximum).toBe(10);
+  });
+
+  it('query 描述含「不能为空」约束', () => {
+    expect(properties.query?.description).toContain('不能为空');
   });
 });
 

@@ -6,6 +6,8 @@
  *
  * - 参数：query 必填；top_k（默认 3，1-10）；start/end/offset 限定检索区间
  *   （意义同 recall：start 为基准边界，end 与 offset 二选一；end 优先）。
+ *   wire 参数 JSON Schema 由本 schema 经 toJSONSchema 生成（各字段描述来自 .describe()，
+ *   见 json-schema.ts）。
  * - 区间缺省（start 未提供）→ 检索全部消息；区间不合法（start/end 越界等）→
  *   不报错，回退全量检索并在输出中明确告知（模型可见）。
  * - 向量：本地 ONNX embedding（embedding.ts，懒加载 + 批量）；相似度 = cosine。
@@ -17,6 +19,7 @@
 import { z } from 'zod';
 import { COMPLETE_MESSAGE_DEFINITION } from './constants.ts';
 import { cosineSimilarity, type EmbedFn, getEmbedder, type ModelStatus } from './embedding.ts';
+import { parametersFromZod } from './json-schema.ts';
 import { indexCompleteMessages, type PrunerLike, renderCompleteMessage } from './log-index.ts';
 import type { CompleteMessage, ToolDefinition, ToolRunContext } from './types.ts';
 import { isMainSession } from './utils.ts';
@@ -24,11 +27,30 @@ import { isMainSession } from './utils.ts';
 /** recall-semantic 工具参数 schema：query 必填；top_k 默认 3（1-10）；区间参数均可选。 */
 export const semanticRecallArgsSchema = z
   .object({
-    query: z.string(),
-    top_k: z.number().int().min(1).max(10).optional(),
-    start: z.number().optional(),
-    end: z.number().optional(),
-    offset: z.number().optional(),
+    query: z
+      .string()
+      .describe(
+        '描述要找的内容的自然语言 query（可混用中英文与代码术语，如 "修复 retry backoff 的逻辑"），不能为空。',
+      ),
+    top_k: z
+      .number()
+      .int()
+      .min(1)
+      .max(10)
+      .optional()
+      .describe('返回最匹配的完整消息条数（1-10，默认 3）。'),
+    start: z
+      .number()
+      .optional()
+      .describe('完整消息序号（index），可选。作为基准边界，和end或offset配合，指定搜索区间。'),
+    end: z
+      .number()
+      .optional()
+      .describe('必须和start配合使用，与 offset 互斥，指定搜索区间的另一个边界。'),
+    offset: z
+      .number()
+      .optional()
+      .describe('必须和start配合使用，与 end 互斥。相对 start 的步数：正数向后、负数向前。'),
   })
   .refine((args) => args.query.trim().length > 0, {
     message: 'query 不能为空',
@@ -136,30 +158,7 @@ export function buildSemanticRecallTool(options?: {
   return {
     name: 'recall-semantic',
     description: `${COMPLETE_MESSAGE_DEFINITION}此工具可以按自然语言含义，检索最符合的完整消息。默认在全消息范围搜索，可以指定区间。`,
-    parameters: {
-      query: {
-        type: 'string',
-        description:
-          '描述要找的内容的自然语言 query（可混用中英文与代码术语，如 "修复 retry backoff 的逻辑"）。',
-        required: true,
-      },
-      top_k: {
-        type: 'number',
-        description: '返回最匹配的完整消息条数（1-10，默认 3）。',
-      },
-      start: {
-        type: 'number',
-        description: '完整消息序号（index），可选。作为基准边界，和end或offset配合，指定搜索区间。',
-      },
-      end: {
-        type: 'number',
-        description: '必须和start配合使用，与 offset 互斥，指定搜索区间的另一个边界。',
-      },
-      offset: {
-        type: 'number',
-        description: '必须和start配合使用，与 end 互斥。相对 start 的步数：正数向后、负数向前。',
-      },
-    },
+    parameters: parametersFromZod(semanticRecallArgsSchema),
     output: {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: String(value) }],
