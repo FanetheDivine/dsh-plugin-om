@@ -148,7 +148,7 @@ describe('配置校验 resolveConfig', () => {
     const d = resolveConfig({});
     expect(d.observeThresholdTokens).toBe(35000);
     expect(d.reflectThresholdTokens).toBe(40000);
-    expect(d.compressMaxTokens).toBe(10000);
+    expect(d.compressMaxTokens).toBe(5000);
     expect(d.tailMessageCount).toBe(5);
     expect(d.compressRetryCount).toBe(5); // 失败后最大重试次数（不含首次）
     expect(d.omEnabled).toBe(true); // 缺省启用 OM
@@ -199,7 +199,7 @@ describe('配置校验 resolveConfig', () => {
       const d = resolveConfig(raw);
       expect(d.observeThresholdTokens).toBe(35000);
       expect(d.reflectThresholdTokens).toBe(40000);
-      expect(d.compressMaxTokens).toBe(10000);
+      expect(d.compressMaxTokens).toBe(5000);
       expect(d.tailMessageCount).toBe(5);
       expect(d.compressRetryCount).toBe(5);
       expect(d.omEnabled).toBe(true);
@@ -218,7 +218,7 @@ describe('配置校验 resolveConfig', () => {
     expect(mixed.observeThresholdTokens).toBe(35000);
     expect(mixed.reflectThresholdTokens).toBe(3000);
     const mixed2 = resolveConfig({ compressMaxTokens: null, tailMessageCount: 3 });
-    expect(mixed2.compressMaxTokens).toBe(10000);
+    expect(mixed2.compressMaxTokens).toBe(5000);
     expect(mixed2.tailMessageCount).toBe(3);
   });
 
@@ -234,7 +234,7 @@ describe('配置校验 resolveConfig', () => {
     expect(resolveConfig({ observeThresholdTokens: '0.5' }).observeThresholdTokens).toBe(35000); // 非数值回退默认
     expect(resolveConfig({ observeThresholdTokens: 2.5 }).observeThresholdTokens).toBe(35000); // 非整数回退默认
     expect(resolveConfig({ reflectThresholdTokens: 2.5 }).reflectThresholdTokens).toBe(40000); // 非整数回退默认
-    expect(resolveConfig({ compressMaxTokens: 2.5 }).compressMaxTokens).toBe(10000); // 非整数回退默认
+    expect(resolveConfig({ compressMaxTokens: 2.5 }).compressMaxTokens).toBe(5000); // 非整数回退默认
     // 全部未知键被忽略 → 结果等于默认配置
     expect(
       resolveConfig({
@@ -1310,7 +1310,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     const instruction = instructionText(options);
     expect(instruction).toBe(buildHistoryPrompt()); // 共享提示词（观察/反思同一套）
     expect(options.system).toBe(instruction);
-    expect(options.maxTokens).toBe(10000); // compressMaxTokens 默认
+    expect(options.maxTokens).toBe(5000); // compressMaxTokens 默认
 
     const historyText = latestHistoryText(session);
     // 新格式：<user_message index> 完整原文 + <assistant start..end> 聚合模块；格式说明注释在块首
@@ -2030,7 +2030,7 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
     expect((summaryEvent.data as CompactionSummaryPayload).shadowedCharCount).toBe(40); // 旧块文本 X*40
     expect(summaryEvent.data.provider).toBe('test');
     expect(summaryEvent.data.model).toBe('test-model');
-    expect(summaryEvent.data.maxTokens).toBe(10000); // compressMaxTokens 默认
+    expect(summaryEvent.data.maxTokens).toBe(5000); // compressMaxTokens 默认
     // summary 内容 = 合并后摘要
     const summaryText = summaryEvent.data.summary
       .map((block) => (block.type === 'text' ? block.text : ''))

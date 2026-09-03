@@ -36,7 +36,7 @@ export type PluginConfig = {
 export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   observeThresholdTokens: 35000,
   reflectThresholdTokens: 40000,
-  compressMaxTokens: 10000,
+  compressMaxTokens: 5000,
   rateLimitWaitMs: 60000,
   tailMessageCount: 5,
   compressRetryCount: 5,

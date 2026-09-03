@@ -47,7 +47,7 @@ dsh plugin --profile <profile> add dsh-plugin-om
 
 ### 与 compaction-basic 的关系
 
-preset-agent 自带 `compaction-basic` 压缩，与本插件冲突；其压缩阈值为 80% 上下文窗口。模型窗口小于 `observeThresholdTokens`/0.8（默认即 4.375 万 tokens）时宿主摘要会先于 OM 触发，需调低 `observeThresholdTokens` 到窗口的 0.8 以下，或定义不含 `compaction-basic` 的 preset-agent。
+preset-agent 自带 `compaction-basic` 压缩，也会压缩上下文，其压缩阈值为 80% 上下文窗口，一般会先用om进行压缩。
 
 ## 插件配置项
 
@@ -55,7 +55,7 @@ preset-agent 自带 `compaction-basic` 压缩，与本插件冲突；其压缩�
 | --- | --- | --- |
 | `observeThresholdTokens` | `35000` | 观察阈值（tokens）：净压力 ≥ 该值时触发观察压缩 |
 | `reflectThresholdTokens` | `40000` | 反思阈值（tokens）：全部 `<history>` 块 token 合计 ≥ 该值时触发合并 |
-| `compressMaxTokens` | `10000` | 单次摘要生成上限 |
+| `compressMaxTokens` | `5000` | 单次摘要生成上限 |
 | `rateLimitWaitMs` | `60000` | 遇 429 限流后下一次摘要请求前的等待毫秒数（全局冷却期；`0` 不限流） |
 | `tailMessageCount` | `5` | 尾部保留的不压缩消息条数 |
 | `compressRetryCount` | `5` | 摘要失败后的最大重试次数（不含首次） |
