@@ -1032,6 +1032,15 @@ describe('摘要日志提取 extractSummaryLog', () => {
     expect(out).not.toContain('尾部多余文字');
   });
 
+  it('decorate=false：不加 tip 属性与格式说明注释（chunk 中间产物），块内容原样', () => {
+    const raw = block('<user_message index="0">' + '\n' + 'A' + '\n' + '</user_message>');
+    const out = extractSummaryLog(raw, undefined, { decorate: false });
+    expect(out).not.toBeNull();
+    expect(out).toBe(raw); // 原样返回（无 tip 改写、无注释插入）
+    expect(out).not.toContain('tip=');
+    expect(out).not.toContain('完整消息：');
+  });
+
   it('含 <sys> 系统消息空块的日志合法（type/index 保留，连续性含 sys）', () => {
     const raw = block(
       '<sys type="agent-instructions" index="0"></sys>\n<user_message index="1">\nA\n</user_message>',
