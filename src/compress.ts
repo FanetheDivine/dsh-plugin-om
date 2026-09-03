@@ -4,7 +4,8 @@
  * reflectPass / observePass / maybeCompress。
  *
  * - 反思：全部 <history> 块 token 合计 ≥ reflectThresholdTokens 时，摘要合并为一条
- * - 观察：净压力（上下文压力 − 已压缩块 token 合计 − 系统提示词 token 估算）≥ observeThresholdTokens 时，
+ * - 观察：净压力（上下文压力 − 已压缩块 token 合计 − 系统提示词 token 估算 − 工具定义
+ *   token 估算）≥ observeThresholdTokens 时，
  *   摘要未压缩消息为新 <history> 块并精确替换被压缩区间（旧块保留）
  * - 两级在 pre-step 阻塞串行执行（先反思后观察）；仅主会话生效；omEnabled=false 关闭
  * - 压缩边界：最后一个合法 <history> 块之后的消息视为未压缩，其前不重复压缩
@@ -410,9 +411,20 @@ async function estimateSystemPromptTokens(
 }
 
 /**
+ * 估算请求工具定义 tokens：按会话请求头 tools（assembled tool schemas）JSON 序列化
+ * 长度/4 启发式计（与宿主 dsh-token-meter 对工具 schema 的启发式一致）。会话请求头
+ * 缺失或无 tools 时按 0 计——只影响观察触发时机（偏早触发），不产生错误。
+ */
+function estimateToolsTokens(session: Session): number {
+  const header = session.requestHeader();
+  if (header?.tools === undefined || header.tools.length === 0) return 0;
+  return estimateTextTokens(JSON.stringify(header.tools));
+}
+
+/**
  * 观察：净压力 tokens（上下文压力 − 已压缩 <history> 块 token 合计 − 系统提示词
- * token 估算）≥ observeThresholdTokens 时，摘要调用把未压缩消息压缩为观察日志，
- * 追加到旧摘要并替换被压缩消息区间。失败不产生部分替换。
+ * token 估算 − 工具定义 token 估算）≥ observeThresholdTokens 时，摘要调用把未压缩
+ * 消息压缩为观察日志，追加到旧摘要并替换被压缩消息区间。失败不产生部分替换。
  */
 export async function observePass(
   ctx: Context,
@@ -432,15 +444,16 @@ export async function observePass(
   const { blocks } = historySection(session);
   const historyTokens = blocks.reduce((total, block) => total + estimateTextTokens(block.text), 0);
   const systemTokens = await estimateSystemPromptTokens(ctx, agent, logger, signal);
-  const netTokens = pressureTokens - historyTokens - systemTokens;
+  const toolsTokens = estimateToolsTokens(session);
+  const netTokens = pressureTokens - historyTokens - systemTokens - toolsTokens;
   if (netTokens < threshold) {
     logger.step(
-      `观察：净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens} − 系统提示词 ${systemTokens}）< 阈值 ${threshold}，跳过`,
+      `观察：净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens} − 系统提示词 ${systemTokens} − 工具定义 ${toolsTokens}）< 阈值 ${threshold}，跳过`,
     );
     return;
   }
   logger.step(
-    `观察：净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens} − 系统提示词 ${systemTokens}）≥ 阈值 ${threshold}，触发压缩`,
+    `观察：净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens} − 系统提示词 ${systemTokens} − 工具定义 ${toolsTokens}）≥ 阈值 ${threshold}，触发压缩`,
   );
   const range = computeCompressRange(session, tailCount);
   if (!range) {

@@ -592,7 +592,7 @@ describe('token 估算 estimateTextTokens', () => {
   });
 });
 
-describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 系统提示词，ctx.tokenMeter.measure）', () => {
+describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 系统提示词 − 工具定义，ctx.tokenMeter.measure）', () => {
   /** 运行 pre-step 监听器。 */
   async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
     const listeners = ctx._onCallbacks.get('agent/pre-step');
@@ -644,7 +644,9 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
     expect(
       steps.some((s) =>
-        s.includes('净压力 50 tokens（上下文压力 50 − 已压缩块 0 − 系统提示词 0）< 阈值 100000'),
+        s.includes(
+          '净压力 50 tokens（上下文压力 50 − 已压缩块 0 − 系统提示词 0 − 工具定义 0）< 阈值 100000',
+        ),
       ),
     ).toBe(true);
   });
@@ -693,7 +695,7 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     expect(
       steps.some((s) =>
         s.includes(
-          `净压力 ${pressure - historyTokens} tokens（上下文压力 ${pressure} − 已压缩块 ${historyTokens} − 系统提示词 0）< 阈值 100000`,
+          `净压力 ${pressure - historyTokens} tokens（上下文压力 ${pressure} − 已压缩块 ${historyTokens} − 系统提示词 0 − 工具定义 0）< 阈值 100000`,
         ),
       ),
     ).toBe(true);
@@ -728,7 +730,7 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     expect(
       steps.some((s) =>
         s.includes(
-          `净压力 ${pressure - 10} tokens（上下文压力 ${pressure} − 已压缩块 0 − 系统提示词 10）< 阈值 100000`,
+          `净压力 ${pressure - 10} tokens（上下文压力 ${pressure} − 已压缩块 0 − 系统提示词 10 − 工具定义 0）< 阈值 100000`,
         ),
       ),
     ).toBe(true);
@@ -787,7 +789,69 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
     expect(warns.some((s) => s.includes('系统提示词 tokens 估算失败，按 0 计: boom'))).toBe(true);
     const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
-    expect(steps.some((s) => s.includes('− 系统提示词 0）< 阈值 100000'))).toBe(true);
+    expect(steps.some((s) => s.includes('− 系统提示词 0 − 工具定义 0）< 阈值 100000'))).toBe(true);
+  });
+
+  it('工具定义 token 从净压力扣除：低于阈值跳过', async () => {
+    const session = makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
+      requestHeaderValue: {
+        config: { provider: 'test', model: 'test-model' },
+        tools: [
+          { name: 'run_code', description: '执行代码', schema: { type: 'object' } },
+          { name: 'recall', description: '回看会话', schema: { type: 'object' } },
+        ],
+      },
+    });
+    const header = session.requestHeader() as { tools?: unknown[] };
+    const toolsTokens = estimateTextTokens(JSON.stringify(header.tools));
+    // 注入压力 = 阈值 + 工具定义 tokens − 1 → 扣除后净压力恰低于阈值 1 token
+    const pressure = 100000 + toolsTokens - 1;
+    const ctx = makeCtx({ meterTotalTokens: pressure });
+    apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
+    await runPreStep(ctx, session);
+    expect(ctx._llmCalls).toHaveLength(0);
+    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
+    expect(
+      steps.some((s) =>
+        s.includes(
+          `净压力 ${pressure - toolsTokens} tokens（上下文压力 ${pressure} − 已压缩块 0 − 系统提示词 0 − 工具定义 ${toolsTokens}）< 阈值 100000`,
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it('工具定义 token 从净压力扣除：扣除后仍达阈值则触发', async () => {
+    const session = makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
+      requestHeaderValue: {
+        config: { provider: 'test', model: 'test-model' },
+        tools: [{ name: 'run_code', description: '执行代码', schema: { type: 'object' } }],
+      },
+    });
+    const header = session.requestHeader() as { tools?: unknown[] };
+    const toolsTokens = estimateTextTokens(JSON.stringify(header.tools));
+    // 注入压力 = 阈值 + 工具定义 tokens → 扣除后净压力恰达阈值（触发）
+    const pressure = 100000 + toolsTokens;
+    const ctx = makeCtx({
+      meterTotalTokens: pressure,
+      llmStream: [{ type: 'text-delta', text: observeReport }],
+    });
+    apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
+    await runPreStep(ctx, session);
+    expect(ctx._llmCalls).toHaveLength(1);
   });
 
   it('已压缩块 token 从压力中扣除：扣除后净压力仍达阈值则触发', async () => {
@@ -2261,6 +2325,8 @@ describe('摘要请求形态（new 方式）', () => {
   it('始终以 new 方式开启观察：指令作为 system，输入 = 被压缩消息（XML 包裹，不含尾部）', async () => {
     const session = sessionWithHeader();
     const ctx = makeCtx({
+      // 会话请求头带 tools（JSON 21 字符 → 6 tokens）：注入真实 usage 锚定压力，扣除工具定义后仍达阈值
+      meterTotalTokens: 100000,
       llmStream: [
         {
           type: 'text-delta',
