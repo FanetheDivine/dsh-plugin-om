@@ -1105,31 +1105,71 @@ describe('摘要日志提取 extractSummaryLog', () => {
     expect(extractSummaryLog(block('<sys type="agent-instructions"></sys>'))).toBeNull();
   });
 
-  it('多块输出视为不合法（输出必须是单个合法 <history> 块，XML 解析拒绝多根）', () => {
+  it('多块输出（块间夹杂杂文）按条目模糊合并，index 连续即合法', () => {
     const raw = [
       block('<user_message index="0">\nA\n</user_message>'),
+      '这里是第二块：',
       block('<user_message index="1">\nB\n</user_message>'),
     ].join('\n');
-    expect(extractSummaryLog(raw)).toBeNull();
+    const out = extractSummaryLog(raw);
+    expect(out).not.toBeNull();
+    expect(out).toContain('<user_message index="0">');
+    expect(out).toContain('<user_message index="1">');
+    expect(out).not.toContain('这里是第二块：');
   });
 
-  it('结构非法 XML（标签不匹配 / 未闭合 / 未知元素 / 裸 <）视为不合法', () => {
-    // 标签不匹配
+  it('条目可恢复的非法 XML 不再整体拒绝（标签不匹配 / 未知元素 / 裸 <）', () => {
+    // 标签不匹配：条目按开闭就近配对恢复
     expect(
       extractSummaryLog('<history><user_message index="0">A</assistant></history>'),
-    ).toBeNull();
-    // 未闭合
-    expect(extractSummaryLog('<history><user_message index="0">A</user_message>')).toBeNull();
-    // 未知顶层元素类型
+    ).not.toBeNull();
+    // 未知顶层元素被忽略，其余条目保留
     expect(
       extractSummaryLog(
         '<history><user_message index="0">A</user_message><unknown>x</unknown></history>',
       ),
-    ).toBeNull();
-    // 文本中的裸 < / & 由解析器宽容处理（视为文本，不破坏结构）——输入侧由 XML 序列化转义兜底
+    ).not.toBeNull();
+    // 文本中的裸 < / & 正常接受
     expect(
       extractSummaryLog('<history><user_message index="0">a < b & c</user_message></history>'),
     ).not.toBeNull();
+  });
+
+  it('整块非法 XML 时按条目模糊提取重建为合法块', () => {
+    // 末尾未闭合条目以文本末尾收口，条目保留
+    expect(
+      extractSummaryLog(block('<user_message index="0">A</user_message><assistant index="1">B')),
+    ).not.toBeNull();
+    // 模糊重建统一 XML 转义：已有转义形式解码后重新转义保持不变，杂文与未知元素丢弃
+    const out = extractSummaryLog(
+      block('<user_message index="0">a &lt; b &amp; c</user_message><extra>占位</extra>'),
+    );
+    expect(out).not.toBeNull();
+    expect(out).toContain('a &lt; b &amp; c');
+    expect(out).not.toContain('<extra>');
+    expect(out).not.toContain('占位');
+  });
+
+  it('开标签携带属性 / 尾部多余闭标签时仍可定位提取', () => {
+    const attrs = extractSummaryLog(
+      '说明：\n<history lang="zh">\n<user_message index="0">\nA\n</user_message>\n</history>\n完',
+    );
+    expect(attrs).not.toBeNull();
+    expect(attrs?.startsWith(`<${HISTORY_TAG} tip="${HISTORY_TIP}">`)).toBe(true);
+    // 尾部出现 </history> 字样时按最后一个闭标签切分，条目仍可恢复且杂文丢弃
+    const tail = extractSummaryLog(
+      block('<user_message index="0">\nA\n</user_message>') + '\n以上即 </history> 格式说明',
+    );
+    expect(tail).not.toBeNull();
+    expect(tail).not.toContain('格式说明');
+  });
+
+  it('模糊提取路径同样拒绝产物中的 <reasoning> 块', () => {
+    expect(
+      extractSummaryLog(
+        '<history><user_message index="0">A</assistant><reasoning>思考</reasoning></history>',
+      ),
+    ).toBeNull();
   });
 
   it('找不到标签 / 顺序颠倒返回 null', () => {
@@ -1188,6 +1228,10 @@ describe('摘要日志提取 extractSummaryLog', () => {
     // 非 0 起始的观察块（续接旧摘要）：expected.start = 8
     const continued = block('<user_message index="8">\nA\n</user_message>');
     expect(extractSummaryLog(continued, { start: 8, end: 8 })).not.toBeNull();
+    // 模糊恢复的条目同样受 expected 区间约束
+    expect(
+      extractSummaryLog('<history><user_message index="0">A</assistant></history>', { start: 1 }),
+    ).toBeNull();
   });
 });
 

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- feat: 摘要输出校验放宽为模糊提取，不再要求模型输出整体合法 XML——取首个 `<history>` 开标签（允许带属性）到最后一个 `</history>` 定位候选块，整块非法时按条目标签（user_message/sys/assistant/reasoning）字符串级扫描配对并重建为合法块（未闭合条目以文本末尾收口、未知元素与杂文忽略、转义形式解码后归一），随后仍校验无 reasoning、index 连续与 expected 覆盖区间，可恢复的输出不再触发无效重试
 - feat: 观察阈值（`observeThresholdTokens`）默认改为 35000 tokens、尾部保留条数（`tailMessageCount`）默认改为 5、摘要最大重试次数（`compressRetryCount`）默认改为 5
 - docs: 精简 README 与代码注释——README 提纲挈领只描述功能概况（保留文件地图），注释统一为静态描述（文件头说明功能与关键导出项，函数/常量简注功能），并新增 AGENTS.md 文档与注释规范
 - feat: 观察阈值默认改为 30000 tokens、反思阈值默认改为 40000 tokens

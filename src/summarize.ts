@@ -4,7 +4,8 @@
  * historyContinuity / runSummarySubagent 及相关类型与常量。
  * 摘要以新会话方式直连 ctx.llm.stream()：指令（共享提示词）作为 system、被压缩消息
  * （renderMessages 渲染为合法 <history> 块）作为 user 输入；输出经 extractSummaryLog
- * 校验（XML 合法 / 无 reasoning / index 连续），失败按 maxAttempts 重试；每次请求前
+ * 定位与校验（首个 <history> 开标签到最后一个 </history>；整块 XML 非法时按条目标签
+ * 模糊提取重建 / 无 reasoning / index 连续），失败按 maxAttempts 重试；每次请求前
  * 过全局限流等待门；token usage 归入主会话记录。
  */
 
@@ -373,32 +374,113 @@ export function historyContinuity(
 /** 校验期望覆盖区间（外部传入；仅校验提供的字段，缺省字段跳过）。 */
 export type SummaryValidationRange = { start?: number; end?: number };
 
+/** <history> 开标签（允许携带属性）：模糊定位输出中日志块起点。 */
+const HISTORY_OPEN_TAG_RE = /<history(\s[^>]*)?>/;
+
+/** history 块内条目标签的 token 正则（开 / 闭 / 自闭合）：模糊提取按标签逐个扫描配对。 */
+const HISTORY_ENTRY_TOKEN_RE = /<(\/)?(user_message|sys|assistant|reasoning)\b([^>]*?)(\/)?>/g;
+
+/** 解析标签属性串为键值对（支持双引号 / 单引号 / 无引号取值；非法片段忽略）。 */
+function parseTagAttrs(raw: string): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  for (const m of raw.matchAll(/([^\s=/]+)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/g)) {
+    const key = m[1] ?? '';
+    const value = m[3] ?? m[4] ?? m[5] ?? '';
+    if (key !== '') attrs[key] = value;
+  }
+  return attrs;
+}
+
+/**
+ * 解码 XML 预定义实体（&amp; 最后解码，避免 &amp;lt; 之类被二次解码）。
+ * 模糊提取的条目文本解码后经 XML 序列化重新转义，已有转义形式不发生二次转义。
+ */
+function decodeXmlEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+/**
+ * 模糊重建 <history> 块（xmldom 原生无模糊匹配，按条目标签做字符串级扫描配对）：
+ * 依次提取 user_message / sys / assistant / reasoning 条目——开闭标签就近配对、
+ * 自闭合直接成条、未闭合条目以文本末尾收口；未知元素与其间杂文忽略；条目文本
+ * 解码后重新序列化为合法 XML。扫描不到任何条目返回 null。
+ */
+function rebuildHistoryBlock(inner: string): string | null {
+  type OpenEntry = { tag: string; attrs: Record<string, string>; contentFrom: number };
+  type RawEntry = { tag: string; attrs: Record<string, string>; content: string };
+  const entries: RawEntry[] = [];
+  const stack: OpenEntry[] = [];
+  for (const m of inner.matchAll(HISTORY_ENTRY_TOKEN_RE)) {
+    const tag = m[2] ?? '';
+    if (m[1] === '/') {
+      // 闭标签：与栈顶最近的同标签开标签配对成条
+      for (let i = stack.length - 1; i >= 0; i -= 1) {
+        const open = stack[i];
+        if (open?.tag === tag) {
+          entries.push({ tag, attrs: open.attrs, content: inner.slice(open.contentFrom, m.index) });
+          stack.splice(i, 1);
+          break;
+        }
+      }
+    } else if (m[4] === '/') {
+      // 自闭合标签：空条目
+      entries.push({ tag, attrs: parseTagAttrs(m[3] ?? ''), content: '' });
+    } else {
+      stack.push({ tag, attrs: parseTagAttrs(m[3] ?? ''), contentFrom: m.index + m[0].length });
+    }
+  }
+  for (const open of stack) {
+    entries.push({ tag: open.tag, attrs: open.attrs, content: inner.slice(open.contentFrom) });
+  }
+  if (entries.length === 0) return null;
+  const doc = new DOMParser().parseFromString(`<${HISTORY_TAG} />`, 'text/xml');
+  const root = doc.documentElement;
+  if (!root) return null;
+  for (const e of entries) {
+    const el = doc.createElement(e.tag);
+    for (const [key, value] of Object.entries(e.attrs))
+      el.setAttribute(key, decodeXmlEntities(value));
+    el.appendChild(doc.createTextNode(decodeXmlEntities(e.content)));
+    root.appendChild(el);
+  }
+  return new XMLSerializer().serializeToString(root);
+}
+
 /**
  * 从 AI 摘要输出中提取合法日志（不信任 AI 的总结结果）：
- * 取首个 <history> 到最后一个 </history> 切为日志，找不到或内容过短返回 null；
- * 经 XML 结构校验、无 reasoning、index 连续且与 expected 覆盖区间一致；
- * 通过后把开标签改写为带 tip 属性的版本并插入格式说明注释。
+ * 取首个 <history> 开标签（允许带属性）到最后一个 </history> 切为候选块，
+ * 找不到或内容过短返回 null；候选块经 XML 结构校验，整块非法时按条目模糊
+ * 提取重建为合法块（不要求模型输出整体合法 XML）；随后统一校验：无 reasoning、
+ * index 连续且与 expected 覆盖区间一致；通过后统一改写为带 tip 属性的开标签
+ * 并在块顶插入格式说明注释。
  */
 export function extractSummaryLog(raw: string, expected?: SummaryValidationRange): string | null {
-  const openTag = `<${HISTORY_TAG}>`;
   const closeTag = `</${HISTORY_TAG}>`;
-  const openTagWithTip = `<${HISTORY_TAG} tip="${HISTORY_TIP}">`;
-  const open = raw.indexOf(openTag);
+  const openMatch = HISTORY_OPEN_TAG_RE.exec(raw);
+  const open = openMatch?.index ?? -1;
   const close = raw.lastIndexOf(closeTag);
-  if (open === -1 || close === -1 || close < open) return null;
-  const inner = raw.slice(open + openTag.length, close);
+  if (openMatch === null || close === -1 || close < open) return null;
+  const inner = raw.slice(open + openMatch[0].length, close);
   if (inner.trim().length < MIN_HISTORY_LENGTH) return null;
   const block = raw.slice(open, close + closeTag.length);
-  const parsed = parseHistoryBlock(block);
+  const candidate = parseHistoryBlock(block) === null ? rebuildHistoryBlock(inner) : block;
+  if (candidate === null) return null;
+  const parsed = parseHistoryBlock(candidate);
   if (parsed === null) return null;
   if (parsed.hasReasoning) return null;
   const span = historyContinuity(parsed.entries);
   if (span === null) return null;
   if (expected?.start !== undefined && span.start !== expected.start) return null;
   if (expected?.end !== undefined && span.end !== expected.end) return null;
-  return block
-    .replace(openTag, openTagWithTip)
-    .replace(openTagWithTip, `${openTagWithTip}\n${HISTORY_FORMAT_NOTE}`);
+  const candidateInner = candidate
+    .slice(candidate.indexOf('>') + 1, candidate.length - closeTag.length)
+    .trim();
+  return `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${HISTORY_FORMAT_NOTE}\n${candidateInner}\n</${HISTORY_TAG}>`;
 }
 
 /** 摘要调用总尝试次数兜底（无 options.maxAttempts 时；实际由 config.compressRetryCount + 1 传入）。 */

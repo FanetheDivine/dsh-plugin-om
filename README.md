@@ -9,6 +9,7 @@
 - **自动压缩**（仅主会话，`agent/pre-step` 时阻塞串行执行）：
   - **观察**：净压力（上下文压力 − 已压缩 `<history>` 块 token 估算合计）≥ `observeThresholdTokens` 时，摘要未压缩消息并追加为新 `<history>` 块，精确替换被压缩的消息区间（旧块保留）
   - **反思**：全部 `<history>` 块 token 合计 ≥ `reflectThresholdTokens` 时，把多个摘要块合并为一条更紧凑的摘要
+  - **输出容错**：摘要输出按首个 `<history>` 开标签到最后一个 `</history>` 定位；整块 XML 非法时按条目标签模糊提取并重建为合法块，再校验无 reasoning 与 index 连续
 - **recall 工具**：按完整消息 index 区间回看原始会话（含被压缩内容；命中消息中的图片附件随结果保留）
 - **recall-semantic 工具**：本地嵌入模型（paraphrase-multilingual-MiniLM-L12-v2）按语义检索全部完整消息（只匹配文本，纯图片消息不进候选池）
 - **压缩卡片**：浏览器客户端在消息列表渲染折叠式「已压缩」卡片与「正在压缩上下文（观察/反思）…」提示行
