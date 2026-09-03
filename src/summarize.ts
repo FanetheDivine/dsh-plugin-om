@@ -584,7 +584,8 @@ export async function runSummarySubagent(
       for await (const chunk of ctx.llm.stream(requestOptions)) collector.push(chunk);
       /** 提取合法日志（首个 <history> 到最后一个 </history>，无 reasoning、index 连续；不信任 AI 输出）。 */
       const text = extractSummaryLog(collector.text, options?.expected, {
-        decorate: options?.decorate,
+        // exactOptionalPropertyTypes：decorate 缺省时不携带该键（不直传 undefined）
+        ...(options?.decorate === undefined ? {} : { decorate: options.decorate }),
       });
       /** 终止原因（仅 stop 视为完成）。 */
       const finish = collector.finish;
