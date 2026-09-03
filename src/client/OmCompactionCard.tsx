@@ -3,6 +3,7 @@
  * 复用平台原语 DisclosureRow；行内统计与展开体样式按宿主 ContextInjectionRow 的规则
  * 注入 <style>（宿主该卡片样式是编译期哈希的 CSS Module，插件 bundle 无法引用其类名）。
  * 卡片报告模型从何处起不再看到那段历史；summary 留在加载窗口外时行不可展开。
+ * 压缩失败节点渲染为可展开的错误行：折叠行显示错误摘要，展开体显示完整报错。
  */
 
 import type { ChatNode } from '@deepseek-ai/dsh-client-ui-conversation/client';
@@ -75,6 +76,43 @@ export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCo
       </div>
     );
   }
+  // 压缩失败：可展开的错误行（按 phase 区分文案），折叠行为错误摘要、展开体为完整报错
+  if (data.error !== null) {
+    const failedLabel =
+      data.phase === 'observe'
+        ? t('compaction.failed.observe')
+        : data.phase === 'reflect'
+          ? t('compaction.failed.reflect')
+          : t('compaction.failed');
+    const errorSummary = data.error.length > 80 ? `${data.error.slice(0, 80)}…` : data.error;
+    return (
+      <div style={styles.row}>
+        <DisclosureRow
+          className={css.root}
+          icon={<IconBrowseOutline16 size={14} />}
+          chevronClassName={css.chevron}
+          title={failedLabel}
+          collapsedContent={
+            <>
+              <span className={css.sep} aria-hidden />
+              <span className={css.summary}>{errorSummary}</span>
+            </>
+          }
+          keepContentWhenOpen
+          expandable
+          expandOnRowClick
+          open={expanded}
+          onToggle={() => {
+            setExpanded((value) => !value);
+          }}
+        >
+          <div className={css.body} style={styles.body}>
+            {data.error}
+          </div>
+        </DisclosureRow>
+      </div>
+    );
+  }
   const expandable = data.summary !== null;
   const open = expandable && expanded;
   // 统计行：优先完整压缩前后统计，载荷字段不全时逐级回落；重试次数仅在有重试时追加
@@ -139,6 +177,6 @@ export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCo
 
 const styles: Record<string, CSSProperties> = {
   row: {},
-  /** 摘要为 <history> 文本，保留换行。 */
+  /** 摘要与失败报错为多行文本，保留换行。 */
   body: { whiteSpace: 'pre-wrap' },
 };

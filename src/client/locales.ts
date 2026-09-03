@@ -17,6 +17,9 @@ export const zh = {
   'compaction.running': '正在压缩上下文…',
   'compaction.running.observe': '正在压缩上下文（观察）…',
   'compaction.running.reflect': '正在压缩上下文（反思）…',
+  'compaction.failed': '上下文压缩失败',
+  'compaction.failed.observe': '上下文压缩失败（观察）',
+  'compaction.failed.reflect': '上下文压缩失败（反思）',
   'compaction.retries': '重试 {count} 次',
 } as const;
 
@@ -31,6 +34,9 @@ export const en: Record<keyof typeof zh, string> = {
   'compaction.running': 'Compressing context…',
   'compaction.running.observe': 'Compressing context (observation)…',
   'compaction.running.reflect': 'Compressing context (reflection)…',
+  'compaction.failed': 'Context compaction failed',
+  'compaction.failed.observe': 'Context compaction failed (observation)',
+  'compaction.failed.reflect': 'Context compaction failed (reflection)',
   'compaction.retries': 'Retried {count} times',
 };
 
