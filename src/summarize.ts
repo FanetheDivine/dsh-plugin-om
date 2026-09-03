@@ -5,7 +5,9 @@
  * 摘要以新会话方式直连 ctx.llm.stream()：指令（共享提示词）作为 system、被压缩消息
  * （renderMessages 渲染为合法 <history> 块）作为 user 输入；输出经 extractSummaryLog
  * 定位与校验（首个 <history> 开标签到最后一个 </history>；整块 XML 非法时按条目标签
- * 模糊提取重建 / 无 reasoning / index 连续），失败按 maxAttempts 重试；每次请求前
+ * 模糊提取重建 / 无 reasoning / index 连续），失败按 maxAttempts 重试；每次尝试的
+ * 结果或报错始终写入日志（成功 info / 失败 warn，失败原因说明具体问题而非解析器
+ * 原始报错）；全部耗尽返回失败结果（携带最后一次尝试的实际报错）。每次请求前
  * 过全局限流等待门；token usage 归入主会话记录。
  */
 
@@ -13,6 +15,7 @@ import type { FinishReason, GenerateOptions, StreamChunk } from '@deepseek-ai/ds
 import type { Document, Element } from '@xmldom/xmldom';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import {
+  COMPACTION_ABORTED_ERROR,
   COMPLETE_MESSAGE_DEFINITION,
   HISTORY_TAG,
   HISTORY_TIP,
@@ -75,6 +78,14 @@ export function buildHistoryPrompt(): string {
   return lines.join('\n');
 }
 
+/**
+ * 静默 DOMParser：非致命解析问题不再走 xmldom 默认的 console.error 输出
+ * （模型输出非法 XML 时避免刷 console），fatalError 仍抛 ParseError、解析语义不变。
+ */
+function newQuietParser(): DOMParser {
+  return new DOMParser({ onError: () => {} });
+}
+
 /** 渲染用户消息条目（DOM 元素）：文本块原样；图片/文件等非文本块以注释补充。 */
 function renderUserEntry(doc: Document, session: Session, cm: CompleteMessage): Element | null {
   const seq = cm.seqs[0];
@@ -128,7 +139,7 @@ export function renderMessages(session: Session, seqs: readonly number[]): strin
     if (reasonings.length > 0) reasoningBySeq.set(seq, reasonings);
   }
   const emittedReasoning = new Set<number>();
-  const doc = new DOMParser().parseFromString(`<${HISTORY_TAG} />`, 'text/xml');
+  const doc = newQuietParser().parseFromString(`<${HISTORY_TAG} />`, 'text/xml');
   const entries: Element[] = [];
   for (const cm of indexCompleteMessages(session)) {
     if (!cm.seqs.every((seq) => shadowed.has(seq))) continue;
@@ -169,13 +180,26 @@ export function renderMessages(session: Session, seqs: readonly number[]): strin
   return `<${HISTORY_TAG}>\n${entries.map((el) => serializer.serializeToString(el)).join('\n')}\n</${HISTORY_TAG}>`;
 }
 
-/** 摘要调用结果：文本 + 可选 token usage + 成功时的尝试次数。 */
-export type SummarySubagentResult = {
+/** 摘要调用成功结果：文本 + 可选 token usage + 尝试次数。 */
+export type SummarySuccess = {
+  ok: true;
   text: string;
   usage?: TokenUsage;
   /** 成功时的尝试次数（1 起；载荷层换算为重试次数 = 该值 - 1）。 */
   attemptCount: number;
 };
+
+/** 摘要调用失败结果：最后一次尝试的实际报错/具体问题 + 是否因 signal 中止。 */
+export type SummaryFailure = {
+  ok: false;
+  /** 最后一次尝试的实际报错（异常消息）或未通过校验的具体问题说明。 */
+  error: string;
+  /** 因 signal 中止（含限流等待被中止）而放弃；此时 error 为 COMPACTION_ABORTED_ERROR。 */
+  aborted: boolean;
+};
+
+/** 摘要调用结果（成功/失败二选一）。 */
+export type SummaryOutcome = SummarySuccess | SummaryFailure;
 
 /** 流收集器：提取文本输出 + usage + finish（不依赖宿主 BlockAssembler）。 */
 class StreamCollector {
@@ -286,7 +310,7 @@ function intAttr(el: Element, name: string): number | undefined {
 function parseHistoryBlock(xml: string): ParsedHistoryBlock | null {
   let doc: Document;
   try {
-    doc = new DOMParser().parseFromString(xml, 'text/xml');
+    doc = newQuietParser().parseFromString(xml, 'text/xml');
   } catch {
     return null;
   }
@@ -438,7 +462,7 @@ function rebuildHistoryBlock(inner: string): string | null {
     entries.push({ tag: open.tag, attrs: open.attrs, content: inner.slice(open.contentFrom) });
   }
   if (entries.length === 0) return null;
-  const doc = new DOMParser().parseFromString(`<${HISTORY_TAG} />`, 'text/xml');
+  const doc = newQuietParser().parseFromString(`<${HISTORY_TAG} />`, 'text/xml');
   const root = doc.documentElement;
   if (!root) return null;
   for (const e of entries) {
@@ -454,46 +478,82 @@ function rebuildHistoryBlock(inner: string): string | null {
 /**
  * 从 AI 摘要输出中提取合法日志（不信任 AI 的总结结果）：
  * 取首个 <history> 开标签（允许带属性）到最后一个 </history> 切为候选块，
- * 找不到或内容过短返回 null；候选块经 XML 结构校验，整块非法时按条目模糊
+ * 找不到或内容过短返回具体原因；候选块经 XML 结构校验，整块非法时按条目模糊
  * 提取重建为合法块（不要求模型输出整体合法 XML）；随后统一校验：无 reasoning、
  * index 连续且与 expected 覆盖区间一致；通过后统一改写为带 tip 属性的开标签
- * 并在块顶插入格式说明注释。
+ * 并在块顶插入格式说明注释。所有失败原因均为说明性描述，不携带解析器原始报错。
  */
-export function extractSummaryLog(raw: string, expected?: SummaryValidationRange): string | null {
+export function extractSummaryDetailed(
+  raw: string,
+  expected?: SummaryValidationRange,
+): { log: string } | { error: string } {
   const closeTag = `</${HISTORY_TAG}>`;
   const openMatch = HISTORY_OPEN_TAG_RE.exec(raw);
   const open = openMatch?.index ?? -1;
   const close = raw.lastIndexOf(closeTag);
-  if (openMatch === null || close === -1 || close < open) return null;
+  if (openMatch === null || close === -1 || close < open) {
+    return {
+      error: '输出中找不到完整的 <history> 块（缺少 <history> 开标签或 </history> 闭标签）',
+    };
+  }
   const inner = raw.slice(open + openMatch[0].length, close);
-  if (inner.trim().length < MIN_HISTORY_LENGTH) return null;
+  if (inner.trim().length < MIN_HISTORY_LENGTH) {
+    return { error: '输出中 <history> 块内容过短（少于 10 字符）' };
+  }
   const block = raw.slice(open, close + closeTag.length);
   const candidate = parseHistoryBlock(block) === null ? rebuildHistoryBlock(inner) : block;
-  if (candidate === null) return null;
+  if (candidate === null) {
+    return {
+      error: '输出不是合法的 <history> 块（XML 结构非法，按条目模糊提取也未找到有效条目）',
+    };
+  }
   const parsed = parseHistoryBlock(candidate);
-  if (parsed === null) return null;
-  if (parsed.hasReasoning) return null;
+  if (parsed === null) {
+    return { error: '输出不是合法的 <history> 块（条目结构非法：属性缺失或包含未定义元素）' };
+  }
+  if (parsed.hasReasoning) {
+    return { error: '输出包含 <reasoning> 条目（产物不允许携带思考过程）' };
+  }
   const span = historyContinuity(parsed.entries);
-  if (span === null) return null;
-  if (expected?.start !== undefined && span.start !== expected.start) return null;
-  if (expected?.end !== undefined && span.end !== expected.end) return null;
+  if (span === null) {
+    return { error: '输出条目 index/start/end 不连续（跳号、重叠或乱序）' };
+  }
+  if (expected?.start !== undefined && span.start !== expected.start) {
+    return { error: `输出覆盖区间从 ${span.start} 开始，与期望起始 ${expected.start} 不一致` };
+  }
+  if (expected?.end !== undefined && span.end !== expected.end) {
+    return { error: `输出覆盖区间止于 ${span.end}，与期望结束 ${expected.end} 不一致` };
+  }
   const candidateInner = candidate
     .slice(candidate.indexOf('>') + 1, candidate.length - closeTag.length)
     .trim();
-  return `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${HISTORY_FORMAT_NOTE}\n${candidateInner}\n</${HISTORY_TAG}>`;
+  return {
+    log: `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${HISTORY_FORMAT_NOTE}\n${candidateInner}\n</${HISTORY_TAG}>`,
+  };
+}
+
+/**
+ * extractSummaryDetailed 的简便形式：提取成功返回合法日志块，失败返回 null
+ * （具体失败原因经 extractSummaryDetailed 获取）。
+ */
+export function extractSummaryLog(raw: string, expected?: SummaryValidationRange): string | null {
+  const extracted = extractSummaryDetailed(raw, expected);
+  return 'log' in extracted ? extracted.log : null;
 }
 
 /** 摘要调用总尝试次数兜底（无 options.maxAttempts 时；实际由 config.compressRetryCount + 1 传入）。 */
 export const SUMMARY_DEFAULT_MAX_ATTEMPTS = 11;
 
-/** 尝试失败的简短原因（供重试日志与最终失败日志使用）。 */
-type AttemptFailure = { error?: string; finish?: string };
+/** 尝试失败的简短记录（供重试日志与最终失败日志使用）：error=实际报错，reason=校验/完成度问题的具体说明。 */
+type AttemptFailure = { error?: string; reason?: string };
 
 /**
  * 直连 LLM 执行一次摘要（观察或反思），返回文本与可选 token usage。
- * 失败（抛异常 / 空输出 / 非 stop 结束 / 校验不通过）均记录日志并重试，最多尝试
- * options.maxAttempts 次；全部失败返回 null（不产生任何日志变更）。每次请求发出前
- * 先过全局限流等待门。
+ * 失败（抛异常 / 空输出 / 非 stop 结束 / 校验不通过）均记录日志并重试，每次尝试的
+ * 结果或报错始终写入日志（成功 info / 失败 warn，不受 debug 影响）；全部尝试耗尽
+ * 返回失败结果（携带最后一次尝试的实际报错/具体问题，不产生任何日志变更）。
+ * signal 中止（含限流等待被中止）立即放弃并标记 aborted。每次请求发出前先过全局
+ * 限流等待门。
  */
 export async function runSummarySubagent(
   ctx: Context,
@@ -505,7 +565,7 @@ export async function runSummarySubagent(
   debug: boolean,
   signal?: AbortSignal,
   options?: { maxAttempts?: number; expected?: SummaryValidationRange; rateLimitWaitMs?: number },
-): Promise<SummarySubagentResult | null> {
+): Promise<SummaryOutcome> {
   const session = agent.session;
   const logger = makeLogger(ctx, debug);
   const maxAttempts = options?.maxAttempts ?? SUMMARY_DEFAULT_MAX_ATTEMPTS;
@@ -513,17 +573,17 @@ export async function runSummarySubagent(
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (signal?.aborted) {
       logger.warn(
-        `摘要调用中止（第 ${attempt}/${maxAttempts} 次尝试前 signal 已中止），放弃本次摘要`,
+        `摘要调用中止（第 ${attempt}/${maxAttempts} 次尝试前 signal 已中止），放弃本次压缩`,
       );
-      return null;
+      return { ok: false, error: COMPACTION_ABORTED_ERROR, aborted: true };
     }
     const rateLimitWaitMs = options?.rateLimitWaitMs ?? RATE_LIMIT_WAIT_MS_DEFAULT;
     const gated = await gateRateLimit(rateLimitWaitMs, signal);
     if (!gated) {
       logger.warn(
-        `摘要调用中止（第 ${attempt}/${maxAttempts} 次尝试前限流等待被 signal 中止），放弃本次摘要`,
+        `摘要调用中止（第 ${attempt}/${maxAttempts} 次尝试前限流等待被 signal 中止），放弃本次压缩`,
       );
-      return null;
+      return { ok: false, error: COMPACTION_ABORTED_ERROR, aborted: true };
     }
     logger.step(
       `摘要调用开始（第 ${attempt}/${maxAttempts} 次，provider ${target.provider}，model ${target.model}，maxTokens ${
@@ -541,31 +601,34 @@ export async function runSummarySubagent(
       );
       const collector = new StreamCollector();
       for await (const chunk of ctx.llm.stream(requestOptions)) collector.push(chunk);
-      const text = extractSummaryLog(collector.text, options?.expected);
+      const extracted = extractSummaryDetailed(collector.text, options?.expected);
       const finish = collector.finish;
-      if (finish.kind !== 'stop' || text === null) {
-        const reason =
-          finish.kind === 'stop'
-            ? collector.text.trim() === ''
-              ? '无输出'
-              : '缺少合法 <history> 块（含 reasoning 或 index 不连续）'
-            : String(finish.kind);
-        lastFailure = { finish: reason };
+      if (finish.kind !== 'stop') {
+        lastFailure = { reason: `摘要流以 ${String(finish.kind)} 结束（非正常完成）` };
         logger.warn(
-          `摘要未完成（第 ${attempt}/${maxAttempts} 次，${reason}）` +
-            (attempt < maxAttempts ? '，将重试' : '，重试耗尽，忽略本次摘要'),
+          `摘要未完成（第 ${attempt}/${maxAttempts} 次，${lastFailure.reason}）` +
+            (attempt < maxAttempts ? '，将重试' : '，重试耗尽，放弃本次压缩'),
         );
         continue;
       }
+      if ('error' in extracted) {
+        lastFailure = { reason: extracted.error };
+        logger.warn(
+          `摘要输出未通过校验（第 ${attempt}/${maxAttempts} 次，${extracted.error}）` +
+            (attempt < maxAttempts ? '，将重试' : '，重试耗尽，放弃本次压缩'),
+        );
+        continue;
+      }
+      const text = extracted.log;
       const usage = collector.usage;
-      logger.step(
+      logger.info(
         `摘要调用成功（第 ${attempt}/${maxAttempts} 次，输出 ${text.length} 字符` +
           (usage === undefined
             ? ''
             : `，input ${String(usage.inputTokens ?? '?')} / output ${String(usage.outputTokens ?? '?')} tokens`) +
           '）',
       );
-      return { text, attemptCount: attempt, ...(usage === undefined ? {} : { usage }) };
+      return { ok: true, text, attemptCount: attempt, ...(usage === undefined ? {} : { usage }) };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (isRateLimitError(message)) {
@@ -577,15 +640,13 @@ export async function runSummarySubagent(
       lastFailure = { error: message };
       logger.warn(
         `摘要调用失败（第 ${attempt}/${maxAttempts} 次，${message}）` +
-          (attempt < maxAttempts ? '，将重试' : '，重试耗尽，忽略本次摘要'),
+          (attempt < maxAttempts ? '，将重试' : '，重试耗尽，放弃本次压缩'),
       );
     }
   }
+  const lastError = lastFailure.error ?? lastFailure.reason ?? '未知原因';
   logger.warn(
-    `摘要调用最终失败（已尝试 ${maxAttempts} 次` +
-      (lastFailure.error !== undefined ? `，最后错误：${lastFailure.error}` : '') +
-      (lastFailure.finish !== undefined ? `，最后结果：${lastFailure.finish}` : '') +
-      '），忽略本次摘要',
+    `摘要调用最终失败（已尝试 ${maxAttempts} 次，最后错误：${lastError}），拒绝放行本轮 step`,
   );
-  return null;
+  return { ok: false, error: lastError, aborted: false };
 }
