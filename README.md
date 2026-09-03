@@ -55,7 +55,7 @@ preset-agent 自带 `compaction-basic` 压缩，也会压缩上下文，其压�
 | --- | --- | --- |
 | `observeThresholdTokens` | `35000` | 观察阈值（tokens）：净压力（上下文压力 − 已压缩块 − 系统提示词估算）≥ 该值时触发观察压缩 |
 | `reflectThresholdTokens` | `40000` | 反思阈值（tokens）：全部 `<history>` 块 token 合计 ≥ 该值时触发合并 |
-| `compressMaxTokens` | `5000` | 单次摘要生成上限 |
+| `compressMaxTokens` | 不设置 | 单次摘要生成上限（不设置时由模型适配器默认值决定） |
 | `rateLimitWaitMs` | `60000` | 遇 429 限流后下一次摘要请求前的等待毫秒数（全局冷却期；`0` 不限流） |
 | `tailMessageCount` | `5` | 尾部保留的不压缩消息条数 |
 | `compressRetryCount` | `5` | 摘要失败后的最大重试次数（不含首次） |

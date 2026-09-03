@@ -206,7 +206,8 @@ function appendCompactionSummary(
     shadowedCharCount: number;
     provider: string;
     model: string;
-    maxTokens: number;
+    /** 摘要请求的生成上限（undefined 表示未设置，载荷省略该字段）。 */
+    maxTokens: number | undefined;
     /** 摘要重试次数（0 起）。 */
     attemptCount: number;
     usage?: TokenUsage;
@@ -221,7 +222,7 @@ function appendCompactionSummary(
     shadowedCharCount: data.shadowedCharCount,
     provider: data.provider,
     model: data.model,
-    maxTokens: data.maxTokens,
+    ...(data.maxTokens === undefined ? {} : { maxTokens: data.maxTokens }),
     attemptCount: data.attemptCount,
     ...(data.usage === undefined ? {} : { usage: data.usage }),
   };

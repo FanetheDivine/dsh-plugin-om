@@ -234,14 +234,14 @@ function buildSummaryOptions(
   session: Session,
   instruction: string,
   contextText: string | undefined,
-  maxTokens: number,
+  maxTokens: number | undefined,
   target: RoutedTarget,
   signal: AbortSignal | undefined,
 ): GenerateOptions {
   return {
     provider: target.provider,
     model: target.model,
-    maxTokens,
+    ...(maxTokens === undefined ? {} : { maxTokens }),
     sessionId: session.id,
     purpose: 'compaction' as const,
     ...(signal === undefined ? {} : { signal }),
@@ -500,7 +500,7 @@ export async function runSummarySubagent(
   agent: Agent,
   instruction: string,
   contextText: string | undefined,
-  maxTokens: number,
+  maxTokens: number | undefined,
   target: RoutedTarget,
   debug: boolean,
   signal?: AbortSignal,
@@ -526,7 +526,9 @@ export async function runSummarySubagent(
       return null;
     }
     logger.step(
-      `摘要调用开始（第 ${attempt}/${maxAttempts} 次，provider ${target.provider}，model ${target.model}，maxTokens ${maxTokens}）`,
+      `摘要调用开始（第 ${attempt}/${maxAttempts} 次，provider ${target.provider}，model ${target.model}，maxTokens ${
+        maxTokens === undefined ? '未设置' : String(maxTokens)
+      }）`,
     );
     try {
       const requestOptions = buildSummaryOptions(

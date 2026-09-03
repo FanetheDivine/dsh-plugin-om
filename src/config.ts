@@ -12,8 +12,8 @@ export type PluginConfig = {
   observeThresholdTokens: number;
   /** 反思阈值（tokens）：全部 <history> 块 token 合计 ≥ 该值时触发精简合并。 */
   reflectThresholdTokens: number;
-  /** 单次摘要生成上限（LLM maxTokens）。 */
-  compressMaxTokens: number;
+  /** 单次摘要生成上限（LLM maxTokens）；undefined 表示不设置，由模型适配器默认值决定。 */
+  compressMaxTokens: number | undefined;
   /** 遇 429 限流后下一次摘要请求前的等待毫秒数（全局冷却期）。 */
   rateLimitWaitMs: number;
   /** 尾部保留的不压缩消息条数。 */
@@ -36,7 +36,7 @@ export type PluginConfig = {
 export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   observeThresholdTokens: 35000,
   reflectThresholdTokens: 40000,
-  compressMaxTokens: 5000,
+  compressMaxTokens: undefined,
   rateLimitWaitMs: 60000,
   tailMessageCount: 5,
   compressRetryCount: 5,

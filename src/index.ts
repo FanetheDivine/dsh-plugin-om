@@ -24,7 +24,9 @@ export function apply(ctx: Context, config?: unknown): void {
   const resolved = resolveConfig(config);
   const logger = makeLogger(ctx, resolved.debug);
   logger.step(
-    `apply 启动：observeThresholdTokens=${String(resolved.observeThresholdTokens)} reflectThresholdTokens=${String(resolved.reflectThresholdTokens)} compressMaxTokens=${String(resolved.compressMaxTokens)} tailMessageCount=${String(resolved.tailMessageCount)} omEnabled=${String(resolved.omEnabled)} debug=${String(resolved.debug)}`,
+    `apply 启动：observeThresholdTokens=${String(resolved.observeThresholdTokens)} reflectThresholdTokens=${String(resolved.reflectThresholdTokens)} compressMaxTokens=${
+      resolved.compressMaxTokens === undefined ? '未设置' : String(resolved.compressMaxTokens)
+    } tailMessageCount=${String(resolved.tailMessageCount)} omEnabled=${String(resolved.omEnabled)} debug=${String(resolved.debug)}`,
   );
 
   // recall 工具：超大输出由 tool-result-pruner 裁剪；recallEnabled=false 时不注册。
