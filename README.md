@@ -10,9 +10,10 @@
   - **观察**：净压力（上下文压力 − 已压缩 `<history>` 块 token 估算合计 − 系统提示词 token 估算 − 工具定义 token 估算）≥ `observeThresholdTokens` 时，摘要未压缩消息并追加为新 `<history>` 块，精确替换被压缩的消息区间（旧块保留）
   - **反思**：全部 `<history>` 块 token 合计 ≥ `reflectThresholdTokens` 时，把多个摘要块合并为一条更紧凑的摘要
   - **输出容错**：摘要输出按首个 `<history>` 开标签到最后一个 `</history>` 定位；整块 XML 非法时按条目标签模糊提取并重建为合法块，再校验无 reasoning 与 index 连续
+  - **失败中断**：摘要尝试全部耗尽后拒绝当前 step（当前 turn 以 blocked 结束，不再继续 AI 会话；signal 中止除外），最后一次尝试的实际报错写入日志与 `compaction/end` error
 - **recall 工具**：按完整消息 index 区间回看原始会话（含被压缩内容；命中消息中的图片附件随结果保留）
 - **recall-semantic 工具**：本地嵌入模型（paraphrase-multilingual-MiniLM-L12-v2）按语义检索全部完整消息（只匹配文本，纯图片消息不进候选池）
-- **压缩卡片**：浏览器客户端在消息列表渲染折叠式「已压缩」卡片与「正在压缩上下文（观察/反思）…」提示行
+- **压缩卡片**：浏览器客户端在消息列表渲染折叠式「已压缩」卡片、「正在压缩上下文（观察/反思）…」提示行与可展开的「上下文压缩失败」错误行
 
 ## 安装与启用
 
@@ -61,7 +62,7 @@ preset-agent 自带 `compaction-basic` 压缩，也会压缩上下文，其压�
 | `compressRetryCount` | `5` | 摘要失败后的最大重试次数（不含首次） |
 | `modelDir` | 共享目录 | recall-semantic 嵌入模型目录（默认 `$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>`，onnx 缺失且启用语义召回时运行时自动下载） |
 | `omEnabled` | `true` | 是否启用自动压缩（`false` 时关闭，recall 工具不受影响） |
-| `debug` | dev | 步骤级日志开关（缺省按 `NODE_ENV !== 'production'` 判定；失败日志始终输出） |
+| `debug` | dev | 步骤级日志开关（缺省按 `NODE_ENV !== 'production'` 判定；每次压缩尝试的结果/报错与失败日志始终输出） |
 | `recallEnabled` | `true` | 是否注册 `recall` 工具 |
 | `semanticRecallEnabled` | `true` | 是否注册 `recall-semantic` 工具（`false` 时不注册、不触发模型下载） |
 
@@ -98,11 +99,11 @@ src/
 ├── embedding.ts               # 本地 ONNX 嵌入（懒加载 / 批量 / 运行时按需下载编排）
 ├── model-download.ts          # 模型下载原语（URL / 跳过判定 / 原子落盘）
 ├── summarize.ts               # 共享压缩提示词 + <history> 块渲染与输出校验 + 摘要调用
-├── compress.ts                # 两级自动压缩（观察/反思）与 compaction 生命周期事件
+├── compress.ts                # 两级自动压缩（观察/反思）、失败中断传播与 compaction 生命周期事件
 └── client/                    # 浏览器客户端 bundle（压缩卡片）
     ├── index.ts               # 客户端入口：注册卡片定义与渲染器
     ├── definition.ts          # 压缩卡片业务定义（认领生命周期事件与替换检查点）
-    ├── OmCompactionCard.tsx   # 折叠卡片渲染器（统计标题 + summary 展开）
+    ├── OmCompactionCard.tsx   # 折叠卡片渲染器（统计标题 + summary/失败报错展开）
     ├── format.ts              # 统计数字紧凑格式化（k/w/M）
     └── locales.ts             # om-compaction 文案字典（zh/en）
 models/                        # 嵌入模型目录（小文件随包分发；onnx 运行时按需下载，不进 git）

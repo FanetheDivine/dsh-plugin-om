@@ -1,7 +1,7 @@
 /**
  * 共享常量：插件级魔法字符串，集中定义避免散落各模块。
  * 导出 PLUGIN_LABEL / HISTORY_TAG / HISTORY_TIP / COMPLETE_MESSAGE_DEFINITION /
- * COMPACT_CHECKPOINT_PLUGIN / isPluginOwnedSource。
+ * COMPACT_CHECKPOINT_PLUGIN / COMPACTION_ABORTED_ERROR / isPluginOwnedSource。
  */
 
 /** 插件标识：压缩消息 source.plugin 取值与日志前缀。 */
@@ -22,6 +22,12 @@ export const COMPLETE_MESSAGE_DEFINITION =
 
 /** 旧日志压缩消息的宿主 checkpoint 标记 plugin 名（历史兼容识别用）。 */
 export const COMPACT_CHECKPOINT_PLUGIN = 'compact';
+
+/**
+ * 压缩因 signal 中止而放弃时 compaction/end 的 error 标识（服务端写入、客户端过滤）：
+ * 中止不是失败，客户端据此隐藏失败行（宿主不变量要求无 summary 的 end 必须带 error）。
+ */
+export const COMPACTION_ABORTED_ERROR = '压缩已中止（signal aborted）';
 
 /** 判定 user/message 的 source 是否为本插件自产（压缩日志消息；含旧宿主 checkpoint 标记兼容）。这类消息不占完整消息 index。 */
 export function isPluginOwnedSource(

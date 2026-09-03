@@ -14,7 +14,7 @@ import type {
 import type { ChatNode, ChatNodeDataMap } from '@deepseek-ai/dsh-client-ui-conversation/client';
 import type {} from '@deepseek-ai/dsh-compaction/types';
 import type { SessionEvent } from '@deepseek-ai/dsh-session/types';
-import { PLUGIN_LABEL } from '../constants.ts';
+import { COMPACTION_ABORTED_ERROR, PLUGIN_LABEL } from '../constants.ts';
 import type { CompactionSummaryPayload } from '../types.ts';
 
 /** 压缩卡片渲染器分发键（合并进 ChatNodeDataMap）。 */
@@ -49,13 +49,15 @@ export interface OmCompactionChatData {
   readonly summaryTokenCount: number | null;
   /** 摘要调用重试次数，载荷缺失或非法时为 null。 */
   readonly retryCount: number | null;
+  /** 压缩失败的错误文案（来自 compaction/end 载荷 error）；非失败节点为 null。 */
+  readonly error: string | null;
 }
 
 /** 压缩生命周期关联状态：summary / checkpoint / end 事件证据。 */
 interface OmCompactionState {
   readonly summary?: ConversationMatch;
   readonly checkpoint?: ConversationMatch;
-  /** compaction/end（成功与失败都会到达；无 checkpoint 的 end 表示压缩失败，撤回进行中提示行）。 */
+  /** compaction/end（成功与失败都会到达；无 checkpoint 的 end 表示压缩失败或中止）。 */
   readonly end?: ConversationMatch;
 }
 
@@ -133,6 +135,7 @@ function compactSummaryData(summaryMatch: ConversationMatch | undefined): OmComp
   return {
     running: false,
     phase: null,
+    error: null,
     summary,
     summaryEventSeq: summaryMatch?.event.seq ?? null,
     shadowedItemCount,
@@ -144,13 +147,43 @@ function compactSummaryData(summaryMatch: ConversationMatch | undefined): OmComp
   };
 }
 
+/** 从 compaction/start 载荷读取压缩 pass（observe/reflect；缺失或非法时回落 null）。 */
+function startPhase(start: ConversationMatch | undefined): 'observe' | 'reflect' | null {
+  const data = start?.event.data as { phase?: unknown } | undefined;
+  return data?.phase === 'observe' || data?.phase === 'reflect' ? data.phase : null;
+}
+
 /** 压缩进行中提示行的载荷（统计未就绪，全部为 null）。 */
 function runningData(start: ConversationMatch | undefined): OmCompactionChatData {
-  const data = start?.event.data as { phase?: unknown } | undefined;
-  const phase = data?.phase === 'observe' || data?.phase === 'reflect' ? data.phase : null;
   return {
     running: true,
-    phase,
+    phase: startPhase(start),
+    error: null,
+    summary: null,
+    summaryEventSeq: null,
+    shadowedItemCount: null,
+    shadowedTokenCount: null,
+    shadowedCharCount: null,
+    summaryCharCount: null,
+    summaryTokenCount: null,
+    retryCount: null,
+  };
+}
+
+/**
+ * 压缩失败节点的载荷：end 已到且带非中止 error、无检查点时使用。
+ * error 取 compaction/end 载荷中的实际报错文案（非字符串或为空时回落 null）；
+ * 摘要与统计字段全部为 null。
+ */
+function failureData(
+  start: ConversationMatch | undefined,
+  end: ConversationMatch,
+): OmCompactionChatData {
+  const data = end.event.data as { error?: unknown } | undefined;
+  return {
+    running: false,
+    phase: startPhase(start),
+    error: typeof data?.error === 'string' && data.error !== '' ? data.error : null,
     summary: null,
     summaryEventSeq: null,
     shadowedItemCount: null,
@@ -198,9 +231,10 @@ function chatNode<Kind extends keyof ChatNodeDataMap & string>(
 
 /**
  * 插件压缩生命周期定义：compaction/start 开启上下文，summary / 替换检查点 / end
- * 作为 update 折叠证据。有检查点时产出摘要卡片；无检查点的 end 以 hidden 撤回
- * 进行中提示行（已物化节点以 hidden visibility 保留同一 key）；仅 start 时渲染
- * 「正在压缩上下文…」提示行。
+ * 作为 update 折叠证据。有检查点时产出摘要卡片；end 已到且无检查点时，error 为
+ * 非中止报错则产出可见失败行，error 为中止标识或缺失则以 hidden 撤回进行中提示行
+ * （已物化节点以 hidden visibility 保留同一 key）；仅 start 时渲染「正在压缩上下文…」
+ * 提示行。
  */
 export const omCompactionDefinition: ConversationNodeDefinition<OmCompactionState> = {
   kind: COMPACTION_CARD_KIND,
@@ -234,9 +268,24 @@ export const omCompactionDefinition: ConversationNodeDefinition<OmCompactionStat
       const data = compactSummaryData(state.summary);
       return chatNode(context, COMPACTION_CARD_KIND, state.checkpoint.event.seq, data);
     }
-    // end 已到达但无检查点 → 压缩失败/中止：以 hidden visibility 撤回进行中提示行
+    // end 已到达但无检查点：error 为非中止的实际报错时渲染可见失败行；
+    // 无 error 或 error 以 COMPACTION_ABORTED_ERROR 开头（用户中止）时，
+    // 以 hidden visibility 撤回进行中提示行
     if (state.end !== undefined) {
       const anchorSeq = context.start?.event.seq ?? state.end.event.seq;
+      const endData = state.end.event.data as { error?: unknown } | undefined;
+      const isFailure =
+        typeof endData?.error === 'string' &&
+        endData.error !== '' &&
+        !endData.error.startsWith(COMPACTION_ABORTED_ERROR);
+      if (isFailure) {
+        return chatNode(
+          context,
+          COMPACTION_CARD_KIND,
+          anchorSeq,
+          failureData(context.start, state.end),
+        );
+      }
       return chatNode(
         context,
         COMPACTION_CARD_KIND,

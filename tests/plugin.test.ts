@@ -20,6 +20,7 @@ import {
 } from '../src/compress.ts';
 import { resolveConfig } from '../src/config.ts';
 import {
+  COMPACTION_ABORTED_ERROR,
   COMPLETE_MESSAGE_DEFINITION,
   HISTORY_TAG,
   HISTORY_TIP,
@@ -49,6 +50,7 @@ import {
   historyContinuity,
   parseHistoryEntries,
   renderMessages,
+  runSummarySubagent,
 } from '../src/summarize.ts';
 import type {
   CompactionSummaryPayload,
@@ -1315,7 +1317,7 @@ describe('摘要日志提取 extractSummaryLog', () => {
     expect(attrs?.startsWith(`<${HISTORY_TAG} tip="${HISTORY_TIP}">`)).toBe(true);
     // 尾部出现 </history> 字样时按最后一个闭标签切分，条目仍可恢复且杂文丢弃
     const tail = extractSummaryLog(
-      block('<user_message index="0">\nA\n</user_message>') + '\n以上即 </history> 格式说明',
+      `${block('<user_message index="0">\nA\n</user_message>')}\n以上即 </history> 格式说明`,
     );
     expect(tail).not.toBeNull();
     expect(tail).not.toContain('格式说明');
@@ -1389,6 +1391,102 @@ describe('摘要日志提取 extractSummaryLog', () => {
     expect(
       extractSummaryLog('<history><user_message index="0">A</assistant></history>', { start: 1 }),
     ).toBeNull();
+  });
+});
+
+describe('runSummarySubagent 结构化结果', () => {
+  /** 直连调用的固定入参（agent 仅承载 session 的最小桩，整体按签名断言）。 */
+  function callArgs(ctx: ReturnType<typeof makeCtx>, signal?: AbortSignal) {
+    const agent = { session: makeSession({ events: twoCallFlow() }) };
+    const target = { provider: 'test', model: 'test-model' };
+    return [
+      ctx,
+      agent,
+      buildHistoryPrompt(),
+      '<history>\n<user_message index="0">旧内容</user_message>\n</history>',
+      undefined,
+      target,
+      false,
+      signal,
+      { maxAttempts: 2, expected: { start: 0, end: 0 } },
+    ] as unknown as Parameters<typeof runSummarySubagent>;
+  }
+
+  it('每次尝试的结果/报错始终写日志：成功 info、失败 warn（不受 debug 影响）', async () => {
+    let attempts = 0;
+    const ctx = makeCtx({
+      llmStream: {
+        [Symbol.iterator]() {
+          attempts += 1;
+          const current = attempts;
+          return (function* () {
+            if (current === 1) throw new Error('网络抖动');
+            yield {
+              type: 'text-delta',
+              text: '<history><user_message index="0">旧内容</user_message></history>',
+            };
+          })();
+        },
+      },
+    });
+    const result = await runSummarySubagent(...callArgs(ctx));
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('应成功');
+    expect(result.attemptCount).toBe(2);
+    const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
+    const infos = ctx._loggerCalls.filter((c) => c.level === 'info').map((c) => String(c.args[0]));
+    expect(warns.some((w) => w.includes('摘要调用失败（第 1/2 次，网络抖动），将重试'))).toBe(true);
+    expect(infos.some((s) => s.includes('摘要调用成功（第 2/2 次'))).toBe(true);
+  });
+
+  it('全部尝试耗尽：返回失败结果，error 为最后一次尝试的实际报错', async () => {
+    const ctx = makeCtx({
+      llmStream: {
+        [Symbol.iterator]() {
+          return {
+            next() {
+              throw new Error('额度不足');
+            },
+          };
+        },
+      },
+    });
+    const result = await runSummarySubagent(...callArgs(ctx));
+    expect(result).toEqual({ ok: false, error: '额度不足', aborted: false });
+    const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
+    expect(
+      warns.some((w) => w.includes('摘要调用最终失败（已尝试 2 次，最后错误：额度不足）')),
+    ).toBe(true);
+  });
+
+  it('校验失败耗尽：error 为具体问题说明（非解析器原始报错）', async () => {
+    const ctx = makeCtx({
+      llmStream: [{ type: 'text-delta', text: '没有 history 块的输出' }],
+    });
+    const result = await runSummarySubagent(...callArgs(ctx));
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('应失败');
+    expect(result.aborted).toBe(false);
+    expect(result.error).toContain('找不到完整的 <history> 块');
+    expect(result.error).not.toMatch(/xmldom|ParseError/i); // 不携带解析器原始报错
+  });
+
+  it('signal 中止：返回 aborted=true，error 为共享中止标识', async () => {
+    const controller = new AbortController();
+    const ctx = makeCtx({
+      llmStream: {
+        [Symbol.iterator]() {
+          return {
+            next() {
+              controller.abort(); // 第一次尝试失败后中止，第二次尝试前检测到
+              throw new Error('模拟失败');
+            },
+          };
+        },
+      },
+    });
+    const result = await runSummarySubagent(...callArgs(ctx, controller.signal));
+    expect(result).toEqual({ ok: false, error: COMPACTION_ABORTED_ERROR, aborted: true });
   });
 });
 
@@ -1709,12 +1807,17 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(session.events.some((e) => e.type === 'compaction/summary')).toBe(false);
     const failEnd = session.events.findLast((e) => e.type === 'compaction/end');
     if (failEnd?.type !== 'compaction/end') throw new Error('缺 end');
-    expect((failEnd.data as { error?: string }).error).toContain('摘要调用失败/无输出');
+    // end(error) 写最后一次尝试的具体问题（无 <history> 块），不再写泛化文案
+    expect((failEnd.data as { error?: string }).error).toContain('找不到完整的 <history> 块');
     expect(latestHistoryText(session)).toBe(''); // 无部分替换
-    // 失败日志始终输出（含尝试次数与重试耗尽说明）
+    // 失败日志始终输出（含具体原因、尝试次数与重试耗尽说明）
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
-    expect(warns.some((w) => w.includes('摘要未完成（第 1/3 次，无输出），将重试'))).toBe(true);
-    expect(warns.some((w) => w.includes('重试耗尽，忽略本次摘要'))).toBe(true);
+    expect(
+      warns.some((w) =>
+        w.includes('摘要输出未通过校验（第 1/3 次，输出中找不到完整的 <history> 块'),
+      ),
+    ).toBe(true);
+    expect(warns.some((w) => w.includes('重试耗尽，放弃本次压缩'))).toBe(true);
     expect(warns.some((w) => w.includes('摘要调用最终失败（已尝试 3 次'))).toBe(true);
   });
 
@@ -1833,6 +1936,79 @@ describe('apply 接线（OM 观察压缩）', () => {
     ).toBe(true);
   });
 
+  it('摘要尝试耗尽：pre-step 返回 reject 中断当前 turn（不调用 next），end(error) 携带实际报错', async () => {
+    const session = makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
+    });
+    const ctx = makeCtx({
+      llmStream: {
+        [Symbol.iterator]() {
+          return {
+            next() {
+              throw new Error('额度不足');
+            },
+          };
+        },
+      },
+    });
+    apply(ctx, { tailMessageCount: 1, compressRetryCount: 1, observeThresholdTokens: 1 }); // 总尝试 2 次
+    const listeners = ctx._onCallbacks.get('agent/pre-step');
+    let nextCalled = false;
+    const decision = await listeners?.[0]?.(
+      { agent: { session }, signal: new AbortController().signal },
+      () => {
+        nextCalled = true;
+        return undefined;
+      },
+    );
+    expect(decision).toEqual({ kind: 'reject' }); // 拒绝本 step，当前 turn 以 blocked 结束
+    expect(nextCalled).toBe(false); // 不放行、不再继续 AI 会话
+    expect(ctx._llmCalls).toHaveLength(2); // 首次 + 1 次重试
+    const failEnd = session.events.findLast((e) => e.type === 'compaction/end');
+    if (failEnd?.type !== 'compaction/end') throw new Error('缺 end');
+    expect((failEnd.data as { error?: string }).error).toContain('额度不足'); // 实际报错写入 end
+    const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
+    expect(
+      warns.some((w) => w.includes('上下文压缩失败，拒绝本 step 中断当前 turn：额度不足')),
+    ).toBe(true);
+  });
+
+  it('signal 已中止：放弃压缩但不拒绝（照常放行 next）', async () => {
+    const session = makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
+    });
+    const ctx = observeCtx(
+      '<history>\n<user_message index="0">\nOBSERVED-PASS\n</user_message>\n</history>',
+    );
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
+    const controller = new AbortController();
+    controller.abort();
+    const listeners = ctx._onCallbacks.get('agent/pre-step');
+    let nextCalled = false;
+    const decision = await listeners?.[0]?.(
+      { agent: { session }, signal: controller.signal },
+      () => {
+        nextCalled = true;
+        return undefined;
+      },
+    );
+    expect(decision).toBeUndefined(); // next() 的返回值（放行）
+    expect(nextCalled).toBe(true);
+    expect(ctx._llmCalls).toHaveLength(0); // 中止时不发起摘要调用
+  });
+
   it('流程逐步日志：dev 环境 step（debug）日志覆盖关键步骤', async () => {
     const session = makeSession({
       events: buildToolCallFlow({
@@ -1855,7 +2031,11 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(steps.some((s) => s.includes('触发压缩'))).toBe(true);
     expect(steps.some((s) => s.includes('压缩区间'))).toBe(true);
     expect(steps.some((s) => s.includes('摘要调用开始（第 1/3 次'))).toBe(true);
-    expect(steps.some((s) => s.includes('摘要调用成功'))).toBe(true);
+    // 尝试成功始终写入日志（info，不受 debug 影响）
+    const infos = ctx._loggerCalls
+      .filter((c) => c.level === 'info')
+      .map((c) => String(c.args[0] ?? ''));
+    expect(infos.some((s) => s.includes('摘要调用成功（第 1/3 次'))).toBe(true);
     expect(
       steps.some((s) => s.includes('观察：追加 compaction/start（摘要调用前开启压缩中提示）')),
     ).toBe(true);

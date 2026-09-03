@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- 压缩摘要尝试全部耗尽后拒绝当前 step，当前 turn 以 blocked 结束、不再继续 AI 会话（signal 中止除外）：最后一次尝试的实际报错写入日志与 `compaction/end` error，浏览器客户端渲染可展开的「上下文压缩失败」错误行（用户主动中止维持静默撤回）
+- 每次压缩尝试的结果/报错始终写入日志（成功 info / 失败 warn，不受 `debug` 影响）；失败原因为说明具体问题的文案（如缺少 `<history>` 块、条目 index 不连续），不再输出解析器原始报错；xmldom 非致命解析消息不再走 console，模型下载日志只走日志门面
+
 ### Fixed
 
 - vitest 排除 `.dsh/` 目录（`configDefaults.exclude` 基础上追加），不再收集 `.dsh/worktrees/` 内 worktree 副本中的重复测试；`.gitignore` 忽略 `.dsh/worktrees/`

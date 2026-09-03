@@ -9,8 +9,10 @@
  *   摘要未压缩消息为新 <history> 块并精确替换被压缩区间（旧块保留）
  * - 两级在 pre-step 阻塞串行执行（先反思后观察）；仅主会话生效；omEnabled=false 关闭
  * - 压缩边界：最后一个合法 <history> 块之后的消息视为未压缩，其前不重复压缩
+ * - 摘要尝试全部耗尽时 pass 返回失败结果（携带最后一次尝试的实际报错），压缩流程
+ *   向上传播，pre-step 据此拒绝本 step 中断当前 turn；signal 中止标记 aborted（不中断）
  * - 提交走宿主 compaction/* 生命周期事件（start 带 phase → summary → 替换消息 → end），
- *   失败补 end(error)；替换消息 source 标记插件标识供 UI 认领
+ *   失败补 end(error，实际报错)；替换消息 source 标记插件标识供 UI 认领
  */
 import { scopeOf } from '@deepseek-ai/dsh-scope';
 import type { AssembleContext } from '@deepseek-ai/dsh-system-prompt';
@@ -38,6 +40,11 @@ import type {
   UserMessage,
 } from './types.ts';
 import { blocksToText, type RoutedTarget, routedTarget, textCharCount, uuid } from './utils.ts';
+
+/** 压缩 pass 结果：failed=false 表示无需中断（成功、跳过或非摘要耗尽的局部失败）；failed=true 携带最后一次尝试的实际报错与是否因 signal 中止。 */
+export type CompressPassResult =
+  | { failed: false }
+  | { failed: true; error: string; aborted: boolean };
 
 /** 历史文本 token 估算：4 字符 ≈ 1 token（与宿主 dsh-token-meter 启发式一致）。 */
 export function estimateTextTokens(text: string): number {
@@ -262,7 +269,8 @@ function appendHistoryMessage(
 
 /**
  * 反思：全部 <history> 块 token 合计 ≥ reflectThresholdTokens 时，摘要调用把整个块
- * 区段合并替换为一条更紧凑的摘要。失败不产生部分替换。
+ * 区段合并替换为一条更紧凑的摘要。失败不产生部分替换；摘要尝试全部耗尽返回
+ * 失败结果（error = 最后一次尝试的实际报错/具体问题）。
  */
 export async function reflectPass(
   ctx: Context,
@@ -270,14 +278,14 @@ export async function reflectPass(
   config: Readonly<PluginConfig>,
   target: RoutedTarget,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<CompressPassResult> {
   const session = agent.session;
   const logger = makeLogger(ctx, config.debug);
   logger.step(`反思检查（反思阈值 ${config.reflectThresholdTokens} tokens）`);
   const { blocks } = historySection(session);
   if (blocks.length === 0) {
     logger.step('反思：无 <history> 压缩日志，跳过');
-    return;
+    return { failed: false };
   }
   const threshold = config.reflectThresholdTokens;
   const tokens = blocks.reduce((total, block) => total + estimateTextTokens(block.text), 0);
@@ -287,7 +295,7 @@ export async function reflectPass(
   );
   if (tokens < threshold) {
     logger.step(`反思：摘要 ${tokens} tokens < 阈值 ${threshold}，跳过`);
-    return;
+    return { failed: false };
   }
   logger.step(
     `反思：摘要 ${tokens} tokens ≥ 阈值 ${threshold}，触发精简合并（${blocks.length} 个块）`,
@@ -296,7 +304,7 @@ export async function reflectPass(
   const last = blocks[blocks.length - 1];
   if (first === undefined || last === undefined) {
     logger.step('反思：块区段缺失，跳过');
-    return;
+    return { failed: false };
   }
   const blockSeqs = blocks.map((block) => block.seq);
   const instruction = buildHistoryPrompt();
@@ -312,7 +320,7 @@ export async function reflectPass(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(`反思压缩启动失败: ${message}`);
-    return;
+    return { failed: false };
   }
   const summaryResult = await runSummarySubagent(
     ctx,
@@ -329,14 +337,14 @@ export async function reflectPass(
       rateLimitWaitMs: config.rateLimitWaitMs,
     },
   );
-  if (summaryResult === null || summaryResult.text.trim().length === 0) {
-    logger.step('反思：摘要调用失败/无输出，追加 compaction/end(error)');
+  if (!summaryResult.ok) {
+    logger.warn(`反思：摘要调用失败（${summaryResult.error}），追加 compaction/end(error)`);
     try {
-      appendCompactionEnd(session, lifecycle, '摘要调用失败/无输出');
+      appendCompactionEnd(session, lifecycle, summaryResult.error);
     } catch {
       /* end 追加失败忽略（start 已记录，日志仍可诊断） */
     }
-    return;
+    return { failed: true, error: summaryResult.error, aborted: summaryResult.aborted };
   }
   const report = summaryResult.text;
   try {
@@ -371,6 +379,7 @@ export async function reflectPass(
     logger.info(
       `反思完成（摘要 ${tokens} tokens ≥ 阈值 ${threshold}，合并 ${blocks.length} 个块为一条）`,
     );
+    return { failed: false };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(`反思提交失败: ${message}`);
@@ -379,6 +388,8 @@ export async function reflectPass(
     } catch {
       /* end 追加失败忽略（start 已记录，日志仍可诊断） */
     }
+    // 提交失败为局部异常（摘要已成功）：记日志后继续本轮，不中断 turn
+    return { failed: false };
   }
 }
 
@@ -424,7 +435,8 @@ function estimateToolsTokens(session: Session): number {
 /**
  * 观察：净压力 tokens（上下文压力 − 已压缩 <history> 块 token 合计 − 系统提示词
  * token 估算 − 工具定义 token 估算）≥ observeThresholdTokens 时，摘要调用把未压缩
- * 消息压缩为观察日志，追加到旧摘要并替换被压缩消息区间。失败不产生部分替换。
+ * 消息压缩为观察日志，追加到旧摘要并替换被压缩消息区间。失败不产生部分替换；
+ * 摘要尝试全部耗尽返回失败结果（error = 最后一次尝试的实际报错/具体问题）。
  */
 export async function observePass(
   ctx: Context,
@@ -433,7 +445,7 @@ export async function observePass(
   tailCount: number,
   target: RoutedTarget,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<CompressPassResult> {
   const session = agent.session;
   const logger = makeLogger(ctx, config.debug);
   logger.step(
@@ -450,7 +462,7 @@ export async function observePass(
     logger.step(
       `观察：净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens} − 系统提示词 ${systemTokens} − 工具定义 ${toolsTokens}）< 阈值 ${threshold}，跳过`,
     );
-    return;
+    return { failed: false };
   }
   logger.step(
     `观察：净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens} − 系统提示词 ${systemTokens} − 工具定义 ${toolsTokens}）≥ 阈值 ${threshold}，触发压缩`,
@@ -458,7 +470,7 @@ export async function observePass(
   const range = computeCompressRange(session, tailCount);
   if (!range) {
     logger.step('观察：无可行压缩区间（边界后消息过短或配对无法平衡），跳过');
-    return;
+    return { failed: false };
   }
   logger.step(
     `观察：压缩区间 [${range.start}..${range.end}]，遮蔽 ${range.shadowedSeqs.length} 个表层节点`,
@@ -467,7 +479,7 @@ export async function observePass(
   const replaceStart = replaceSeqs[0];
   if (replaceStart === undefined) {
     logger.step('观察：区间内无新消息（全部为压缩日志块），跳过');
-    return;
+    return { failed: false };
   }
   const shadowedSet = new Set(replaceSeqs);
   const inRangeCms = indexCompleteMessages(session).filter((cm) =>
@@ -475,7 +487,7 @@ export async function observePass(
   );
   if (inRangeCms.length === 0) {
     logger.step('观察：区间内无完整消息，跳过');
-    return;
+    return { failed: false };
   }
   const startIndex = inRangeCms[0]?.index ?? 0;
   const endIndex = inRangeCms[inRangeCms.length - 1]?.index ?? startIndex;
@@ -494,7 +506,7 @@ export async function observePass(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(`观察压缩启动失败: ${message}`);
-    return;
+    return { failed: false };
   }
   const summaryResult = await runSummarySubagent(
     ctx,
@@ -511,14 +523,14 @@ export async function observePass(
       rateLimitWaitMs: config.rateLimitWaitMs,
     },
   );
-  if (summaryResult === null || summaryResult.text.trim().length === 0) {
-    logger.step('观察：摘要调用失败/无输出，追加 compaction/end(error)');
+  if (!summaryResult.ok) {
+    logger.warn(`观察：摘要调用失败（${summaryResult.error}），追加 compaction/end(error)`);
     try {
-      appendCompactionEnd(session, lifecycle, '摘要调用失败/无输出');
+      appendCompactionEnd(session, lifecycle, summaryResult.error);
     } catch {
       /* end 追加失败忽略（start 已记录，日志仍可诊断） */
     }
-    return;
+    return { failed: true, error: summaryResult.error, aborted: summaryResult.aborted };
   }
   const report = summaryResult.text;
   const attemptCount = summaryResult.attemptCount - 1;
@@ -565,6 +577,7 @@ export async function observePass(
     logger.info(
       `观察压缩完成（净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens}）≥ 阈值 ${threshold}，替换 ${replaceSeqs.length} 个表层节点，约 ${shadowedTokenCount} tokens）`,
     );
+    return { failed: false };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(`观察压缩提交失败: ${message}`);
@@ -573,32 +586,43 @@ export async function observePass(
     } catch {
       /* end 追加失败忽略（start 已记录，日志仍可诊断） */
     }
+    // 提交失败为局部异常（摘要已成功）：记日志后继续本轮，不中断 turn
+    return { failed: false };
   }
 }
 
-/** 压力检查 + 两级压缩入口：先反思后观察，pre-step 阻塞串行执行；仅主会话生效。 */
+/**
+ * 压力检查 + 两级压缩入口：先反思后观察，pre-step 阻塞串行执行；仅主会话生效。
+ * 反思摘要耗尽失败时直接返回失败结果（观察无需继续，本轮将被拒绝）；观察失败同样
+ * 传播失败结果，由 pre-step 拒绝本 step 中断当前 turn。
+ */
 export async function maybeCompress(
   ctx: Context,
   agent: Agent,
   config: Readonly<PluginConfig>,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<CompressPassResult> {
   const session = agent.session;
   const logger = makeLogger(ctx, config.debug);
   if (!config.omEnabled) {
     logger.step('omEnabled=false，跳过压缩');
-    return;
+    return { failed: false };
   }
   const target = routedTarget(session);
   if (target === undefined) {
     logger.step('会话未路由（无 provider/model），跳过压缩');
-    return;
+    return { failed: false };
   }
   logger.step(`会话路由：provider ${target.provider}，model ${target.model}`);
   const tailCount = config.tailMessageCount;
   logger.step('反思 pass 开始');
-  await reflectPass(ctx, agent, config, target, signal);
+  const reflect = await reflectPass(ctx, agent, config, target, signal);
+  if (reflect.failed) {
+    logger.step('反思 pass 失败（本轮将被拒绝），跳过观察 pass');
+    return reflect;
+  }
   logger.step('反思 pass 结束，观察 pass 开始');
-  await observePass(ctx, agent, config, tailCount, target, signal);
+  const observe = await observePass(ctx, agent, config, tailCount, target, signal);
   logger.step('观察 pass 结束，压缩流程完成');
+  return observe;
 }

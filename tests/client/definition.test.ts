@@ -13,7 +13,7 @@ import {
   checkpointCompactionId,
   omCompactionDefinition,
 } from '../../src/client/definition.ts';
-import { PLUGIN_LABEL } from '../../src/constants.ts';
+import { COMPACTION_ABORTED_ERROR, PLUGIN_LABEL } from '../../src/constants.ts';
 
 /** 宿主 compaction-basic 的检查点标记：宿主自己渲染，插件不认领。 */
 const HOST_COMPACT_PLUGIN = 'compact';
@@ -349,13 +349,16 @@ describe('omCompactionDefinition.buildViewNode', () => {
     expect(node?.data).toMatchObject({ running: true, phase: null });
   });
 
-  it('end 无检查点（压缩失败）：以 hidden visibility 撤回提示行', () => {
+  it('end error 以中止标识开头（用户中止）：以 hidden visibility 撤回提示行', () => {
     const start = matchOf(
       lifecycle('compaction/start', 5, { compactionId: 'om-1', turn: 1, phase: 'reflect' }),
       'start',
     );
     const end = matchOf(
-      lifecycle('compaction/end', 9, { compactionId: 'om-1', error: '摘要调用失败/无输出' }),
+      lifecycle('compaction/end', 9, {
+        compactionId: 'om-1',
+        error: COMPACTION_ABORTED_ERROR,
+      }),
     );
     const state = { end };
     const node = omCompactionDefinition.buildViewNode?.(contextOf([start, end], state));
@@ -364,7 +367,55 @@ describe('omCompactionDefinition.buildViewNode', () => {
       kind: 'om-compaction',
       anchorSeq: 5,
       visibility: 'hidden',
-      data: { running: true, phase: 'reflect' },
+      data: { running: true, phase: 'reflect', error: null },
+    });
+  });
+
+  it('end 带非中止 error（压缩失败）：渲染可见失败行（error + running false + phase）', () => {
+    const start = matchOf(
+      lifecycle('compaction/start', 5, { compactionId: 'om-1', turn: 1, phase: 'observe' }),
+      'start',
+    );
+    const end = matchOf(
+      lifecycle('compaction/end', 9, { compactionId: 'om-1', error: 'LLM 429 Too Many Requests' }),
+    );
+    const state = { end };
+    const node = omCompactionDefinition.buildViewNode?.(contextOf([start, end], state));
+    expect(node).not.toBeNull();
+    expect(node).toMatchObject({
+      kind: 'om-compaction',
+      anchorSeq: 5,
+      visibility: 'visible',
+      data: {
+        running: false,
+        phase: 'observe',
+        error: 'LLM 429 Too Many Requests',
+        summary: null,
+        summaryEventSeq: null,
+        shadowedItemCount: null,
+        shadowedTokenCount: null,
+        shadowedCharCount: null,
+        summaryCharCount: null,
+        summaryTokenCount: null,
+        retryCount: null,
+      },
+    });
+  });
+
+  it('end 无 error（旧版本会话）：维持 hidden 撤回提示行', () => {
+    const start = matchOf(
+      lifecycle('compaction/start', 5, { compactionId: 'om-1', turn: 1 }),
+      'start',
+    );
+    const end = matchOf(lifecycle('compaction/end', 9, { compactionId: 'om-1' }));
+    const state = { end };
+    const node = omCompactionDefinition.buildViewNode?.(contextOf([start, end], state));
+    expect(node).not.toBeNull();
+    expect(node).toMatchObject({
+      kind: 'om-compaction',
+      anchorSeq: 5,
+      visibility: 'hidden',
+      data: { running: true, error: null },
     });
   });
 
