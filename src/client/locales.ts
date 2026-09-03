@@ -1,8 +1,6 @@
 /**
- * `om-compaction` namespace dictionaries: 插件压缩卡片的界面文案。
- *
- * 与宿主 conversation 命名空间分离（独立 NS），插件卡片走自己的 keyed 渲染器，
- * 文案键不与对话插件的键冲突。
+ * `om-compaction` namespace 字典：插件压缩卡片的界面文案（zh/en）。
+ * 导出 NS / zh / en；zh 为键集事实源，en 键集与 zh 一致。
  */
 
 /** Dictionary namespace owned by this plugin. */

@@ -1,14 +1,8 @@
 /**
- * dsh-plugin-om 压缩卡片渲染器：与宿主「上下文注入」卡片同款的折叠行。
- *
- * 复用平台原语 DisclosureRow（宿主 ContextInjectionRow 用的同一外壳组件）；行内
- * 统计与展开体样式按宿主 ContextInjectionRow.module.css 的规则注入——宿主该卡片
- * 的样式是编译期哈希的 CSS Module，插件 bundle 无法引用其类名，故按宿主 client
- * bundle 的同一机制（注入 <style>）注册逐字一致的规则，保证视觉同款。
- *
- * 压缩检查点遮蔽的是模型可见表层，人类转录中的历史仍在其上方；卡片只报告
- * 模型从何处起不再看到那段历史。summary 来自检查点引用的 compaction/summary
- * 事件；窗口裁剪把该事件留在窗外时，行不可展开而不是显示空内容。
+ * 压缩卡片渲染器：与宿主「上下文注入」卡片同款的折叠行。
+ * 复用平台原语 DisclosureRow；行内统计与展开体样式按宿主 ContextInjectionRow 的规则
+ * 注入 <style>（宿主该卡片样式是编译期哈希的 CSS Module，插件 bundle 无法引用其类名）。
+ * 卡片报告模型从何处起不再看到那段历史；summary 留在加载窗口外时行不可展开。
  */
 
 import type { ChatNode } from '@deepseek-ai/dsh-client-ui-conversation/client';
@@ -43,7 +37,7 @@ const cardCss = `
 .${css.body}{box-sizing:border-box;background:var(--dsw-alias-markdown-code-block);width:calc(100% - 22px);max-height:141px;color:var(--dsw-alias-label-tertiary);font:400 11px/16px var(--ds-font-family-code);border:none;border-radius:8px;margin:4px 0 0 22px;padding:10px 16px 12px 12px;overflow:auto}
 `;
 
-/** 注册卡片样式（与宿主 client bundle 同机制；无 document 的环境如 node 测试直接跳过）。 */
+/** 注册卡片样式（无 document 的环境如 node 测试直接跳过）。 */
 if (
   typeof document !== 'undefined' &&
   document.querySelector('style[data-dsh-plugin-om-card]') === null
@@ -54,13 +48,12 @@ if (
   document.head.appendChild(tag);
 }
 
-/** 折叠式压缩卡片（统计标题行 + 代码块样式 summary 展开，同「上下文注入」卡片）。 */
+/** 折叠式压缩卡片（统计标题行 + 代码块样式 summary 展开）。 */
 export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCompactionCardProps) {
   const [expanded, setExpanded] = useState(false);
   const { data } = node;
-  // 压缩进行中：start 已到、checkpoint/end 未到 → 不可展开的「正在压缩上下文…」提示行
+  // 压缩进行中：不可展开的「正在压缩上下文…」提示行（按 phase 区分文案）
   if (data.running) {
-    /** 提示行文案（按 phase 区分观察/反思；缺失回退通用文案）。 */
     const runningLabel =
       data.phase === 'observe'
         ? t('compaction.running.observe')
@@ -84,7 +77,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCo
   }
   const expandable = data.summary !== null;
   const open = expandable && expanded;
-  /** 统计行文案（数字按 k/w/M 单位化；重试次数仅在有重试时追加；retryCount 缺失视为未重试）。 */
+  // 统计行：优先完整压缩前后统计，载荷字段不全时逐级回落；重试次数仅在有重试时追加
   const stats =
     data.shadowedItemCount !== null &&
     data.shadowedCharCount !== null &&
@@ -146,6 +139,6 @@ export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCo
 
 const styles: Record<string, CSSProperties> = {
   row: {},
-  /** 摘要为 <history> 文本，保留换行（宿主 body 的白色空间由内容形态各自处理）。 */
+  /** 摘要为 <history> 文本，保留换行。 */
   body: { whiteSpace: 'pre-wrap' },
 };

@@ -1,12 +1,9 @@
 /**
- * 压缩卡片业务定义：认领插件自产的压缩生命周期事件与替换检查点，
- * 聚合出可渲染的摘要卡片节点。
- *
- * 宿主 conversation 客户端仅识别 source.plugin === 'compact' 的压缩检查点
- * （ui-conversation 的 compactionDefinition），插件自产的检查点标记为
- * PLUGIN_LABEL（'dsh-plugin-om'），由本定义认领。生命周期事件（compaction/start
- * |summary|end）同时会被宿主的 compactionDefinition 匹配，但宿主没有检查点证据
- * 时不产出节点（buildViewNode 返回 null），因此双方共存无视觉冲突。
+ * 压缩卡片业务定义：认领插件自产的压缩生命周期事件（compaction/start|summary|end）
+ * 与替换检查点（source.plugin = 'dsh-plugin-om'），聚合出可渲染的摘要卡片节点。
+ * 导出 COMPACTION_CARD_KIND / OmCompactionChatData / checkpointCompactionId /
+ * omCompactionDefinition。宿主的 'compact' 检查点由宿主自己渲染，本定义不认领
+ * （双方共存无视觉冲突：宿主无检查点证据时不产出节点）。
  */
 
 import type {
@@ -30,11 +27,11 @@ declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
   }
 }
 
-/** 压缩卡片载荷：摘要文本与遮蔽统计（seq/time 由节点本体提供，不重复存放）。 */
+/** 压缩卡片载荷：摘要文本与遮蔽统计。 */
 export interface OmCompactionChatData {
-  /** 压缩进行中（compaction/start 已到、checkpoint/end 未到）：渲染为「正在压缩上下文…」提示行。 */
+  /** 压缩进行中（start 已到、checkpoint/end 未到）：渲染为「正在压缩上下文…」提示行。 */
   readonly running: boolean;
-  /** 压缩 pass（观察/反思；来自 start 事件载荷的插件扩展，缺失或非运行态为 null）。 */
+  /** 压缩 pass（观察/反思；来自 start 事件载荷扩展，缺失或非运行态为 null）。 */
   readonly phase: 'observe' | 'reflect' | null;
   /** compaction/summary 的文本摘要；窗口裁剪把该事件留在窗外时为 null（卡片不可展开）。 */
   readonly summary: string | null;
@@ -44,13 +41,13 @@ export interface OmCompactionChatData {
   readonly shadowedItemCount: number | null;
   /** 遮蔽的 token 数，summary 事件缺失或载荷非法时为 null。 */
   readonly shadowedTokenCount: number | null;
-  /** 压缩前的字符数（被压缩内容文本长度合计），载荷缺失或非法时为 null。 */
+  /** 压缩前的字符数，载荷缺失或非法时为 null。 */
   readonly shadowedCharCount: number | null;
   /** 压缩后的字符数（摘要文本长度），summary 不可用或非法时为 null。 */
   readonly summaryCharCount: number | null;
-  /** 压缩后的估算 token 数（4 字符 ≈ 1 token，与服务端 estimateTextTokens 同一启发式），summary 不可用或非法时为 null。 */
+  /** 压缩后的估算 token 数（4 字符 ≈ 1 token），summary 不可用或非法时为 null。 */
   readonly summaryTokenCount: number | null;
-  /** 摘要调用重试次数（载荷 attemptCount 即重试次数；缺失或非法时为 null）。 */
+  /** 摘要调用重试次数，载荷缺失或非法时为 null。 */
   readonly retryCount: number | null;
 }
 
@@ -64,8 +61,8 @@ interface OmCompactionState {
 
 /**
  * replace-surface 判定：surfaceOp 为 { op: 'replace' } 对象（与宿主 runtime 的
- * isReplacementSurfaceEvent 同义）。宿主该助手位于浏览器 bundle 内
- * （window.__ModuleLoader__ 闭包），node 端测试无法求值，故本地实现同一形状检查。
+ * isReplacementSurfaceEvent 同义；宿主该助手位于浏览器 bundle，node 端测试无法求值，
+ * 故本地实现同一形状检查）。
  */
 function isReplacementSurface(event: SessionEvent): boolean {
   const surfaceOp = (event as { surfaceOp?: unknown }).surfaceOp;
@@ -77,9 +74,8 @@ function isReplacementSurface(event: SessionEvent): boolean {
 }
 
 /**
- * 从压缩替换检查点（user/message + replace surface + source.plugin 为本插件）
- * 读取关联 identity。宿主的 'compact' 检查点由宿主自己渲染，本插件不认领，
- * 避免同一压缩出现两张卡片。
+ * 从压缩替换检查点（user/message + replace surface + source.plugin 为本插件）读取
+ * 关联 compactionId；其余事件返回 undefined。
  */
 export function checkpointCompactionId(event: SessionEvent): string | undefined {
   if (event.type !== 'user/message' || !isReplacementSurface(event)) return undefined;
@@ -148,11 +144,9 @@ function compactSummaryData(summaryMatch: ConversationMatch | undefined): OmComp
   };
 }
 
-/** 压缩进行中提示行的载荷（统计未就绪，全部为 null；phase 取自 start 事件载荷扩展，缺失回退 null）。 */
+/** 压缩进行中提示行的载荷（统计未就绪，全部为 null）。 */
 function runningData(start: ConversationMatch | undefined): OmCompactionChatData {
-  /** start 事件载荷（phase 为插件扩展；非法值回退 null）。 */
   const data = start?.event.data as { phase?: unknown } | undefined;
-  /** 合法 phase（观察/反思）。 */
   const phase = data?.phase === 'observe' || data?.phase === 'reflect' ? data.phase : null;
   return {
     running: true,
@@ -203,8 +197,10 @@ function chatNode<Kind extends keyof ChatNodeDataMap & string>(
 }
 
 /**
- * 插件压缩生命周期定义：compaction/start 开启上下文，summary / 替换检查点 /
- * end 作为 update 折叠证据；仅在存在替换检查点时产出卡片节点。
+ * 插件压缩生命周期定义：compaction/start 开启上下文，summary / 替换检查点 / end
+ * 作为 update 折叠证据。有检查点时产出摘要卡片；无检查点的 end 以 hidden 撤回
+ * 进行中提示行（已物化节点以 hidden visibility 保留同一 key）；仅 start 时渲染
+ * 「正在压缩上下文…」提示行。
  */
 export const omCompactionDefinition: ConversationNodeDefinition<OmCompactionState> = {
   kind: COMPACTION_CARD_KIND,
@@ -233,13 +229,12 @@ export const omCompactionDefinition: ConversationNodeDefinition<OmCompactionStat
   },
   buildViewNode: (context) => {
     const state = context.state ?? fallbackState(context);
-    // 替换检查点已到达 → 压缩完成，渲染摘要卡片（摘要统计就绪）
+    // 替换检查点已到达 → 压缩完成，渲染摘要卡片
     if (state.checkpoint !== undefined) {
       const data = compactSummaryData(state.summary);
       return chatNode(context, COMPACTION_CARD_KIND, state.checkpoint.event.seq, data);
     }
-    // end 已到达但无检查点 → 压缩失败/中止：撤回进行中提示行——
-    // 已物化节点不能撤回，以 hidden visibility 保留同一 key（聊天视图按可见节点过滤，行从消息流消失）
+    // end 已到达但无检查点 → 压缩失败/中止：以 hidden visibility 撤回进行中提示行
     if (state.end !== undefined) {
       const anchorSeq = context.start?.event.seq ?? state.end.event.seq;
       return chatNode(

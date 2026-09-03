@@ -1,21 +1,9 @@
 /**
- * dsh-plugin-om — Observational Memory（OM）上下文压缩 + recall 检索插件。
- * 不依赖特定 tool mode（native / code / both 均可运行）。
- *
- * 模块：
- *  - recall.ts  recall({ start, end?, offset? }) 工具：按完整消息 index 回看原始会话
- *  - semantic-recall.ts  recall-semantic({ query, top_k?, start?, end?, offset? }) 工具：
- *    按语义在全部完整消息（含被压缩/遮蔽）中检索，返回最匹配的完整消息与匹配说明
- *    （本地 ONNX embedding，模型随插件打包，懒加载）
- *  - compress.ts 自动压缩（OM 观察/反思两级阈值）：pre-step 阻塞串行执行——
- *    反思（<history> 块 tokens 合计 ≥ reflectThresholdTokens 时摘要调用精简合并）、
- *    观察（净压力 tokens = 上下文压力 − 已压缩 <history> 块 tokens 合计 ≥ observeThresholdTokens 时摘要调用压缩为观察日志并追加）
- *
- * 约束：不引入自定义会话事件类型——压缩复用宿主已知的 compaction/* 生命周期事件
- * （start/summary/end）与 checkpoint 标记，结果写入消息记录与轨迹。
- * 仅主会话生效（subagent 不压缩、recall 拒绝）。
+ * dsh-plugin-om 入口（tsdown 打包入口）：导出 name / inject / apply。
+ * apply 注册 recall / recall-semantic 工具，并接线 agent/pre-step 自动压缩
+ * （先反思后观察，仅主会话生效）。压缩与检索的实现见 compress.ts / recall.ts /
+ * semantic-recall.ts。
  */
-
 import { maybeCompress } from './compress.ts';
 import { resolveConfig } from './config.ts';
 import { ensureModelReady, getEmbedder } from './embedding.ts';
@@ -31,36 +19,23 @@ export const name = 'dsh-plugin-om';
 /** 插件注入的服务依赖（tools/llm/tokenMeter/sessions），由宿主按序注入。 */
 export const inject = ['tools', 'llm', 'tokenMeter', 'sessions'];
 
-/**
- * 插件激活入口：注册 recall / recall-semantic 工具（由配置键 recallEnabled /
- * semanticRecallEnabled 控制），并在 agent/pre-step 阻塞触发两级自动压缩
- * （先反思后观察）。仅主会话生效。
- */
+/** 插件激活入口：解析配置、注册工具、接线 pre-step 自动压缩。 */
 export function apply(ctx: Context, config?: unknown): void {
-  /** 解析后的插件配置（默认值合并 + 校验）。 */
   const resolved = resolveConfig(config);
-  /** 插件日志门面（step=debug 按配置 debug 开关输出；info/warn 始终输出）。 */
   const logger = makeLogger(ctx, resolved.debug);
   logger.step(
     `apply 启动：observeThresholdTokens=${String(resolved.observeThresholdTokens)} reflectThresholdTokens=${String(resolved.reflectThresholdTokens)} compressMaxTokens=${String(resolved.compressMaxTokens)} tailMessageCount=${String(resolved.tailMessageCount)} omEnabled=${String(resolved.omEnabled)} debug=${String(resolved.debug)}`,
   );
 
-  // recall 工具（code 呈现下即 SDK 绑定 tools.recall(...)）；输出 token 由
-  // tool-result-pruner 控制（recall 渲染超大的工具结果时调用其 pruneContent）。
-  // 配置键 recallEnabled=false 时禁用（不注册该工具）。
+  // recall 工具：超大输出由 tool-result-pruner 裁剪；recallEnabled=false 时不注册。
   if (resolved.recallEnabled) {
     ctx.tools.register(buildRecallTool(() => ctx.get('toolResultPruner')));
   }
 
-  // recall-semantic 工具：本地 ONNX embedding（懒加载，首次调用才加载模型），
-  // 输出同样由 tool-result-pruner 裁剪。
-  // 配置键 semanticRecallEnabled=false 时禁用（不注册，也不触发模型下载）。
-  // 运行时按需下载：仅当启用且模型 onnx 缺失时后台预热（不阻塞）；下载开始/结束
-  // 经 console.log + 插件日志双通道输出；下载失败仅记日志（含镜像建议），查询时
-  // 未就绪由工具告知模型，下次查询自动重试。
+  // recall-semantic 工具：本地 ONNX 嵌入懒加载；semanticRecallEnabled=false 时不注册。
+  // 启用时若模型 onnx 缺失则后台预热下载（不阻塞，失败记日志，下次查询自动重试）。
   if (resolved.semanticRecallEnabled) {
     const warnModel = (message: string) => ctx.logger.warn(`dsh-plugin-om: ${message}`);
-    /** 下载开始/结束日志：console + 插件日志双通道（失败经 warnModel 输出）。 */
     const logModel = (message: string) => {
       console.log(message);
       logger.info(message);
@@ -75,8 +50,7 @@ export function apply(ctx: Context, config?: unknown): void {
     );
   }
 
-  // 两级自动压缩：pre-step 阻塞串行（先反思压缩过往摘要，后观察压缩新消息），
-  // 失败不影响主流程；仅主会话（subagent 不压缩）。
+  // 两级自动压缩：pre-step 阻塞串行（先反思后观察）；仅主会话生效。
   ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
     try {
       if (signal.aborted) {

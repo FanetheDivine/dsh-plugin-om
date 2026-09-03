@@ -1,9 +1,8 @@
 /**
- * 共享类型：全部来自 deepseek-ai 官方包（type-only 导入，编译期擦除，运行时零依赖）。
- *
- * 各 dsh-* 包通过 declare module '@deepseek-ai/cordis' 增强 Context/Events，
- * 使 ctx.tools / ctx.tokenMeter / ctx.sessions 等获得与真实宿主一致的类型；
- * ctx.on / ctx.get 等 mixin 方法由 cordis 自身声明，无需本地补充。
+ * 共享类型：宿主类型再导出（type-only，编译期擦除）+ 插件领域类型。
+ * 导出官方包宿主类型（Context/Agent/Session 等）、PluginConfig、
+ * MessageNode/MessageIndex/CompleteMessage（完整消息索引）与 compaction 载荷扩展。
+ * 各 dsh-* 包通过 declare module 增强 Context/Events，使 ctx.tools 等获得宿主一致类型。
  */
 
 import type { Context, EventOptions, Events } from '@deepseek-ai/cordis';
@@ -23,13 +22,10 @@ import type { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import type { TokenMeter } from '@deepseek-ai/dsh-token-meter';
 import type { JsonSchemaNode, ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools';
 
-/** 插件配置类型（来自 config.ts，供外部 preset 与类型使用者引用）。 */
+/** 插件配置类型（来自 config.ts）。 */
 export type { PluginConfig } from './config.ts';
 
-/**
- * 官方包宿主类型再导出：插件 API 与工具签名统一从这里取型，
- * 避免各模块直接依赖不同版本的 dsh-* 包类型面。
- */
+/** 官方包宿主类型再导出：插件 API 与工具签名统一从这里取型。 */
 export type {
   Agent,
   CompactionId,
@@ -55,10 +51,7 @@ export type {
   UserMessage,
 };
 
-/**
- * 一条消息事件（user/assistant/tool-result），带稳定 message_id；
- * 消息级索引（indexMessages）的节点，按 message_id 定位消息序列下标。
- */
+/** 一条消息事件（user/assistant/tool-result），带稳定 message_id；消息级索引的节点。 */
 export type MessageNode = {
   /** 事件在日志中的 seq。 */
   seq: number;
@@ -78,45 +71,39 @@ export type MessageIndex = {
 
 /**
  * 一条完整消息：摘要日志与 recall 共用的定位单位，分四类——
- * user（用户消息，user_message 中 source.kind === 'user'）、
- * sys（系统消息，user_message 中其余 source.kind 的部分，如宿主注入的上下文）、
+ * user（用户消息）、sys（系统消息，user_message 中非 user 来源的部分）、
  * assistant（模型输出文本）、toolcall（单个工具调用及其结果）。
- * index 从 0 起、按日志顺序递增、只追加不重排 → 会话内全局稳定
- * （压缩后旧摘要条目引用的 index 仍然有效）；本插件自产的压缩日志消息不占位。
+ * index 从 0 起、按日志顺序递增、只追加不重排（会话内全局稳定）；
+ * 本插件自产的压缩日志消息不占位。
  */
 export type CompleteMessage = {
   /** 完整消息序号（0 起，全局稳定）。 */
   index: number;
-  /**
-   * 类别：user=用户消息；sys=系统消息（压缩日志中以 <sys type="KIND" index="N"> 空块
-   * 表示）；assistant=模型输出文本；toolcall=单个工具调用及其结果。
-   */
+  /** 类别：user=用户消息；sys=系统消息；assistant=模型输出文本；toolcall=工具调用及其结果。 */
   type: 'user' | 'sys' | 'assistant' | 'toolcall';
-  /** 系统消息的 source.kind（仅 sys 类；如 agent-instructions / skill-catalog）。 */
+  /** 系统消息的 source.kind（仅 sys 类）。 */
   kind?: string;
   /** 关联的消息事件 seq（user/sys/assistant=1 个；toolcall=assistant 消息 + 结果）。 */
   seqs: number[];
-  /** 工具调用 id（仅 toolcall 类；关联 tool/result 用）。 */
+  /** 工具调用 id（仅 toolcall 类）。 */
   callId?: string;
 };
 
 /**
- * 插件扩展的 compaction/summary 载荷：宿主类型 + shadowedCharCount（压缩前字符数）。
- * 宿主 append 不做 schema 剥离，扩展字段原样持久化；旧会话载荷可能缺失该字段，
- * 客户端读取时按可选处理。宿主类型是 union（rawOutput 分支），无法直接声明合并，
- * 故用交叉类型 + 读取处收窄。
+ * 插件扩展的 compaction/summary 载荷：宿主类型 + shadowedCharCount/attemptCount。
+ * 宿主 append 不做 schema 剥离，扩展字段原样持久化；旧会话载荷可能缺失，
+ * 客户端读取时按可选处理。宿主类型是 union，无法声明合并，故用交叉类型 + 读取处收窄。
  */
 export type CompactionSummaryPayload = SessionEventMap['compaction/summary'] & {
-  /** 被压缩内容的字符数（压缩前文本长度合计；UI 标题统计用），旧载荷可能缺失。 */
+  /** 被压缩内容的字符数（压缩前文本长度合计；UI 标题统计用）。 */
   shadowedCharCount?: number;
-  /** 摘要重试次数（0 起；观察分块为各块重试之和，反思为尝试次数 - 1），旧载荷可能缺失。 */
+  /** 摘要重试次数（观察分块为各块重试之和，反思为尝试次数 - 1）。 */
   attemptCount?: number;
 };
 
 /**
  * 插件扩展的 compaction/start 载荷：宿主类型 + phase（压缩 pass）。
- * 宿主 append 不做 schema 剥离，扩展字段原样持久化；客户端读取时按可选处理，
- * 缺失（旧版本会话）回落通用压缩中文案。
+ * 客户端读取时按可选处理，缺失回落通用压缩中文案。
  */
 export type CompactionStartPayload = SessionEventMap['compaction/start'] & {
   /** 压缩 pass（观察/反思；UI 压缩中提示行区分文案）。 */

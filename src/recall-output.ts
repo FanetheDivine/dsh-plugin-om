@@ -1,11 +1,8 @@
 /**
  * recall / recall-semantic 共享输出契约：输出值为固定形态 { text, images }。
- *  - text：完整消息内容的文本部分（与压缩路径同一套渲染），带图消息在此追加
- *    [图片附件：…] 标注行，帮助模型把文本段落与随后的 image 块对应；
- *  - images：引用会话日志中既有 image 块的持久附件元数据（与宿主 ImageAttachmentRef
- *    同构的无损 JSON，不含图片字节），宿主请求序列化时经 attachment 服务按
- *    attachmentId 解析字节。
- * output.render 把值投影为 text 块 + 逐个 image 块（模式同宿主 read_image 工具）。
+ * text 为完整消息的文本内容（带图消息附图片标注行），images 为图片附件元数据
+ * （按 attachmentId 引用，不含字节）。导出 ImageRefValue / RecallOutputValue /
+ * RECALL_OUTPUT_SCHEMA / textOnly / imageNote / renderRecallOutput。
  */
 
 import type { ContentBlock, ImageBlock } from '@deepseek-ai/dsh-llm';
@@ -27,7 +24,7 @@ export type ImageRefValue = {
   name?: string;
 };
 
-/** recall / recall-semantic 的输出值：text 为文本部分（含图片标注行），images 按文本段出现顺序。 */
+/** recall / recall-semantic 的输出值：text 为文本部分，images 按出现顺序。 */
 export type RecallOutputValue = {
   text: string;
   images: ImageRefValue[];
@@ -38,13 +35,13 @@ export function textOnly(text: string): RecallOutputValue {
   return { text, images: [] };
 }
 
-/** 一张图片的文本标注行：[图片附件：name（mediaType W×H，N bytes）]（无名时省略名称）。 */
+/** 一张图片的文本标注行：[图片附件：name（mediaType W×H，N bytes）]。 */
 export function imageNote(ref: ImageRefValue): string {
   const name = ref.name ? `：${ref.name}` : '';
   return `[图片附件${name}（${ref.mediaType} ${ref.width}×${ref.height}，${ref.bytes} bytes）]`;
 }
 
-/** 输出值 wire schema：宿主按此校验 execute 返回值（元数据仅引用既有附件，不含字节）。 */
+/** 输出值 wire schema：宿主按此校验 execute 返回值。 */
 export const RECALL_OUTPUT_SCHEMA: JsonSchemaNode = {
   type: 'object',
   additionalProperties: false,
@@ -77,12 +74,10 @@ export const RECALL_OUTPUT_SCHEMA: JsonSchemaNode = {
 
 /** 把输出值投影为模型内容：text 块在前，images 逐个投影为 image 块。 */
 export function renderRecallOutput(value: RecallOutputValue): ContentBlock[] {
-  /** 内容块（text 信封 + 图片）。 */
   const blocks: ContentBlock[] = [{ type: 'text', text: value.text }];
   for (const ref of value.images) {
-    // ref 来自会话日志中既有 image 块的 attachment（宿主 admission 校验过的
-    // ImageAttachmentRef），经无损 JSON 往返后按结构还原；品牌类型由宿主解析，此处仅透传
-    /** 图片块（attachment 元数据）。 */
+    // ref 来自会话日志中既有 image 块的 attachment，经无损 JSON 往返后按结构还原；
+    // 品牌类型由宿主解析，此处仅透传
     const block: ImageBlock = {
       type: 'image',
       attachment: ref as unknown as ImageBlock['attachment'],

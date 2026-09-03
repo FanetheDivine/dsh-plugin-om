@@ -1,6 +1,6 @@
 // CHANGELOG 归档：把 CHANGELOG.md 的条目归档到 changelogs/ 并清空 CHANGELOG.md。
 // 归档与清空必须落在同一次提交里——先落盘全部计划文件，再统一 add + commit，
-// 否则清空 CHANGELOG.md 的改动会遗留在工作区（此前 bug：reset 发生在 commit 之后）。
+// 否则清空 CHANGELOG.md 的改动会遗留在工作区。
 import { execSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';

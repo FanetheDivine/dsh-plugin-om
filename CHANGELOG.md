@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- docs: 精简 README 与代码注释——README 提纲挈领只描述功能概况（保留文件地图），注释统一为静态描述（文件头说明功能与关键导出项，函数/常量简注功能），并新增 AGENTS.md 文档与注释规范
 - feat: 观察阈值默认改为 30000 tokens、反思阈值默认改为 40000 tokens
 - refactor: 观察压缩采用单次摘要——未压缩消息不再按 token 边界分块并行压缩，观察/反思共用同一套系统提示词与 `compressMaxTokens`；删除 `observeChunkTokens` / `observeChunkMaxTokens` / `observeChunkParallelism` 配置项
 - feat: 观察压缩触发压力扣除已压缩摘要——触发条件由「上下文压力 ≥ `observeThresholdTokens`」改为「净压力 = 上下文压力（`ctx.tokenMeter.measure(session).totalTokens`）− 已压缩 <history> 块 token 估算合计（4 字符 ≈ 1 token，与反思同口径）≥ `observeThresholdTokens`」，观察只压缩新消息、旧摘要块的 token 不再挤占触发预算；默认值与配置键不变，跳过/触发/完成日志改为输出净压力及压力构成
