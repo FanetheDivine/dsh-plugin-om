@@ -1,11 +1,13 @@
 // 观察分块单元测试：chunkCompleteMessages（token 边界切块 / 完整消息不跨块）、
-// mergeChunkReports（剥离外壳合并为单个 <history> 块，可再经 extractSummaryLog 校验）
+// mergeChunkReports（剥离外壳合并为单个 <history> 块——tip 与格式说明注释在合并时
+// 最终装配一次；可再经 extractSummaryLog 校验）
 // 与 runWithConcurrency（有界并发池：并发上限 / 结果按 index 对齐）。
 import { describe, expect, it } from 'vitest';
 
 import { chunkCompleteMessages, mergeChunkReports, runWithConcurrency } from '../src/compress.ts';
+import { HISTORY_TAG, HISTORY_TIP } from '../src/constants.ts';
 import { indexCompleteMessages } from '../src/log-index.ts';
-import { extractSummaryLog } from '../src/summarize.ts';
+import { extractSummaryLog, HISTORY_FORMAT_NOTE } from '../src/summarize.ts';
 import type { SessionEvent } from '../src/types.ts';
 import { makeMessage, makeSession, textBlock } from './helpers.ts';
 
@@ -138,6 +140,70 @@ describe('mergeChunkReports（分块摘要合并）', () => {
   it('无外壳的块原样保留', () => {
     const merged = mergeChunkReports(['<user_message index="0">', '内容占位', '</user_message>']);
     expect(merged).toContain('<user_message index="0">');
+  });
+
+  it('最终装配：合并块带 tip 属性与格式说明注释各一条（chunk 中间产物不带）', () => {
+    const p0 = [
+      '<history>',
+      '<user_message index="0">',
+      '未装饰块内容占位甲',
+      '</user_message>',
+      '</history>',
+    ].join('\n');
+    const p1 = [
+      '<history>',
+      '<user_message index="1">',
+      '未装饰块内容占位乙',
+      '</user_message>',
+      '</history>',
+    ].join('\n');
+    const merged = mergeChunkReports([p0, p1]);
+    expect(merged.startsWith(`<${HISTORY_TAG} tip="${HISTORY_TIP}">`)).toBe(true);
+    // tip 仅出现在合并开标签上（各块外壳已剥离）
+    expect(merged.match(new RegExp(`<${HISTORY_TAG} tip=`, 'g'))).toHaveLength(1);
+    // 格式说明注释仅一条（合并块顶，紧随开标签）
+    expect(merged.split(HISTORY_FORMAT_NOTE)).toHaveLength(2);
+    expect(merged.indexOf(HISTORY_FORMAT_NOTE)).toBe(
+      `<${HISTORY_TAG} tip="${HISTORY_TIP}">`.length + 1,
+    );
+  });
+
+  it('传入已装饰块（带 tip 与注释）也去重：合并块顶仅保留一条注释', () => {
+    const decorated = [
+      `<${HISTORY_TAG} tip="${HISTORY_TIP}">`,
+      HISTORY_FORMAT_NOTE,
+      '<user_message index="0">',
+      '已装饰块内容占位',
+      '</user_message>',
+      `</${HISTORY_TAG}>`,
+    ].join('\n');
+    const merged = mergeChunkReports([decorated]);
+    expect(merged.split(HISTORY_FORMAT_NOTE)).toHaveLength(2); // 原有的一条剥离，合并块顶补一条
+    expect(merged).toContain('已装饰块内容占位');
+  });
+
+  it('块间不引入多余空行（内层首尾空白清除，拼接单换行）', () => {
+    const p0 = [
+      '<history>',
+      '',
+      '<user_message index="0">',
+      '空行清除内容占位甲',
+      '</user_message>',
+      '',
+      '</history>',
+    ].join('\n');
+    const p1 = [
+      '<history>',
+      '<user_message index="1">',
+      '空行清除内容占位乙',
+      '</user_message>',
+      '',
+      '',
+      '</history>',
+    ].join('\n');
+    const merged = mergeChunkReports([p0, p1]);
+    expect(merged).toContain('</user_message>\n<user_message index="1">'); // 块间单换行
+    expect(merged).not.toMatch(/\n{3,}/); // 无连续多行空行
   });
 });
 
