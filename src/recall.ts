@@ -3,6 +3,9 @@
  * offset 为相对 start 的完整消息步数）。完整消息即 `用户消息`（user_message 中 kind 为 user
  * 的部分）、`系统消息`（user_message 中其余 kind 的部分）、`模型输出文本`和`具有result的
  * toolcall`；首条完整消息的 index 为 0，后续递增、会话内全局稳定，与摘要日志条目同一套编号。
+ * 输出值为固定形态 { text, images }：text 为区间内完整消息的文本内容（每条标 index/类型，
+ * 带图位置以 [图片附件：…] 标注行提示），images 为文本中引用的图片附件元数据（按出现顺序，
+ * output.render 投影为随文本之后的 image 内容块，共享契约见 recall-output.ts）。
  * recall 自身不设输出上限：超大的工具结果由 tool-result-pruner 裁剪（pruneContent），
  * 输出 token 由 pruner 配置控制。
  *
@@ -14,7 +17,15 @@
 import { z } from 'zod';
 import { COMPLETE_MESSAGE_DEFINITION } from './constants.ts';
 import { parametersFromZod } from './json-schema.ts';
-import { indexCompleteMessages, type PrunerLike, renderCompleteMessage } from './log-index.ts';
+import { indexCompleteMessages, type PrunerLike, renderCompleteMessageParts } from './log-index.ts';
+import {
+  type ImageRefValue,
+  imageNote,
+  RECALL_OUTPUT_SCHEMA,
+  type RecallOutputValue,
+  renderRecallOutput,
+  textOnly,
+} from './recall-output.ts';
 import type { ToolDefinition, ToolRunContext } from './types.ts';
 import { isMainSession } from './utils.ts';
 
@@ -65,27 +76,29 @@ export function parseRecallArgs(raw: unknown): RecallArgs {
 export function buildRecallTool(getPruner?: () => unknown): ToolDefinition {
   return {
     name: 'recall',
-    description: `${COMPLETE_MESSAGE_DEFINITION}此工具可以精确查询完整消息。用index指定一个区间，返回区间内所有完整消息的内容。`,
+    description: `${COMPLETE_MESSAGE_DEFINITION}此工具可以精确查询完整消息。用index指定一个区间，返回区间内所有完整消息的内容；完整消息携带的图片附件随结果保留（文本段以 [图片附件：…] 标注，随后附 image 内容块）。`,
     parameters: parametersFromZod(recallArgsSchema),
     output: {
-      schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: String(value) }],
+      schema: RECALL_OUTPUT_SCHEMA,
+      render: (_args, value) => renderRecallOutput(value as RecallOutputValue),
     },
-    async execute(args: unknown, exec: ToolRunContext) {
+    async execute(args: unknown, exec: ToolRunContext): Promise<RecallOutputValue> {
       /** 解析并校验后的调用参数（不满足 schema 时抛出可读错误）。 */
       const { start, end, offset } = parseRecallArgs(args);
       /** 当前会话（缺失则无法回看）。 */
       const session = exec.agent?.session;
-      if (!session) return '会话异常';
+      if (!session) return textOnly('会话异常');
       if (!isMainSession(session)) {
-        return 'recall 仅主会话可用';
+        return textOnly('recall 仅主会话可用');
       }
       /** 完整消息索引（index = 数组下标，0 起）。 */
       const cms = indexCompleteMessages(session);
       /** 起始下标（非整数 floor；越界返回提示）。 */
       const startIndex = Number.isFinite(start) ? Math.floor(start) : 0;
       if (startIndex < 0 || startIndex >= cms.length) {
-        return `start ${start} 越界（完整消息共 ${cms.length} 条，index 范围 0..${cms.length - 1}）`;
+        return textOnly(
+          `start ${start} 越界（完整消息共 ${cms.length} 条，index 范围 0..${cms.length - 1}）`,
+        );
       }
       /** 终点下标（end 优先，否则 startIndex + offset）。 */
       let endIndex: number;
@@ -94,7 +107,9 @@ export function buildRecallTool(getPruner?: () => unknown): ToolDefinition {
         /** end 取整（非整数 floor）。 */
         const e = Number.isFinite(end) ? Math.floor(end) : 0;
         if (e < 0 || e >= cms.length) {
-          return `end ${end} 越界（完整消息共 ${cms.length} 条，index 范围 0..${cms.length - 1}）`;
+          return textOnly(
+            `end ${end} 越界（完整消息共 ${cms.length} 条，index 范围 0..${cms.length - 1}）`,
+          );
         }
         endIndex = e;
       } else {
@@ -113,23 +128,35 @@ export function buildRecallTool(getPruner?: () => unknown): ToolDefinition {
       const pruner = getPruner?.() as PrunerLike | undefined;
       /** 渲染结果缓冲（每条完整消息一段，标 index + 类型）。 */
       const parts: string[] = [];
+      /** 区间内收集的图片附件（按完整消息顺序，供 render 投影为 image 块）。 */
+      const images: ImageRefValue[] = [];
       for (let i = lo; i <= hi; i += 1) {
         /** 当前完整消息。 */
         const cm = cms[i];
         if (!cm) continue;
-        /** 该条完整消息的呈现文本（pruner 裁剪超大结果；单条失败不影响整体）。 */
+        /** 该条完整消息的文本与图片（pruner 裁剪超大结果；单条失败不影响整体）。 */
         let text = '';
+        let cmImages: ImageRefValue[] = [];
         try {
-          text = renderCompleteMessage(session, cm, pruner);
+          /** 渲染结果（文本 + 图片元数据）。 */
+          const rendered = renderCompleteMessageParts(session, cm, pruner);
+          text = rendered.text;
+          cmImages = rendered.images;
         } catch {
           /* 单条完整消息渲染失败不影响整体 */
         }
         /** 类型标注（toolcall 附调用 id，便于模型关联）。 */
         const callAttr = cm.type === 'toolcall' && cm.callId ? ` callId=${cm.callId}` : '';
-        parts.push(`-- [index ${cm.index}] ${cm.type}${callAttr} --\n${text}`);
+        /** 文本段（带图时在文本后追加标注行，帮助模型对应随后的 image 块）。 */
+        let body = text;
+        if (cmImages.length > 0) {
+          body += (body === '' ? '' : '\n') + cmImages.map(imageNote).join('\n');
+          images.push(...cmImages);
+        }
+        parts.push(`-- [index ${cm.index}] ${cm.type}${callAttr} --\n${body}`);
       }
-      if (parts.length === 0) return '指定区间没有完整消息';
-      return parts.join('\n\n');
+      if (parts.length === 0) return textOnly('指定区间没有完整消息');
+      return { text: parts.join('\n\n'), images };
     },
   };
 }

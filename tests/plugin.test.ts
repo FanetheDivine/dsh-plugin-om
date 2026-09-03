@@ -1,5 +1,6 @@
 // dsh-plugin-om 单元测试（vitest）：配置校验 / 消息索引 /
 // OM 两级压缩（观察/反思 new 摘要）/ recall（范围+拒绝+参数校验）/ apply 接线。
+import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools';
 import { describe, expect, it, vi } from 'vitest';
 
 // 隔离 apply 的模型下载编排：ensureModelReady 打桩为"就绪"，避免单测触发真实下载/网络
@@ -33,6 +34,7 @@ import {
   renderCompleteMessage,
 } from '../src/log-index.ts';
 import { buildRecallTool, parseRecallArgs } from '../src/recall.ts';
+import { RECALL_OUTPUT_SCHEMA, type RecallOutputValue } from '../src/recall-output.ts';
 import {
   buildSemanticRecallTool,
   matchExplanation,
@@ -48,9 +50,15 @@ import {
   parseHistoryEntries,
   renderMessages,
 } from '../src/summarize.ts';
-import type { CompactionSummaryPayload, Session, SessionEvent } from '../src/types.ts';
+import type {
+  CompactionSummaryPayload,
+  ContentBlock,
+  Session,
+  SessionEvent,
+} from '../src/types.ts';
 import {
   buildToolCallFlow,
+  imageBlock,
   makeCtx,
   makeMessage,
   makeSession,
@@ -2374,12 +2382,19 @@ describe('系统消息渲染（<sys> 空块）', () => {
   });
 });
 
+/**
+ * 取 recall / recall-semantic 输出值的文本部分（断言文本内容用；图片附件单独断言 images）。
+ */
+function textOf(value: unknown): string {
+  return (value as { text: string }).text;
+}
+
 describe('recall 工具', () => {
   it('start+end 返回区间内全部完整消息（含代码与结果），输出标 index/类型', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const span = await tool.execute({ start: 0, end: 5 }, exec as never);
+    const span = textOf(await tool.execute({ start: 0, end: 5 }, exec as never));
     expect(span).toContain('firstCode()');
     expect(span).toContain('secondCode()');
     expect(span).toContain('out1');
@@ -2393,7 +2408,7 @@ describe('recall 工具', () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const span = await tool.execute({ start: 5, end: 0 }, exec as never);
+    const span = textOf(await tool.execute({ start: 5, end: 0 }, exec as never));
     expect(span).toContain('firstCode()');
     expect(span).toContain('secondCode()');
     expect(span).toContain('out1');
@@ -2417,7 +2432,7 @@ describe('recall 工具', () => {
     const tool = buildRecallTool();
     const exec = { agent: { session } };
     // sys 占 index 0，后续两条流程从 index 1 起
-    const span = await tool.execute({ start: 0, end: 6 }, exec as never);
+    const span = textOf(await tool.execute({ start: 0, end: 6 }, exec as never));
     expect(String(span)).toContain('-- [index 0] sys --');
     expect(String(span)).toContain('宿主注入的工作区指令'); // sys 显示原文
     expect(String(span)).toContain('-- [index 1] user --');
@@ -2428,7 +2443,7 @@ describe('recall 工具', () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const span = await tool.execute({ start: 1, offset: 2 }, exec as never);
+    const span = textOf(await tool.execute({ start: 1, offset: 2 }, exec as never));
     // cms 1..3：assistant 文本 + toolcall c1 + user-c2
     expect(span).toContain('firstCode()');
     expect(span).toContain('out1');
@@ -2440,7 +2455,7 @@ describe('recall 工具', () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const span = await tool.execute({ start: 5, offset: -2 }, exec as never);
+    const span = textOf(await tool.execute({ start: 5, offset: -2 }, exec as never));
     // endIndex=3 → cms 3..5：user-c2 + assistant 文本 + toolcall c2
     expect(span).toContain('请帮我完成一个任务');
     expect(span).toContain('secondCode()');
@@ -2452,14 +2467,14 @@ describe('recall 工具', () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const up = await tool.execute({ start: 1, offset: 2.9 }, exec as never);
+    const up = textOf(await tool.execute({ start: 1, offset: 2.9 }, exec as never));
     expect(up).toContain('out1');
     expect(up).not.toContain('secondCode()');
-    const down = await tool.execute({ start: 5, offset: -1.5 }, exec as never);
+    const down = textOf(await tool.execute({ start: 5, offset: -1.5 }, exec as never));
     expect(down).toContain('secondCode()');
     expect(down).toContain('out2');
     expect(down).not.toContain('out1');
-    const zero = await tool.execute({ start: 5, offset: 0 }, exec as never);
+    const zero = textOf(await tool.execute({ start: 5, offset: 0 }, exec as never));
     expect(zero).toContain('secondCode()'); // toolcall 条含调用参数与结果
     expect(zero).toContain('out2');
     expect(zero).not.toContain('firstCode()');
@@ -2469,7 +2484,7 @@ describe('recall 工具', () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const span = await tool.execute({ start: 0, end: 5, offset: 0 }, exec as never);
+    const span = textOf(await tool.execute({ start: 0, end: 5, offset: 0 }, exec as never));
     expect(span).toContain('secondCode()');
     expect(span).toContain('out2');
   });
@@ -2485,11 +2500,11 @@ describe('recall 工具', () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    const badStart = await tool.execute({ start: 99, offset: 1 }, exec as never);
+    const badStart = textOf(await tool.execute({ start: 99, offset: 1 }, exec as never));
     expect(String(badStart)).toContain('start 99 越界');
-    const badEnd = await tool.execute({ start: 0, end: 99 }, exec as never);
+    const badEnd = textOf(await tool.execute({ start: 0, end: 99 }, exec as never));
     expect(String(badEnd)).toContain('end 99 越界');
-    const badNeg = await tool.execute({ start: -1, offset: 1 }, exec as never);
+    const badNeg = textOf(await tool.execute({ start: -1, offset: 1 }, exec as never));
     expect(String(badNeg)).toContain('start -1 越界');
   });
 
@@ -2544,10 +2559,10 @@ describe('recall 工具', () => {
       },
     }));
     const exec = { agent: { session } };
-    const span = await tool.execute({ start: 2, offset: 0 }, exec as never);
+    const span = textOf(await tool.execute({ start: 2, offset: 0 }, exec as never));
     expect(String(span)).toContain('PRUNED-HEAD');
     expect(String(span)).not.toContain('X'.repeat(20000));
-    const raw = await buildRecallTool().execute({ start: 2, offset: 0 }, exec as never);
+    const raw = textOf(await buildRecallTool().execute({ start: 2, offset: 0 }, exec as never));
     expect(String(raw)).toContain('X'.repeat(20000));
   });
 
@@ -2560,10 +2575,122 @@ describe('recall 工具', () => {
     });
     const session = makeSession({ events: flow, header: { origin: 'subagent' } });
     const tool = buildRecallTool();
-    const result = await tool.execute({ start: 0, offset: 1 }, {
-      agent: { session },
-    } as never);
+    const result = textOf(
+      await tool.execute({ start: 0, offset: 1 }, {
+        agent: { session },
+      } as never),
+    );
     expect(String(result)).toContain('仅主会话可用');
+  });
+  it('带图用户消息：文本标注行 + images 元数据随结果保留', async () => {
+    const events = [
+      {
+        type: 'user/message',
+        data: makeMessage({
+          content: [textBlock('看图说话'), imageBlock({ name: '图.png' })],
+          id: 'u-img',
+        }),
+      } as unknown as SessionEvent,
+    ];
+    const session = makeSession({ events });
+    const tool = buildRecallTool();
+    const value = (await tool.execute({ start: 0, offset: 0 }, {
+      agent: { session },
+    } as never)) as RecallOutputValue;
+    expect(value.text).toContain('-- [index 0] user --');
+    expect(value.text).toContain('看图说话');
+    expect(value.text).toContain('[图片附件：图.png（image/png 800×600，1024 bytes）]');
+    expect(value.images).toEqual([
+      {
+        attachmentId: 'att-1',
+        mediaType: 'image/png',
+        bytes: 1024,
+        width: 800,
+        height: 600,
+        name: '图.png',
+      },
+    ]);
+  });
+
+  it('纯图无字消息：条目仍输出，正文仅图片标注行', async () => {
+    const events = [
+      {
+        type: 'user/message',
+        data: makeMessage({ content: [imageBlock()], id: 'u-img-only' }),
+      } as unknown as SessionEvent,
+    ];
+    const session = makeSession({ events });
+    const value = (await buildRecallTool().execute({ start: 0, offset: 0 }, {
+      agent: { session },
+    } as never)) as RecallOutputValue;
+    expect(value.text).toContain('-- [index 0] user --');
+    expect(value.text).toContain('[图片附件（image/png 800×600，1024 bytes）]');
+    expect(value.images).toHaveLength(1);
+  });
+
+  it('toolcall 结果 content 内的图片随结果保留（含 tool-result 嵌套）', async () => {
+    const events = [
+      {
+        type: 'assistant/message',
+        data: {
+          message: makeMessage({
+            role: 'assistant',
+            content: [toolCallBlock('c9', 'run_code', JSON.stringify({ code: 'a()' }))],
+            source: { kind: 'model', provider: 'test', model: 'test-model' },
+            id: 'a-call',
+          }),
+        },
+      } as unknown as SessionEvent,
+      {
+        type: 'tool/result',
+        data: {
+          message: makeMessage({
+            content: [
+              toolResultBlock('c9', [textBlock('r1'), imageBlock({ attachmentId: 'att-2' })]),
+            ],
+            source: { kind: 'tool', callId: 'c9' },
+            id: 't-r',
+          }),
+        },
+      } as unknown as SessionEvent,
+    ];
+    const session = makeSession({ events });
+    const value = (await buildRecallTool().execute({ start: 0, offset: 0 }, {
+      agent: { session },
+    } as never)) as RecallOutputValue;
+    expect(value.text).toContain('-- [index 0] toolcall callId=c9 --');
+    expect(value.text).toContain('r1');
+    expect(value.text).toContain('[图片附件（image/png 800×600，1024 bytes）]');
+    expect(value.images).toEqual([
+      { attachmentId: 'att-2', mediaType: 'image/png', bytes: 1024, width: 800, height: 600 },
+    ]);
+  });
+
+  it('output.render 投影：text 块在前，images 逐个投影为 image 块', () => {
+    const value: RecallOutputValue = {
+      text: '正文',
+      images: [{ attachmentId: 'att-9', mediaType: 'image/png', bytes: 9, width: 4, height: 3 }],
+    };
+    const blocks = buildRecallTool().output?.render?.({}, value) as ContentBlock[];
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toEqual({ type: 'text', text: '正文' });
+    expect(blocks[1]).toEqual({
+      type: 'image',
+      attachment: { attachmentId: 'att-9', mediaType: 'image/png', bytes: 9, width: 4, height: 3 },
+    });
+  });
+
+  it('输出值满足 RECALL_OUTPUT_SCHEMA', () => {
+    expect(validateJsonSchemaValue(RECALL_OUTPUT_SCHEMA, { text: 'x', images: [] })).toEqual([]);
+    const problems = validateJsonSchemaValue(RECALL_OUTPUT_SCHEMA, {
+      text: 'x',
+      images: [{ attachmentId: 1 }],
+    });
+    expect(problems.length).toBeGreaterThan(0);
+  });
+
+  it('描述说明图片随结果保留', () => {
+    expect(buildRecallTool().description).toContain('图片附件随结果保留');
   });
 });
 
@@ -2803,7 +2930,7 @@ describe('recall-semantic 工具', () => {
     ]);
     const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
     const exec = { agent: { session } };
-    const span = await tool.execute({ query: '数据库 缓存' }, exec as never);
+    const span = textOf(await tool.execute({ query: '数据库 缓存' }, exec as never));
     const out = String(span);
     // 最匹配 3 条按分数降序：同时含数据库+缓存 > 单数据库 > 单缓存
     const idxDbCache = out.indexOf('数据库查询走缓存');
@@ -2831,11 +2958,11 @@ describe('recall-semantic 工具', () => {
     ]);
     const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
     const exec = { agent: { session } };
-    const span = await tool.execute({ query: '数据库 缓存', top_k: 5 }, exec as never);
+    const span = textOf(await tool.execute({ query: '数据库 缓存', top_k: 5 }, exec as never));
     const out = String(span);
     expect(out).toContain('权限校验逻辑');
     expect(out).toContain('日志输出格式');
-    const top1 = await tool.execute({ query: '数据库 缓存', top_k: 1 }, exec as never);
+    const top1 = textOf(await tool.execute({ query: '数据库 缓存', top_k: 1 }, exec as never));
     expect(String(top1)).toContain('数据库查询走缓存');
     expect(String(top1)).not.toContain('修改数据库连接池配置');
   });
@@ -2859,7 +2986,7 @@ describe('recall-semantic 工具', () => {
     const session = makeSession({ events, surfaceNodes: [2] }); // 0、1 被压缩遮蔽
     const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
     const exec = { agent: { session } };
-    const span = await tool.execute({ query: '数据库', top_k: 3 }, exec as never);
+    const span = textOf(await tool.execute({ query: '数据库', top_k: 3 }, exec as never));
     const out = String(span);
     expect(out).toContain('早期讨论过数据库索引优化');
     expect(out).toContain('index 0 user'); // old-db 为完整消息 index 0
@@ -2874,7 +3001,9 @@ describe('recall-semantic 工具', () => {
     const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
     const exec = { agent: { session } };
     // 区间 [0..1]（m-db .. m-cache）：不含权限消息
-    const span = await tool.execute({ query: '权限 数据库', start: 0, offset: 1 }, exec as never);
+    const span = textOf(
+      await tool.execute({ query: '权限 数据库', start: 0, offset: 1 }, exec as never),
+    );
     const out = String(span);
     expect(out).toContain('修改数据库连接池配置');
     expect(out).toContain('缓存失效问题排查');
@@ -2889,7 +3018,7 @@ describe('recall-semantic 工具', () => {
     ]);
     const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
     const exec = { agent: { session } };
-    const span = await tool.execute({ query: '权限', start: 99, offset: 2 }, exec as never);
+    const span = textOf(await tool.execute({ query: '权限', start: 99, offset: 2 }, exec as never));
     const out = String(span);
     expect(out).toContain('已回退检索全部消息');
     expect(out).toContain('权限校验逻辑'); // 全量检索可见
@@ -2899,7 +3028,7 @@ describe('recall-semantic 工具', () => {
     const session = textSession([['m-auth', '权限校验逻辑']]);
     const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
     const exec = { agent: { session } };
-    const span = await tool.execute({ query: '权限' }, exec as never);
+    const span = textOf(await tool.execute({ query: '权限' }, exec as never));
     expect(String(span)).toContain('检索全部消息');
   });
 
@@ -2952,7 +3081,7 @@ describe('recall-semantic 工具', () => {
       }),
     });
     const exec = { agent: { session } };
-    const span = await tool.execute({ query: '数据库权限', top_k: 3 }, exec as never);
+    const span = textOf(await tool.execute({ query: '数据库权限', top_k: 3 }, exec as never));
     const out = String(span);
     // 未裁剪时 20000 个 X 会溢出输出；裁剪后不出现
     expect(out).not.toContain('X'.repeat(20000));
@@ -2961,7 +3090,7 @@ describe('recall-semantic 工具', () => {
   it('subagent 会话调用被拒绝', async () => {
     const session = textSession([['m-db', '数据库配置']], { origin: 'subagent' });
     const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
-    const result = await tool.execute({ query: '数据库' }, { agent: { session } } as never);
+    const result = textOf(await tool.execute({ query: '数据库' }, { agent: { session } } as never));
     expect(String(result)).toContain('仅主会话可用');
   });
 
@@ -2969,7 +3098,7 @@ describe('recall-semantic 工具', () => {
     const session = makeSession({ events: [] });
     const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
     const exec = { agent: { session } };
-    const span = await tool.execute({ query: '数据库' }, exec as never);
+    const span = textOf(await tool.execute({ query: '数据库' }, exec as never));
     expect(String(span)).toContain('没有可检索的消息');
   });
 
@@ -2983,7 +3112,7 @@ describe('recall-semantic 工具', () => {
       },
       modelStatus: async () => 'downloading' as const,
     });
-    const result = await tool.execute({ query: '数据库' }, { agent: { session } } as never);
+    const result = textOf(await tool.execute({ query: '数据库' }, { agent: { session } } as never));
     const out = String(result);
     expect(out).toContain(SEMANTIC_MODEL_NOT_READY_MESSAGE);
     expect(embedded).toBe(false);
@@ -2995,9 +3124,54 @@ describe('recall-semantic 工具', () => {
       embedder: fakeEmbedder(),
       modelStatus: async () => 'ready' as const,
     });
-    const out = String(await tool.execute({ query: '数据库' }, { agent: { session } } as never));
+    const out = textOf(await tool.execute({ query: '数据库' }, { agent: { session } } as never));
     expect(out).toContain('数据库配置');
     expect(out).toContain('index 0 user'); // m-db 为完整消息 index 0
+  });
+  it('命中消息携带图片时随结果输出；描述注明只匹配文本', async () => {
+    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    expect(tool.description).toContain('只匹配文本');
+    expect(tool.description).toContain('图片内容不参与匹配');
+    const events = [
+      {
+        type: 'user/message',
+        data: makeMessage({
+          content: [textBlock('数据库配置说明'), imageBlock({ attachmentId: 'att-3' })],
+          id: 'm-db',
+        }),
+      } as unknown as SessionEvent,
+    ];
+    const session = makeSession({ events });
+    const value = (await tool.execute({ query: '数据库' }, {
+      agent: { session },
+    } as never)) as RecallOutputValue;
+    expect(value.text).toContain('数据库配置说明');
+    expect(value.text).toContain('[图片附件（image/png 800×600，1024 bytes）]');
+    expect(value.images).toEqual([
+      { attachmentId: 'att-3', mediaType: 'image/png', bytes: 1024, width: 800, height: 600 },
+    ]);
+  });
+
+  it('纯图片消息（无可渲染文本）不进候选池，无法被语义命中', async () => {
+    const events = [
+      {
+        type: 'user/message',
+        data: makeMessage({ content: [imageBlock()], id: 'm-img-only' }),
+      } as unknown as SessionEvent,
+      {
+        type: 'user/message',
+        data: makeMessage({ content: [textBlock('权限校验逻辑')], id: 'm-auth' }),
+      } as unknown as SessionEvent,
+    ];
+    const session = makeSession({ events });
+    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const value = (await tool.execute({ query: '权限' }, {
+      agent: { session },
+    } as never)) as RecallOutputValue;
+    // 候选仅含可嵌入的文本消息（1 条），命中 m-auth；纯图片消息不占候选
+    expect(value.text).toContain('1 条可嵌入');
+    expect(value.text).toContain('权限校验逻辑');
+    expect(value.images).toEqual([]);
   });
 });
 

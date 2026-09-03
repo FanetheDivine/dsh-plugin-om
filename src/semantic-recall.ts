@@ -11,8 +11,12 @@
  * - 区间缺省（start 未提供）→ 检索全部消息；区间不合法（start/end 越界等）→
  *   不报错，回退全量检索并在输出中明确告知（模型可见）。
  * - 向量：本地 ONNX embedding（embedding.ts，懒加载 + 批量）；相似度 = cosine。
+ * - 匹配：只匹配文本（嵌入文本不含图片标注行）——图片内容不参与相似度，纯图片消息
+ *   （无可渲染文本）不进候选池、无法命中；
  * - 输出：命中消息的 index/类型（toolcall 附调用 id）+ 完整渲染文本 + 匹配说明（相似度、
- *   命中的关键词）；超大结果由 tool-result-pruner 裁剪（同 recall）。
+ *   命中的关键词）；命中消息携带的图片附件随结果保留（同 recall：文本段以 [图片附件：…]
+ *   标注行提示、images 元数据经 output.render 投影为 image 内容块）；超大结果由
+ *   tool-result-pruner 裁剪（同 recall）。
  * - 仅主会话可用（subagent 拒绝，与 recall 一致）。
  */
 
@@ -20,7 +24,20 @@ import { z } from 'zod';
 import { COMPLETE_MESSAGE_DEFINITION } from './constants.ts';
 import { cosineSimilarity, type EmbedFn, getEmbedder, type ModelStatus } from './embedding.ts';
 import { parametersFromZod } from './json-schema.ts';
-import { indexCompleteMessages, type PrunerLike, renderCompleteMessage } from './log-index.ts';
+import {
+  indexCompleteMessages,
+  type PrunerLike,
+  renderCompleteMessage,
+  renderCompleteMessageParts,
+} from './log-index.ts';
+import {
+  type ImageRefValue,
+  imageNote,
+  RECALL_OUTPUT_SCHEMA,
+  type RecallOutputValue,
+  renderRecallOutput,
+  textOnly,
+} from './recall-output.ts';
 import type { CompleteMessage, ToolDefinition, ToolRunContext } from './types.ts';
 import { isMainSession } from './utils.ts';
 
@@ -157,25 +174,25 @@ export function buildSemanticRecallTool(options?: {
   const embed: EmbedFn = options?.embedder ?? ((texts) => getEmbedder().then((fn) => fn(texts)));
   return {
     name: 'recall-semantic',
-    description: `${COMPLETE_MESSAGE_DEFINITION}此工具可以按自然语言含义，检索最符合的完整消息。默认在全消息范围搜索，可以指定区间。`,
+    description: `${COMPLETE_MESSAGE_DEFINITION}此工具可以按自然语言含义，检索最符合的完整消息。默认在全消息范围搜索，可以指定区间。注意：语义检索只匹配文本，图片内容不参与匹配（纯图片消息无法命中，也不能按图片内容检索）；命中的完整消息携带的图片附件随结果保留（文本段以 [图片附件：…] 标注，随后附 image 内容块），与 recall 相同。`,
     parameters: parametersFromZod(semanticRecallArgsSchema),
     output: {
-      schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: String(value) }],
+      schema: RECALL_OUTPUT_SCHEMA,
+      render: (_args, value) => renderRecallOutput(value as RecallOutputValue),
     },
-    async execute(args: unknown, exec: ToolRunContext) {
+    async execute(args: unknown, exec: ToolRunContext): Promise<RecallOutputValue> {
       /** 解析并校验后的调用参数。 */
       const { query, top_k, start, end, offset } = parseSemanticRecallArgs(args);
       /** 当前会话。 */
       const session = exec.agent?.session;
-      if (!session) return '会话异常';
-      if (!isMainSession(session)) return 'recall-semantic 仅主会话可用';
+      if (!session) return textOnly('会话异常');
+      if (!isMainSession(session)) return textOnly('recall-semantic 仅主会话可用');
       /** 模型就绪检查（缺省视为就绪，向后兼容；未就绪时告知模型，不阻塞等待下载）。 */
       const status = (await options?.modelStatus?.()) ?? 'ready';
-      if (status !== 'ready') return SEMANTIC_MODEL_NOT_READY_MESSAGE;
+      if (status !== 'ready') return textOnly(SEMANTIC_MODEL_NOT_READY_MESSAGE);
       /** 完整消息索引（全部事件，含被压缩/遮蔽）。 */
       const cms = indexCompleteMessages(session);
-      if (cms.length === 0) return '会话中没有可检索的消息';
+      if (cms.length === 0) return textOnly('会话中没有可检索的消息');
       /** 检索区间（完整消息 index；区间不合法时回退全量并标记）。 */
       const range = resolveSemanticRange(cms.length, { start, end, offset });
       /** 候选完整消息渲染文本（区间内；跳过渲染失败/空文本）。 */
@@ -193,10 +210,10 @@ export function buildSemanticRecallTool(options?: {
         }
         if (text.trim().length > 0) candidates.push({ cm, text });
       }
-      if (candidates.length === 0) return '指定范围内没有可检索的消息';
+      if (candidates.length === 0) return textOnly('指定范围内没有可检索的消息');
       /** 查询向量（单条）。 */
       const [queryVec] = await embed([query]);
-      if (!queryVec) return '语义检索失败：无法生成查询向量';
+      if (!queryVec) return textOnly('语义检索失败：无法生成查询向量');
       /** 候选文本批量嵌入。 */
       const vectors = await embed(candidates.map((c) => c.text));
       /** 打分结果（相似度 + 候选）。 */
@@ -211,6 +228,8 @@ export function buildSemanticRecallTool(options?: {
       const hits = scored.slice(0, limit);
       /** 结果缓冲。 */
       const parts: string[] = [];
+      /** 命中消息收集的图片附件（按命中顺序，供 render 投影为 image 块）。 */
+      const images: ImageRefValue[] = [];
       /** 范围描述（回退时明确告知模型）。 */
       const rangeNote = range.fallback
         ? '指定区间不合法（start/end 越界等），已回退检索全部消息'
@@ -227,21 +246,28 @@ export function buildSemanticRecallTool(options?: {
         /** 类型标注（toolcall 附调用 id，与 recall 输出一致）。 */
         const callAttr =
           hit.cm.type === 'toolcall' && hit.cm.callId ? ` callId=${hit.cm.callId}` : '';
-        /** 输出文本（pruner 裁剪超大内容；裁剪失败保留嵌入用文本）。 */
+        /** 输出文本与图片（pruner 裁剪超大内容；裁剪失败保留嵌入用文本）。 */
         let text = hit.text;
+        /** 命中消息携带的图片附件（渲染失败时无）。 */
+        let hitImages: ImageRefValue[] = [];
         try {
           /** tool-result-pruner（可选）。 */
           const pruner = getPruner() as PrunerLike | undefined;
-          text = renderCompleteMessage(session, hit.cm, pruner);
+          /** 渲染结果（文本 + 图片元数据）。 */
+          const rendered = renderCompleteMessageParts(session, hit.cm, pruner);
+          text = rendered.text;
+          hitImages = rendered.images;
         } catch {
           /* 保留嵌入用文本 */
         }
         parts.push(
           `-- [${i + 1}] index ${hit.cm.index} ${hit.cm.type}${callAttr} — ${matchExplanation(query, hit.text, hit.score)} --`,
         );
-        parts.push(text);
+        // 带图时在文本后追加标注行，帮助模型对应随后的 image 块
+        parts.push(hitImages.length > 0 ? [text, ...hitImages.map(imageNote)].join('\n') : text);
+        images.push(...hitImages);
       }
-      return parts.join('\n\n');
+      return { text: parts.join('\n\n'), images };
     },
   };
 }

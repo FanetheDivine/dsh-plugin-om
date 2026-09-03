@@ -27,6 +27,38 @@ export function textBlock(text: string) {
   return { type: 'text', text };
 }
 
+/** 构造 image 内容块（attachment 为持久图片元数据，与宿主 ImageAttachmentRef 同构）。 */
+export function imageBlock(
+  overrides: {
+    attachmentId?: string;
+    mediaType?: string;
+    bytes?: number;
+    width?: number;
+    height?: number;
+    name?: string;
+  } = {},
+) {
+  const {
+    attachmentId = 'att-1',
+    mediaType = 'image/png',
+    bytes = 1024,
+    width = 800,
+    height = 600,
+    name,
+  } = overrides;
+  return {
+    type: 'image',
+    attachment: {
+      attachmentId,
+      mediaType,
+      bytes,
+      width,
+      height,
+      ...(name === undefined ? {} : { name }),
+    },
+  };
+}
+
 export function toolCallBlock(id: string, name: string, args: unknown) {
   return { type: 'tool-call', id, name, arguments: args };
 }

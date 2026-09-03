@@ -14,6 +14,7 @@
  * 压缩后旧摘要条目引用的 index 仍然有效。
  */
 import { isPluginOwnedSource } from './constants.ts';
+import type { ImageRefValue } from './recall-output.ts';
 import type {
   CompleteMessage,
   Message,
@@ -22,7 +23,7 @@ import type {
   Session,
   SessionEvent,
 } from './types.ts';
-import { renderMessageText, safeJson } from './utils.ts';
+import { isRecord, renderMessageText, safeJson } from './utils.ts';
 
 /** 工具结果裁剪器结构（tool-result-pruner；超大结果渲染前裁剪）。 */
 export type PrunerLike = { pruneContent?: (blocks: readonly unknown[]) => unknown[] | null };
@@ -156,25 +157,71 @@ export function indexCompleteMessages(session: Session): CompleteMessage[] {
   }
   return cms;
 }
+/**
+ * 递归收集内容块中的图片附件元数据（recall / recall-semantic 输出保留图片用）：
+ *  - image 块：attachment 携带持久元数据（宿主 admission 校验过的 ImageAttachmentRef），
+ *    字段齐全时收集为无损 JSON 引用（不含图片字节）；
+ *  - tool-result 块：递归收集其 content（工具结果可嵌套图片，如 read_image 的结果）；
+ *  - 其余块忽略；字段不全的 image 块忽略（防御）。
+ */
+export function collectImageRefs(content: unknown, out: ImageRefValue[]): void {
+  if (!Array.isArray(content)) return;
+  for (const block of content) {
+    if (!isRecord(block)) continue;
+    if (block.type === 'image') {
+      /** image 块的附件元数据。 */
+      const a = block.attachment;
+      if (
+        isRecord(a) &&
+        typeof a.attachmentId === 'string' &&
+        a.attachmentId !== '' &&
+        typeof a.mediaType === 'string' &&
+        typeof a.bytes === 'number' &&
+        Number.isFinite(a.bytes) &&
+        typeof a.width === 'number' &&
+        Number.isFinite(a.width) &&
+        typeof a.height === 'number' &&
+        Number.isFinite(a.height)
+      ) {
+        out.push({
+          attachmentId: a.attachmentId,
+          mediaType: a.mediaType,
+          bytes: a.bytes,
+          width: a.width,
+          height: a.height,
+          ...(typeof a.name === 'string' && a.name !== '' ? { name: a.name } : {}),
+        });
+      }
+    } else if (block.type === 'tool-result') {
+      collectImageRefs(block.content, out);
+    }
+  }
+}
 
 /**
- * 渲染一条完整消息的文本（recall 输出 / new 模式输入共用）：
+ * 渲染一条完整消息为「文本 + 图片」（recall / recall-semantic 输出用）。
+ * 文本部分与 renderCompleteMessage 一致：
  *  - user / sys：消息原文；
  *  - assistant：仅文本块；
  *  - toolcall：调用块（工具名 + 参数）+ 结果文本（pruner 裁剪超大结果）。
+ * 另递归收集该条完整消息携带的图片附件：user/sys/assistant 的顶层 image 块、
+ * toolcall 结果 content 内的图片（含 tool-result 嵌套）；pruner 裁剪掉的图片不收集。
  */
-export function renderCompleteMessage(
+export function renderCompleteMessageParts(
   session: Session,
   cm: CompleteMessage,
   pruner?: PrunerLike,
-): string {
+): { text: string; images: ImageRefValue[] } {
+  /** 该条完整消息携带的图片（按出现顺序）。 */
+  const images: ImageRefValue[] = [];
   if (cm.type === 'user' || cm.type === 'sys') {
     /** 用户/系统消息事件（seq 缺失则无法渲染）。 */
     const seq = cm.seqs[0];
     const event = seq === undefined ? undefined : session.events[seq];
     /** 派生的消息对象。 */
     const message = event ? session.deriveEventMessage(event) : null;
-    return message ? renderMessageText(message) : '';
+    if (message && Array.isArray(message.content)) collectImageRefs(message.content, images);
+    return { text: message ? renderMessageText(message) : '', images };
   }
   if (cm.type === 'assistant') {
     /** 助手消息事件（seq 缺失则无法渲染）。 */
@@ -182,13 +229,14 @@ export function renderCompleteMessage(
     const event = seq === undefined ? undefined : session.events[seq];
     /** 派生的消息对象。 */
     const message = event ? session.deriveEventMessage(event) : null;
-    if (!message || !Array.isArray(message.content)) return '';
+    if (!message || !Array.isArray(message.content)) return { text: '', images };
+    collectImageRefs(message.content, images);
     /** 文本块拼接缓冲。 */
     const texts: string[] = [];
     for (const block of message.content) {
       if (block.type === 'text') texts.push(String(block.text));
     }
-    return texts.join('\n');
+    return { text: texts.join('\n'), images };
   }
   // toolcall：调用参数 + 结果文本
   /** 渲染缓冲。 */
@@ -226,9 +274,22 @@ export function renderCompleteMessage(
       const pruned = pruner.pruneContent(message.content);
       if (pruned) message = { ...message, content: pruned } as Message;
     }
+    if (message && Array.isArray(message.content)) collectImageRefs(message.content, images);
     /** 结果文本。 */
     const text = message ? renderMessageText(message) : '';
     if (text.trim() !== '') parts.push(`[result]\n${text}`);
   }
-  return parts.join('\n');
+  return { text: parts.join('\n'), images };
+}
+
+/**
+ * 渲染一条完整消息的文本（压缩输入 / new 模式输入共用）：
+ * renderCompleteMessageParts 的纯文本投影（图片附件不进入文本）。
+ */
+export function renderCompleteMessage(
+  session: Session,
+  cm: CompleteMessage,
+  pruner?: PrunerLike,
+): string {
+  return renderCompleteMessageParts(session, cm, pruner).text;
 }
