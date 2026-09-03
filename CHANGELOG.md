@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- feat: 观察阈值（`observeThresholdTokens`）默认改为 35000 tokens、尾部保留条数（`tailMessageCount`）默认改为 5、摘要最大重试次数（`compressRetryCount`）默认改为 5
 - docs: 精简 README 与代码注释——README 提纲挈领只描述功能概况（保留文件地图），注释统一为静态描述（文件头说明功能与关键导出项，函数/常量简注功能），并新增 AGENTS.md 文档与注释规范
 - feat: 观察阈值默认改为 30000 tokens、反思阈值默认改为 40000 tokens
 - refactor: 观察压缩采用单次摘要——未压缩消息不再按 token 边界分块并行压缩，观察/反思共用同一套系统提示词与 `compressMaxTokens`；删除 `observeChunkTokens` / `observeChunkMaxTokens` / `observeChunkParallelism` 配置项

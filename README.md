@@ -31,7 +31,7 @@ dsh plugin --profile <profile> add dsh-plugin-om
 ```yaml
 - id: dsh-plugin-om
   config:
-    observeThresholdTokens: 30000
+    observeThresholdTokens: 35000
 ```
 
 ### 开发插件
@@ -46,18 +46,18 @@ dsh plugin --profile <profile> add dsh-plugin-om
 
 ### 与 compaction-basic 的关系
 
-preset-agent 自带 `compaction-basic` 压缩，与本插件冲突；其压缩阈值为 80% 上下文窗口。模型窗口小于 `observeThresholdTokens`/0.8（默认即 3.75 万 tokens）时宿主摘要会先于 OM 触发，需调低 `observeThresholdTokens` 到窗口的 0.8 以下，或定义不含 `compaction-basic` 的 preset-agent。
+preset-agent 自带 `compaction-basic` 压缩，与本插件冲突；其压缩阈值为 80% 上下文窗口。模型窗口小于 `observeThresholdTokens`/0.8（默认即 4.375 万 tokens）时宿主摘要会先于 OM 触发，需调低 `observeThresholdTokens` 到窗口的 0.8 以下，或定义不含 `compaction-basic` 的 preset-agent。
 
 ## 插件配置项
 
 | 键 | 默认 | 含义 |
 | --- | --- | --- |
-| `observeThresholdTokens` | `30000` | 观察阈值（tokens）：净压力 ≥ 该值时触发观察压缩 |
+| `observeThresholdTokens` | `35000` | 观察阈值（tokens）：净压力 ≥ 该值时触发观察压缩 |
 | `reflectThresholdTokens` | `40000` | 反思阈值（tokens）：全部 `<history>` 块 token 合计 ≥ 该值时触发合并 |
 | `compressMaxTokens` | `10000` | 单次摘要生成上限 |
 | `rateLimitWaitMs` | `60000` | 遇 429 限流后下一次摘要请求前的等待毫秒数（全局冷却期；`0` 不限流） |
-| `tailMessageCount` | `10` | 尾部保留的不压缩消息条数 |
-| `compressRetryCount` | `10` | 摘要失败后的最大重试次数（不含首次） |
+| `tailMessageCount` | `5` | 尾部保留的不压缩消息条数 |
+| `compressRetryCount` | `5` | 摘要失败后的最大重试次数（不含首次） |
 | `modelDir` | 共享目录 | recall-semantic 嵌入模型目录（默认 `$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>`，onnx 缺失且启用语义召回时运行时自动下载） |
 | `omEnabled` | `true` | 是否启用自动压缩（`false` 时关闭，recall 工具不受影响） |
 | `debug` | dev | 步骤级日志开关（缺省按 `NODE_ENV !== 'production'` 判定；失败日志始终输出） |
