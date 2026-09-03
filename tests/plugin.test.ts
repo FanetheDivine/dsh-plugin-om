@@ -602,7 +602,7 @@ describe('token 估算 estimateTextTokens', () => {
   });
 });
 
-describe('观察触发：上下文压力口径（ctx.tokenMeter.measure）', () => {
+describe('观察触发：净压力口径（上下文压力 − 已压缩块，ctx.tokenMeter.measure）', () => {
   /** 运行 pre-step 监听器。 */
   async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
     const listeners = ctx._onCallbacks.get('agent/pre-step');
@@ -652,7 +652,9 @@ describe('观察触发：上下文压力口径（ctx.tokenMeter.measure）', () 
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(0);
     const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
-    expect(steps.some((s) => s.includes('上下文压力 50 tokens < 阈值 100000'))).toBe(true);
+    expect(
+      steps.some((s) => s.includes('净压力 50 tokens（上下文压力 50 − 已压缩块 0）< 阈值 100000')),
+    ).toBe(true);
   });
 
   it('meter 未注入真实 usage 时回退表层启发式（totalTokens = surfaceTokens）', async () => {
@@ -667,6 +669,67 @@ describe('观察触发：上下文压力口径（ctx.tokenMeter.measure）', () 
     });
     const ctx = makeCtx({ llmStream: [{ type: 'text-delta', text: observeReport }] });
     apply(ctx, { observeThresholdTokens: 1, tailMessageCount: 0 });
+    await runPreStep(ctx, session);
+    expect(ctx._llmCalls).toHaveLength(1);
+  });
+
+  it('已压缩块 token 从压力中扣除：净压力低于阈值跳过', async () => {
+    const inner = '旧摘要内容'.repeat(100);
+    const session = makeSession({
+      events: [
+        historyMessage(inner),
+        ...buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+          withTurnEnd: true,
+        }),
+      ],
+    });
+    // 与 historyMessage 同构的完整块文本（含 tip 开/闭标签），据此精确计算已压缩块 token
+    const historyTokens = estimateTextTokens(
+      `<history tip="${HISTORY_TIP}">\n${inner}\n</history>`,
+    );
+    // 注入压力 = 阈值 + 历史块 tokens − 1 → 净压力恰低于阈值 1 token
+    const pressure = 100000 + historyTokens - 1;
+    const ctx = makeCtx({ meterTotalTokens: pressure });
+    apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
+    await runPreStep(ctx, session);
+    expect(ctx._llmCalls).toHaveLength(0);
+    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
+    expect(
+      steps.some((s) =>
+        s.includes(
+          `净压力 ${pressure - historyTokens} tokens（上下文压力 ${pressure} − 已压缩块 ${historyTokens}）< 阈值 100000`,
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it('已压缩块 token 从压力中扣除：扣除后净压力仍达阈值则触发', async () => {
+    const inner = '旧摘要内容'.repeat(100);
+    const session = makeSession({
+      events: [
+        historyMessage(inner),
+        ...buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+          withTurnEnd: true,
+        }),
+      ],
+    });
+    const historyTokens = estimateTextTokens(
+      `<history tip="${HISTORY_TIP}">\n${inner}\n</history>`,
+    );
+    // 注入压力 = 阈值 + 历史块 tokens → 净压力恰达阈值（触发）
+    const ctx = makeCtx({
+      meterTotalTokens: 100000 + historyTokens,
+      llmStream: [{ type: 'text-delta', text: observeReport }],
+    });
+    apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(1);
   });

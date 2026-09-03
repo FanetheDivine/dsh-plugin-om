@@ -7,7 +7,7 @@ import { isRecord } from './utils.ts';
 
 /** 插件配置项（全部可选覆盖，未给出或留空的键用默认值）。 */
 export type PluginConfig = {
-  /** 观察阈值（tokens）：上下文压力（宿主 token-meter measure().totalTokens，provider 真实 usage 优先、不可信回退启发式）≥ 该值时触发观察压缩。 */
+  /** 观察阈值（tokens）：净压力（上下文压力 − 已压缩 <history> 块 tokens 合计）≥ 该值时触发观察压缩；上下文压力取宿主 token-meter measure().totalTokens（provider 真实 usage 优先、不可信回退启发式）。 */
   observeThresholdTokens: number;
   /** 反思阈值（tokens）：全部 <history> 块 tokens 合计 ≥ 该值时由反思摘要调用精简合并。 */
   reflectThresholdTokens: number;

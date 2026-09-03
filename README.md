@@ -73,7 +73,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 ## 工作原理
 
-1. 在上下文压力到达观察阈值后，对未压缩的消息进行摘要（压力取宿主 token-meter 的 `measure().totalTokens`：provider 真实 usage 优先——最近一次成功调用的上报值锚定 + 表层增量，不可信时回退启发式；与宿主上下文压力同口径）
+1. 在净压力（上下文压力 − 已压缩 <history> 块 token 估算合计）到达观察阈值后，对未压缩的消息进行摘要（上下文压力取宿主 token-meter 的 `measure().totalTokens`：provider 真实 usage 优先——最近一次成功调用的上报值锚定 + 表层增量，不可信时回退启发式；与宿主上下文压力同口径；已压缩块 token 按 4 字符 ≈ 1 token 估算，与反思同口径）
 2. 将新生成摘要追加到已有摘要后（每条压缩日志是独立的消息/块，旧块原地保留）
 3. 如果摘要总长到达反思阈值，对其本身进行摘要（把全部 <history> 块拼接合并为一条）
 4. 提供recall/recall-semantic两个tool进行检索（命中消息中的图片附件随结果保留；recall-semantic 只按文本匹配，纯图片消息无法命中）
@@ -105,7 +105,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 ### 注意
 
-- 观察阈值衡量的是上下文总压力（`measure().totalTokens`，含 system、tools、已压缩 history 的全部上下文），provider 上报的 usage 不可信（小于启发式锚点）时自动回退启发式估算
+- 观察阈值衡量的是净压力：上下文总压力（`measure().totalTokens`，含 system、tools、已压缩 history 的全部上下文）扣除已压缩 <history> 块的 token 估算合计，provider 上报的 usage 不可信（小于启发式锚点）时自动回退启发式估算
 - recall 不截断，建议保留 `tool-result-pruner`
 - recall / recall-semantic 输出为 `{ text, images }`：`text` 为完整消息渲染文本（带图消息在文本后附图片附件标注行），`images` 为完整消息中收集的图片附件元数据，经工具 `output.render` 投影为图片内容块（附件按 attachmentId 引用，不复制字节；pruner 裁剪掉的内容不收集）
 - recall-semantic 使用本地多语言嵌入模型（paraphrase-multilingual-MiniLM-L12-v2），只匹配文本：纯图片消息不进候选池，文本+图片消息仅文本参与嵌入
@@ -121,7 +121,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 | 键                      | 默认     | 含义                                                                                                                                                                         |
 | ----------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `observeThresholdTokens` | `100000` | 观察阈值（tokens）：上下文压力（宿主 token-meter，provider 真实 usage 优先、不可信回退启发式）≥ 该值时触发观察压缩                                                                                                              |
+| `observeThresholdTokens` | `100000` | 观察阈值（tokens）：净压力（上下文压力 − 已压缩 <history> 块 token 估算合计）≥ 该值时触发观察压缩；上下文压力取宿主 token-meter（provider 真实 usage 优先、不可信回退启发式）                                                                                                              |
 | `reflectThresholdTokens` | `30000`  | 反思阈值（tokens）：全部 <history> 块 token 估算合计 ≥ 该值时触发精简合并                                                                                                            |
 | `compressMaxTokens`     | `10000`  | 反思（合并调用）生成上限；观察分块用 `observeChunkMaxTokens`                                                                                                                  |
 | `observeChunkTokens`    | `30000`  | 观察分块 token 边界：未压缩消息按该边界拆分为多块并行压缩（完整消息不跨块）                                                                                                  |
@@ -174,7 +174,7 @@ src/
 │   └─ ④ 事件接线（仅主会话生效）
 │        └─ ctx.on('agent/pre-step') → compress.ts  # maybeCompress：两级压缩阻塞串行（先反思后观察；turn 中间即可触发）
 │              ├─ reflectPass → summarize.ts        # 全部 <history> 块 token 估算 ≥ reflectThresholdTokens：多块拼接 + 共享提示词合并整个块区段
-│              ├─ observePass  → summarize.ts       # 上下文压力（token-meter measure）≥ observeThresholdTokens：渲染 <history> 输入 → 观察日志 → 追加 + 替换
+│              ├─ observePass  → summarize.ts       # 净压力（上下文压力 token-meter measure − 已压缩块 tokens）≥ observeThresholdTokens：渲染 <history> 输入 → 观察日志 → 追加 + 替换
 │              └─ 提交          → compress.ts        # compaction/start(摘要调用前，载荷 phase) → summary(attemptCount) → 替换消息(source 插件标识 + compactionId) → end；失败补 end(error)；usage 归入主会话
 ├── constants.ts              # 共享常量（PLUGIN_LABEL / HISTORY_TAG / HISTORY_TIP / COMPLETE_MESSAGE_DEFINITION / COMPACT_CHECKPOINT_PLUGIN）
 ├── types.ts                  # type-only：宿主类型再导出 + 领域类型（MessageNode / MessageIndex）

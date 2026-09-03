@@ -1,11 +1,13 @@
 /**
  * 自动压缩（OM 观察/反思两级阈值，思路参考 Mastra Observational Memory）：
- *  - 观察：上下文压力 tokens ≥ observeThresholdTokens（默认 100000）→ 直连 ctx.llm.stream()
+ *  - 观察：净压力 tokens（上下文压力 − 已压缩 <history> 块 tokens 合计）≥
+ *    observeThresholdTokens（默认 100000）→ 直连 ctx.llm.stream()
  *    摘要（new 方式：共享提示词作为 system、被压缩消息渲染为 <history> 块输入）把未压缩消息
  *    压缩为观察日志，作为独立的新 <history> 块，只精确替换被压缩的新消息区间（旧块原地
  *    保留，多块并存按序排列；不再把旧+新合并进一条消息）。压力取自宿主 token-meter
  *    measure(session).totalTokens：provider 真实 usage 优先（最近一次成功调用的上报值锚定 +
- *    表层增量），不可信时自动回退启发式，与宿主上下文压力同口径；
+ *    表层增量），不可信时自动回退启发式，与宿主上下文压力同口径；已压缩块 token 按
+ *    块文本 4 字符 ≈ 1 token 估算（与反思同口径）；
  *  - 反思：全部 <history> 块 tokens 合计 ≥ reflectThresholdTokens（默认 30000）→
  *    同上摘要调用精简合并（输入为多个块拼接，共用同一套提示词），把整个块区段合并为一条。
  * 两级检查在 pre-step 阻塞串行执行（先反思后观察），避免压缩失败或重复压缩。
@@ -570,7 +572,8 @@ export async function reflectPass(
 }
 
 /**
- * 观察：上下文压力 tokens ≥ observeThresholdTokens 时（宿主 token-meter
+ * 观察：净压力 tokens（上下文压力 − 已压缩 <history> 块 tokens 合计）≥
+ * observeThresholdTokens 时（上下文压力取宿主 token-meter
  * measure(session).totalTokens：provider 真实 usage 优先、不可信回退启发式），摘要调用
  * 把未压缩消息压缩为观察日志，追加到旧摘要并替换被压缩消息区间。失败不产生部分替换。
  */
@@ -593,11 +596,21 @@ export async function observePass(
   const threshold = config.observeThresholdTokens;
   /** 上下文压力 token（宿主 token-meter：provider 真实 usage 优先，不可信回退启发式）。 */
   const pressureTokens = ctx.tokenMeter.measure(session).totalTokens;
-  if (pressureTokens < threshold) {
-    logger.step(`观察：上下文压力 ${pressureTokens} tokens < 阈值 ${threshold}，跳过`);
+  /** 旧压缩日志块（其 token 不计入观察触发压力——观察只压缩新消息；保留不替换、不进新消息遮蔽）。 */
+  const { blocks } = historySection(session);
+  /** 已压缩 <history> 块 token 估算合计（块文本 4 字符 ≈ 1 token，与反思同口径）。 */
+  const historyTokens = blocks.reduce((total, block) => total + estimateTextTokens(block.text), 0);
+  /** 净压力：上下文压力扣除已压缩块 token 后的剩余压力。 */
+  const netTokens = pressureTokens - historyTokens;
+  if (netTokens < threshold) {
+    logger.step(
+      `观察：净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens}）< 阈值 ${threshold}，跳过`,
+    );
     return;
   }
-  logger.step(`观察：上下文压力 ${pressureTokens} tokens ≥ 阈值 ${threshold}，触发压缩`);
+  logger.step(
+    `观察：净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens}）≥ 阈值 ${threshold}，触发压缩`,
+  );
   /** 观察压缩区间（压缩边界之后；尾部保留 tailCount 条不压缩；无可行区间则跳过）。 */
   const range = computeCompressRange(session, tailCount);
   if (!range) {
@@ -607,8 +620,6 @@ export async function observePass(
   logger.step(
     `观察：压缩区间 [${range.start}..${range.end}]，遮蔽 ${range.shadowedSeqs.length} 个表层节点`,
   );
-  /** 旧压缩日志块（保留不替换、不进新消息遮蔽）。 */
-  const { blocks } = historySection(session);
   /** 实际被替换的新消息表层节点（压缩边界之后；旧块不进入遮蔽、不被重写）。 */
   const replaceSeqs = range.shadowedSeqs;
   /** 替换区间起点（首个新消息节点；区间内全部为块时无新消息可压缩）。 */
@@ -763,7 +774,7 @@ export async function observePass(
     logger.step('观察提交：追加 compaction/end');
     appendCompactionEnd(session, lifecycle);
     logger.info(
-      `观察压缩完成（上下文压力 ${pressureTokens} tokens ≥ 阈值 ${threshold}，替换 ${replaceSeqs.length} 个表层节点，约 ${shadowedTokenCount} tokens）`,
+      `观察压缩完成（净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens}）≥ 阈值 ${threshold}，替换 ${replaceSeqs.length} 个表层节点，约 ${shadowedTokenCount} tokens）`,
     );
   } catch (error) {
     /** 提交失败信息（统一字符串）。 */
