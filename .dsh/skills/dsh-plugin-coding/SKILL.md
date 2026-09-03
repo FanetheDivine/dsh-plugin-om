@@ -47,8 +47,16 @@ git push -u origin <分支名>
 gh pr create --fill   # 或用其他方式创建 PR 并回传链接
 ```
 
-- **用户中断/放弃**：删除分支。
-- **两种结局都必须清理 worktree**：
+- PR 创建成功且**所有检查通过**后，以**压缩（squash）**方式将 PR 合并到主分支，删除远程分支与本地分支，并在主工作区执行 `git pull`：
+
+```sh
+gh pr merge <分支名> --squash --delete-branch  # 压缩合并，并删除远程分支
+git -C <项目根> worktree remove ../<分支名> --force  # 移除 worktree（先于删除本地分支）
+git -C <项目根> branch -D <分支名>  # 删除本地分支
+git -C <项目根> pull  # 主分支拉取最新
+```
+
+- **用户中断/放弃**：删除分支并移除 worktree：
 
 ```sh
 git -C <项目根> worktree remove ../<分支名> --force

@@ -7,7 +7,7 @@
 ## 功能
 
 - **自动压缩**（仅主会话，`agent/pre-step` 时阻塞串行执行）：
-  - **观察**：净压力（上下文压力 − 已压缩 `<history>` 块 token 估算合计 − 系统提示词 token 估算）≥ `observeThresholdTokens` 时，摘要未压缩消息并追加为新 `<history>` 块，精确替换被压缩的消息区间（旧块保留）
+  - **观察**：净压力（上下文压力 − 已压缩 `<history>` 块 token 估算合计 − 系统提示词 token 估算 − 工具定义 token 估算）≥ `observeThresholdTokens` 时，摘要未压缩消息并追加为新 `<history>` 块，精确替换被压缩的消息区间（旧块保留）
   - **反思**：全部 `<history>` 块 token 合计 ≥ `reflectThresholdTokens` 时，把多个摘要块合并为一条更紧凑的摘要
   - **输出容错**：摘要输出按首个 `<history>` 开标签到最后一个 `</history>` 定位；整块 XML 非法时按条目标签模糊提取并重建为合法块，再校验无 reasoning 与 index 连续
   - **失败中断**：摘要尝试全部耗尽后拒绝当前 step（当前 turn 以 blocked 结束，不再继续 AI 会话；signal 中止除外），最后一次尝试的实际报错写入日志与 `compaction/end` error
@@ -33,7 +33,7 @@ dsh plugin --profile <profile> add dsh-plugin-om
 ```yaml
 - id: dsh-plugin-om
   config:
-    observeThresholdTokens: 35000
+    observeThresholdTokens: 45000
 ```
 
 ### 开发插件
@@ -54,8 +54,8 @@ preset-agent 自带 `compaction-basic` 压缩，也会压缩上下文，其压�
 
 | 键 | 默认 | 含义 |
 | --- | --- | --- |
-| `observeThresholdTokens` | `35000` | 观察阈值（tokens）：净压力（上下文压力 − 已压缩块 − 系统提示词估算）≥ 该值时触发观察压缩 |
-| `reflectThresholdTokens` | `40000` | 反思阈值（tokens）：全部 `<history>` 块 token 合计 ≥ 该值时触发合并 |
+| `observeThresholdTokens` | `45000` | 观察阈值（tokens）：净压力（上下文压力 − 已压缩块 − 系统提示词估算 − 工具定义估算）≥ 该值时触发观察压缩 |
+| `reflectThresholdTokens` | `120000` | 反思阈值（tokens）：全部 `<history>` 块 token 合计 ≥ 该值时触发合并 |
 | `compressMaxTokens` | 不设置 | 单次摘要生成上限（不设置时由模型适配器默认值决定） |
 | `rateLimitWaitMs` | `60000` | 遇 429 限流后下一次摘要请求前的等待毫秒数（全局冷却期；`0` 不限流） |
 | `tailMessageCount` | `5` | 尾部保留的不压缩消息条数 |

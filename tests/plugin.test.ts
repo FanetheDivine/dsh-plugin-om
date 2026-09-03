@@ -146,10 +146,10 @@ function twoCallFlow(): SessionEvent[] {
 }
 
 describe('配置校验 resolveConfig', () => {
-  it('默认值正确（观察阈值 35000 tokens、反思阈值 40000 tokens）', () => {
+  it('默认值正确（观察阈值 45000 tokens、反思阈值 120000 tokens）', () => {
     const d = resolveConfig({});
-    expect(d.observeThresholdTokens).toBe(35000);
-    expect(d.reflectThresholdTokens).toBe(40000);
+    expect(d.observeThresholdTokens).toBe(45000);
+    expect(d.reflectThresholdTokens).toBe(120000);
     expect(d.compressMaxTokens).toBeUndefined(); // 默认不设置 maxTokens
     expect(d.tailMessageCount).toBe(5);
     expect(d.compressRetryCount).toBe(5); // 失败后最大重试次数（不含首次）
@@ -199,8 +199,8 @@ describe('配置校验 resolveConfig', () => {
     const empty = [undefined, null, '', '   '];
     for (const raw of empty) {
       const d = resolveConfig(raw);
-      expect(d.observeThresholdTokens).toBe(35000);
-      expect(d.reflectThresholdTokens).toBe(40000);
+      expect(d.observeThresholdTokens).toBe(45000);
+      expect(d.reflectThresholdTokens).toBe(120000);
       expect(d.compressMaxTokens).toBeUndefined();
       expect(d.tailMessageCount).toBe(5);
       expect(d.compressRetryCount).toBe(5);
@@ -211,13 +211,13 @@ describe('配置校验 resolveConfig', () => {
   });
 
   it('单项留空（null/空串/undefined）该键用默认值，其余覆盖项仍生效', () => {
-    expect(resolveConfig({ observeThresholdTokens: null }).observeThresholdTokens).toBe(35000);
-    expect(resolveConfig({ observeThresholdTokens: '' }).observeThresholdTokens).toBe(35000);
+    expect(resolveConfig({ observeThresholdTokens: null }).observeThresholdTokens).toBe(45000);
+    expect(resolveConfig({ observeThresholdTokens: '' }).observeThresholdTokens).toBe(45000);
     const mixed = resolveConfig({
       observeThresholdTokens: undefined,
       reflectThresholdTokens: 3000,
     });
-    expect(mixed.observeThresholdTokens).toBe(35000);
+    expect(mixed.observeThresholdTokens).toBe(45000);
     expect(mixed.reflectThresholdTokens).toBe(3000);
     const mixed2 = resolveConfig({ compressMaxTokens: null, tailMessageCount: 3 });
     expect(mixed2.compressMaxTokens).toBeUndefined();
@@ -233,9 +233,9 @@ describe('配置校验 resolveConfig', () => {
     expect(resolveConfig({ reflectThresholdTokens: 0 }).reflectThresholdTokens).toBe(0);
     expect(resolveConfig({ reflectThresholdTokens: 2 }).reflectThresholdTokens).toBe(2);
     expect(resolveConfig({ compressMaxTokens: 0 }).compressMaxTokens).toBe(0);
-    expect(resolveConfig({ observeThresholdTokens: '0.5' }).observeThresholdTokens).toBe(35000); // 非数值回退默认
-    expect(resolveConfig({ observeThresholdTokens: 2.5 }).observeThresholdTokens).toBe(35000); // 非整数回退默认
-    expect(resolveConfig({ reflectThresholdTokens: 2.5 }).reflectThresholdTokens).toBe(40000); // 非整数回退默认
+    expect(resolveConfig({ observeThresholdTokens: '0.5' }).observeThresholdTokens).toBe(45000); // 非数值回退默认
+    expect(resolveConfig({ observeThresholdTokens: 2.5 }).observeThresholdTokens).toBe(45000); // 非整数回退默认
+    expect(resolveConfig({ reflectThresholdTokens: 2.5 }).reflectThresholdTokens).toBe(120000); // 非整数回退默认
     expect(resolveConfig({ compressMaxTokens: 2.5 }).compressMaxTokens).toBeUndefined(); // 非整数视为未设置
     // 全部未知键被忽略 → 结果等于默认配置
     expect(
@@ -594,7 +594,7 @@ describe('token 估算 estimateTextTokens', () => {
   });
 });
 
-describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 系统提示词，ctx.tokenMeter.measure）', () => {
+describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 系统提示词 − 工具定义，ctx.tokenMeter.measure）', () => {
   /** 运行 pre-step 监听器。 */
   async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
     const listeners = ctx._onCallbacks.get('agent/pre-step');
@@ -646,7 +646,9 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
     expect(
       steps.some((s) =>
-        s.includes('净压力 50 tokens（上下文压力 50 − 已压缩块 0 − 系统提示词 0）< 阈值 100000'),
+        s.includes(
+          '净压力 50 tokens（上下文压力 50 − 已压缩块 0 − 系统提示词 0 − 工具定义 0）< 阈值 100000',
+        ),
       ),
     ).toBe(true);
   });
@@ -695,7 +697,7 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     expect(
       steps.some((s) =>
         s.includes(
-          `净压力 ${pressure - historyTokens} tokens（上下文压力 ${pressure} − 已压缩块 ${historyTokens} − 系统提示词 0）< 阈值 100000`,
+          `净压力 ${pressure - historyTokens} tokens（上下文压力 ${pressure} − 已压缩块 ${historyTokens} − 系统提示词 0 − 工具定义 0）< 阈值 100000`,
         ),
       ),
     ).toBe(true);
@@ -730,7 +732,7 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     expect(
       steps.some((s) =>
         s.includes(
-          `净压力 ${pressure - 10} tokens（上下文压力 ${pressure} − 已压缩块 0 − 系统提示词 10）< 阈值 100000`,
+          `净压力 ${pressure - 10} tokens（上下文压力 ${pressure} − 已压缩块 0 − 系统提示词 10 − 工具定义 0）< 阈值 100000`,
         ),
       ),
     ).toBe(true);
@@ -789,7 +791,69 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
     expect(warns.some((s) => s.includes('系统提示词 tokens 估算失败，按 0 计: boom'))).toBe(true);
     const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
-    expect(steps.some((s) => s.includes('− 系统提示词 0）< 阈值 100000'))).toBe(true);
+    expect(steps.some((s) => s.includes('− 系统提示词 0 − 工具定义 0）< 阈值 100000'))).toBe(true);
+  });
+
+  it('工具定义 token 从净压力扣除：低于阈值跳过', async () => {
+    const session = makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
+      requestHeaderValue: {
+        config: { provider: 'test', model: 'test-model' },
+        tools: [
+          { name: 'run_code', description: '执行代码', schema: { type: 'object' } },
+          { name: 'recall', description: '回看会话', schema: { type: 'object' } },
+        ],
+      },
+    });
+    const header = session.requestHeader() as { tools?: unknown[] };
+    const toolsTokens = estimateTextTokens(JSON.stringify(header.tools));
+    // 注入压力 = 阈值 + 工具定义 tokens − 1 → 扣除后净压力恰低于阈值 1 token
+    const pressure = 100000 + toolsTokens - 1;
+    const ctx = makeCtx({ meterTotalTokens: pressure });
+    apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
+    await runPreStep(ctx, session);
+    expect(ctx._llmCalls).toHaveLength(0);
+    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
+    expect(
+      steps.some((s) =>
+        s.includes(
+          `净压力 ${pressure - toolsTokens} tokens（上下文压力 ${pressure} − 已压缩块 0 − 系统提示词 0 − 工具定义 ${toolsTokens}）< 阈值 100000`,
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it('工具定义 token 从净压力扣除：扣除后仍达阈值则触发', async () => {
+    const session = makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
+      requestHeaderValue: {
+        config: { provider: 'test', model: 'test-model' },
+        tools: [{ name: 'run_code', description: '执行代码', schema: { type: 'object' } }],
+      },
+    });
+    const header = session.requestHeader() as { tools?: unknown[] };
+    const toolsTokens = estimateTextTokens(JSON.stringify(header.tools));
+    // 注入压力 = 阈值 + 工具定义 tokens → 扣除后净压力恰达阈值（触发）
+    const pressure = 100000 + toolsTokens;
+    const ctx = makeCtx({
+      meterTotalTokens: pressure,
+      llmStream: [{ type: 'text-delta', text: observeReport }],
+    });
+    apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
+    await runPreStep(ctx, session);
+    expect(ctx._llmCalls).toHaveLength(1);
   });
 
   it('已压缩块 token 从压力中扣除：扣除后净压力仍达阈值则触发', async () => {
@@ -1714,7 +1778,7 @@ describe('apply 接线（OM 观察压缩）', () => {
       }),
     });
     const ctx = makeCtx({});
-    apply(ctx, {}); // 默认观察阈值 35000 tokens，未达不压缩
+    apply(ctx, {}); // 默认观察阈值 45000 tokens，未达不压缩
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(0);
     expect(latestHistoryText(session)).toBe('');
@@ -2098,7 +2162,7 @@ describe('apply 接线（OM 反思压缩）', () => {
 
   it('摘要超反思阈值：摘要调用精简合并并把整个块区段替换为一条', async () => {
     // 单块摘要（X*40 + tip 标签约 26 tokens）；反思阈值 1 → 触发反思；
-    // 上下文压力远小于观察阈值（保持默认 35000）→ 观察不触发
+    // 上下文压力远小于观察阈值（保持默认 45000）→ 观察不触发
     const session = makeSession({
       events: [
         historyMessage('X'.repeat(40)),
@@ -2441,6 +2505,8 @@ describe('摘要请求形态（new 方式）', () => {
   it('始终以 new 方式开启观察：指令作为 system，输入 = 被压缩消息（XML 包裹，不含尾部）', async () => {
     const session = sessionWithHeader();
     const ctx = makeCtx({
+      // 会话请求头带 tools（JSON 21 字符 → 6 tokens）：注入真实 usage 锚定压力，扣除工具定义后仍达阈值
+      meterTotalTokens: 100000,
       llmStream: [
         {
           type: 'text-delta',
