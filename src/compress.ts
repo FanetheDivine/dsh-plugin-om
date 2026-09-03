@@ -4,15 +4,19 @@
  * reflectPass / observePass / maybeCompress。
  *
  * - 反思：全部 <history> 块 token 合计 ≥ reflectThresholdTokens 时，摘要合并为一条
- * - 观察：净压力（上下文压力 − 已压缩块 token 合计）≥ observeThresholdTokens 时，
+ * - 观察：净压力（上下文压力 − 已压缩块 token 合计 − 系统提示词 token 估算）≥ observeThresholdTokens 时，
  *   摘要未压缩消息为新 <history> 块并精确替换被压缩区间（旧块保留）
  * - 两级在 pre-step 阻塞串行执行（先反思后观察）；仅主会话生效；omEnabled=false 关闭
  * - 压缩边界：最后一个合法 <history> 块之后的消息视为未压缩，其前不重复压缩
  * - 提交走宿主 compaction/* 生命周期事件（start 带 phase → summary → 替换消息 → end），
  *   失败补 end(error)；替换消息 source 标记插件标识供 UI 认领
  */
+import { scopeOf } from '@deepseek-ai/dsh-scope';
+import type { AssembleContext } from '@deepseek-ai/dsh-system-prompt';
+import { renderPrompt } from '@deepseek-ai/dsh-system-prompt';
 import { HISTORY_TAG, isPluginOwnedSource, PLUGIN_LABEL } from './constants.ts';
 import { indexCompleteMessages } from './log-index.ts';
+import type { PluginLogger } from './logger.ts';
 import { makeLogger } from './logger.ts';
 import {
   buildHistoryPrompt,
@@ -377,9 +381,37 @@ export async function reflectPass(
 }
 
 /**
- * 观察：净压力 tokens（上下文压力 − 已压缩 <history> 块 token 合计）≥
- * observeThresholdTokens 时，摘要调用把未压缩消息压缩为观察日志，追加到旧摘要并
- * 替换被压缩消息区间。失败不产生部分替换。
+ * 估算系统提示词 tokens：按 agent 作用域组装并渲染系统提示词，按长度/4 启发式计。
+ * 宿主未提供 systemPrompt 服务（无 assemble）或组装/渲染失败时按 0 计——只影响
+ * 观察触发时机（偏早触发），不产生错误。
+ */
+async function estimateSystemPromptTokens(
+  ctx: Context,
+  agent: Agent,
+  logger: PluginLogger,
+  signal?: AbortSignal,
+): Promise<number> {
+  const systemPrompt = ctx.systemPrompt;
+  if (typeof systemPrompt?.assemble !== 'function') return 0;
+  try {
+    const agentCtx = (agent as { ctx?: Context }).ctx;
+    const scope = agentCtx === undefined ? undefined : scopeOf(agentCtx);
+    const assembleContext: AssembleContext = { agent };
+    if (scope !== undefined) assembleContext.scope = scope;
+    if (signal !== undefined) assembleContext.signal = signal;
+    const assembly = await systemPrompt.assemble(assembleContext);
+    return estimateTextTokens(renderPrompt(assembly));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`系统提示词 tokens 估算失败，按 0 计: ${message}`);
+    return 0;
+  }
+}
+
+/**
+ * 观察：净压力 tokens（上下文压力 − 已压缩 <history> 块 token 合计 − 系统提示词
+ * token 估算）≥ observeThresholdTokens 时，摘要调用把未压缩消息压缩为观察日志，
+ * 追加到旧摘要并替换被压缩消息区间。失败不产生部分替换。
  */
 export async function observePass(
   ctx: Context,
@@ -398,15 +430,16 @@ export async function observePass(
   const pressureTokens = ctx.tokenMeter.measure(session).totalTokens;
   const { blocks } = historySection(session);
   const historyTokens = blocks.reduce((total, block) => total + estimateTextTokens(block.text), 0);
-  const netTokens = pressureTokens - historyTokens;
+  const systemTokens = await estimateSystemPromptTokens(ctx, agent, logger, signal);
+  const netTokens = pressureTokens - historyTokens - systemTokens;
   if (netTokens < threshold) {
     logger.step(
-      `观察：净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens}）< 阈值 ${threshold}，跳过`,
+      `观察：净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens} − 系统提示词 ${systemTokens}）< 阈值 ${threshold}，跳过`,
     );
     return;
   }
   logger.step(
-    `观察：净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens}）≥ 阈值 ${threshold}，触发压缩`,
+    `观察：净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens} − 系统提示词 ${systemTokens}）≥ 阈值 ${threshold}，触发压缩`,
   );
   const range = computeCompressRange(session, tailCount);
   if (!range) {

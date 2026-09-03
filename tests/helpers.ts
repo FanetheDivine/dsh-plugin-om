@@ -231,6 +231,8 @@ interface MockCtxOptions {
   pruner?: unknown;
   /** meter.measure 返回的固定 totalTokens（模拟 provider 真实 usage；缺省回退表层启发式）。 */
   meterTotalTokens?: number;
+  /** systemPrompt.assemble 桩（注入后压缩会调用它估算系统提示词 tokens 并记录到 _assembleCalls；缺省无 assemble，模拟旧宿主）。 */
+  systemPromptAssemble?: (context: unknown) => Promise<unknown>;
 }
 
 /** 可编程 ctx 模拟（回调由测试注入）。 */
@@ -240,10 +242,13 @@ export function makeCtx({
   resolveModelInfo,
   pruner,
   meterTotalTokens,
+  systemPromptAssemble,
 }: MockCtxOptions = {}) {
   const onCallbacks = new Map<string, ((...args: unknown[]) => unknown)[]>();
   const registeredTools: unknown[] = [];
   const sections: unknown[] = [];
+  /** systemPrompt.assemble 调用记录（测试据此断言传入的 agent/scope/signal）。 */
+  const assembleCalls: unknown[] = [];
   /** 摘要 llm.stream 调用记录（测试据此断言 options/system/messages/顺序）。 */
   const llmCalls: Array<{ options: unknown }> = [];
   /** 日志调用记录（debug/info/warn；测试据此断言步骤日志与失败日志）。 */
@@ -271,6 +276,14 @@ export function makeCtx({
       section: (s: unknown) => {
         sections.push(s);
       },
+      ...(systemPromptAssemble === undefined
+        ? {}
+        : {
+            assemble: async (context: unknown) => {
+              assembleCalls.push(context);
+              return systemPromptAssemble(context);
+            },
+          }),
     },
     llm: {
       resolveModelInfo: async (provider: string, model: string) =>
@@ -306,6 +319,7 @@ export function makeCtx({
     _onCallbacks: onCallbacks,
     _registeredTools: registeredTools,
     _sections: sections,
+    _assembleCalls: assembleCalls,
     _llmCalls: llmCalls,
     _loggerCalls: loggerCalls,
   };
@@ -313,6 +327,7 @@ export function makeCtx({
     _onCallbacks: Map<string, ((...args: unknown[]) => unknown)[]>;
     _registeredTools: Array<{ name?: string }>;
     _sections: Array<{ name?: string }>;
+    _assembleCalls: unknown[];
     _llmCalls: Array<{ options: unknown }>;
     _loggerCalls: Array<{ level: 'debug' | 'info' | 'warn'; args: unknown[] }>;
   };
