@@ -9,7 +9,7 @@
  *    （本地 ONNX embedding，模型随插件打包，懒加载）
  *  - compress.ts 自动压缩（OM 观察/反思两级阈值）：pre-step 阻塞串行执行——
  *    反思（<history> 块 tokens 合计 ≥ reflectThresholdTokens 时摘要调用精简合并）、
- *    观察（未压缩消息 tokens ≥ observeThresholdTokens 时摘要调用压缩为观察日志并追加）
+ *    观察（上下文压力 tokens ≥ observeThresholdTokens 时摘要调用压缩为观察日志并追加）
  *
  * 约束：不引入自定义会话事件类型——压缩复用宿主已知的 compaction/* 生命周期事件
  * （start/summary/end）与 checkpoint 标记，结果写入消息记录与轨迹。
