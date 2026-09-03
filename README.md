@@ -73,7 +73,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 ## 工作原理
 
-1. 在未压缩的消息到达观察阈值后，进行摘要
+1. 在上下文压力到达观察阈值后，对未压缩的消息进行摘要（压力取宿主 token-meter 的 `measure().totalTokens`：provider 真实 usage 优先——最近一次成功调用的上报值锚定 + 表层增量，不可信时回退启发式；与宿主上下文压力同口径）
 2. 将新生成摘要追加到已有摘要后（每条压缩日志是独立的消息/块，旧块原地保留）
 3. 如果摘要总长到达反思阈值，对其本身进行摘要（把全部 <history> 块拼接合并为一条）
 4. 提供recall/recall-semantic两个tool进行检索
@@ -84,7 +84,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 ### 压缩日志块结构
 
 - 观察压缩只精确替换被压缩的新消息区间：旧 <history> 块保留为独立消息，新观察日志作为新块追加在其后（多块并存按序排列），历史不会随压缩次数膨胀；反思合并时才把多个块合并为一条更紧凑的摘要
-- 压缩边界：消息列表中最后一个合法的 <history> 块（source 为插件，plugin 为插件标识 `dsh-plugin-om`；兼容旧日志的宿主 checkpoint 标记 `compact`）之后的消息视为未压缩；其前（含自身）视为已压缩，不重复压缩、不计入观察阈值
+- 压缩边界：消息列表中最后一个合法的 <history> 块（source 为插件，plugin 为插件标识 `dsh-plugin-om`；兼容旧日志的宿主 checkpoint 标记 `compact`）之后的消息视为未压缩；其前（含自身）视为已压缩，不重复压缩
 - 观察输入经 `@xmldom/xmldom` 构建为合法 <history> 块（用户消息文本/assistant 文本/reasoning 特殊字符自动转义，图片/文件以注释补充；assistant 文本与 toolcall&result 原样；系统消息——user_message 中 source.kind 非 user 的部分，如宿主注入的上下文——渲染为 <sys type="KIND" index="N"></sys> 空块，内容不进入压缩输入）
 - 输出经 `@xmldom/xmldom` 解析校验：结构合法（标签匹配/闭合/单块）、不含 <reasoning>、index/start/end 连续（与预期覆盖区间一致），失败按 `compressRetryCount` 重试；观察分块时每块独立校验（预期覆盖各自 index 区间，失败按 `compressRetryCount` 重试），各块校验通过后再合并为一个 <history> 块提交
 - 块开标签带 `tip` 属性（对 AI 的提醒："当前块是历史消息的压缩产物，不要复述"）；块顶为构成逻辑注释（完整消息定义串 + 条目标签语义），消息正文不再附加前缀句
@@ -105,7 +105,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 ### 注意
 
-- 未压缩消息的 token 统计排除系统消息（user_message 中 source.kind 非 user 的部分，如宿主注入的上下文；宿主注入的提醒不计入观察阈值的触发量）
+- 观察阈值衡量的是上下文总压力（`measure().totalTokens`，含 system、tools、已压缩 history 的全部上下文），provider 上报的 usage 不可信（小于启发式锚点）时自动回退启发式估算
 - recall 不截断，建议保留 `tool-result-pruner`
 - recall-semantic 使用本地多语言嵌入模型（paraphrase-multilingual-MiniLM-L12-v2），
 
@@ -120,7 +120,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 | 键                      | 默认     | 含义                                                                                                                                                                         |
 | ----------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `observeThresholdTokens` | `100000` | 观察阈值（tokens）：未压缩消息 token 估算 ≥ 该值时触发观察压缩                                                                                                              |
+| `observeThresholdTokens` | `100000` | 观察阈值（tokens）：上下文压力（宿主 token-meter，provider 真实 usage 优先、不可信回退启发式）≥ 该值时触发观察压缩                                                                                                              |
 | `reflectThresholdTokens` | `30000`  | 反思阈值（tokens）：全部 <history> 块 token 估算合计 ≥ 该值时触发精简合并                                                                                                            |
 | `compressMaxTokens`     | `10000`  | 反思（合并调用）生成上限；观察分块用 `observeChunkMaxTokens`                                                                                                                  |
 | `observeChunkTokens`    | `30000`  | 观察分块 token 边界：未压缩消息按该边界拆分为多块并行压缩（完整消息不跨块）                                                                                                  |
@@ -173,7 +173,7 @@ src/
 │   └─ ④ 事件接线（仅主会话生效）
 │        └─ ctx.on('agent/pre-step') → compress.ts  # maybeCompress：两级压缩阻塞串行（先反思后观察；turn 中间即可触发）
 │              ├─ reflectPass → summarize.ts        # 全部 <history> 块 token 估算 ≥ reflectThresholdTokens：多块拼接 + 共享提示词合并整个块区段
-│              ├─ observePass  → summarize.ts       # 未压缩消息 token 估算 ≥ observeThresholdTokens：渲染 <history> 输入 → 观察日志 → 追加 + 替换
+│              ├─ observePass  → summarize.ts       # 上下文压力（token-meter measure）≥ observeThresholdTokens：渲染 <history> 输入 → 观察日志 → 追加 + 替换
 │              └─ 提交          → compress.ts        # compaction/start(摘要调用前，载荷 phase) → summary(attemptCount) → 替换消息(source 插件标识 + compactionId) → end；失败补 end(error)；usage 归入主会话
 ├── constants.ts              # 共享常量（PLUGIN_LABEL / HISTORY_TAG / HISTORY_TIP / COMPLETE_MESSAGE_DEFINITION / COMPACT_CHECKPOINT_PLUGIN）
 ├── types.ts                  # type-only：宿主类型再导出 + 领域类型（MessageNode / MessageIndex）
