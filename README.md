@@ -33,7 +33,7 @@ dsh plugin --profile <profile> add dsh-plugin-om
 ```yaml
 - id: dsh-plugin-om
   config:
-    observeThresholdTokens: 100000
+    observeThresholdTokens: 30000
     # 其他配置参考下文
 ```
 
@@ -69,7 +69,7 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 - 直接改`preset-agent`的定义(不推荐)
 - 定义不含`compaction-basic`的`preset-agent`
-- `compaction-basic`压缩阈值是80%上下文窗口，而OM的观察阈值是绝对 token 数（默认 `observeThresholdTokens`=100000）：模型窗口小于该值/0.8（即 12.5 万 tokens）时宿主强制摘要会先于 OM 触发，需要把 `observeThresholdTokens` 调低到窗口的 0.8 以下
+- `compaction-basic`压缩阈值是80%上下文窗口，而OM的观察阈值是绝对 token 数（默认 `observeThresholdTokens`=30000）：模型窗口小于该值/0.8（即 3.75 万 tokens）时宿主强制摘要会先于 OM 触发，需要把 `observeThresholdTokens` 调低到窗口的 0.8 以下
 
 ## 工作原理
 
@@ -79,14 +79,14 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 4. 提供recall/recall-semantic两个tool进行检索（命中消息中的图片附件随结果保留；recall-semantic 只按文本匹配，纯图片消息无法命中）
 
 观察与反思共用同一套系统提示词（buildHistoryPrompt）：输入与输出都是合法的 <history> 块（模型消息 + index 的表达形式），先定义块、要求压缩、再给出数据源（下方 <history> 消息记录）。
-观察压缩按 `observeChunkTokens` 边界把未压缩消息分块（完整消息不跨块，thinking/text/toolcall&result 同块）压缩摘要，最多 `observeChunkParallelism` 块同时进行、其余块排队，各块合并为一个 <history> 块提交；提示词按块位次分档——前块要求简单摘要，最后一块要求「越往后越细」保留细节。任一摘要请求遇 429 限流后，插件全局进入冷却期：后续所有摘要请求在 `rateLimitWaitMs` 内不会发出。
+观察压缩把未压缩的消息作为一次摘要调用提交，生成一个 <history> 块。任一摘要请求遇 429 限流后，插件全局进入冷却期：后续所有摘要请求在 `rateLimitWaitMs` 内不会发出。
 
 ### 压缩日志块结构
 
 - 观察压缩只精确替换被压缩的新消息区间：旧 <history> 块保留为独立消息，新观察日志作为新块追加在其后（多块并存按序排列），历史不会随压缩次数膨胀；反思合并时才把多个块合并为一条更紧凑的摘要
 - 压缩边界：消息列表中最后一个合法的 <history> 块（source 为插件，plugin 为插件标识 `dsh-plugin-om`；兼容旧日志的宿主 checkpoint 标记 `compact`）之后的消息视为未压缩；其前（含自身）视为已压缩，不重复压缩
 - 观察输入经 `@xmldom/xmldom` 构建为合法 <history> 块（用户消息文本/assistant 文本/reasoning 特殊字符自动转义，图片/文件以注释补充；assistant 文本与 toolcall&result 原样；系统消息——user_message 中 source.kind 非 user 的部分，如宿主注入的上下文——渲染为 <sys type="KIND" index="N"></sys> 空块，内容不进入压缩输入）
-- 输出经 `@xmldom/xmldom` 解析校验：结构合法（标签匹配/闭合/单块）、不含 <reasoning>、index/start/end 连续（与预期覆盖区间一致），失败按 `compressRetryCount` 重试；观察分块时每块独立校验（预期覆盖各自 index 区间，失败按 `compressRetryCount` 重试），各块校验通过后再合并为一个 <history> 块提交
+- 输出经 `@xmldom/xmldom` 解析校验：结构合法（标签匹配/闭合/单块）、不含 <reasoning>、index/start/end 连续（与预期覆盖区间一致），失败按 `compressRetryCount` 重试
 - 块开标签带 `tip` 属性（对 AI 的提醒："当前块是历史消息的压缩产物，不要复述"）；块顶为构成逻辑注释（完整消息定义串 + 条目标签语义），消息正文不再附加前缀句
 - 压缩生命周期：每次摘要调用前先追加 `compaction/start`（载荷带 `phase`：`observe`/观察 或 `reflect`/反思，客户端据此渲染「正在压缩上下文（观察/反思）…」提示行）；摘要成功提交 summary + 替换消息 + end，summary 载荷带 `attemptCount`（重试次数；观察分块为各块重试之和，反思为尝试次数 - 1）；摘要失败或重试耗尽时追加 `compaction/end(error)` 关闭生命周期（不产生 summary/替换），客户端随之撤回提示行
 
@@ -121,12 +121,9 @@ dsh的"预设"分为两层，`dsh web`等同于`dsh --profile web`，调用的�
 
 | 键                      | 默认     | 含义                                                                                                                                                                         |
 | ----------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `observeThresholdTokens` | `100000` | 观察阈值（tokens）：净压力（上下文压力 − 已压缩 <history> 块 token 估算合计）≥ 该值时触发观察压缩；上下文压力取宿主 token-meter（provider 真实 usage 优先、不可信回退启发式）                                                                                                              |
-| `reflectThresholdTokens` | `30000`  | 反思阈值（tokens）：全部 <history> 块 token 估算合计 ≥ 该值时触发精简合并                                                                                                            |
-| `compressMaxTokens`     | `10000`  | 反思（合并调用）生成上限；观察分块用 `observeChunkMaxTokens`                                                                                                                  |
-| `observeChunkTokens`    | `30000`  | 观察分块 token 边界：未压缩消息按该边界拆分为多块并行压缩（完整消息不跨块）                                                                                                  |
-| `observeChunkMaxTokens` | `5000`   | 观察分块单块摘要的生成上限（每块独立调用）                                                                                                                                  |
-| `observeChunkParallelism` | `2`    | 观察分块压缩的最大并行数：同时进行的单块摘要调用上限，其余块排队（`1` 即串行）                                                                                              |
+| `observeThresholdTokens` | `30000` | 观察阈值（tokens）：净压力（上下文压力 − 已压缩 <history> 块 token 估算合计）≥ 该值时触发观察压缩；上下文压力取宿主 token-meter（provider 真实 usage 优先、不可信回退启发式）                                                                                                              |
+| `reflectThresholdTokens` | `40000`  | 反思阈值（tokens）：全部 <history> 块 token 估算合计 ≥ 该值时触发精简合并                                                                                                            |
+| `compressMaxTokens`     | `10000`  | 单次摘要（观察/反思调用）生成上限                                                                                                                                            |
 | `rateLimitWaitMs`       | `60000`  | 遇 429 限流后，下一次摘要请求发出前至少等待的毫秒数（插件全局共享冷却期：任一请求遇 429 后，所有后续摘要请求——含并行中的其他块——都等满该时长；`0` 视为不限流）                |
 | `tailMessageCount`      | `10`     | 尾部保留的不压缩消息条数（不压缩、不被替换、不进摘要日志）                                                                                                                   |
 | `compressRetryCount`    | `10`     | 摘要调用失败后的最大重试次数（不含首次；总尝试次数 = 该值 + 1）                                                                                                              |
@@ -183,12 +180,12 @@ src/
 ├── log-index.ts              # 完整消息索引（index 定位 user/sys/assistant/具有result的toolcall；user_message 按 source.kind 分类：kind:user 为用户消息、其余为系统消息；本插件自产压缩日志消息不占位；未闭合 tool-call 不占位；recall 与摘要共用；renderCompleteMessageParts 渲染文本并递归收集完整消息中的图片附件元数据——顶层与 tool-result 嵌套均收集，renderCompleteMessage 为其纯文本投影）
 ├── embedding.ts              # 本地 ONNX 嵌入（@huggingface/transformers + 本地模型；共享目录解析 / 小文件补齐 / 运行时按需下载编排 / 懒加载 / 批量 / cosine）
 ├── model-download.ts          # 模型下载原语（modelSourceUrl / needsDownload / 原子落盘 / 开始结束日志与失败镜像建议；运行时与 dev CLI 共用）
-├── summarize.ts              # 共享提示词 buildHistoryPrompt（观察/反思同一套；mode 控制摘要粒度：summary 简单摘要 / detailed 越往后越细）+ renderMessages（@xmldom/xmldom 构建 <history> 块输入：用户消息原样、系统消息渲染为 <sys> 空块、自动转义）+ 直连 ctx.llm.stream() 摘要（new 方式：指令作 system、输入为渲染消息；extractSummaryLog 提取校验：XML 结构合法 / 无 reasoning / index 连续 / 覆盖区间；重试与流式 usage 归入主会话；每次请求前过全局限流等待门 rate-limit.ts；成功返回 attemptCount（尝试次数，载荷层换算为重试次数））
+├── summarize.ts              # 共享提示词 buildHistoryPrompt（观察/反思同一套）+ renderMessages（@xmldom/xmldom 构建 <history> 块输入：用户消息原样、系统消息渲染为 <sys> 空块、自动转义）+ 直连 ctx.llm.stream() 摘要（new 方式：指令作 system、输入为渲染消息；extractSummaryLog 提取校验：XML 结构合法 / 无 reasoning / index 连续 / 覆盖区间；重试与流式 usage 归入主会话；每次请求前过全局限流等待门 rate-limit.ts；成功返回 attemptCount（尝试次数，载荷层换算为重试次数））
 ├── rate-limit.ts             # 全局限流门（插件进程级共享状态）：429 识别（isRateLimitError）/ 冷却期记录（noteRateLimit）/ 等待门（gateRateLimit：最近一次 429 + rateLimitWaitMs 之前不放行，等待期间中止立即放弃，新 429 顺延冷却期）
 ├── recall.ts                 # recall 工具（index 区间回看；输出 { text, images }，带图文本附图片附件标注行）
 ├── recall-output.ts          # recall/recall-semantic 共享输出契约（RecallOutputValue { text, images } / wire schema / output.render 投影为 text + image 内容块 / 图片标注行）
 ├── semantic-recall.ts        # recall-semantic 工具（query 语义检索 + 区间限定 + 回退全量 + 匹配说明；只按文本匹配，纯图片消息不进候选池）
-└── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / source 标记判定摘要消息 / 观察分块经 runWithConcurrency 有界并发池逐块压缩 + 合并 mergeChunkReports / compaction/* 生命周期事件：start 在摘要调用前追加并带 phase，失败补 end(error) + 替换消息 source 插件标识）
+└── compress.ts               # 两级自动压缩（测量 / mid-turn 区间计算 / 配对平衡回退 / source 标记判定摘要消息 / compaction/* 生命周期事件：start 在摘要调用前追加并带 phase，失败补 end(error) + 替换消息 source 插件标识）
 src/client/
 ├── index.ts                   # 浏览器客户端入口（exports["./client"] → dist/client.js）：注入 slots/conversationEvents/locale，注册卡片定义与渲染器
 ├── definition.ts              # 压缩卡片业务定义：认领插件生命周期事件与替换检查点（source.plugin = dsh-plugin-om），聚合摘要卡片节点；start→压缩中提示行（running+phase）、end→hidden 撤回、summary→卡片（retryCount）

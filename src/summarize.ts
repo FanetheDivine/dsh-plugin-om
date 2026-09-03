@@ -10,9 +10,7 @@
  * <sys type="KIND" index="N"> 空块（内容不进入输入）、<reasoning> 参考条目
  * （产物中没有）、assistant 文本与 toolcall&result 原样。
  * 输出经 extractSummaryLog 校验：合法 <history> 块、不含 <reasoning>、index/start/end 连续
- * （与预期覆盖区间一致），失败按 config.compressRetryCount 重试。tip 属性与格式说明注释
- * （HISTORY_FORMAT_NOTE）属于最终装配装饰（decorate 选项，缺省 true）：直接落盘的产物
- * （反思摘要）带装饰，观察分块的中间产物（decorate=false）不带，由合并侧统一添加一次。
+ * （与预期覆盖区间一致），失败按 config.compressRetryCount 重试。
  * token usage 从流式响应的 usage chunk 提取，归入主会话记录。仅主会话生效（index.ts 守卫）。
  */
 
@@ -40,10 +38,8 @@ import { type RoutedTarget, uuid } from './utils.ts';
  * 共享压缩提示词（观察/反思同一套）：定义 history 块（模型消息 + index 的表达形式）、
  * 完整消息定义、要求压缩（完整保留用户消息 / reasoning 仅参考 / 关联 assistant 合并 /
  * index/start/end 连续）、输出格式（一个合法 <history> 块，无 reasoning）、数据源说明。
- * mode 控制【摘要粒度】：无参为通用提示词（反思调用）；'summary' 要求简单摘要（较早分块）；
- * 'detailed' 要求越往后越细（最后一块保留细节）。观察分块时除最后一块外均用 'summary'。
  */
-export function buildHistoryPrompt(mode?: 'summary' | 'detailed'): string {
+export function buildHistoryPrompt(): string {
   const lines: string[] = [
     '把下方的 <history> 消息记录压缩为一份更紧凑的 <history> 压缩日志。不用工具、不展示思考、不输出多余文字。',
     '',
@@ -81,16 +77,6 @@ export function buildHistoryPrompt(mode?: 'summary' | 'detailed'): string {
     '',
     '【数据源】下方的 <history> 消息记录是本次要压缩的全部消息；压缩结果作为一个新的 <history> 块输出。',
   ];
-  if (mode !== undefined) {
-    // 观察分块：较早块只要求简单摘要，最后一块「越往后越细」保留细节
-    const granularity =
-      mode === 'summary'
-        ? '【摘要粒度】本条为较早的消息，做简单摘要即可：概括要点，不必展开细节；但用户消息仍逐条保留原文，不概括、不省略。'
-        : '【摘要粒度】本条为最近的消息，越往后越细：靠近末尾的完整消息保留更多细节（关键文件、改动与结论），前面的可适当从简；但用户消息始终逐条保留原文，不概括、不省略。';
-    const marker = '【输出格式】只输出一个 <history> 包裹的合法 XML 日志块';
-    const markerIndex = lines.findIndex((line) => line.includes(marker));
-    if (markerIndex !== -1) lines.splice(markerIndex, 0, granularity);
-  }
   return lines.join('\n');
 }
 
@@ -447,18 +433,6 @@ export function historyContinuity(
 export type SummaryValidationRange = { start?: number; end?: number };
 
 /**
- * 提取装配选项。
- */
-export type SummaryExtractOptions = {
-  /**
-   * 是否装配最终产物装饰（首个开标签改写为带 tip 属性的版本 + 块顶插入格式说明注释
-   * HISTORY_FORMAT_NOTE）。缺省 true（反思等直接落盘的最终产物）；观察分块的中间产物传
-   * false——tip 与注释属于最终装配（合并块顶统一一条），chunk 阶段一律不加工。
-   */
-  decorate?: boolean;
-};
-
-/**
  * 从 AI 摘要输出中提取合法日志（不信任 AI 的总结结果）：
  *  - 取首个 <history> 到最后一个 </history>（含两个首尾）切为日志；
  *  - 找不到、顺序颠倒（首个开标签在最后一个闭标签之后）或中间内容长度 < MIN_HISTORY_LENGTH
@@ -466,14 +440,10 @@ export type SummaryExtractOptions = {
  *  - 用 XML 解析器校验结构合法性（非法 XML / 多块输出 / 根非 <history> → 不合法）；
  *  - 产物不允许包含 <reasoning> 块（仅作参考）；
  *  - index/start/end 连续性校验（historyContinuity + 与 expected 覆盖区间一致）；
- *  - decorate（缺省 true）时把首个开标签改写为带 tip 属性的版本（对 AI 的提醒），并在其后插入
- *    格式说明注释（HISTORY_FORMAT_NOTE，块顶）；decorate=false 保持模型输出原样（chunk 中间产物）。
+ *  - 产出后把首个开标签改写为带 tip 属性的版本（对 AI 的提醒），并在其后插入
+ *    格式说明注释（HISTORY_FORMAT_NOTE，块顶）。
  */
-export function extractSummaryLog(
-  raw: string,
-  expected?: SummaryValidationRange,
-  options?: SummaryExtractOptions,
-): string | null {
+export function extractSummaryLog(raw: string, expected?: SummaryValidationRange): string | null {
   /** 开标签（模型输出格式）。 */
   const openTag = `<${HISTORY_TAG}>`;
   /** 闭标签。 */
@@ -502,8 +472,6 @@ export function extractSummaryLog(
   if (span === null) return null;
   if (expected?.start !== undefined && span.start !== expected.start) return null;
   if (expected?.end !== undefined && span.end !== expected.end) return null;
-  // decorate=false：chunk 中间产物保持模型输出原样（tip 与注释由最终装配统一添加）
-  if (options?.decorate === false) return block;
   /** 首个开标签改写为带 tip 版本，块顶紧跟格式说明注释。 */
   return block
     .replace(openTag, openTagWithTip)
@@ -521,7 +489,7 @@ type AttemptFailure = { error?: string; finish?: string };
  * options.maxAttempts 次（默认 SUMMARY_DEFAULT_MAX_ATTEMPTS）；全部尝试失败返回 null
  * （不产生任何日志变更）。输出长度受 maxTokens 限制。
  * 每次请求发出前先过全局限流等待门（gateRateLimit）：任一请求遇 429 后，后续所有
- * 摘要请求（含并行中的其他调用方）在「最近一次 429 + options.rateLimitWaitMs」之前
+ * 摘要请求在「最近一次 429 + options.rateLimitWaitMs」之前
  * 不会发出（缺省 RATE_LIMIT_WAIT_MS_DEFAULT）。
  */
 export async function runSummarySubagent(
@@ -533,13 +501,7 @@ export async function runSummarySubagent(
   target: RoutedTarget,
   debug: boolean,
   signal?: AbortSignal,
-  options?: {
-    maxAttempts?: number;
-    expected?: SummaryValidationRange;
-    rateLimitWaitMs?: number;
-    /** 是否装配最终产物装饰（tip 属性 + 格式说明注释）；缺省 true，观察分块的中间产物传 false。 */
-    decorate?: boolean;
-  },
+  options?: { maxAttempts?: number; expected?: SummaryValidationRange; rateLimitWaitMs?: number },
 ): Promise<SummarySubagentResult | null> {
   /** 当前会话。 */
   const session = agent.session;
@@ -583,10 +545,7 @@ export async function runSummarySubagent(
       const collector = new StreamCollector();
       for await (const chunk of ctx.llm.stream(requestOptions)) collector.push(chunk);
       /** 提取合法日志（首个 <history> 到最后一个 </history>，无 reasoning、index 连续；不信任 AI 输出）。 */
-      const text = extractSummaryLog(collector.text, options?.expected, {
-        // exactOptionalPropertyTypes：decorate 缺省时不携带该键（不直传 undefined）
-        ...(options?.decorate === undefined ? {} : { decorate: options.decorate }),
-      });
+      const text = extractSummaryLog(collector.text, options?.expected);
       /** 终止原因（仅 stop 视为完成）。 */
       const finish = collector.finish;
       if (finish.kind !== 'stop' || text === null) {

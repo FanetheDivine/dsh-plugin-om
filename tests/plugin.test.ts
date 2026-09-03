@@ -144,10 +144,10 @@ function twoCallFlow(): SessionEvent[] {
 }
 
 describe('配置校验 resolveConfig', () => {
-  it('默认值正确（观察阈值 100000 tokens、反思阈值 30000 tokens）', () => {
+  it('默认值正确（观察阈值 30000 tokens、反思阈值 40000 tokens）', () => {
     const d = resolveConfig({});
-    expect(d.observeThresholdTokens).toBe(100000);
-    expect(d.reflectThresholdTokens).toBe(30000);
+    expect(d.observeThresholdTokens).toBe(30000);
+    expect(d.reflectThresholdTokens).toBe(40000);
     expect(d.compressMaxTokens).toBe(10000);
     expect(d.tailMessageCount).toBe(10);
     expect(d.compressRetryCount).toBe(10); // 失败后最大重试次数（不含首次）
@@ -184,16 +184,6 @@ describe('配置校验 resolveConfig', () => {
     expect(resolveConfig({ compressRetryCount: '5' }).compressRetryCount).toBe(10); // 非数值回退默认
   });
 
-  it('observeChunkParallelism：默认 2（观察分块最大并行数），整数可覆盖，非整数回退默认', () => {
-    expect(resolveConfig({}).observeChunkParallelism).toBe(2);
-    expect(resolveConfig({ observeChunkParallelism: 4 }).observeChunkParallelism).toBe(4);
-    expect(resolveConfig({ observeChunkParallelism: 1 }).observeChunkParallelism).toBe(1); // 1 即串行
-    expect(resolveConfig({ observeChunkParallelism: 0 }).observeChunkParallelism).toBe(0); // 无区间限制（运行时 clamp 为 1）
-    expect(resolveConfig({ observeChunkParallelism: 2.5 }).observeChunkParallelism).toBe(2); // 非整数回退默认
-    expect(resolveConfig({ observeChunkParallelism: '3' }).observeChunkParallelism).toBe(2); // 非数值回退默认
-    expect(resolveConfig({ observeChunkParallelism: null }).observeChunkParallelism).toBe(2); // 留空回退默认
-  });
-
   it('rateLimitWaitMs：默认 60000（429 后下一次请求前至少等待的毫秒数），整数可覆盖，非整数回退默认', () => {
     expect(resolveConfig({}).rateLimitWaitMs).toBe(60000);
     expect(resolveConfig({ rateLimitWaitMs: 1000 }).rateLimitWaitMs).toBe(1000);
@@ -207,8 +197,8 @@ describe('配置校验 resolveConfig', () => {
     const empty = [undefined, null, '', '   '];
     for (const raw of empty) {
       const d = resolveConfig(raw);
-      expect(d.observeThresholdTokens).toBe(100000);
-      expect(d.reflectThresholdTokens).toBe(30000);
+      expect(d.observeThresholdTokens).toBe(30000);
+      expect(d.reflectThresholdTokens).toBe(40000);
       expect(d.compressMaxTokens).toBe(10000);
       expect(d.tailMessageCount).toBe(10);
       expect(d.compressRetryCount).toBe(10);
@@ -219,13 +209,13 @@ describe('配置校验 resolveConfig', () => {
   });
 
   it('单项留空（null/空串/undefined）该键用默认值，其余覆盖项仍生效', () => {
-    expect(resolveConfig({ observeThresholdTokens: null }).observeThresholdTokens).toBe(100000);
-    expect(resolveConfig({ observeThresholdTokens: '' }).observeThresholdTokens).toBe(100000);
+    expect(resolveConfig({ observeThresholdTokens: null }).observeThresholdTokens).toBe(30000);
+    expect(resolveConfig({ observeThresholdTokens: '' }).observeThresholdTokens).toBe(30000);
     const mixed = resolveConfig({
       observeThresholdTokens: undefined,
       reflectThresholdTokens: 3000,
     });
-    expect(mixed.observeThresholdTokens).toBe(100000);
+    expect(mixed.observeThresholdTokens).toBe(30000);
     expect(mixed.reflectThresholdTokens).toBe(3000);
     const mixed2 = resolveConfig({ compressMaxTokens: null, tailMessageCount: 3 });
     expect(mixed2.compressMaxTokens).toBe(10000);
@@ -241,9 +231,9 @@ describe('配置校验 resolveConfig', () => {
     expect(resolveConfig({ reflectThresholdTokens: 0 }).reflectThresholdTokens).toBe(0);
     expect(resolveConfig({ reflectThresholdTokens: 2 }).reflectThresholdTokens).toBe(2);
     expect(resolveConfig({ compressMaxTokens: 0 }).compressMaxTokens).toBe(0);
-    expect(resolveConfig({ observeThresholdTokens: '0.5' }).observeThresholdTokens).toBe(100000); // 非数值回退默认
-    expect(resolveConfig({ observeThresholdTokens: 2.5 }).observeThresholdTokens).toBe(100000); // 非整数回退默认
-    expect(resolveConfig({ reflectThresholdTokens: 2.5 }).reflectThresholdTokens).toBe(30000); // 非整数回退默认
+    expect(resolveConfig({ observeThresholdTokens: '0.5' }).observeThresholdTokens).toBe(30000); // 非数值回退默认
+    expect(resolveConfig({ observeThresholdTokens: 2.5 }).observeThresholdTokens).toBe(30000); // 非整数回退默认
+    expect(resolveConfig({ reflectThresholdTokens: 2.5 }).reflectThresholdTokens).toBe(40000); // 非整数回退默认
     expect(resolveConfig({ compressMaxTokens: 2.5 }).compressMaxTokens).toBe(10000); // 非整数回退默认
     // 全部未知键被忽略 → 结果等于默认配置
     expect(
@@ -1103,15 +1093,6 @@ describe('摘要日志提取 extractSummaryLog', () => {
     expect(out).not.toContain('尾部多余文字');
   });
 
-  it('decorate=false：不加 tip 属性与格式说明注释（chunk 中间产物），块内容原样', () => {
-    const raw = block('<user_message index="0">' + '\n' + 'A' + '\n' + '</user_message>');
-    const out = extractSummaryLog(raw, undefined, { decorate: false });
-    expect(out).not.toBeNull();
-    expect(out).toBe(raw); // 原样返回（无 tip 改写、无注释插入）
-    expect(out).not.toContain('tip=');
-    expect(out).not.toContain('完整消息：');
-  });
-
   it('含 <sys> 系统消息空块的日志合法（type/index 保留，连续性含 sys）', () => {
     const raw = block(
       '<sys type="agent-instructions" index="0"></sys>\n<user_message index="1">\nA\n</user_message>',
@@ -1283,9 +1264,9 @@ describe('apply 接线（OM 观察压缩）', () => {
     const options = summaryOptions(ctx);
     // new 方式：persona + 提示词并入 system；输入为被压缩消息（user 消息）
     const instruction = instructionText(options);
-    expect(instruction).toBe(buildHistoryPrompt('detailed')); // 观察单块 = 最后一块：越往后越细
+    expect(instruction).toBe(buildHistoryPrompt()); // 共享提示词（观察/反思同一套）
     expect(options.system).toBe(instruction);
-    expect(options.maxTokens).toBe(5000); // observeChunkMaxTokens 默认
+    expect(options.maxTokens).toBe(10000); // compressMaxTokens 默认
 
     const historyText = latestHistoryText(session);
     // 新格式：<user_message index> 完整原文 + <assistant start..end> 聚合模块；格式说明注释在块首
@@ -1336,74 +1317,6 @@ describe('apply 接线（OM 观察压缩）', () => {
     // 统计载荷：遮蔽节点 = 整条工具流（user/assistant/tool-result）；压缩前字符数 = 9+6+4（递归计入 tool-result 内嵌文本）
     expect(summaryEvent.data.shadowedSeqs).toEqual([0, 1, 3]);
     expect((summaryEvent.data as CompactionSummaryPayload).shadowedCharCount).toBe(19);
-  });
-
-  it('大输入按 token 边界分块并行压缩：前块简单摘要、最后一块越往后越细，合并为一个 <history>', async () => {
-    // 4 条各 ~10k tokens（40k 字符）的用户消息 → 30k 边界 → 3+1 两块
-    const texts = ['A'.repeat(40000), 'B'.repeat(40000), 'C'.repeat(40000), 'D'.repeat(40000)];
-    const events = texts.map(
-      (text) =>
-        ({
-          type: 'user/message' as const,
-          data: makeMessage({ role: 'user', content: [textBlock(text)] }),
-        }) as unknown as SessionEvent,
-    );
-    const session = makeSession({ events });
-    const report0 = [
-      '<history>',
-      '<user_message index="0">',
-      '早块用户消息摘要内容',
-      '</user_message>',
-      '<assistant start="1" end="2">',
-      '早块行为摘要内容',
-      '</assistant>',
-      '</history>',
-    ].join('\n');
-    const report1 = [
-      '<history>',
-      '<user_message index="3">',
-      '最后块用户消息摘要内容',
-      '</user_message>',
-      '</history>',
-    ].join('\n');
-    const ctx = makeCtx({
-      llmStreamFactory: (callIndex) =>
-        callIndex === 0
-          ? [{ type: 'text-delta', text: report0 }]
-          : [{ type: 'text-delta', text: report1 }],
-    });
-    apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1 });
-    const nextCalled = await runPreStep(ctx, session);
-    expect(nextCalled).toBe(true);
-    // 两块并行调用：提示词分档（前块简单摘要 / 最后一块越往后越细），maxTokens 均为分块上限
-    expect(ctx._llmCalls).toHaveLength(2);
-    const opt0 = summaryOptions(ctx, 0);
-    const opt1 = summaryOptions(ctx, 1);
-    expect(String(opt0.system ?? '')).toContain('【摘要粒度】本条为较早的消息');
-    expect(String(opt0.system ?? '')).not.toContain('越往后越细');
-    expect(String(opt1.system ?? '')).toContain('越往后越细');
-    expect(opt0.maxTokens).toBe(5000);
-    expect(opt1.maxTokens).toBe(5000);
-    // 各块输入只含本块完整消息（块 1：index 0..2；块 2：index 3）
-    const input0 = String(opt0.messages?.[0]?.content?.[0]?.text ?? '');
-    const input1 = String(opt1.messages?.[0]?.content?.[0]?.text ?? '');
-    expect(input0).toContain('<user_message index="0">');
-    expect(input0).toContain('<user_message index="2">');
-    expect(input0).not.toContain('<user_message index="3">');
-    expect(input1).toContain('<user_message index="3">');
-    // 合并后的历史块包含两块内容，整体覆盖 index 0..3
-    const historyText = latestHistoryText(session);
-    expect(historyText).toContain('早块用户消息摘要内容');
-    expect(historyText).toContain('早块行为摘要内容');
-    expect(historyText).toContain('最后块用户消息摘要内容');
-    // compaction/summary：maxTokens 记录分块上限，attemptCount = 两块重试之和（均首次成功 → 0）
-    const { summary } = compactionLifecycle(session);
-    const summaryEvent = session.events[summary];
-    if (summaryEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
-    expect((summaryEvent.data as CompactionSummaryPayload).maxTokens).toBe(5000);
-    expect((summaryEvent.data as CompactionSummaryPayload).attemptCount).toBe(0);
-    // 替换后表层只剩压缩日志块
-    expect(session.surface.nodes.length).toBe(1);
   });
 
   it('系统消息参与压缩：输入渲染 <sys> 空块，模型输出必须保留 sys 条目', async () => {
@@ -1566,7 +1479,7 @@ describe('apply 接线（OM 观察压缩）', () => {
       }),
     });
     const ctx = makeCtx({});
-    apply(ctx, {}); // 默认观察阈值 100000 tokens，未达不压缩
+    apply(ctx, {}); // 默认观察阈值 30000 tokens，未达不压缩
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(0);
     expect(latestHistoryText(session)).toBe('');
@@ -1868,7 +1781,7 @@ describe('apply 接线（OM 反思压缩）', () => {
 
   it('摘要超反思阈值：摘要调用精简合并并把整个块区段替换为一条', async () => {
     // 单块摘要（X*40 + tip 标签约 26 tokens）；反思阈值 1 → 触发反思；
-    // 上下文压力远小于观察阈值（保持默认 100000）→ 观察不触发
+    // 上下文压力远小于观察阈值（保持默认 30000）→ 观察不触发
     const session = makeSession({
       events: [
         historyMessage('X'.repeat(40)),
@@ -1978,9 +1891,9 @@ describe('apply 接线（OM 反思压缩）', () => {
     expect(ctx._llmCalls).toHaveLength(2);
     const firstText = instructionText(ctx._llmCalls[0]?.options);
     const secondText = instructionText(ctx._llmCalls[1]?.options);
-    // 反思用通用提示词；观察（最后一块）用「越往后越细」；以输入（数据源）区分两者
+    // 两者共用同一套提示词；以输入（数据源）区分反思/观察
     expect(firstText).toBe(buildHistoryPrompt());
-    expect(secondText).toBe(buildHistoryPrompt('detailed'));
+    expect(secondText).toBe(buildHistoryPrompt());
     const inputOf = (call: unknown) =>
       String(
         (call as { messages?: Array<{ content?: Array<{ type?: string; text?: string }> }> })
@@ -2225,8 +2138,8 @@ describe('摘要请求形态（new 方式）', () => {
       tools?: unknown[];
       messages?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
     };
-    // new 方式：不复用主会话 requestHeader（system/tools 前缀不沿用）；指令 = 观察最后一块提示词
-    expect(options?.system).toBe(buildHistoryPrompt('detailed'));
+    // new 方式：不复用主会话 requestHeader（system/tools 前缀不沿用）；指令 = 共享提示词
+    expect(options?.system).toBe(buildHistoryPrompt());
     expect(options?.system).not.toContain('主会话系统提示词');
     expect(options?.tools).toBeUndefined();
     const input = String(options?.messages?.[0]?.content?.[0]?.text ?? '');

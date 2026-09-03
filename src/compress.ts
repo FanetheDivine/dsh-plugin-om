@@ -1,14 +1,14 @@
 /**
  * 自动压缩（OM 观察/反思两级阈值，思路参考 Mastra Observational Memory）：
  *  - 观察：净压力 tokens（上下文压力 − 已压缩 <history> 块 tokens 合计）≥
- *    observeThresholdTokens（默认 100000）→ 直连 ctx.llm.stream()
+ *    observeThresholdTokens（默认 30000）→ 直连 ctx.llm.stream()
  *    摘要（new 方式：共享提示词作为 system、被压缩消息渲染为 <history> 块输入）把未压缩消息
  *    压缩为观察日志，作为独立的新 <history> 块，只精确替换被压缩的新消息区间（旧块原地
  *    保留，多块并存按序排列；不再把旧+新合并进一条消息）。压力取自宿主 token-meter
  *    measure(session).totalTokens：provider 真实 usage 优先（最近一次成功调用的上报值锚定 +
  *    表层增量），不可信时自动回退启发式，与宿主上下文压力同口径；已压缩块 token 按
  *    块文本 4 字符 ≈ 1 token 估算（与反思同口径）；
- *  - 反思：全部 <history> 块 tokens 合计 ≥ reflectThresholdTokens（默认 30000）→
+ *  - 反思：全部 <history> 块 tokens 合计 ≥ reflectThresholdTokens（默认 40000）→
  *    同上摘要调用精简合并（输入为多个块拼接，共用同一套提示词），把整个块区段合并为一条。
  * 两级检查在 pre-step 阻塞串行执行（先反思后观察），避免压缩失败或重复压缩。
  * 自动压缩由配置键 omEnabled 开关（false 时关闭；recall 工具不受影响）。
@@ -30,23 +30,20 @@
  * 摘要输出的 <history> 块经连续性校验（无 reasoning、index/start/end 连续且覆盖预期
  * 区间），失败按 config.compressRetryCount 重试。仅主会话生效。
  */
-import { HISTORY_TAG, HISTORY_TIP, isPluginOwnedSource, PLUGIN_LABEL } from './constants.ts';
+import { HISTORY_TAG, isPluginOwnedSource, PLUGIN_LABEL } from './constants.ts';
 import { indexCompleteMessages } from './log-index.ts';
 import { makeLogger } from './logger.ts';
 import {
   buildHistoryPrompt,
-  HISTORY_FORMAT_NOTE,
   parseHistoryEntries,
   renderMessages,
   runSummarySubagent,
-  type SummarySubagentResult,
 } from './summarize.ts';
 import type {
   Agent,
   CompactionId,
   CompactionStartPayload,
   CompactionSummaryPayload,
-  CompleteMessage,
   Context,
   PluginConfig,
   Session,
@@ -66,127 +63,6 @@ export function estimateTextTokens(text: string): number {
  * 取用，结果数组与 items 按 index 对齐（任务自身以返回值表达失败，不在此抛出）。
  * items 为空返回空数组。
  */
-export async function runWithConcurrency<T, R>(
-  items: readonly T[],
-  limit: number,
-  task: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  /** 结果数组（按 index 对齐）。 */
-  const results = new Array<R>(items.length);
-  /** 下一个待处理任务的下标（worker 间共享取号）。 */
-  let next = 0;
-  /** worker 数量（clamp 到 [1, items.length]）。 */
-  const workerCount = Math.max(1, Math.min(Math.floor(limit), items.length));
-  /** 各 worker：循环取号执行任务直到取尽。 */
-  const workers = Array.from({ length: workerCount }, async () => {
-    while (next < items.length) {
-      /** 本 worker 领取的任务下标。 */
-      const index = next;
-      next += 1;
-      results[index] = await task(items[index] as T, index);
-    }
-  });
-  await Promise.all(workers);
-  return results;
-}
-
-/**
- * 按 token 边界把完整消息序列分块（观察并行压缩用）：完整消息不跨块——
- * 一条完整消息（含其 thinking/text/toolcall&result 全部 seqs）必然整体落在同一块，
- * 单条超界的消息独立成块。空输入返回空数组。
- */
-export function chunkCompleteMessages<M>(
-  session: Session,
-  cms: readonly CompleteMessage[],
-  tokenBoundary: number,
-  estimateMessage: (message: M) => number,
-): CompleteMessage[][] {
-  if (cms.length === 0) return [];
-  /** 分块结果。 */
-  const chunks: CompleteMessage[][] = [];
-  /** 当前块。 */
-  let current: CompleteMessage[] = [];
-  /** 当前块累计 token（按各完整消息 seqs 的派生消息估算合计）。 */
-  let currentTokens = 0;
-  for (const cm of cms) {
-    /** 当前完整消息的 token 估算（其全部表层 seqs 的派生消息估算之和）。 */
-    let cmTokens = 0;
-    for (const seq of cm.seqs) {
-      /** 表层事件（seq 缺失跳过）。 */
-      const event = session.events[seq];
-      /** 派生消息（用于 token 估算）。 */
-      const message = event ? session.deriveEventMessage(event) : null;
-      if (message) cmTokens += estimateMessage(message as M);
-    }
-    // 当前块非空且加入本条会超界 → 先切块（完整消息不跨块）
-    if (current.length > 0 && currentTokens + cmTokens > tokenBoundary) {
-      chunks.push(current);
-      current = [];
-      currentTokens = 0;
-    }
-    current.push(cm);
-    currentTokens += cmTokens;
-  }
-  if (current.length > 0) chunks.push(current);
-  return chunks;
-}
-
-/**
- * 合并分块摘要为单个 <history> 块（最终装配点）：剥离各块的 <history> 开/闭标签
- * （保留块内全部内容），以统一的开标签（带 tip 属性）与闭标签包裹拼接，块顶插入一条
- * 格式说明注释（HISTORY_FORMAT_NOTE）——tip 与注释都属于最终装配，chunk 阶段的块
- * （decorate=false 的中间产物）不带；防御性剥离各块内层已有的注释避免重复。
- * 各块内层清除首尾空白后逐块单换行拼接（不引入多余空行，连续多行空行压成单个空行）。
- */
-export function mergeChunkReports(parts: readonly string[]): string {
-  /** 各块内层内容（剥离外壳失败时原样保留该块文本）。 */
-  const inners: string[] = [];
-  for (const part of parts) {
-    /** 首个 <history 开标签位置。 */
-    const open = part.indexOf(`<${HISTORY_TAG}`);
-    /** 开标签右括号位置。 */
-    const gt = open === -1 ? -1 : part.indexOf('>', open);
-    /** 最后一个 </history> 闭标签位置。 */
-    const close = part.lastIndexOf(`</${HISTORY_TAG}>`);
-    /** 块内层（外壳不完整时退回整块文本）。 */
-    const inner =
-      open === -1 || gt === -1 || close === -1 || close <= gt ? part : part.slice(gt + 1, close);
-    inners.push(
-      inner
-        /* 防御性剥离各块内层已有的格式说明注释（chunk 阶段已不添加，避免重复） */
-        .split(HISTORY_FORMAT_NOTE)
-        .join('')
-        /* 连续多行空行压成单个空行（条目内单个空行保留） */
-        .replace(/\n{3,}/g, '\n\n')
-        .trim(),
-    );
-  }
-  /** 拼接正文（全部为空时省略，避免块顶注释后出现空行）。 */
-  const body = inners.filter((s) => s.length > 0).join('\n');
-  return `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${HISTORY_FORMAT_NOTE}${body.length > 0 ? `\n${body}` : ''}\n</${HISTORY_TAG}>`;
-}
-
-/** 合并多块摘要的 token usage（同名数字字段求和；全部为空返回 undefined）。 */
-function mergeUsage(usages: readonly TokenUsage[]): TokenUsage | undefined {
-  if (usages.length === 0) return undefined;
-  /** 合并结果（必填字段从 0 起累加）。 */
-  const out: TokenUsage = { inputTokens: 0, outputTokens: 0 };
-  for (const u of usages) {
-    out.inputTokens += u.inputTokens;
-    out.outputTokens += u.outputTokens;
-    if (u.cacheReadTokens !== undefined) {
-      out.cacheReadTokens = (out.cacheReadTokens ?? 0) + u.cacheReadTokens;
-    }
-    if (u.cacheWriteTokens !== undefined) {
-      out.cacheWriteTokens = (out.cacheWriteTokens ?? 0) + u.cacheWriteTokens;
-    }
-    if (u.reasoningTokens !== undefined) {
-      out.reasoningTokens = (out.reasoningTokens ?? 0) + u.reasoningTokens;
-    }
-  }
-  return out;
-}
-
 /**
  * 反思输入块引用的最大完整消息 index（解析全部条目取最大 end；无条目返回 -1）。
  * 反思输出必须覆盖输入引用的完整 index 区间（0..max），连续性校验据此约束。
@@ -644,18 +520,10 @@ export async function observePass(
   logger.step(
     `观察：保留旧块 ${blocks.length} 条，替换新消息 [${replaceSeqs[0]}..${range.end}]（${replaceSeqs.length} 条），尾部保留 ${tailCount} 条（不压缩、不进日志），新消息 index ${startIndex}..${endIndex}`,
   );
-  /** 按 observeChunkTokens 边界把完整消息分块（完整消息不跨块；每块独立并行压缩）。 */
-  const chunks = chunkCompleteMessages(
-    session,
-    inRangeCms,
-    config.observeChunkTokens,
-    (message: Parameters<typeof ctx.tokenMeter.estimateMessage>[0]) =>
-      ctx.tokenMeter.estimateMessage(message),
-  );
-  logger.step(
-    `观察：${inRangeCms.length} 条完整消息按 ${config.observeChunkTokens} tokens 边界分为 ${chunks.length} 块` +
-      `（最多 ${config.observeChunkParallelism} 块并行，每块摘要 maxTokens ${config.observeChunkMaxTokens}，除最后一块外要求简单摘要）`,
-  );
+  /** 共享提示词（观察/反思同一套）。 */
+  const instruction = buildHistoryPrompt();
+  /** 渲染输入：本次要压缩的完整消息（合法 <history> 块，含绝对 index；不含尾部；系统消息渲染为 <sys> 空块）。 */
+  const contextText = renderMessages(session, replaceSeqs);
   /** 本次压缩生命周期（compactionId + 当前轮次；start 在摘要调用前开启，UI 压缩中提示）。 */
   const lifecycle: CompactionLifecycle = {
     compactionId: newCompactionId(),
@@ -670,46 +538,24 @@ export async function observePass(
     logger.warn(`观察压缩启动失败: ${message}`);
     return;
   }
-  /** 各块摘要结果（有界并发池，最多 observeChunkParallelism 块同时进行；null = 该块失败；结果按块顺序）。 */
-  const chunkResults = await runWithConcurrency(
-    chunks,
-    config.observeChunkParallelism,
-    async (chunk, index) => {
-      /** 是否为最后一块（唯一要求「越往后越细」的块；其余块要求简单摘要）。 */
-      const isLast = index === chunks.length - 1;
-      /** 该块提示词（较早块简单摘要；最后一块越往后越细）。 */
-      const instruction = buildHistoryPrompt(isLast ? 'detailed' : 'summary');
-      /** 该块渲染输入（块内完整消息的 seqs；合法 <history> 块，含绝对 index）。 */
-      const contextText = renderMessages(
-        session,
-        chunk.flatMap((cm) => cm.seqs),
-      );
-      /** 该块覆盖的完整消息 index 区间（连续性校验预期）。 */
-      const start = chunk[0]?.index ?? 0;
-      const end = chunk[chunk.length - 1]?.index ?? start;
-      return runSummarySubagent(
-        ctx,
-        agent,
-        instruction,
-        contextText,
-        config.observeChunkMaxTokens,
-        target,
-        config.debug,
-        signal,
-        {
-          maxAttempts: config.compressRetryCount + 1,
-          expected: { start, end },
-          rateLimitWaitMs: config.rateLimitWaitMs,
-          // chunk 中间产物不加工：tip 与格式说明注释由 mergeChunkReports 最终装配统一添加
-          decorate: false,
-        },
-      );
+  /** 观察摘要结果（null 表示失败/跳过）。 */
+  const summaryResult = await runSummarySubagent(
+    ctx,
+    agent,
+    instruction,
+    contextText,
+    config.compressMaxTokens,
+    target,
+    config.debug,
+    signal,
+    {
+      maxAttempts: config.compressRetryCount + 1,
+      expected: { start: startIndex, end: endIndex },
+      rateLimitWaitMs: config.rateLimitWaitMs,
     },
   );
-  /** 失败块（null 或空输出；任一失败则整体失败，不产生部分替换）。 */
-  const failed = chunkResults.find((r) => r === null || r.text.trim().length === 0);
-  if (failed !== undefined) {
-    logger.step('观察：分块摘要存在失败/无输出，不产生部分替换，追加 compaction/end(error)');
+  if (summaryResult === null || summaryResult.text.trim().length === 0) {
+    logger.step('观察：摘要调用失败/无输出，追加 compaction/end(error)');
     try {
       appendCompactionEnd(session, lifecycle, '摘要调用失败/无输出');
     } catch {
@@ -717,16 +563,12 @@ export async function observePass(
     }
     return;
   }
-  /** 成功结果（上方已排除 null/空输出；每块已独立校验并规范化）。 */
-  const okResults = chunkResults as SummarySubagentResult[];
-  /** 合并各块摘要为单个带 tip 的 <history> 块（剥离各块外壳拼接内层；不再整体校验）。 */
-  const report = mergeChunkReports(okResults.map((r) => r.text));
-  /** 重试次数合计（各块重试次数之和；每块重试次数 = 该块成功尝试次数 - 1）。 */
-  const attemptCount = okResults.reduce((sum, r) => sum + (r.attemptCount - 1), 0);
-  /** token usage 合计（各块求和；全部缺省为 undefined）。 */
-  const usage = mergeUsage(
-    okResults.map((r) => r.usage).filter((u): u is TokenUsage => u !== undefined),
-  );
+  /** 观察摘要文本（独立新块；旧块保留，不再合并）。 */
+  const report = summaryResult.text;
+  /** 摘要重试次数（0 起；首次尝试即成功为 0）。 */
+  const attemptCount = summaryResult.attemptCount - 1;
+  /** 摘要 token usage（归入主会话记录；无则省略）。 */
+  const usage = summaryResult.usage;
   /** 被替换表层节点的 token 估算合计（仅新消息区间）。 */
   const shadowedTokenCount = replaceSeqs.reduce((total, seq) => {
     /** 当前表层事件。 */
@@ -755,7 +597,7 @@ export async function observePass(
       shadowedCharCount,
       provider: target.provider,
       model: target.model,
-      maxTokens: config.observeChunkMaxTokens,
+      maxTokens: config.compressMaxTokens,
       attemptCount,
       ...(usage === undefined ? {} : { usage }),
     });
