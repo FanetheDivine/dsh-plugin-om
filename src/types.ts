@@ -10,12 +10,18 @@ import type { Context, EventOptions, Events } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { CompactionId } from '@deepseek-ai/dsh-compaction';
 import type { ToolResultPruner } from '@deepseek-ai/dsh-compaction-tool-result-pruner';
-import type { Message, TokenUsage, UserMessage } from '@deepseek-ai/dsh-llm';
+import type {
+  ContentBlock,
+  ImageBlock,
+  Message,
+  TokenUsage,
+  UserMessage,
+} from '@deepseek-ai/dsh-llm';
 import type { Session, SessionEvent, SessionEventMap } from '@deepseek-ai/dsh-session';
 import type { SubagentResult, SubagentRun, SubagentStartRequest } from '@deepseek-ai/dsh-subagent';
 import type { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import type { TokenMeter } from '@deepseek-ai/dsh-token-meter';
-import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools';
+import type { JsonSchemaNode, ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools';
 
 /** 插件配置类型（来自 config.ts，供外部 preset 与类型使用者引用）。 */
 export type { PluginConfig } from './config.ts';
@@ -27,9 +33,12 @@ export type { PluginConfig } from './config.ts';
 export type {
   Agent,
   CompactionId,
+  ContentBlock,
   Context,
   EventOptions,
   Events,
+  ImageBlock,
+  JsonSchemaNode,
   Message,
   Session,
   SessionEvent,
