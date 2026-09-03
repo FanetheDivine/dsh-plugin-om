@@ -159,7 +159,7 @@ export function estimateTextTokens(text: unknown) {
   return Math.ceil(String(text ?? '').length / 4);
 }
 
-export function makeMeter() {
+export function makeMeter(opts: { totalTokens?: number | undefined } = {}) {
   return {
     estimateMessage(message: unknown) {
       const m = message as { content?: unknown[] } | null | undefined;
@@ -181,7 +181,8 @@ export function makeMeter() {
         surfaceTokens += tokens;
         nodes.push({ seq, tokens });
       }
-      return { totalTokens: surfaceTokens, surfaceTokens, nodes };
+      // totalTokens 可注入固定值模拟 provider 真实 usage 锚定；缺省回退表层启发式
+      return { totalTokens: opts.totalTokens ?? surfaceTokens, surfaceTokens, nodes };
     },
   };
 }
@@ -196,6 +197,8 @@ interface MockCtxOptions {
   ) => Iterable<unknown> | AsyncIterable<unknown>;
   resolveModelInfo?: (provider: string, model: string) => Promise<unknown>;
   pruner?: unknown;
+  /** meter.measure 返回的固定 totalTokens（模拟 provider 真实 usage；缺省回退表层启发式）。 */
+  meterTotalTokens?: number;
 }
 
 /** 可编程 ctx 模拟（回调由测试注入）。 */
@@ -204,6 +207,7 @@ export function makeCtx({
   llmStreamFactory,
   resolveModelInfo,
   pruner,
+  meterTotalTokens,
 }: MockCtxOptions = {}) {
   const onCallbacks = new Map<string, ((...args: unknown[]) => unknown)[]>();
   const registeredTools: unknown[] = [];
@@ -223,7 +227,7 @@ export function makeCtx({
       loggerCalls.push({ level: 'warn', args });
     },
   };
-  const meter = makeMeter();
+  const meter = makeMeter({ totalTokens: meterTotalTokens });
   const ctx = {
     logger,
     tools: {

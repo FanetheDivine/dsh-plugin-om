@@ -16,7 +16,6 @@ import {
   estimateTextTokens,
   historySection,
   isPairBalancedAfter,
-  measureUncompressedTokens,
 } from '../src/compress.ts';
 import { resolveConfig } from '../src/config.ts';
 import {
@@ -54,7 +53,6 @@ import {
   buildToolCallFlow,
   makeCtx,
   makeMessage,
-  makeMeter,
   makeSession,
   textBlock,
   toolCallBlock,
@@ -596,80 +594,73 @@ describe('token 估算 estimateTextTokens', () => {
   });
 });
 
-describe('未压缩消息测量 measureUncompressedTokens', () => {
-  it('表层节点合计，不含 <history> 摘要节点', () => {
-    const flow = buildToolCallFlow({
-      code: 'a()',
-      description: '任务A',
-      callId: 'c1',
-      resultText: 'r1',
-    });
-    const plain = makeSession({ events: flow });
-    const withHistory = makeSession({ events: [historyMessage('旧任务'), ...flow] });
-    const meter = makeMeter();
-    expect(measureUncompressedTokens(plain, meter)).toBeGreaterThan(0);
-    expect(measureUncompressedTokens(withHistory, meter)).toBe(
-      measureUncompressedTokens(plain, meter),
-    ); // 摘要节点不计入未压缩消息
-  });
+describe('观察触发：上下文压力口径（ctx.tokenMeter.measure）', () => {
+  /** 运行 pre-step 监听器。 */
+  async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
+    const listeners = ctx._onCallbacks.get('agent/pre-step');
+    await listeners?.[0]?.({ agent: { session }, signal: new AbortController().signal }, () => {});
+  }
 
-  it('空表层为 0', () => {
-    expect(measureUncompressedTokens(makeSession(), makeMeter())).toBe(0);
-  });
+  /** 固定观察报告（覆盖夹具完整消息 index 区间）。 */
+  const observeReport = [
+    '<history>',
+    '<user_message index="0">ok</user_message>',
+    '<assistant start="1" end="2">toolcall index:2 purpose:任务A summary:完成</assistant>',
+    '</history>',
+  ].join('\n');
 
-  it('系统消息（非 kind:user 的 user_message，如宿主注入上下文）不计入未压缩消息', () => {
-    const events = [
-      {
-        type: 'user/message',
-        data: makeMessage({
-          content: [textBlock('宿主注入的工作区指令，很长的一段说明')],
-          source: { kind: 'agent-instructions' },
-          id: 'sys-1',
-        }),
-      } as unknown as SessionEvent,
-      {
-        type: 'user/message',
-        data: makeMessage({ content: [textBlock('真正的用户请求')], id: 'u-1' }),
-      } as unknown as SessionEvent,
-    ];
-    const session = makeSession({ events });
-    const meter = makeMeter();
-    // 仅 kind:user 的用户消息计入；系统消息整条跳过
-    expect(measureUncompressedTokens(session, meter)).toBe(estimateTextTokens('真正的用户请求'));
-  });
-
-  it('整条仅为系统消息时测量为 0', () => {
+  it('压力取 measure().totalTokens：真实 usage 远大于表层启发式时也触发', async () => {
     const session = makeSession({
-      events: [
-        {
-          type: 'user/message',
-          data: makeMessage({
-            content: [textBlock('<system-reminder>\nnotice\n</system-reminder>')],
-            source: { kind: 'agent-instructions' },
-            id: 'sys-only',
-          }),
-        } as unknown as SessionEvent,
-      ],
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
     });
-    expect(measureUncompressedTokens(session, makeMeter())).toBe(0);
+    const ctx = makeCtx({
+      meterTotalTokens: 500000,
+      llmStream: [{ type: 'text-delta', text: observeReport }],
+    });
+    apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
+    await runPreStep(ctx, session);
+    // 表层启发式远小于阈值，但注入的真实压力 500000 ≥ 100000 → 触发观察压缩
+    expect(ctx._llmCalls).toHaveLength(1);
   });
 
-  it('用户消息中的 <system-reminder> 文本仍计入未压缩消息（不再特殊扣除）', () => {
+  it('压力低于阈值跳过（日志说明上下文压力）', async () => {
     const session = makeSession({
-      events: [
-        {
-          type: 'user/message',
-          data: makeMessage({
-            content: [textBlock('<system-reminder>\nworkspace instructions\n</system-reminder>')],
-            id: 'u-sr',
-          }),
-        } as unknown as SessionEvent,
-      ],
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
     });
-    const meter = makeMeter();
-    expect(measureUncompressedTokens(session, meter)).toBe(
-      estimateTextTokens('<system-reminder>\nworkspace instructions\n</system-reminder>'),
-    );
+    const ctx = makeCtx({ meterTotalTokens: 50 });
+    apply(ctx, { observeThresholdTokens: 100000 });
+    await runPreStep(ctx, session);
+    expect(ctx._llmCalls).toHaveLength(0);
+    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
+    expect(steps.some((s) => s.includes('上下文压力 50 tokens < 阈值 100000'))).toBe(true);
+  });
+
+  it('meter 未注入真实 usage 时回退表层启发式（totalTokens = surfaceTokens）', async () => {
+    const session = makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
+    });
+    const ctx = makeCtx({ llmStream: [{ type: 'text-delta', text: observeReport }] });
+    apply(ctx, { observeThresholdTokens: 1, tailMessageCount: 0 });
+    await runPreStep(ctx, session);
+    expect(ctx._llmCalls).toHaveLength(1);
   });
 });
 
@@ -872,31 +863,6 @@ describe('压缩边界 historySection', () => {
     });
     expect(historySection(pluginNoTag).blocks).toEqual([]);
     expect(historySection(pluginNoTag).boundarySeq).toBeUndefined();
-  });
-
-  it('D：measureUncompressedTokens 只计最后一个 history 块之后的节点', () => {
-    const fake = makeSession({
-      events: [
-        {
-          type: 'user/message',
-          data: makeMessage({
-            content: [textBlock('请解释一下 <history> 标签的含义')],
-            id: 'user-fake',
-          }),
-        } as unknown as SessionEvent,
-      ],
-    });
-    const historyOnly = makeSession({ events: [historyMessage('旧任务')] });
-    expect(measureUncompressedTokens(fake, makeMeter())).toBeGreaterThan(0);
-    expect(measureUncompressedTokens(historyOnly, makeMeter())).toBe(0); // 边界后无节点
-    // 边界后的普通消息计入未压缩
-    const stray = makeSession({
-      events: [
-        historyMessage('旧任务'),
-        ...buildToolCallFlow({ code: 'a()', description: '任务A', callId: 'c1', resultText: 'r1' }),
-      ],
-    });
-    expect(measureUncompressedTokens(stray, makeMeter())).toBeGreaterThan(0);
   });
 });
 
@@ -1470,7 +1436,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     const session = makeSession({
       events: [historyMessage('user_message message_id:old-u text:旧任务'), ...flowEvents],
     });
-    // 观察阈值 1 tokens ≤ 未压缩 6 tokens（触发）；反思阈值 1000 > 旧摘要
+    // 观察阈值 1 tokens ≤ 上下文压力（触发）；反思阈值 1000 > 旧摘要
     // （含 tip 开标签约 26 tokens，不触发）——隔离观察路径验证增量追加
     const ctx = observeCtx(
       '<history>\n<user_message index="0">\n新内容\n</user_message>\n</history>',
@@ -1822,7 +1788,7 @@ describe('apply 接线（OM 反思压缩）', () => {
 
   it('摘要超反思阈值：摘要调用精简合并并把整个块区段替换为一条', async () => {
     // 单块摘要（X*40 + tip 标签约 26 tokens）；反思阈值 1 → 触发反思；
-    // 表层节点数 < tailMessageCount（默认 10）→ 观察不触发（观察阈值保持默认 100000）
+    // 上下文压力远小于观察阈值（保持默认 100000）→ 观察不触发
     const session = makeSession({
       events: [
         historyMessage('X'.repeat(40)),
@@ -1895,7 +1861,7 @@ describe('apply 接线（OM 反思压缩）', () => {
   });
 
   it('先反思后观察串行：反思合并旧块，观察在其后追加独立新块', async () => {
-    // 反思阈值 1（摘要约 13 tokens ✓）、观察阈值 1（未压缩 6 tokens ✓）均触发
+    // 反思阈值 1（摘要约 13 tokens ✓）、观察阈值 1（上下文压力 ✓）均触发
     const session = makeSession({
       events: [
         historyMessage('X'.repeat(40)),
