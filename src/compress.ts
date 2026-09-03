@@ -33,6 +33,7 @@ import { indexCompleteMessages } from './log-index.ts';
 import { makeLogger } from './logger.ts';
 import {
   buildHistoryPrompt,
+  HISTORY_FORMAT_NOTE,
   parseHistoryEntries,
   renderMessages,
   runSummarySubagent,
@@ -129,8 +130,11 @@ export function chunkCompleteMessages<M>(
 }
 
 /**
- * 合并分块摘要为单个 <history> 块：剥离各块的 <history> 开/闭标签（保留块内全部内容），
- * 以统一的开标签（带 tip 属性）与闭标签包裹拼接。块内内容原样保留（含格式说明注释）。
+ * 合并分块摘要为单个 <history> 块（最终装配点）：剥离各块的 <history> 开/闭标签
+ * （保留块内全部内容），以统一的开标签（带 tip 属性）与闭标签包裹拼接，块顶插入一条
+ * 格式说明注释（HISTORY_FORMAT_NOTE）——tip 与注释都属于最终装配，chunk 阶段的块
+ * （decorate=false 的中间产物）不带；防御性剥离各块内层已有的注释避免重复。
+ * 各块内层清除首尾空白后逐块单换行拼接（不引入多余空行，连续多行空行压成单个空行）。
  */
 export function mergeChunkReports(parts: readonly string[]): string {
   /** 各块内层内容（剥离外壳失败时原样保留该块文本）。 */
@@ -142,13 +146,22 @@ export function mergeChunkReports(parts: readonly string[]): string {
     const gt = open === -1 ? -1 : part.indexOf('>', open);
     /** 最后一个 </history> 闭标签位置。 */
     const close = part.lastIndexOf(`</${HISTORY_TAG}>`);
-    if (open === -1 || gt === -1 || close === -1 || close <= gt) {
-      inners.push(part);
-      continue;
-    }
-    inners.push(part.slice(gt + 1, close));
+    /** 块内层（外壳不完整时退回整块文本）。 */
+    const inner =
+      open === -1 || gt === -1 || close === -1 || close <= gt ? part : part.slice(gt + 1, close);
+    inners.push(
+      inner
+        /* 防御性剥离各块内层已有的格式说明注释（chunk 阶段已不添加，避免重复） */
+        .split(HISTORY_FORMAT_NOTE)
+        .join('')
+        /* 连续多行空行压成单个空行（条目内单个空行保留） */
+        .replace(/\n{3,}/g, '\n\n')
+        .trim(),
+    );
   }
-  return `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${inners.join('\n').trim()}\n</${HISTORY_TAG}>`;
+  /** 拼接正文（全部为空时省略，避免块顶注释后出现空行）。 */
+  const body = inners.filter((s) => s.length > 0).join('\n');
+  return `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${HISTORY_FORMAT_NOTE}${body.length > 0 ? `\n${body}` : ''}\n</${HISTORY_TAG}>`;
 }
 
 /** 合并多块摘要的 token usage（同名数字字段求和；全部为空返回 undefined）。 */
@@ -676,6 +689,8 @@ export async function observePass(
           maxAttempts: config.compressRetryCount + 1,
           expected: { start, end },
           rateLimitWaitMs: config.rateLimitWaitMs,
+          // chunk 中间产物不加工：tip 与格式说明注释由 mergeChunkReports 最终装配统一添加
+          decorate: false,
         },
       );
     },
