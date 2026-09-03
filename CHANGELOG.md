@@ -10,5 +10,6 @@
 
 ### Changed
 
+- 观察阈值（`observeThresholdTokens`）默认改为 45000 tokens、反思阈值（`reflectThresholdTokens`）默认改为 120000 tokens
 - 摘要生成上限（`compressMaxTokens`）默认改为不设置——默认不向摘要请求发送 `maxTokens`，由模型适配器默认值决定；显式配置整数时按原样生效，载荷与日志中该字段省略/显示为未设置
 - `.dsh/skills/dsh-plugin-coding/SKILL.md`：验收通过并创建 PR 后，待 PR 创建成功且所有检查通过，以压缩（squash）方式将 PR 合并到 `main`，随后删除远程分支与本地分支，并在主工作区执行 `git pull`

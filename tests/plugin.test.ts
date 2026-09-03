@@ -144,10 +144,10 @@ function twoCallFlow(): SessionEvent[] {
 }
 
 describe('配置校验 resolveConfig', () => {
-  it('默认值正确（观察阈值 35000 tokens、反思阈值 40000 tokens）', () => {
+  it('默认值正确（观察阈值 45000 tokens、反思阈值 120000 tokens）', () => {
     const d = resolveConfig({});
-    expect(d.observeThresholdTokens).toBe(35000);
-    expect(d.reflectThresholdTokens).toBe(40000);
+    expect(d.observeThresholdTokens).toBe(45000);
+    expect(d.reflectThresholdTokens).toBe(120000);
     expect(d.compressMaxTokens).toBeUndefined(); // 默认不设置 maxTokens
     expect(d.tailMessageCount).toBe(5);
     expect(d.compressRetryCount).toBe(5); // 失败后最大重试次数（不含首次）
@@ -197,8 +197,8 @@ describe('配置校验 resolveConfig', () => {
     const empty = [undefined, null, '', '   '];
     for (const raw of empty) {
       const d = resolveConfig(raw);
-      expect(d.observeThresholdTokens).toBe(35000);
-      expect(d.reflectThresholdTokens).toBe(40000);
+      expect(d.observeThresholdTokens).toBe(45000);
+      expect(d.reflectThresholdTokens).toBe(120000);
       expect(d.compressMaxTokens).toBeUndefined();
       expect(d.tailMessageCount).toBe(5);
       expect(d.compressRetryCount).toBe(5);
@@ -209,13 +209,13 @@ describe('配置校验 resolveConfig', () => {
   });
 
   it('单项留空（null/空串/undefined）该键用默认值，其余覆盖项仍生效', () => {
-    expect(resolveConfig({ observeThresholdTokens: null }).observeThresholdTokens).toBe(35000);
-    expect(resolveConfig({ observeThresholdTokens: '' }).observeThresholdTokens).toBe(35000);
+    expect(resolveConfig({ observeThresholdTokens: null }).observeThresholdTokens).toBe(45000);
+    expect(resolveConfig({ observeThresholdTokens: '' }).observeThresholdTokens).toBe(45000);
     const mixed = resolveConfig({
       observeThresholdTokens: undefined,
       reflectThresholdTokens: 3000,
     });
-    expect(mixed.observeThresholdTokens).toBe(35000);
+    expect(mixed.observeThresholdTokens).toBe(45000);
     expect(mixed.reflectThresholdTokens).toBe(3000);
     const mixed2 = resolveConfig({ compressMaxTokens: null, tailMessageCount: 3 });
     expect(mixed2.compressMaxTokens).toBeUndefined();
@@ -231,9 +231,9 @@ describe('配置校验 resolveConfig', () => {
     expect(resolveConfig({ reflectThresholdTokens: 0 }).reflectThresholdTokens).toBe(0);
     expect(resolveConfig({ reflectThresholdTokens: 2 }).reflectThresholdTokens).toBe(2);
     expect(resolveConfig({ compressMaxTokens: 0 }).compressMaxTokens).toBe(0);
-    expect(resolveConfig({ observeThresholdTokens: '0.5' }).observeThresholdTokens).toBe(35000); // 非数值回退默认
-    expect(resolveConfig({ observeThresholdTokens: 2.5 }).observeThresholdTokens).toBe(35000); // 非整数回退默认
-    expect(resolveConfig({ reflectThresholdTokens: 2.5 }).reflectThresholdTokens).toBe(40000); // 非整数回退默认
+    expect(resolveConfig({ observeThresholdTokens: '0.5' }).observeThresholdTokens).toBe(45000); // 非数值回退默认
+    expect(resolveConfig({ observeThresholdTokens: 2.5 }).observeThresholdTokens).toBe(45000); // 非整数回退默认
+    expect(resolveConfig({ reflectThresholdTokens: 2.5 }).reflectThresholdTokens).toBe(120000); // 非整数回退默认
     expect(resolveConfig({ compressMaxTokens: 2.5 }).compressMaxTokens).toBeUndefined(); // 非整数视为未设置
     // 全部未知键被忽略 → 结果等于默认配置
     expect(
@@ -1680,7 +1680,7 @@ describe('apply 接线（OM 观察压缩）', () => {
       }),
     });
     const ctx = makeCtx({});
-    apply(ctx, {}); // 默认观察阈值 35000 tokens，未达不压缩
+    apply(ctx, {}); // 默认观察阈值 45000 tokens，未达不压缩
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(0);
     expect(latestHistoryText(session)).toBe('');
@@ -1982,7 +1982,7 @@ describe('apply 接线（OM 反思压缩）', () => {
 
   it('摘要超反思阈值：摘要调用精简合并并把整个块区段替换为一条', async () => {
     // 单块摘要（X*40 + tip 标签约 26 tokens）；反思阈值 1 → 触发反思；
-    // 上下文压力远小于观察阈值（保持默认 35000）→ 观察不触发
+    // 上下文压力远小于观察阈值（保持默认 45000）→ 观察不触发
     const session = makeSession({
       events: [
         historyMessage('X'.repeat(40)),
