@@ -18,7 +18,7 @@ export const HISTORY_TIP = '当前块是历史消息的压缩产物，不要复�
  * 完整消息是摘要日志与 recall 共用的定位单位；首条 index 为 0，按会话顺序递增、全局稳定。
  */
 export const COMPLETE_MESSAGE_DEFINITION =
-  '`完整消息`被定义为`用户消息`，`系统消息`，`模型输出文本`和`具有result的toolcall`的集合。首条`完整消息`的index是0，后续的index递增。';
+  '`完整消息`指一条`用户消息`、`系统消息`、`模型输出文本`或`具有result的toolcall`；首条 index 为 0，按会话顺序递增。';
 
 /** 旧日志压缩消息的宿主 checkpoint 标记 plugin 名（历史兼容识别用）。 */
 export const COMPACT_CHECKPOINT_PLUGIN = 'compact';

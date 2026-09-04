@@ -35,27 +35,18 @@ export const semanticRecallArgsSchema = z
     query: z
       .string()
       .describe(
-        '描述要找的内容的自然语言 query（可混用中英文与代码术语，如 "修复 retry backoff 的逻辑"），不能为空。',
+        '要找的内容的自然语言 query（中英文与代码术语皆可，如 "修复 retry backoff 的逻辑"），不能为空。',
       ),
-    top_k: z
-      .number()
-      .int()
-      .min(1)
-      .max(10)
-      .optional()
-      .describe('返回最匹配的完整消息条数（1-10，默认 3）。'),
+    top_k: z.number().int().min(1).max(10).optional().describe('返回最匹配条数（1-10，默认 3）。'),
     start: z
       .number()
       .optional()
-      .describe('完整消息序号（index），可选。作为基准边界，和end或offset配合，指定搜索区间。'),
-    end: z
-      .number()
-      .optional()
-      .describe('必须和start配合使用，与 offset 互斥，指定搜索区间的另一个边界。'),
+      .describe('完整消息 index，基准边界，与 end/offset 配合指定搜索区间；缺省检索全部。'),
+    end: z.number().optional().describe('须与 start 配合，与 offset 互斥，指定搜索区间另一边界。'),
     offset: z
       .number()
       .optional()
-      .describe('必须和start配合使用，与 end 互斥。相对 start 的步数：正数向后、负数向前。'),
+      .describe('须与 start 配合，与 end 互斥，相对 start 的步数（正向后、负向前）。'),
   })
   .refine((args) => args.query.trim().length > 0, {
     message: 'query 不能为空',
@@ -147,7 +138,7 @@ export function buildSemanticRecallTool(options?: {
   const embed: EmbedFn = options?.embedder ?? ((texts) => getEmbedder().then((fn) => fn(texts)));
   return {
     name: 'recall-semantic',
-    description: `${COMPLETE_MESSAGE_DEFINITION}此工具可以按自然语言含义，检索最符合的完整消息。默认在全消息范围搜索，可以指定区间。注意：语义检索只匹配文本，图片内容不参与匹配（纯图片消息无法命中，也不能按图片内容检索）；命中的完整消息携带的图片附件随结果保留（文本段以 [图片附件：…] 标注，随后附 image 内容块），与 recall 相同。`,
+    description: `${COMPLETE_MESSAGE_DEFINITION}按自然语言含义检索最符合的完整消息，默认全量搜索，可指定区间。注意：只匹配文本。`,
     parameters: parametersFromZod(semanticRecallArgsSchema),
     output: {
       schema: RECALL_OUTPUT_SCHEMA,

@@ -1090,50 +1090,35 @@ describe('共享提示词 buildHistoryPrompt（观察/反思同一套）', () =>
   it('定义 history 块 / 完整消息定义串 / 压缩要求（a-f）/ 输出格式 / 数据源', () => {
     const prompt = buildHistoryPrompt();
     // 任务声明：压缩下方 <history> 记录
-    expect(prompt).toContain('压缩为一份更紧凑的 <history> 压缩日志');
+    expect(prompt).toContain('压缩 <history> 消息记录。你应当输出**单个**合法的 <history> 块');
     expect(prompt).not.toContain('停止一切现有任务');
-    // a. 模型消息 + index 的表达形式（输入与输出都是合法 <history> 块）
-    expect(prompt).toContain('输入与输出都是合法的 <history> 块');
-    expect(prompt).toContain('「模型消息 + index」的表达形式');
-    // 完整消息定义串（与 recall 工具共用）
-    expect(prompt).toContain(COMPLETE_MESSAGE_DEFINITION);
-    expect(prompt).toContain('用户消息');
-    expect(prompt).toContain('模型输出文本');
-    expect(prompt).toContain('具有result的toolcall');
-    expect(prompt).toContain('首条`完整消息`的index是0');
-    // 条目标签语义
-    expect(prompt).toContain('<user_message index="N">');
-    expect(prompt).toContain('<reasoning>');
-    expect(prompt).toContain('<assistant index="N">');
-    expect(prompt).toContain('<assistant start="A" end="B">');
-    // 系统消息条目（<sys> 空块：type=kind、index；块中为空）
-    expect(prompt).toContain('<sys type="(kind)" index="N">');
-    expect(prompt).toContain('系统消息');
-    expect(prompt).toContain('块中为空');
-    // b. 要求压缩
-    expect(prompt).toContain('把下方的 <history> 消息记录压缩');
-    // c. 完整保留用户消息
-    expect(prompt).toContain('完整保留用户消息');
-    expect(prompt).toContain('逐条保留原文，不概括、不省略');
-    // d. reasoning 仅参考，产物中没有
+    // history 块定义（条目标签语义）
+    expect(prompt).toContain('<history> 是历史消息的记录块');
+    expect(prompt).toContain('<user_message index="N">：用户消息条目');
+    expect(prompt).toContain('<sys type="(kind)" index="N">：系统消息条目');
+    expect(prompt).toContain('<reasoning>：模型的思考过程，仅作压缩参考，产物中不要出现');
+    expect(prompt).toContain('<assistant index="N">：单条完整消息');
+    expect(prompt).toContain('<assistant start="A" end="B">：多条连续完整消息聚合的模块');
+    // 压缩要求：用户/系统条目从输入逐条保留（含 XML 转义形式，不解码）
+    expect(prompt).toContain('条目从输入中逐条保留，不做任何处理');
     expect(prompt).toContain('<reasoning> 只作参考，输出产物中不包含 <reasoning> 块');
-    // e. 具有关联性的 assistant 块合并
+    // 具有关联性的 assistant 块合并
     expect(prompt).toContain('将具有关联性的 <assistant> 消息');
     expect(prompt).toContain('目的、行为与结果');
     expect(prompt).toContain('合并简写');
     expect(prompt).toContain('内在逻辑连贯性');
     // 单条重要消息单独呈现
     expect(prompt).toContain('单条重要的完整消息以 <assistant index=""> 单独呈现');
-    // f. index/start/end 必须连续
+    // index/start/end 必须连续
     expect(prompt).toContain('index/start/end 必须连续');
     expect(prompt).toContain('不跳号、不重叠、不遗漏');
     // 输出格式：一个合法 <history> 块（无 reasoning），含 <sys> 空块示例
-    expect(prompt).toContain('只输出一个 <history> 包裹的合法 XML 日志块');
+    expect(prompt).toContain('【输出格式】输出单个合法的 <history> 块，**不包含其他任何内容**');
     expect(prompt).toContain('<user_message index="(index)">');
     expect(prompt).toContain('<sys type="(kind)" index="(index)"></sys>');
     expect(prompt).toContain('<assistant start="(起始 index)" end="(结束 index)">');
     expect(prompt).toContain('<assistant index="(index)">');
-    // 数据源说明（先定义块、要求压缩、再给出数据源）
+    // 数据源说明
     expect(prompt).toContain('【数据源】下方的 <history> 消息记录是本次要压缩的全部消息');
     expect(prompt).not.toContain('message_id');
     expect(prompt).not.toContain('[interrupted]');
@@ -3048,8 +3033,10 @@ describe('recall 工具', () => {
     expect(problems.length).toBeGreaterThan(0);
   });
 
-  it('描述说明图片随结果保留', () => {
-    expect(buildRecallTool().description).toContain('图片附件随结果保留');
+  it('描述说明按 index 区间返回', () => {
+    expect(buildRecallTool().description).toContain(
+      '按 index 区间精确返回区间内全部完整消息的内容',
+    );
   });
 });
 
@@ -3490,7 +3477,6 @@ describe('recall-semantic 工具', () => {
   it('命中消息携带图片时随结果输出；描述注明只匹配文本', async () => {
     const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
     expect(tool.description).toContain('只匹配文本');
-    expect(tool.description).toContain('图片内容不参与匹配');
     const events = [
       {
         type: 'user/message',

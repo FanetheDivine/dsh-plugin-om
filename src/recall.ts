@@ -29,10 +29,10 @@ export const recallArgsSchema = z
     start: z
       .number()
       .describe(
-        '完整消息序号（index），作为基准边界，和 end 或 offset 配合，指定区间；end 与 offset 至少提供一个（同时给出时 end 优先）。',
+        '完整消息 index，基准边界，与 end 或 offset 配合指定区间；end 与 offset 至少提供一个（同时给出时 end 优先）。',
       ),
-    end: z.number().optional().describe('与 offset 互斥，指定区间的另一个边界。'),
-    offset: z.number().optional().describe('与 end 互斥。相对 start 的步数：正数向后、负数向前。'),
+    end: z.number().optional().describe('与 offset 互斥，指定区间另一边界。'),
+    offset: z.number().optional().describe('与 end 互斥，相对 start 的步数（正向后、负向前）。'),
   })
   .refine((args) => args.end !== undefined || args.offset !== undefined, {
     message: 'end 与 offset 至少提供一个',
@@ -61,7 +61,7 @@ export function parseRecallArgs(raw: unknown): RecallArgs {
 export function buildRecallTool(getPruner?: () => unknown): ToolDefinition {
   return {
     name: 'recall',
-    description: `${COMPLETE_MESSAGE_DEFINITION}此工具可以精确查询完整消息。用index指定一个区间，返回区间内所有完整消息的内容；完整消息携带的图片附件随结果保留（文本段以 [图片附件：…] 标注，随后附 image 内容块）。`,
+    description: `${COMPLETE_MESSAGE_DEFINITION}按 index 区间精确返回区间内全部完整消息的内容。`,
     parameters: parametersFromZod(recallArgsSchema),
     output: {
       schema: RECALL_OUTPUT_SCHEMA,
