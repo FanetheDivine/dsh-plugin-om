@@ -1,11 +1,13 @@
 // 整条链路集成测试：真实 cordis 容器 + 真实 dsh 服务（SessionStore / SystemPrompt /
 // LlmRuntime / TokenMeter / ToolRuntime）+ 自写 mock LLM adapter，驱动被测插件 apply()
-// 的 agent/pre-step 压缩接线，验证 观察触发 → 摘要 → compaction 生命周期 → 表层替换
-// → 压力下降 的完整链路，以及 systemPrompt 服务未挂载时的降级（om/warning + console）。
+// 的完整接线：
+// - agent/pre-step 两级压缩（观察 → 反思），验证 触发 → 摘要 → compaction 生命周期
+//   → 表层替换 → 压力下降 的完整链路，以及 systemPrompt 服务未挂载时的降级；
+// - recall / recall-semantic 工具经真实 ToolRuntime 注册与 execute 管线调用。
 
 import { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
-import type { GenerateOptions, MessageId, StreamChunk } from '@deepseek-ai/dsh-llm';
+import type { CallId, GenerateOptions, MessageId, StreamChunk } from '@deepseek-ai/dsh-llm';
 import { LlmAdapter, LlmRuntime } from '@deepseek-ai/dsh-llm';
 import type { Session, SessionId } from '@deepseek-ai/dsh-session';
 import { SessionStore } from '@deepseek-ai/dsh-session';
@@ -24,6 +26,8 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
 });
 
 import { PLUGIN_LABEL } from '../src/constants.ts';
+// 命中 vi.mock 打桩后的模块（ensureModelReady 为 vi.fn，可断言预热调用）
+import * as embedding from '../src/embedding.ts';
 import { apply, name } from '../src/index.ts';
 
 /** mock LLM adapter：只实现 stream()，按注入的分块工厂回放响应并记录调用。 */
@@ -57,6 +61,16 @@ async function stackHarness(options: {
   withSystemPrompt: boolean;
   /** mock adapter 的分块工厂。 */
   chunksFor: (options: GenerateOptions, callIndex: number) => StreamChunk[];
+  /** 覆盖默认插件配置的键（未给出的键保持默认堆叠值）。 */
+  configOverrides?: Partial<{
+    observeThresholdTokens: number;
+    reflectThresholdTokens: number;
+    tailMessageCount: number;
+    compressRetryCount: number;
+    recallEnabled: boolean;
+    semanticRecallEnabled: boolean;
+    debug: boolean;
+  }>;
 }) {
   const app = new Context();
   await app.plugin(SessionStore);
@@ -82,6 +96,7 @@ async function stackHarness(options: {
       recallEnabled: false,
       semanticRecallEnabled: false,
       debug: false,
+      ...options.configOverrides,
     },
   );
   const session = app.sessions.create('it-om' as SessionId) as Session;
@@ -92,15 +107,16 @@ async function stackHarness(options: {
   return { app, session, adapter };
 }
 
-/** 预置 n 条大 user/message（各自独立完整消息 index 0..n-1）。 */
-function seedUserMessages(session: Session, count: number, chars = 600): void {
+/** 预置 n 条大 user/message（id 与文本 seed 取 from..from+n-1，各自独立完整消息 index）。 */
+function seedUserMessages(session: Session, count: number, chars = 600, from = 0): void {
   for (let i = 0; i < count; i += 1) {
+    const n = from + i;
     session.append(
       'user/message',
       {
-        id: `user-${i}` as MessageId,
+        id: `user-${n}` as MessageId,
         role: 'user',
-        content: [{ type: 'text', text: bigText(chars, `任务${i}`) }],
+        content: [{ type: 'text', text: bigText(chars, `任务${n}`) }],
         source: { kind: 'user' },
       },
       { surfaceOp: 'append' },
@@ -108,13 +124,19 @@ function seedUserMessages(session: Session, count: number, chars = 600): void {
   }
 }
 
-/** 产出覆盖完整消息 index 0..last 的合法 <history> 观察块。 */
-function observeHistory(last: number): string {
+/** 产出覆盖完整消息 index from..to 的合法 <history> 观察块。 */
+function observeHistoryRange(from: number, to: number): string {
   const entries = Array.from(
-    { length: last + 1 },
-    (_, i) => `<user_message index="${i}">压缩条目${i}：任务要点与结论完整保留</user_message>`,
+    { length: to - from + 1 },
+    (_, i) =>
+      `<user_message index="${from + i}">压缩条目${from + i}：任务要点与结论完整保留</user_message>`,
   );
   return `<history>\n${entries.join('\n')}\n</history>`;
+}
+
+/** 产出覆盖完整消息 index 0..last 的合法 <history> 观察块。 */
+function observeHistory(last: number): string {
+  return observeHistoryRange(0, last);
 }
 
 /** 读取消息事件的文本内容。 */
@@ -278,5 +300,117 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(app.get('systemPrompt')).toBeDefined();
     expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(1);
     expect(session.events.filter((e) => e.type === 'om/warning')).toHaveLength(0);
+  }, 30000);
+
+  it('观察→反思两级压缩全链路：单块观察 → 反思合并 → 新消息观察，两块并存', async () => {
+    const { app, session, adapter } = await stackHarness({
+      withSystemPrompt: true,
+      configOverrides: { reflectThresholdTokens: 10 },
+      chunksFor: (_options, callIndex) => {
+        // call 0：观察 0..5；call 1：反思合并（覆盖 0..5）；call 2：观察新消息 6..11
+        if (callIndex <= 1)
+          return [
+            { type: 'text-delta', index: 0, text: observeHistory(5) } as StreamChunk,
+            { type: 'finish', reason: { kind: 'stop' } } as StreamChunk,
+          ];
+        return [
+          { type: 'text-delta', index: 0, text: observeHistoryRange(6, 11) } as StreamChunk,
+          { type: 'finish', reason: { kind: 'stop' } } as StreamChunk,
+        ];
+      },
+    });
+    seedUserMessages(session, 6);
+    await runPreStep(app, session); // 第一轮：仅观察压缩（反思无块跳过）
+
+    seedUserMessages(session, 6, 600, 6);
+    await runPreStep(app, session); // 第二轮：反思合并旧块 + 观察压缩新消息
+
+    // 三次摘要调用：观察 → 反思 → 观察
+    expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(3);
+    // compaction/start 的 phase 序列：observe → reflect → observe
+    const phases = session.events
+      .filter((e) => e.type === 'compaction/start')
+      .map((e) => (e.data as { phase?: string }).phase);
+    expect(phases).toEqual(['observe', 'reflect', 'observe']);
+    // 全部生命周期正常收尾（无 error）
+    const ends = session.events.filter((e) => e.type === 'compaction/end');
+    expect(ends).toHaveLength(3);
+    for (const end of ends) {
+      expect((end.data as { error?: string }).error).toBeUndefined();
+    }
+    // 表层两块并存：反思合并块（0..5）+ 新观察块（6..11）
+    expect(session.surface.nodes).toHaveLength(2);
+    const texts = session.surface.nodes.map((seq) => textOf(session.events[seq as number]));
+    expect(texts[0]).toContain('<history tip=');
+    expect(texts[0]).toContain('<user_message index="0">');
+    expect(texts[0]).not.toContain('index="6"');
+    expect(texts[1]).toContain('<user_message index="6">');
+    expect(texts[1]).toContain('<user_message index="11">');
+  }, 30000);
+
+  it('recall 工具经真实 ToolRuntime 注册与调用：压缩后仍可回看原始内容，参数校验失败返回 isError', async () => {
+    const { app, session } = await stackHarness({
+      withSystemPrompt: true,
+      configOverrides: { recallEnabled: true },
+      chunksFor: () => [
+        { type: 'text-delta', index: 0, text: observeHistory(5) } as StreamChunk,
+        { type: 'finish', reason: { kind: 'stop' } } as StreamChunk,
+      ],
+    });
+    // recallEnabled 注册、semanticRecallEnabled 未启用不注册
+    expect(app.tools.get('recall')).toBeDefined();
+    expect(app.tools.get('recall-semantic')).toBeUndefined();
+
+    seedUserMessages(session, 6);
+    await runPreStep(app, session); // 先压缩：表层收缩为单一 <history> 块
+    expect(session.surface.nodes).toHaveLength(1);
+
+    // 经真实 execute 管线（pre-execute → body → 输出校验 → render）调用 recall
+    const result = await app.tools.execute({
+      callId: 'it-recall-1' as CallId,
+      name: 'recall',
+      arguments: { start: 0, end: 5 },
+      agent: { session } as unknown as Agent,
+      signal: new AbortController().signal,
+    });
+    expect(result.isError).toBe(false);
+    const value = (result as { value?: { text?: string; images?: unknown[] } }).value;
+    // 被压缩的原始内容仍可按 index 区间回看
+    expect(value?.text).toContain('-- [index 0] user --');
+    expect(value?.text).toContain('任务0');
+    expect(value?.text).toContain('任务5');
+    expect(value?.images).toEqual([]);
+    // output.render 投影：text 块在前、内容与 value.text 一致
+    const content = (result as { content?: Array<{ type?: string; text?: string }> }).content;
+    expect(content?.[0]?.type).toBe('text');
+    expect(content?.[0]?.text).toContain('[index 0]');
+
+    // 参数校验失败（缺 end/offset）：经真实管线物化为 isError 结果
+    const bad = await app.tools.execute({
+      callId: 'it-recall-2' as CallId,
+      name: 'recall',
+      arguments: { start: 0 },
+      agent: { session } as unknown as Agent,
+      signal: new AbortController().signal,
+    });
+    expect(bad.isError).toBe(true);
+    const error = (bad as { error?: { message?: string } }).error;
+    expect(error?.message).toContain('end 与 offset 至少提供一个');
+  }, 30000);
+
+  it('recall-semantic 启用：注册工具并后台预热模型（recall 未启用时不注册 recall）', async () => {
+    const warmup = vi.mocked(embedding.ensureModelReady);
+    warmup.mockClear();
+    const { app } = await stackHarness({
+      withSystemPrompt: true,
+      configOverrides: { recallEnabled: false, semanticRecallEnabled: true },
+      chunksFor: () => [],
+    });
+    expect(app.tools.get('recall')).toBeUndefined();
+    expect(app.tools.get('recall-semantic')).toBeDefined();
+    // 启用即后台预热（ensureModelReady 已打桩为就绪，不触发真实下载）
+    await vi.waitFor(() => {
+      expect(warmup.mock.calls.length).toBeGreaterThanOrEqual(1);
+    });
   }, 30000);
 });
