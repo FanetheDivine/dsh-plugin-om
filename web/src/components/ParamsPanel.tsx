@@ -2,10 +2,10 @@
  * 参数面板：会话 / om / 价格三组可调项（滑块 + 数字输入联动）。
  * 右侧侧边栏布局，可滚动。导出 ParamsPanel。
  */
-import { useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import type { ModelParams } from '../model';
 
 /** 单个可调参数项属性。 */
@@ -30,29 +30,18 @@ type SliderFieldProps = {
 
 /** 滑块 + 数字输入联动的参数项：滑块拖动与键盘输入都直接写回受控值。 */
 function SliderField({ label, tooltip, value, min, max, step, unit, onChange }: SliderFieldProps) {
-  const [open, setOpen] = useState(false);
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-2">
-        <div className="relative flex items-center gap-1">
+        <div className="flex items-center gap-1">
           <Label className="text-xs text-muted-foreground">{label}</Label>
           {tooltip !== undefined ? (
-            <button
-              type="button"
-              className="text-[10px] text-muted-foreground/70"
-              aria-label={tooltip}
-              onMouseEnter={() => setOpen(true)}
-              onMouseLeave={() => setOpen(false)}
-              onFocus={() => setOpen(true)}
-              onBlur={() => setOpen(false)}
-            >
-              ⓘ
-            </button>
-          ) : null}
-          {open && tooltip !== undefined ? (
-            <span className="absolute left-0 top-full z-10 mt-1 w-40 rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md">
-              {tooltip}
-            </span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="cursor-help text-[10px] text-muted-foreground/70">ⓘ</span>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-48">{tooltip}</TooltipContent>
+            </Tooltip>
           ) : null}
         </div>
         <div className="flex items-center gap-1">
