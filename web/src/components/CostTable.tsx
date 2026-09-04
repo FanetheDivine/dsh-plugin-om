@@ -1,5 +1,5 @@
 /**
- * 成本对比表：原始会话规模 20k–250k 逐行对比 om 开/关的四类 token 消耗、费用、
+ * 成本对比表：原始会话规模 20k–250k 逐行对比 om 开/关的三类 token 消耗、费用、
  * 压缩次数与节省额。数据由 web/src/model.ts 的 buildTable 生成。
  * 每格合并显示两个值：om 关闭（红）/ om 开启（绿），保留当前配色。
  */
@@ -41,6 +41,9 @@ export function CostTable({ rows }: CostTableProps) {
           此表格展示不同上下文窗口占用情况下，是否启用OM的token和计费情况
           <br />
           表格显示 om 关闭/开启 的值
+          <br />
+          dsh 全程为请求打缓存标记：主会话 prompt 命中前缀缓存（读）或写入缓存（创建），
+          不产生未受缓存保护的输入；om 的摘要调用为独立新会话，其请求量计入缓存创建列
         </p>
       </div>
       <div className="w-full max-w-4xl overflow-x-auto">
@@ -48,7 +51,6 @@ export function CostTable({ rows }: CostTableProps) {
           <TableHeader>
             <TableRow>
               <TableHead className="text-center">原始规模</TableHead>
-              <TableHead className="text-center">输入</TableHead>
               <TableHead className="text-center">输出</TableHead>
               <TableHead className="text-center">缓存读取</TableHead>
               <TableHead className="text-center">缓存创建</TableHead>
@@ -63,7 +65,6 @@ export function CostTable({ rows }: CostTableProps) {
                 <TableCell className="text-center font-medium tabular-nums">
                   {formatTokens(row.targetTokens)}
                 </TableCell>
-                <MergedCell off={formatTokens(row.off.input)} on={formatTokens(row.on.input)} />
                 <MergedCell
                   off={formatTokens(row.off.completion)}
                   on={formatTokens(row.on.completion)}

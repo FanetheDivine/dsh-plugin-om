@@ -188,15 +188,6 @@ export function ParamsPanel({ params, onChange, onReset }: ParamsPanelProps) {
             价格 / 1M
           </legend>
           <SliderField
-            label="输入"
-            unit="$"
-            value={params.prices.input}
-            min={0}
-            max={20}
-            step={0.1}
-            onChange={(v) => setPrice('input', v)}
-          />
-          <SliderField
             label="输出"
             unit="$"
             value={params.prices.completion}

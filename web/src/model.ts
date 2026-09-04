@@ -14,15 +14,14 @@
  *   ≥ 观察阈值触发观察压缩（摘要 = 压缩比 × 被压缩量，旧块保留、未压缩量清零）；
  *   首次观察把 dsh 注入消息遮蔽为 <sys> 空条目（内容不再占上下文、不进摘要输入）；
  *   history 块合计 ≥ 反思阈值触发合并（全部块压缩为一条）
- * - 摘要调用按无缓存新会话计费：input = 指令 + 被压缩内容，output = 压缩比 × 输入
+ * - 摘要调用为独立新会话：请求同样写入缓存，input = 指令 + 被压缩内容
+ *   （全量计入缓存创建桶），output = 压缩比 × 输入
  * - 压缩替换破坏前缀缓存：该轮主请求只缓存读取替换点之前的前缀，其余重新缓存创建
  * - 忽略项：工具定义 tokens（会推迟观察触发）、XML 渲染开销、尾部保留消息、429 重试
  */
 
-/** 四类 token 单价（USD / 1M tokens）。 */
+/** 三类 token 单价（USD / 1M tokens）。 */
 export type TokenPrices = {
-  /** 未命中缓存的输入价格。 */
-  input: number;
   /** 补全（输出）价格。 */
   completion: number;
   /** 缓存读取价格。 */
@@ -31,21 +30,19 @@ export type TokenPrices = {
   cacheWrite: number;
 };
 
-/** 四类 token 消耗量（tokens）。 */
+/** 三类 token 消耗量（tokens）。 */
 export type UsageBuckets = {
-  /** 未命中缓存的输入 tokens（含摘要调用 input）。 */
-  input: number;
   /** 补全 tokens（含摘要调用 output）。 */
   completion: number;
   /** 缓存读取 tokens。 */
   cacheRead: number;
-  /** 缓存创建 tokens。 */
+  /** 缓存创建 tokens（含摘要调用 input）。 */
   cacheWrite: number;
 };
 
 /** 单个场景（om 开 / 关）的模拟结果。 */
 export type ScenarioResult = UsageBuckets & {
-  /** 总费用（USD，四类 token 分别计价求和）。 */
+  /** 总费用（USD，三类 token 分别计价求和）。 */
   cost: number;
   /** 峰值主请求 prompt tokens（om 的上下文收益参考）。 */
   peakPromptTokens: number;
@@ -55,7 +52,7 @@ export type ScenarioResult = UsageBuckets & {
   observeCount: number;
   /** 反思合并触发次数（om 关闭恒为 0）。 */
   reflectCount: number;
-  /** 摘要调用 input tokens 合计（已并入 input；无缓存）。 */
+  /** 摘要调用 input tokens 合计（已并入 cacheWrite）。 */
   summaryInputTokens: number;
   /** 摘要调用 output tokens 合计（已并入 completion）。 */
   summaryCompletionTokens: number;
@@ -77,13 +74,12 @@ export type ModelParams = {
   turnDeltaTokens: number;
   /** 对比表行步长（tokens）。 */
   tableStepTokens: number;
-  /** 四类 token 单价（USD / 1M tokens）。 */
+  /** 三类 token 单价（USD / 1M tokens）。 */
   prices: TokenPrices;
 };
 
 /** Opus 定价（USD / 1M tokens）：成本表默认单价。 */
 export const OPUS_PRICES: Readonly<TokenPrices> = Object.freeze({
-  input: 5,
   completion: 25,
   cacheRead: 0.5,
   cacheWrite: 6.25,
@@ -113,11 +109,10 @@ export const DEFAULT_PARAMS: Readonly<ModelParams> = Object.freeze({
   prices: OPUS_PRICES,
 });
 
-/** 四类 bucket 求和计价（USD）。 */
+/** 三类 bucket 求和计价（USD）。 */
 function costOf(usage: UsageBuckets, prices: Readonly<TokenPrices>): number {
   return (
-    (usage.input * prices.input +
-      usage.completion * prices.completion +
+    (usage.completion * prices.completion +
       usage.cacheRead * prices.cacheRead +
       usage.cacheWrite * prices.cacheWrite) /
     1_000_000
@@ -132,7 +127,7 @@ export function turnCount(params: Readonly<ModelParams>, targetTokens: number): 
 }
 
 /**
- * om 关闭的全会话模拟：逐轮累计四类 token。
+ * om 关闭的全会话模拟：逐轮累计三类 token。
  * 首轮缓存创建完整 prompt；此后每轮缓存读取上一轮 prompt、缓存创建新增 Δ；
  * 每轮补全 Δ/2。
  */
@@ -143,7 +138,7 @@ export function simulateWithoutOm(
   const n = turnCount(params, targetTokens);
   const half = params.turnDeltaTokens / 2;
   const base = params.systemPromptTokens + params.injectedTokens + half;
-  const usage: UsageBuckets = { input: 0, completion: 0, cacheRead: 0, cacheWrite: 0 };
+  const usage: UsageBuckets = { completion: 0, cacheRead: 0, cacheWrite: 0 };
   let prevPrompt: number | null = null;
   let peak = 0;
   for (let t = 1; t <= n; t += 1) {
@@ -187,7 +182,7 @@ export function simulateWithOm(
   const delta = params.turnDeltaTokens;
   const half = delta / 2;
   const ratio = params.compressionRatio;
-  const usage: UsageBuckets = { input: 0, completion: 0, cacheRead: 0, cacheWrite: 0 };
+  const usage: UsageBuckets = { completion: 0, cacheRead: 0, cacheWrite: 0 };
   let summaryInput = 0;
   let summaryCompletion = 0;
   let observeCount = 0;
@@ -237,7 +232,7 @@ export function simulateWithOm(
     // 本轮用户消息 + 模型回复计入未压缩量
     uncompressed += delta;
   }
-  usage.input += summaryInput;
+  usage.cacheWrite += summaryInput;
   usage.completion += summaryCompletion;
   return {
     ...usage,

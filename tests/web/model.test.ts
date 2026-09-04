@@ -41,26 +41,24 @@ describe('turnCount', () => {
 });
 
 describe('simulateWithoutOm', () => {
-  it('基线四类 token 按闭式公式累计', () => {
+  it('基线三类 token 按闭式公式累计', () => {
     // n=4、Δ=2500、half=1250、base=11250：
     // cacheWrite = 11250 + 3×2500 = 18750
     // cacheRead = 11250 + 13750 + 16250 = 41250
-    // completion = 4×1250 = 5000，input = 0
+    // completion = 4×1250 = 5000
     const r = simulateWithoutOm(P, 20_000);
     expect(r.turns).toBe(4);
     expect(r.cacheWrite).toBe(18_750);
     expect(r.cacheRead).toBe(41_250);
     expect(r.completion).toBe(5_000);
-    expect(r.input).toBe(0);
     expect(r.observeCount).toBe(0);
     expect(r.reflectCount).toBe(0);
     expect(r.peakPromptTokens).toBe(5_000 + 5_000 + 3 * 2_500 + 1_250);
   });
 
-  it('费用 = 四类 token 分别计价求和', () => {
+  it('费用 = 三类 token 分别计价求和', () => {
     const r = simulateWithoutOm(P, 20_000);
-    const expected =
-      (r.input * 5 + r.completion * 25 + r.cacheRead * 0.5 + r.cacheWrite * 6.25) / 1_000_000;
+    const expected = (r.completion * 25 + r.cacheRead * 0.5 + r.cacheWrite * 6.25) / 1_000_000;
     expect(r.cost).toBeCloseTo(expected, 10);
   });
 
@@ -108,10 +106,10 @@ describe('simulateWithOm（默认阈值）', () => {
   it('观察轮主请求缓存从替换点重新创建：该轮只缓存读取系统提示词', () => {
     // T=60k（n=20）：第 17 轮 pre-step 观察（替换点在最前，保留前缀 = 系统提示词）
     // cacheRead = 第 1–15 轮 prompt 合计(431250) + 第 17 轮截断读取(5000) + 第 18–20 轮(30000)
-    // cacheWrite = 首轮 11250 + 常规增量 18×2500 + 第 17 轮重写 2500
+    // cacheWrite = 首轮 11250 + 常规增量 18×2500 + 第 17 轮重写 2500 + 摘要 input(指令 1000 + 40000)
     const r = simulateWithOm(P, 60_000);
     expect(r.cacheRead).toBe(431_250 + 5_000 + 30_000);
-    expect(r.cacheWrite).toBe(11_250 + 18 * 2_500 + 2_500);
+    expect(r.cacheWrite).toBe(11_250 + 18 * 2_500 + 2_500 + INSTRUCTION_TOKENS + 40_000);
     // om-off 对照：无截断，每轮读取完整上一轮 prompt
     const off = simulateWithoutOm(P, 60_000);
     expect(off.cacheRead).toBeGreaterThan(r.cacheRead);
