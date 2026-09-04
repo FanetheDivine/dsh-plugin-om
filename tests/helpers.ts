@@ -1,5 +1,8 @@
 // 单元测试公共设施：极简 Session/Surface 模拟（复刻 surface 的 append/replace 语义），
-// 以及一个可编程的 ctx 模拟。测试目标是 src 的纯函数与 apply 接线。
+// 以及一个可编程的 ctx 模拟；另含跨测试文件共享的断言辅助
+// （latestHistoryText / compactionLifecycle / checkpointSourceOf / historyMessage /
+// twoCallFlow / textOf）。测试目标是 src 的纯函数与 apply 接线。
+import { HISTORY_TAG, HISTORY_TIP, PLUGIN_LABEL } from '../src/constants.ts';
 import type { Context, Session, SessionEvent } from '../src/types.ts';
 
 export function makeMessage({
@@ -441,4 +444,85 @@ export function buildToolCallFlow({
     } as unknown as SessionEvent);
   }
   return events;
+}
+
+/** 从会话日志提取最后一次 <history> 消息的完整文本（去标签）。 */
+export function latestHistoryText(session: Session): string {
+  const historyMsg = session.events.findLast(
+    (e) =>
+      e.type === 'user/message' &&
+      String(
+        ((e.data as { content?: unknown[] }).content?.[0] as { text?: string } | undefined)?.text ??
+          '',
+      ).includes(`<${HISTORY_TAG}`), // 兼容带 tip 属性的开标签（<history tip="…">）
+  );
+  const text = String(
+    (
+      (historyMsg as { data?: { content?: unknown[] } } | undefined)?.data?.content?.[0] as
+        | { text?: string }
+        | undefined
+    )?.text ?? '',
+  );
+  return text.replace(new RegExp(`</?${HISTORY_TAG}[^>]*>`, 'g'), '').trim();
+}
+
+/** 定位一次压缩的 compaction 生命周期事件下标（start/summary/替换消息/end；缺省 -1）。 */
+export function compactionLifecycle(session: Session) {
+  const events = session.events;
+  return {
+    start: events.findIndex((e) => e.type === 'compaction/start'),
+    summary: events.findIndex((e) => e.type === 'compaction/summary'),
+    end: events.findIndex((e) => e.type === 'compaction/end'),
+    replace: events.findIndex(
+      (e) =>
+        e.type === 'user/message' &&
+        typeof e.surfaceOp === 'object' &&
+        e.surfaceOp !== null &&
+        (e.surfaceOp as { op?: string }).op === 'replace',
+    ),
+  };
+}
+
+/** 提取 <history> 替换消息的 source（来源标记断言用）。 */
+export function checkpointSourceOf(event: SessionEvent | undefined) {
+  if (event?.type !== 'user/message') return undefined;
+  return event.data.source as { kind?: string; plugin?: string; compactionId?: string } | undefined;
+}
+
+/** 构造 <history> 压缩日志消息（插件自产 user/message，seq 从 0 起；与真实消息一致：无前缀句，tip 属性在开标签上）。 */
+export function historyMessage(inner: string, id = 'history-msg'): SessionEvent {
+  return {
+    type: 'user/message',
+    data: makeMessage({
+      content: [textBlock(`<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${inner}\n</${HISTORY_TAG}>`)],
+      source: { kind: 'plugin', plugin: PLUGIN_LABEL },
+      id,
+    }),
+  } as unknown as SessionEvent;
+}
+
+/** 构造两条 run_code 流程（消息序列纯净：0 user-c1, 1 assistant-c1, 2 result-c1, 3 user-c2, ...）。 */
+export function twoCallFlow(): SessionEvent[] {
+  return [
+    ...buildToolCallFlow({
+      code: 'firstCode()',
+      description: '第一次',
+      callId: 'c1',
+      resultText: 'out1',
+    }),
+    ...buildToolCallFlow({
+      code: 'secondCode()',
+      description: '第二次',
+      callId: 'c2',
+      resultText: 'out2',
+      userMessageId: 'user-c2',
+      assistantMessageId: 'assistant-c2',
+      resultMessageId: 'result-c2',
+    }),
+  ];
+}
+
+/** 取 recall / recall-semantic 输出值的文本部分（断言文本内容用；图片附件单独断言 images）。 */
+export function textOf(value: unknown): string {
+  return (value as { text: string }).text;
 }
