@@ -53,7 +53,7 @@ export function buildHistoryPrompt(): string {
     '- <reasoning> 只作参考，输出产物中不包含 <reasoning> 块。',
     '- 将具有关联性的 <assistant> 消息按内在逻辑连贯性划分为连续模块，聚合为 <assistant start="" end=""> 块：块内描述模块的目的、行为与结果；涉及的具体文件保留在模块内容中，多个前缀相同的路径合并简写。',
     '- 单条重要的完整消息以 <assistant index=""> 单独呈现，内容不受限制。',
-    '- 加载的 skill 属于关键信息：应当产出独立块且不过多省略。',
+    '- 加载的 skill 属于**关键信息**：应当产出独立块且不过多省略。',
     '- 条目按 index 顺序覆盖本次压缩的全部完整消息：index/start/end 必须连续（区间内 index 连续、相邻条目相接），不跳号、不重叠、不遗漏。',
     '',
     '【摘要粒度】',
