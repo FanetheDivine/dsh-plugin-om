@@ -233,6 +233,14 @@ interface MockCtxOptions {
   meterTotalTokens?: number;
   /** systemPrompt.assemble 桩（注入后压缩会调用它估算系统提示词 tokens 并记录到 _assembleCalls；缺省无 assemble，模拟旧宿主）。 */
   systemPromptAssemble?: (context: unknown) => Promise<unknown>;
+  /**
+   * systemPrompt 服务是否挂载（缺省 true）。false 时 ctx.get('systemPrompt') 返回
+   * undefined，且属性访问 ctx.systemPrompt 抛错——与真实 cordis 服务未挂载行为一致，
+   * 用于回归验证压缩必须经 ctx.get 容错读取。
+   */
+  systemPromptMounted?: boolean;
+  /** meter.measure 抛错（模拟 tokenMeter 服务异常）。 */
+  meterThrows?: Error;
 }
 
 /** 可编程 ctx 模拟（回调由测试注入）。 */
@@ -243,6 +251,8 @@ export function makeCtx({
   pruner,
   meterTotalTokens,
   systemPromptAssemble,
+  systemPromptMounted = true,
+  meterThrows,
 }: MockCtxOptions = {}) {
   const onCallbacks = new Map<string, ((...args: unknown[]) => unknown)[]>();
   const registeredTools: unknown[] = [];
@@ -265,25 +275,32 @@ export function makeCtx({
     },
   };
   const meter = makeMeter({ totalTokens: meterTotalTokens });
+  if (meterThrows !== undefined)
+    meter.measure = () => {
+      throw meterThrows;
+    };
+  const systemPromptStub = {
+    section: (s: unknown) => {
+      sections.push(s);
+    },
+    ...(systemPromptAssemble === undefined
+      ? {}
+      : {
+          assemble: async (context: unknown) => {
+            assembleCalls.push(context);
+            return systemPromptAssemble(context);
+          },
+        }),
+  };
+  // systemPrompt 服务是否挂载：提供了 assemble 桩且未显式声明未挂载时视为挂载；
+  // 缺省模拟未提供 systemPrompt 服务的旧宿主（get 返回 undefined、属性访问抛错）
+  const systemPromptMountedNow = systemPromptMounted && systemPromptAssemble !== undefined;
   const ctx = {
     logger,
     tools: {
       register: (def: unknown) => {
         registeredTools.push(def);
       },
-    },
-    systemPrompt: {
-      section: (s: unknown) => {
-        sections.push(s);
-      },
-      ...(systemPromptAssemble === undefined
-        ? {}
-        : {
-            assemble: async (context: unknown) => {
-              assembleCalls.push(context);
-              return systemPromptAssemble(context);
-            },
-          }),
     },
     llm: {
       resolveModelInfo: async (provider: string, model: string) =>
@@ -314,6 +331,7 @@ export function makeCtx({
     },
     get(name: string) {
       if (name === 'toolResultPruner') return pruner;
+      if (name === 'systemPrompt') return systemPromptMountedNow ? systemPromptStub : undefined;
       return undefined;
     },
     _onCallbacks: onCallbacks,
@@ -323,6 +341,16 @@ export function makeCtx({
     _llmCalls: llmCalls,
     _loggerCalls: loggerCalls,
   };
+  // 与真实 cordis 一致：服务未挂载时属性访问抛错（回归验证压缩必须经 ctx.get 容错读取）
+  Object.defineProperty(ctx, 'systemPrompt', {
+    enumerable: false,
+    get() {
+      if (!systemPromptMountedNow) {
+        throw new Error('cannot get property "systemPrompt" without inject');
+      }
+      return systemPromptStub;
+    },
+  });
   return ctx as unknown as Context & {
     _onCallbacks: Map<string, ((...args: unknown[]) => unknown)[]>;
     _registeredTools: Array<{ name?: string }>;
