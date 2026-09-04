@@ -34,8 +34,7 @@ import { type RoutedTarget, uuid } from './utils.ts';
 
 /**
  * 共享压缩提示词（观察/反思同一套）：定义 history 块（模型消息 + index 的表达形式）、
- * 完整消息定义、压缩要求（完整保留用户/系统消息、reasoning 仅参考、关联 assistant
- * 合并为模块、index 连续）、输出格式与数据源说明。
+ * 完整消息定义、压缩要求、输出格式与数据源说明。
  */
 export function buildHistoryPrompt(): string {
   const lines: string[] = [
@@ -55,6 +54,10 @@ export function buildHistoryPrompt(): string {
     '- 将具有关联性的 <assistant> 消息按内在逻辑连贯性划分为连续模块，聚合为 <assistant start="" end=""> 块：块内描述模块的目的、行为与结果；涉及的具体文件保留在模块内容中，多个前缀相同的路径合并简写。',
     '- 单条重要的完整消息以 <assistant index=""> 单独呈现，内容不受限制。',
     '- 条目按 index 顺序覆盖本次压缩的全部完整消息：index/start/end 必须连续（区间内 index 连续、相邻条目相接），不跳号、不重叠、不遗漏。',
+    '',
+    '【摘要粒度】',
+    '- 越往后越细：靠近末尾（最近）的完整消息保留更多细节（关键文件、改动与结论），开头（较早）的完整消息可适当从简。',
+    '- 用户消息不受此约束：始终逐条保留原文，不做概括与省略。',
     '',
     '【输出格式】输出单个合法的 <history> 块，**不包含其他任何内容**：',
     `<${HISTORY_TAG}>`,

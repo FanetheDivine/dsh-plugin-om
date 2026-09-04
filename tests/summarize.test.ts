@@ -60,6 +60,15 @@ describe('共享提示词 buildHistoryPrompt（观察/反思同一套）', () =>
     expect(prompt).not.toContain('message_id');
     expect(prompt).not.toContain('[interrupted]');
   });
+
+  it('摘要粒度：越往后越细（靠前简略、靠后详细），用户消息不受约束', () => {
+    const prompt = buildHistoryPrompt();
+    expect(prompt).toContain('【摘要粒度】');
+    expect(prompt).toContain('越往后越细');
+    expect(prompt).toContain('靠近末尾（最近）的完整消息保留更多细节');
+    expect(prompt).toContain('开头（较早）的完整消息可适当从简');
+    expect(prompt).toContain('用户消息不受此约束：始终逐条保留原文，不做概括与省略');
+  });
 });
 
 describe('history 条目解析与连续性 parseHistoryEntries / historyContinuity', () => {
