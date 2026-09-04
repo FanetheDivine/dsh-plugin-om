@@ -12,3 +12,4 @@
 ### Changed
 
 - `pnpm-workspace.yaml` 新增 `web` 包与 `esbuild` 构建白名单（web 构建依赖）
+- `web/` 成本计算器 UI 重构为 Tailwind CSS + shadcn/ui：机制说明与 dsh 注入说明合并为单区、参数面板吸顶且改为滑块 + 数字输入联动、成本表每格合并显示 om 关闭（红）/ om 开启（绿）两个值
