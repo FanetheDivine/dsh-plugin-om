@@ -70,7 +70,7 @@ preset-agent 自带 `compaction-basic` 压缩，也会压缩上下文，其压�
 
 > 不建议把观察阈值设置得过高：越早压缩收益越高，且机制依赖模型对消息计数，过多消息会导致历史混乱。
 
-> 想直观理解机制并估算不同参数下的 token 成本，可打开交互式[机制说明与成本计算器](https://fanethedivine.github.io/dsh-plugin-om/)（部署在 GitHub Pages，不随插件包分发）：左侧参数侧边栏（滑块 + 数字输入联动）+ 右侧合并单元格成本表（每格显示 om 关闭红 / om 开启绿），可调节系统提示词、dsh 注入消息、阈值、压缩比与四类 token 价格，对比 20k–250k 原始会话规模下启用 om 的 token 消耗量与费用。
+> 想直观理解机制并估算不同参数下的 token 成本，可打开交互式[机制说明与成本计算器](https://fanethedivine.github.io/dsh-plugin-om/)（部署在 GitHub Pages，不随插件包分发）：右侧参数侧边栏（滑块 + 数字输入联动）+ 居中的合并单元格成本表（每格显示 om 关闭红 / om 开启绿），可调节系统提示词、dsh 注入消息、阈值、压缩比与四类 token 价格，对比 20k–250k 原始会话规模下启用 om 的 token 消耗量与费用。
 
 ## npm 命令
 

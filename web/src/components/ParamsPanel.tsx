@@ -1,7 +1,8 @@
 /**
- * 参数面板：会话假设 / om 参数 / Token 价格三组可调项（滑块 + 数字输入联动）。
- * 侧边栏布局，可滚动。导出 ParamsPanel。
+ * 参数面板：会话 / om / 价格三组可调项（滑块 + 数字输入联动）。
+ * 右侧侧边栏布局，可滚动。导出 ParamsPanel。
  */
+import { useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
@@ -11,6 +12,8 @@ import type { ModelParams } from '../model';
 type SliderFieldProps = {
   /** 字段标签。 */
   label: string;
+  /** 字段说明（可选，悬停显示）。 */
+  tooltip?: string;
   /** 当前值（受控）。 */
   value: number;
   /** 滑块最小值。 */
@@ -26,15 +29,36 @@ type SliderFieldProps = {
 };
 
 /** 滑块 + 数字输入联动的参数项：滑块拖动与键盘输入都直接写回受控值。 */
-function SliderField({ label, value, min, max, step, unit, onChange }: SliderFieldProps) {
+function SliderField({ label, tooltip, value, min, max, step, unit, onChange }: SliderFieldProps) {
+  const [open, setOpen] = useState(false);
   return (
-    <div className="space-y-2">
+    <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-2">
-        <Label className="text-xs text-muted-foreground">{label}</Label>
+        <div className="relative flex items-center gap-1">
+          <Label className="text-xs text-muted-foreground">{label}</Label>
+          {tooltip !== undefined ? (
+            <button
+              type="button"
+              className="text-[10px] text-muted-foreground/70"
+              aria-label={tooltip}
+              onMouseEnter={() => setOpen(true)}
+              onMouseLeave={() => setOpen(false)}
+              onFocus={() => setOpen(true)}
+              onBlur={() => setOpen(false)}
+            >
+              ⓘ
+            </button>
+          ) : null}
+          {open && tooltip !== undefined ? (
+            <span className="absolute left-0 top-full z-10 mt-1 w-40 rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md">
+              {tooltip}
+            </span>
+          ) : null}
+        </div>
         <div className="flex items-center gap-1">
           <Input
             type="number"
-            className="h-7 w-20 px-2 text-right text-xs tabular-nums"
+            className="h-6 w-20 px-1.5 text-right text-xs tabular-nums"
             value={value}
             min={min}
             step={step}
@@ -48,7 +72,7 @@ function SliderField({ label, value, min, max, step, unit, onChange }: SliderFie
             }}
           />
           {unit !== undefined ? (
-            <span className="w-8 text-xs text-muted-foreground">{unit}</span>
+            <span className="w-7 text-xs text-muted-foreground">{unit}</span>
           ) : null}
         </div>
       </div>
@@ -81,19 +105,19 @@ export function ParamsPanel({ params, onChange, onReset }: ParamsPanelProps) {
   const setPrice = (key: keyof ModelParams['prices'], value: number) =>
     onChange({ ...params, prices: { ...params.prices, [key]: value } });
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b px-4 py-3">
+    <div className="rounded-xl border bg-card text-card-foreground shadow-sm">
+      <div className="flex items-center justify-between px-4 py-3">
         <h2 className="text-sm font-semibold">参数</h2>
         <button
           type="button"
-          className="rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:border-primary hover:text-primary"
+          className="rounded-md border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:border-primary hover:text-primary"
           onClick={onReset}
         >
           恢复默认
         </button>
       </div>
-      <div className="flex-1 space-y-6 overflow-y-auto px-4 py-4">
-        <fieldset className="space-y-3">
+      <div className="space-y-5 px-4 pb-4">
+        <fieldset className="space-y-2.5">
           <legend className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             会话
           </legend>
@@ -108,6 +132,7 @@ export function ParamsPanel({ params, onChange, onReset }: ParamsPanelProps) {
           />
           <SliderField
             label="dsh 注入"
+            tooltip="AGENTS.md、skill 定义等系统消息，首次观察压缩后遮蔽为空条目"
             unit="tok"
             value={params.injectedTokens}
             min={0}
@@ -117,6 +142,7 @@ export function ParamsPanel({ params, onChange, onReset }: ParamsPanelProps) {
           />
           <SliderField
             label="每轮新增"
+            tooltip="每轮用户消息 + 模型回复的 token 增量，双方各半"
             unit="tok"
             value={params.turnDeltaTokens}
             min={500}
@@ -135,7 +161,7 @@ export function ParamsPanel({ params, onChange, onReset }: ParamsPanelProps) {
           />
         </fieldset>
 
-        <fieldset className="space-y-3">
+        <fieldset className="space-y-2.5">
           <legend className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             om
           </legend>
@@ -168,7 +194,7 @@ export function ParamsPanel({ params, onChange, onReset }: ParamsPanelProps) {
           />
         </fieldset>
 
-        <fieldset className="space-y-3">
+        <fieldset className="space-y-2.5">
           <legend className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             价格 / 1M
           </legend>
@@ -182,7 +208,7 @@ export function ParamsPanel({ params, onChange, onReset }: ParamsPanelProps) {
             onChange={(v) => setPrice('input', v)}
           />
           <SliderField
-            label="补全"
+            label="输出"
             unit="$"
             value={params.prices.completion}
             min={0}

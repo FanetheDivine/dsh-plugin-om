@@ -20,10 +20,10 @@ type CostTableProps = {
   rows: CostRow[];
 };
 
-/** 合并单元格：om 关闭（红）/ om 开启（绿）双值展示。 */
+/** 合并单元格：om 关闭（红）/ om 开启（绿）双值展示，居中。 */
 function MergedCell({ off, on }: { off: string; on: string }) {
   return (
-    <TableCell className="text-right tabular-nums">
+    <TableCell className="text-center tabular-nums">
       <span className="text-om-off">{off}</span>
       <span className="text-muted-foreground"> / </span>
       <span className="text-om-on">{on}</span>
@@ -31,35 +31,36 @@ function MergedCell({ off, on }: { off: string; on: string }) {
   );
 }
 
-/** 成本对比表组件：合并单元格 + 节省额高亮。 */
+/** 成本对比表组件：合并单元格 + 节省额高亮，居中列对齐。 */
 export function CostTable({ rows }: CostTableProps) {
   return (
-    <section className="rounded-xl border bg-card text-card-foreground shadow-sm" id="table">
-      <div className="p-6 pb-4">
+    <section id="table" className="flex flex-col items-center">
+      <div className="mb-4 w-full max-w-4xl text-center">
         <h2 className="text-xl font-semibold tracking-tight">成本对比</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          「原始会话规模」= 系统提示词 + dsh 注入消息 + 对话内容总量；每行模拟一个完整会话的
-          <strong>全部轮次累计</strong>计费（前缀缓存口径）。每格显示 om 关闭（红）/ om 开启（绿）。
+          此表格展示不同上下文窗口占用情况下，是否启用OM的token和计费情况
+          <br />
+          表格显示 om 关闭/开启 的值
         </p>
       </div>
-      <div className="overflow-x-auto px-6 pb-6">
+      <div className="w-full max-w-4xl overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="text-right">原始规模</TableHead>
-              <TableHead className="text-right">输入</TableHead>
-              <TableHead className="text-right">补全</TableHead>
-              <TableHead className="text-right">缓存读取</TableHead>
-              <TableHead className="text-right">缓存创建</TableHead>
-              <TableHead className="text-right">费用</TableHead>
-              <TableHead className="text-right">观察 / 反思</TableHead>
-              <TableHead className="text-right">节省</TableHead>
+              <TableHead className="text-center">原始规模</TableHead>
+              <TableHead className="text-center">输入</TableHead>
+              <TableHead className="text-center">输出</TableHead>
+              <TableHead className="text-center">缓存读取</TableHead>
+              <TableHead className="text-center">缓存创建</TableHead>
+              <TableHead className="text-center">费用</TableHead>
+              <TableHead className="text-center">观察 / 反思</TableHead>
+              <TableHead className="text-center">节省</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {rows.map((row) => (
               <TableRow key={row.targetTokens}>
-                <TableCell className="text-right font-medium tabular-nums">
+                <TableCell className="text-center font-medium tabular-nums">
                   {formatTokens(row.targetTokens)}
                 </TableCell>
                 <MergedCell off={formatTokens(row.off.input)} on={formatTokens(row.on.input)} />
@@ -76,13 +77,13 @@ export function CostTable({ rows }: CostTableProps) {
                   on={formatTokens(row.on.cacheWrite)}
                 />
                 <MergedCell off={formatUsd(row.off.cost)} on={formatUsd(row.on.cost)} />
-                <TableCell className="text-right tabular-nums">
+                <TableCell className="text-center tabular-nums">
                   <span className="text-om-on">{row.on.observeCount}</span>
                   <span className="text-muted-foreground"> / </span>
                   <span className="text-om-on">{row.on.reflectCount}</span>
                 </TableCell>
                 <TableCell
-                  className={`text-right tabular-nums font-semibold ${row.savings >= 0 ? 'text-om-on' : 'text-om-off'}`}
+                  className={`text-center tabular-nums font-semibold ${row.savings >= 0 ? 'text-om-on' : 'text-om-off'}`}
                 >
                   {formatSignedUsd(row.savings)}
                 </TableCell>
