@@ -21,6 +21,7 @@ export const zh = {
   'compaction.failed.observe': '上下文压缩失败（观察）',
   'compaction.failed.reflect': '上下文压缩失败（反思）',
   'compaction.retries': '重试 {count} 次',
+  warning: '上下文压缩功能降级',
 } as const;
 
 /** English dictionary（键集与 zh 一致）。 */
@@ -38,6 +39,7 @@ export const en: Record<keyof typeof zh, string> = {
   'compaction.failed.observe': 'Context compaction failed (observation)',
   'compaction.failed.reflect': 'Context compaction failed (reflection)',
   'compaction.retries': 'Retried {count} times',
+  warning: 'Context compaction degraded',
 };
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {

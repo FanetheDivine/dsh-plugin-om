@@ -13,11 +13,16 @@
  *   向上传播，pre-step 据此拒绝本 step 中断当前 turn；signal 中止标记 aborted（不中断）
  * - 提交走宿主 compaction/* 生命周期事件（start 带 phase → summary → 替换消息 → end），
  *   失败补 end(error，实际报错)；替换消息 source 标记插件标识供 UI 认领
+ * - 挂载失败类问题（systemPrompt/tokenMeter 服务异常）始终 console 到外部进程，并追加
+ *   log-only om/warning 事件（客户端渲染功能降级警告行，每会话同一问题至多一次）；
+ *   辅助估算的普通运行时报错仅记日志。降级与报错都不阻塞压缩（tokenMeter 压力数据
+ *   缺失时本轮跳过观察）
  */
 import { scopeOf } from '@deepseek-ai/dsh-scope';
 import type { AssembleContext } from '@deepseek-ai/dsh-system-prompt';
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt';
 import { HISTORY_TAG, isPluginOwnedSource, PLUGIN_LABEL } from './constants.ts';
+import { reportDegrade } from './degrade.ts';
 import { indexCompleteMessages } from './log-index.ts';
 import type { PluginLogger } from './logger.ts';
 import { makeLogger } from './logger.ts';
@@ -395,8 +400,9 @@ export async function reflectPass(
 
 /**
  * 估算系统提示词 tokens：按 agent 作用域组装并渲染系统提示词，按长度/4 启发式计。
- * 宿主未提供 systemPrompt 服务（无 assemble）或组装/渲染失败时按 0 计——只影响
- * 观察触发时机（偏早触发），不产生错误。
+ * systemPrompt 服务经 ctx.get 容错读取（ctx 属性访问在服务未挂载时抛错）；服务缺失
+ * 或组装/渲染失败时按 0 计——只影响观察触发时机（偏早触发），不阻塞压缩。
+ * 服务缺失属挂载失败：console 外部 + om/warning 事件每会话报告一次；组装失败仅记日志。
  */
 async function estimateSystemPromptTokens(
   ctx: Context,
@@ -404,8 +410,12 @@ async function estimateSystemPromptTokens(
   logger: PluginLogger,
   signal?: AbortSignal,
 ): Promise<number> {
-  const systemPrompt = ctx.systemPrompt;
-  if (typeof systemPrompt?.assemble !== 'function') return 0;
+  // 服务未挂载时属性访问抛 "cannot get property ... without inject"，必须 ctx.get 容错读取
+  const systemPrompt = ctx.get('systemPrompt');
+  if (systemPrompt === undefined || typeof systemPrompt.assemble !== 'function') {
+    reportDegrade(agent.session, logger, 'systemPrompt-missing');
+    return 0;
+  }
   try {
     const agentCtx = (agent as { ctx?: Context }).ctx;
     const scope = agentCtx === undefined ? undefined : scopeOf(agentCtx);
@@ -423,13 +433,39 @@ async function estimateSystemPromptTokens(
 
 /**
  * 估算请求工具定义 tokens：按会话请求头 tools（assembled tool schemas）JSON 序列化
- * 长度/4 启发式计（与宿主 dsh-token-meter 对工具 schema 的启发式一致）。会话请求头
- * 缺失或无 tools 时按 0 计——只影响观察触发时机（偏早触发），不产生错误。
+ * 长度/4 启发式计（与宿主 dsh-token-meter 对工具 schema 的启发式一致）。请求头读取
+ * 失败或缺 tools 时按 0 计——只影响观察触发时机（偏早触发），不阻塞压缩。
  */
-function estimateToolsTokens(session: Session): number {
-  const header = session.requestHeader();
-  if (header?.tools === undefined || header.tools.length === 0) return 0;
-  return estimateTextTokens(JSON.stringify(header.tools));
+function estimateToolsTokens(session: Session, logger: PluginLogger): number {
+  try {
+    const header = session.requestHeader();
+    if (header?.tools === undefined || header.tools.length === 0) return 0;
+    return estimateTextTokens(JSON.stringify(header.tools));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`工具定义 tokens 估算失败，按 0 计: ${message}`);
+    return 0;
+  }
+}
+
+/**
+ * 读取上下文压力 tokens（tokenMeter.measure 的 totalTokens）。tokenMeter 调用异常时
+ * 记日志并报告降级（console 外部 + om/warning 每会话一次），返回 undefined——本轮
+ * 跳过观察压缩（无压力数据不触发），不阻塞 turn。
+ */
+function measurePressureTokens(
+  ctx: Context,
+  session: Session,
+  logger: PluginLogger,
+): number | undefined {
+  try {
+    return ctx.tokenMeter.measure(session).totalTokens;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`上下文压力读取失败（tokenMeter.measure 抛错），本轮跳过观察压缩: ${message}`);
+    reportDegrade(session, logger, 'tokenMeter-unavailable');
+    return undefined;
+  }
 }
 
 /**
@@ -452,11 +488,12 @@ export async function observePass(
     `观察检查（观察阈值 ${config.observeThresholdTokens} tokens，尾部保留 ${tailCount} 条）`,
   );
   const threshold = config.observeThresholdTokens;
-  const pressureTokens = ctx.tokenMeter.measure(session).totalTokens;
+  const pressureTokens = measurePressureTokens(ctx, session, logger);
+  if (pressureTokens === undefined) return { failed: false };
   const { blocks } = historySection(session);
   const historyTokens = blocks.reduce((total, block) => total + estimateTextTokens(block.text), 0);
   const systemTokens = await estimateSystemPromptTokens(ctx, agent, logger, signal);
-  const toolsTokens = estimateToolsTokens(session);
+  const toolsTokens = estimateToolsTokens(session, logger);
   const netTokens = pressureTokens - historyTokens - systemTokens - toolsTokens;
   if (netTokens < threshold) {
     logger.step(
@@ -535,10 +572,19 @@ export async function observePass(
   const report = summaryResult.text;
   const attemptCount = summaryResult.attemptCount - 1;
   const usage = summaryResult.usage;
+  // 单条消息计价失败按 0 计（tokenMeter 异常属挂载类降级：console 外部 + om/warning 每会话一次）
   const shadowedTokenCount = replaceSeqs.reduce((total, seq) => {
     const event = session.events[seq];
     const message = event ? session.deriveEventMessage(event) : null;
-    return total + (message ? ctx.tokenMeter.estimateMessage(message) : 0);
+    let tokens = 0;
+    if (message) {
+      try {
+        tokens = ctx.tokenMeter.estimateMessage(message);
+      } catch {
+        reportDegrade(session, logger, 'tokenMeter-unavailable');
+      }
+    }
+    return total + tokens;
   }, 0);
   const shadowedCharCount = replaceSeqs.reduce((total, seq) => {
     const event = session.events[seq];

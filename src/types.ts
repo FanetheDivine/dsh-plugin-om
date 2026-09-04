@@ -25,6 +25,22 @@ import type { JsonSchemaNode, ToolDefinition, ToolRunContext } from '@deepseek-a
 /** 插件配置类型（来自 config.ts）。 */
 export type { PluginConfig } from './config.ts';
 
+declare module '@deepseek-ai/dsh-session/types' {
+  interface SessionEventMap {
+    /**
+     * 插件功能降级警告（log-only，不进 surface）：压缩流程的挂载失败/辅助失败
+     * 按会话去重后追加，客户端渲染为「功能降级」警告行。
+     * 同一会话同一 problem 至多一条；problem 取值与 message 文案见 degrade.ts。
+     */
+    'om/warning': {
+      /** 降级问题标识（会话内去重键）。 */
+      problem: string;
+      /** 面向用户的简短说明。 */
+      message: string;
+    };
+  }
+}
+
 /** 官方包宿主类型再导出：插件 API 与工具签名统一从这里取型。 */
 export type {
   Agent,

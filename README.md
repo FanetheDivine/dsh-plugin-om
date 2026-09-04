@@ -11,9 +11,11 @@
   - **反思**：全部 `<history>` 块 token 合计 ≥ `reflectThresholdTokens` 时，把多个摘要块合并为一条更紧凑的摘要
   - **输出容错**：摘要输出按首个 `<history>` 开标签到最后一个 `</history>` 定位；整块 XML 非法时按条目标签模糊提取并重建为合法块，再校验无 reasoning 与 index 连续
   - **失败中断**：摘要尝试全部耗尽后拒绝当前 step（当前 turn 以 blocked 结束，不再继续 AI 会话；signal 中止除外），最后一次尝试的实际报错写入日志与 `compaction/end` error
+  - **降级容错**：挂载失败类问题（systemPrompt 服务缺失、tokenMeter 服务异常）不阻塞压缩——systemPrompt 按 0 计、tokenMeter 计价按 0 计或跳过观察；问题始终 `console.warn` 输出到宿主进程外部，并写入 log-only `om/warning` 会话事件（同会话同一问题至多一条）。系统提示词/工具定义估算的普通运行时报错仅记日志，同样按 0 计
 - **recall 工具**：按完整消息 index 区间回看原始会话（含被压缩内容；命中消息中的图片附件随结果保留）
 - **recall-semantic 工具**：本地嵌入模型（paraphrase-multilingual-MiniLM-L12-v2）按语义检索全部完整消息（只匹配文本，纯图片消息不进候选池）
 - **压缩卡片**：浏览器客户端在消息列表渲染折叠式「已压缩」卡片、「正在压缩上下文（观察/反思）…」提示行与可展开的「上下文压缩失败」错误行
+- **降级警告行**：浏览器客户端把 `om/warning` 事件渲染为可展开的「上下文压缩功能降级」警告行（折叠摘要 + 完整说明展开）
 
 ## 安装与启用
 
@@ -88,6 +90,7 @@ src/
 ├── index.ts                   # 打包入口：注册 recall 工具 + 接线 pre-step 自动压缩
 ├── config.ts                  # 配置默认值与宽松合并（未知键忽略、非法值回退默认）
 ├── constants.ts               # 共享常量（插件标识 / history 标签 / 完整消息定义）
+├── degrade.ts                 # 挂载失败降级上报（console 外部输出 + om/warning 会话事件，每会话去重）
 ├── types.ts                   # type-only：宿主类型再导出 + 领域类型
 ├── utils.ts                   # 零依赖工具函数（文本渲染 / 主会话判定 / 路由解析）
 ├── logger.ts                  # 插件日志门面（step 按 debug 开关过滤）
@@ -102,12 +105,13 @@ src/
 ├── compress.ts                # 两级自动压缩（观察/反思）、失败中断传播与 compaction 生命周期事件
 └── client/                    # 浏览器客户端 bundle（压缩卡片）
     ├── index.ts               # 客户端入口：注册卡片定义与渲染器
-    ├── definition.ts          # 压缩卡片业务定义（认领生命周期事件与替换检查点）
+    ├── definition.ts          # 压缩卡片业务定义（认领生命周期事件、替换检查点与 om/warning）
     ├── OmCompactionCard.tsx   # 折叠卡片渲染器（统计标题 + summary/失败报错展开）
+    ├── OmWarningCard.tsx      # 功能降级警告行渲染器（折叠摘要 + 完整说明展开）
     ├── format.ts              # 统计数字紧凑格式化（k/w/M）
     └── locales.ts             # om-compaction 文案字典（zh/en）
 models/                        # 嵌入模型目录（小文件随包分发；onnx 运行时按需下载，不进 git）
 scripts/                       # release-archive.mjs（CHANGELOG 归档）/ download-model.mjs（预下载 CLI）
-tests/                         # vitest 单元测试（服务端各模块 + tests/client/ 客户端卡片）
+tests/                         # vitest 测试（服务端各模块 + tests/client/ 客户端卡片 + 整条链路集成测试）
 ```
 
