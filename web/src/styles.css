@@ -1,0 +1,270 @@
+/* 站点样式：单列布局、卡片分区、紧凑数据表。 */
+
+:root {
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --ink: #1f2328;
+  --muted: #59636e;
+  --line: #d8dee4;
+  --accent: #0969da;
+  --pos: #1a7f37;
+  --neg: #cf222e;
+  --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  line-height: 1.65;
+}
+
+.page {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 24px 20px 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 20px 24px;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 28px;
+}
+
+h2 {
+  margin: 0 0 12px;
+  font-size: 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+h3 {
+  margin: 20px 0 8px;
+  font-size: 16px;
+}
+
+p {
+  margin: 8px 0;
+}
+
+.hero p {
+  color: var(--muted);
+  max-width: 72ch;
+}
+
+.links {
+  display: flex;
+  gap: 16px;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  background: #f0f2f5;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+pre.formula,
+pre.snippet {
+  font-family: var(--mono);
+  font-size: 13px;
+  background: #f0f2f5;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+ul {
+  margin: 8px 0;
+  padding-left: 22px;
+}
+
+li {
+  margin: 4px 0;
+}
+
+/* 参数面板 */
+.param-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+fieldset {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 16px 16px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+legend {
+  font-weight: 600;
+  padding: 0 6px;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.field-label {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.field-input {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.field-input input {
+  width: 110px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.field-input em {
+  font-style: normal;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.reset {
+  margin-left: auto;
+  font-size: 13px;
+  padding: 3px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fafbfc;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.reset:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* 成本对比表 */
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+th,
+td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+  white-space: nowrap;
+}
+
+thead th {
+  background: #f0f2f5;
+  position: sticky;
+  top: 0;
+  font-weight: 600;
+}
+
+thead tr:first-child th {
+  top: 0;
+}
+
+thead tr:nth-child(2) th {
+  top: 31px;
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+th.group.off {
+  color: var(--neg);
+}
+
+th.group.on {
+  color: var(--pos);
+}
+
+tbody th[scope="row"] {
+  background: #fafbfc;
+  font-weight: 600;
+}
+
+tbody tr:hover td,
+tbody tr:hover th[scope="row"] {
+  background: #f6f9ff;
+}
+
+.num {
+  text-align: right;
+}
+
+.strong {
+  font-weight: 600;
+}
+
+.savings.pos {
+  color: var(--pos);
+}
+
+.savings.neg {
+  color: var(--neg);
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+footer {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
