@@ -45,7 +45,7 @@ git -C <项目根> worktree add ../<分支名> -b <分支名> origin/main --no-t
 gh pr create --fill   # 创建 PR 并回传链接
 ```
 
-确保pr的所有检查通过，且与主分支不冲突，将输出链接让用户验收
+确保pr的所有检查通过；如果与main冲突，将其merge到新分支并解决冲突；将输出链接让用户验收
 
 - 用户验收通过后，以**压缩（squash）**方式将 PR 合并到主分支，删除worktree、远程分支、本地分支，并在主工作区执行 `git pull`：
 
