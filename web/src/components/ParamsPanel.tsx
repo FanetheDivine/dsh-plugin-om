@@ -2,6 +2,7 @@
  * 参数面板：会话 / om / 价格三组可调项（滑块 + 数字输入联动）。
  * 右侧侧边栏布局，可滚动。导出 ParamsPanel。
  */
+import { useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
@@ -30,6 +31,8 @@ type SliderFieldProps = {
 
 /** 滑块 + 数字输入联动的参数项：滑块拖动与键盘输入都直接写回受控值。 */
 function SliderField({ label, tooltip, value, min, max, step, unit, onChange }: SliderFieldProps) {
+  /** 输入框草稿：编辑期间允许暂时清空或键入非法值，失焦后回落到受控值。 */
+  const [draft, setDraft] = useState<string | null>(null);
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-2">
@@ -48,17 +51,16 @@ function SliderField({ label, tooltip, value, min, max, step, unit, onChange }: 
           <Input
             type="number"
             className="h-6 w-20 px-1.5 text-right text-xs tabular-nums"
-            value={value}
-            min={min}
+            value={draft ?? String(value)}
             step={step}
             onChange={(e) => {
-              const n = Number(e.target.value);
-              if (e.target.value.trim() !== '' && Number.isFinite(n) && n >= min) onChange(n);
+              const raw = e.target.value;
+              setDraft(raw);
+              const n = Number(raw);
+              // 只要求非负数；空串与非法值仅保留在草稿中，不写回
+              if (raw.trim() !== '' && Number.isFinite(n) && n >= 0) onChange(n);
             }}
-            onBlur={(e) => {
-              const n = Number(e.target.value);
-              if (!(Number.isFinite(n) && n >= min)) onChange(min);
-            }}
+            onBlur={() => setDraft(null)}
           />
           {unit !== undefined ? (
             <span className="w-7 text-xs text-muted-foreground">{unit}</span>
@@ -71,6 +73,7 @@ function SliderField({ label, tooltip, value, min, max, step, unit, onChange }: 
         max={max}
         step={step}
         onValueChange={([v]) => {
+          setDraft(null);
           if (v !== undefined) onChange(v);
         }}
       />

@@ -38,6 +38,11 @@ describe('turnCount', () => {
     expect(turnCount(P, 11_000)).toBe(1);
     expect(turnCount(P, 12_000)).toBe(1); // (12000-10000)/2500=0.8 → 1
   });
+
+  it('每轮新增 Δ ≤ 0 视为会话不增长：任意规模均为 0 轮', () => {
+    expect(turnCount(withParams({ turnDeltaTokens: 0 }), 250_000)).toBe(0);
+    expect(turnCount(withParams({ turnDeltaTokens: -100 }), 250_000)).toBe(0);
+  });
 });
 
 describe('simulateWithoutOm', () => {
@@ -173,6 +178,15 @@ describe('buildTable', () => {
     expect(rows[0]?.targetTokens).toBe(20_000);
     expect(rows[1]?.targetTokens).toBe(45_000);
     expect(rows[rows.length - 1]?.targetTokens).toBe(TABLE_MAX_TOKENS);
+  });
+
+  it('步长低于 1000 时按 1000 下限执行（行数防护），为 0 也不死循环', () => {
+    // 20000..249000 共 230 行 + 末行并入 250000
+    const rows = buildTable(withParams({ tableStepTokens: 500 }));
+    expect(rows.length).toBe(231);
+    expect(rows[1]?.targetTokens).toBe(21_000);
+    const zero = buildTable(withParams({ tableStepTokens: 0 }));
+    expect(zero.length).toBe(231);
   });
 
   it('每行 savings = off.cost − on.cost', () => {

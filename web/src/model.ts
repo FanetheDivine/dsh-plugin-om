@@ -119,10 +119,10 @@ function costOf(usage: UsageBuckets, prices: Readonly<TokenPrices>): number {
   );
 }
 
-/** 会话总轮数：原始会话规模 T 达到 (S + D + n·Δ) 时的 n（不足一轮按 0 计）。 */
+/** 会话总轮数：原始会话规模 T 达到 (S + D + n·Δ) 时的 n（不足一轮按 0 计；Δ ≤ 0 视为会话不增长，恒为 0）。 */
 export function turnCount(params: Readonly<ModelParams>, targetTokens: number): number {
   const conversation = targetTokens - params.systemPromptTokens - params.injectedTokens;
-  if (conversation <= 0) return 0;
+  if (conversation <= 0 || params.turnDeltaTokens <= 0) return 0;
   return Math.ceil(conversation / params.turnDeltaTokens);
 }
 
@@ -267,9 +267,10 @@ export function computeRow(params: Readonly<ModelParams>, targetTokens: number):
 
 /**
  * 构建对比表全部行：目标规模从下限起按步长递增到上限，末行不足一个步长时并入上限行。
+ * 步长下限 1000 是行数防护（20k–250k 区间至多 230 行），避免小步长撑爆 DOM。
  */
 export function buildTable(params: Readonly<ModelParams>): CostRow[] {
-  const step = Math.max(1, params.tableStepTokens);
+  const step = Math.max(1000, params.tableStepTokens);
   const rows: CostRow[] = [];
   for (let target = TABLE_MIN_TOKENS; target < TABLE_MAX_TOKENS; target += step) {
     rows.push(computeRow(params, target));
