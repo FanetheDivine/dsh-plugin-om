@@ -70,6 +70,8 @@ preset-agent 自带 `compaction-basic` 压缩，也会压缩上下文，其压�
 
 > 不建议把观察阈值设置得过高：越早压缩收益越高，且机制依赖模型对消息计数，过多消息会导致历史混乱。
 
+> 想直观理解机制并估算不同参数下的 token 成本，可打开交互式[机制说明与成本计算器](https://fanethedivine.github.io/dsh-plugin-om/)（部署在 GitHub Pages，不随插件包分发）：可调节系统提示词、dsh 注入消息、阈值、压缩比与四类 token 价格，对比 20k–250k 原始会话规模下启用 om 的 token 消耗量与费用。
+
 ## npm 命令
 
 | 命令 | 作用 |
@@ -112,6 +114,10 @@ src/
     └── locales.ts             # om-compaction 文案字典（zh/en）
 models/                        # 嵌入模型目录（小文件随包分发；onnx 运行时按需下载，不进 git）
 scripts/                       # release-archive.mjs（CHANGELOG 归档）/ download-model.mjs（预下载 CLI）
-tests/                         # vitest 测试（服务端各模块 + tests/client/ 客户端卡片 + 整条链路集成测试）
+tests/                         # vitest 测试（服务端各模块 + tests/client/ 客户端卡片 + tests/web/ 成本模型 + 整条链路集成测试）
+web/                           # 机制说明与成本计算器站点（独立 Vite + React 工程，发布到 GitHub Pages，不随插件包分发）
+    ├── src/model.ts           # 成本模型纯函数（om 开/关全会话模拟与四类 token 计价）
+    └── src/components/        # 机制说明 / dsh 注入说明 / 参数面板 / 成本对比表 / 模型假设
+.github/workflows/web-deploy.yml  # web/ 变更合入 main 时构建并部署 GitHub Pages
 ```
 
