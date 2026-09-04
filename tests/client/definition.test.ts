@@ -11,7 +11,9 @@ import { describe, expect, it } from 'vitest';
 import {
   COMPACTION_CARD_KIND,
   checkpointCompactionId,
+  OM_WARNING_CARD_KIND,
   omCompactionDefinition,
+  omWarningDefinition,
 } from '../../src/client/definition.ts';
 import { COMPACTION_ABORTED_ERROR, PLUGIN_LABEL } from '../../src/constants.ts';
 
@@ -452,5 +454,54 @@ describe('omCompactionDefinition.buildViewNode', () => {
     const state = { summary, checkpoint };
     const node = omCompactionDefinition.buildViewNode?.(contextOf([summary, checkpoint], state));
     expect(node?.data).toMatchObject({ retryCount: null });
+  });
+});
+
+describe('omWarningDefinition（om/warning 功能降级警告行）', () => {
+  function warningEvent(seq: number, data: unknown): SessionEvent {
+    return { type: 'om/warning', seq, time: 2000 + seq, data } as unknown as SessionEvent;
+  }
+
+  it('match 认领 om/warning 事件为 start（id 含 seq，逐条独立节点）', () => {
+    expect(omWarningDefinition.match(warningEvent(7, { problem: 'p', message: 'm' }))).toEqual({
+      id: 'om-warning:7',
+      role: 'start',
+    });
+  });
+
+  it('忽略非 om/warning 事件', () => {
+    const plain = {
+      type: 'user/message',
+      seq: 1,
+      time: 2001,
+      data: { content: 'hi' },
+    } as unknown as SessionEvent;
+    expect(omWarningDefinition.match(plain)).toBeNull();
+  });
+
+  it('渲染 problem 与 message（锚定事件自身 seq）', () => {
+    const start = matchOf(
+      warningEvent(7, { problem: 'systemPrompt-missing', message: '系统提示词服务未挂载' }),
+      'start',
+    );
+    const node = omWarningDefinition.buildViewNode?.(contextOf([start], {}));
+    expect(node).toMatchObject({
+      kind: OM_WARNING_CARD_KIND,
+      target: 'chat',
+      anchorSeq: 7,
+      visibility: 'visible',
+      data: { problem: 'systemPrompt-missing', message: '系统提示词服务未挂载' },
+    });
+  });
+
+  it('message 缺失时回落 problem；两者皆非法时不产出节点', () => {
+    const start = matchOf(warningEvent(7, { problem: 'p' }), 'start');
+    expect(omWarningDefinition.buildViewNode?.(contextOf([start], {}))).toMatchObject({
+      data: { problem: 'p', message: null },
+    });
+    const empty = matchOf(warningEvent(8, { problem: '' }), 'start');
+    expect(omWarningDefinition.buildViewNode?.(contextOf([empty], {}))).toBeNull();
+    const bogus = matchOf(warningEvent(9, { problem: 3, message: [] }), 'start');
+    expect(omWarningDefinition.buildViewNode?.(contextOf([bogus], {}))).toBeNull();
   });
 });

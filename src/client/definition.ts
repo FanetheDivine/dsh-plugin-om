@@ -1,8 +1,10 @@
 /**
  * 压缩卡片业务定义：认领插件自产的压缩生命周期事件（compaction/start|summary|end）
- * 与替换检查点（source.plugin = 'dsh-plugin-om'），聚合出可渲染的摘要卡片节点。
+ * 与替换检查点（source.plugin = 'dsh-plugin-om'），聚合出可渲染的摘要卡片节点；
+ * 并认领 om/warning 功能降级警告事件渲染为警告行。
  * 导出 COMPACTION_CARD_KIND / OmCompactionChatData / checkpointCompactionId /
- * omCompactionDefinition。宿主的 'compact' 检查点由宿主自己渲染，本定义不认领
+ * omCompactionDefinition / OM_WARNING_CARD_KIND / OmWarningChatData / omWarningDefinition。
+ * 宿主的 'compact' 检查点由宿主自己渲染，本定义不认领
  * （双方共存无视觉冲突：宿主无检查点证据时不产出节点）。
  */
 
@@ -20,10 +22,15 @@ import type { CompactionSummaryPayload } from '../types.ts';
 /** 压缩卡片渲染器分发键（合并进 ChatNodeDataMap）。 */
 export const COMPACTION_CARD_KIND = 'om-compaction';
 
+/** 功能降级警告行渲染器分发键（合并进 ChatNodeDataMap）。 */
+export const OM_WARNING_CARD_KIND = 'om-warning';
+
 declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
   interface ChatNodeDataMap {
     /** dsh-plugin-om 压缩替换检查点渲染的摘要卡片数据。 */
     'om-compaction': OmCompactionChatData;
+    /** dsh-plugin-om 功能降级警告行数据。 */
+    'om-warning': OmWarningChatData;
   }
 }
 
@@ -304,5 +311,37 @@ export const omCompactionDefinition: ConversationNodeDefinition<OmCompactionStat
       );
     }
     return null;
+  },
+};
+
+/** 功能降级警告行载荷：降级问题标识与面向用户的说明（载荷非法时为 null）。 */
+export interface OmWarningChatData {
+  /** 降级问题标识（om/warning 载荷 problem）。 */
+  readonly problem: string | null;
+  /** 面向用户的降级说明（om/warning 载荷 message）。 */
+  readonly message: string | null;
+}
+
+/**
+ * 插件功能降级警告定义：每条 om/warning 事件独立成节点（id 含 seq），渲染为可展开的
+ * 「功能降级」警告行。服务端按会话同问题去重后追加，每会话同一问题至多一行。
+ */
+export const omWarningDefinition: ConversationNodeDefinition = {
+  kind: OM_WARNING_CARD_KIND,
+  target: 'chat',
+  match: (event) => {
+    if (event.type !== 'om/warning') return null;
+    return { id: `om-warning:${event.seq}`, role: 'start' };
+  },
+  start: () => ({}),
+  update: (context) => context.state,
+  buildViewNode: (context) => {
+    const start = context.start;
+    if (start === undefined) return null;
+    const data = start.event.data as { problem?: unknown; message?: unknown } | undefined;
+    const problem = typeof data?.problem === 'string' && data.problem !== '' ? data.problem : null;
+    const message = typeof data?.message === 'string' && data.message !== '' ? data.message : null;
+    if (problem === null && message === null) return null;
+    return chatNode(context, OM_WARNING_CARD_KIND, start.event.seq, { problem, message });
   },
 };
