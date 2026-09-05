@@ -286,6 +286,15 @@ export const MIN_HISTORY_LENGTH = 10;
 /** 产出日志后插入首个 <history> 后的格式说明（XML 注释，完整消息定义 + 条目标签语义）。 */
 export const HISTORY_FORMAT_NOTE = `<!-- 完整消息：${COMPLETE_MESSAGE_DEFINITION} <TAG index="N">表示单条完整消息，<TAG start="A" end="B"> 表示连续模块，start/end 是首尾完整消息的 index；<sys type="KIND" index="N"> 表示被压缩的系统消息，块中为空 -->`;
 
+/**
+ * 剥离 <history> 块内文块首的格式说明注释（HISTORY_FORMAT_NOTE 整体精确匹配，仅块首
+ * 一处）；正文条目内出现的同名注释串不动。非块首或不匹配时原样返回。
+ */
+export function stripLeadingFormatNote(inner: string): string {
+  if (!inner.startsWith(HISTORY_FORMAT_NOTE)) return inner;
+  return inner.slice(HISTORY_FORMAT_NOTE.length).replace(/^\s+/, '');
+}
+
 /** history 块内条目（单条 index 或模块 start/end）。 */
 export type HistoryEntryRange = {
   kind: 'user' | 'assistant' | 'sys';
@@ -361,7 +370,7 @@ function parseHistoryBlock(xml: string): ParsedHistoryBlock | null {
 }
 
 /**
- * 解析文本中全部 <history> 块内的条目（反思输入为多个块拼接：逐块解析提取）。
+ * 解析文本中全部 <history> 块内的条目（逐块解析提取，兼容多块拼接文本）。
  * 非法块跳过；仅提取不校验顺序（连续性由 historyContinuity 校验）。
  */
 export function parseHistoryEntries(text: string): HistoryEntryRange[] {

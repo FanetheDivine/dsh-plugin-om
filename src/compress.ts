@@ -3,7 +3,8 @@
  * 导出 estimateTextTokens / isPairBalancedAfter / computeCompressRange / historySection /
  * findObservePending / reflectPass / observePass / maybeCompress。
  *
- * - 反思：全部 <history> 块 token 合计 ≥ reflectThresholdTokens 时，摘要合并为一条
+ * - 反思：全部 <history> 块 token 合计 ≥ reflectThresholdTokens 时，块内文拼合为单个
+ *   <history> 块输入摘要，合并为一条
  * - 观察（触发 → 待定 → 延迟执行）：净压力（上下文压力 − 已压缩块 token 合计 − 系统提示词
  *   token 估算 − 工具定义 token 估算）首次 ≥ observeThresholdTokens 时记录待定标记
  *   （触发点 = 当时的最后一条完整消息 index），本次不压缩；待定后新增完整消息数 ≥
@@ -36,6 +37,7 @@ import {
   parseHistoryEntries,
   renderMessages,
   runSummarySubagent,
+  stripLeadingFormatNote,
 } from './summarize.ts';
 import type {
   Agent,
@@ -106,6 +108,17 @@ function historyInnerText(text: string): string {
   const gt = text.indexOf('>', open);
   if (gt === -1 || gt >= close) return text;
   return text.slice(gt + 1, close).trim();
+}
+
+/**
+ * 反思输入拼合：全部块内文（historyInnerText 去掉开标签属性，块首格式说明注释剥离）
+ * 按序合并进单个 <history> 块。正文条目内出现的属性/注释同名串原样保留。
+ */
+function mergeHistoryBlocks(blocks: Array<{ text: string }>): string {
+  const inner = blocks
+    .map((block) => stripLeadingFormatNote(historyInnerText(block.text)))
+    .join('\n');
+  return `<${HISTORY_TAG}>\n${inner}\n</${HISTORY_TAG}>`;
 }
 
 /**
@@ -338,9 +351,9 @@ function appendHistoryMessage(
 }
 
 /**
- * 反思：全部 <history> 块 token 合计 ≥ reflectThresholdTokens 时，摘要调用把整个块
- * 区段合并替换为一条更紧凑的摘要。失败不产生部分替换；摘要尝试全部耗尽返回
- * 失败结果（error = 最后一次尝试的实际报错/具体问题）。
+ * 反思：全部 <history> 块 token 合计 ≥ reflectThresholdTokens 时，全部块内文拼合为
+ * 单个 <history> 块送入摘要调用，整个块区段合并替换为一条更紧凑的摘要。失败不产生
+ * 部分替换；摘要尝试全部耗尽返回失败结果（error = 最后一次尝试的实际报错/具体问题）。
  */
 export async function reflectPass(
   ctx: Context,
@@ -378,7 +391,7 @@ export async function reflectPass(
   }
   const blockSeqs = blocks.map((block) => block.seq);
   const instruction = buildHistoryPrompt();
-  const contextText = blocks.map((block) => block.text).join('\n');
+  const contextText = mergeHistoryBlocks(blocks);
   const expectedEnd = reflectExpectedEnd(contextText);
   const lifecycle: CompactionLifecycle = {
     compactionId: newCompactionId(),
