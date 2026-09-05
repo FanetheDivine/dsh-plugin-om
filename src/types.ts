@@ -38,6 +38,27 @@ declare module '@deepseek-ai/dsh-session/types' {
       /** 面向用户的简短说明。 */
       message: string;
     };
+    /**
+     * 观察压缩待定标记（log-only，不进 surface）：净压力首次达到观察阈值时追加，
+     * 记录触发点完整消息 index，本次不压缩；延迟等待 tailMessageCount 条新完整消息后
+     * 执行压缩（区间截至触发点）。同一会话同时至多一条活跃待定标记（key 固定 'observe'）。
+     */
+    'om/observe-pending': {
+      /** 标记键（固定 'observe'，与 om/observe-invalidate 配对）。 */
+      key: 'observe';
+      /** 触发点：追加时的最后一条完整消息 index。 */
+      triggerMessageIndex: number;
+    };
+    /**
+     * 观察压缩待定失效标记（log-only，不进 surface）：待定标记对应的压缩执行完成
+     * （成功提交或无可行区间）后追加，声明指定 pending 已失效、可重新触发观察。
+     */
+    'om/observe-invalidate': {
+      /** 标记键（固定 'observe'）。 */
+      key: 'observe';
+      /** 被失效的 om/observe-pending 事件 seq。 */
+      pendingSeq: number;
+    };
   }
 }
 

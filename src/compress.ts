@@ -1,12 +1,17 @@
 /**
  * 两级自动压缩（观察/反思）与 compaction 生命周期提交。
  * 导出 estimateTextTokens / isPairBalancedAfter / computeCompressRange / historySection /
- * reflectPass / observePass / maybeCompress。
+ * findObservePending / reflectPass / observePass / maybeCompress。
  *
  * - 反思：全部 <history> 块 token 合计 ≥ reflectThresholdTokens 时，摘要合并为一条
- * - 观察：净压力（上下文压力 − 已压缩块 token 合计 − 系统提示词 token 估算 − 工具定义
- *   token 估算）≥ observeThresholdTokens 时，
- *   摘要未压缩消息为新 <history> 块并精确替换被压缩区间（旧块保留）
+ * - 观察（触发 → 待定 → 延迟执行）：净压力（上下文压力 − 已压缩块 token 合计 − 系统提示词
+ *   token 估算 − 工具定义 token 估算）首次 ≥ observeThresholdTokens 时记录待定标记
+ *   （触发点 = 当时的最后一条完整消息 index），本次不压缩；待定后新增完整消息数 ≥
+ *   tailMessageCount 时，把压缩边界至触发点的全部消息摘要为新 <history> 块并精确替换
+ *   被压缩区间（旧块保留），等待期间的新消息成为下一轮未压缩尾部（延迟窗口内压力允许
+ *   短暂超阈值）；tailMessageCount=0 时触发当轮直接执行（不落待定标记）
+ * - 待定标记以 log-only om/observe-pending / om/observe-invalidate 事件持久化在会话
+ *   日志中（重启后从日志恢复）；摘要失败保留待定，下个 pre-step 直接重试执行
  * - 两级在 pre-step 阻塞串行执行（先反思后观察）；仅主会话生效；omEnabled=false 关闭
  * - 压缩边界：最后一个合法 <history> 块之后的消息视为未压缩，其前不重复压缩
  * - 摘要尝试全部耗尽时 pass 返回失败结果（携带最后一次尝试的实际报错），压缩流程
@@ -23,7 +28,7 @@ import type { AssembleContext } from '@deepseek-ai/dsh-system-prompt';
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt';
 import { HISTORY_TAG, isPluginOwnedSource, PLUGIN_LABEL } from './constants.ts';
 import { reportDegrade } from './degrade.ts';
-import { indexCompleteMessages } from './log-index.ts';
+import { indexCompleteMessages, surfaceIndexOf } from './log-index.ts';
 import type { PluginLogger } from './logger.ts';
 import { makeLogger } from './logger.ts';
 import {
@@ -117,13 +122,14 @@ export function isPairBalancedAfter(session: Session, seq: number): boolean {
 }
 
 /**
- * 观察压缩区间：压缩边界后的首个表层节点 → 表层长度-1-tailCount（尾部保留 tailCount
- * 条不压缩）；区间终点回退到 tool-call/result 配对平衡点（不切段）。无可行区间返回
- * undefined。返回区间起止表层 seq 与被遮蔽 seq 列表。
+ * 观察压缩区间：压缩边界后的首个表层节点 → 触发点完整消息（endMessageIndex）对应的
+ * 表层终点（取该完整消息最后一个事件 seq 在表层中的位置）；区间终点回退到
+ * tool-call/result 配对平衡点（不切段）。触发点完整消息不存在或其事件已不在表层
+ * （被后续压缩遮蔽）时返回 undefined。返回区间起止表层 seq 与被遮蔽 seq 列表。
  */
 export function computeCompressRange(
   session: Session,
-  tailCount: number,
+  endMessageIndex: number,
 ): { start: number; end: number; shadowedSeqs: number[] } | undefined {
   const surface = [...session.surface.nodes];
   if (surface.length === 0) return undefined;
@@ -132,7 +138,16 @@ export function computeCompressRange(
   // seq 大于被遮蔽消息，须按表层顺序而非 seq 比较取「边界之后」）
   const startIdx = boundarySeq === undefined ? 0 : surface.indexOf(boundarySeq) + 1;
   if (startIdx >= surface.length) return undefined;
-  let endIdx = surface.length - 1 - tailCount;
+  const target = indexCompleteMessages(session).find((cm) => cm.index === endMessageIndex);
+  if (target === undefined) return undefined;
+  // 完整消息可能含多个事件（toolcall = 调用 + 结果）：取最后一个仍在表层的 seq 定位终点
+  let endIdx = -1;
+  for (let i = target.seqs.length - 1; i >= 0; i -= 1) {
+    const seq = target.seqs[i];
+    if (seq === undefined) continue;
+    endIdx = surfaceIndexOf(surface, seq);
+    if (endIdx !== -1) break;
+  }
   if (endIdx < startIdx) return undefined;
   while (endIdx >= startIdx) {
     const node = surface[endIdx];
@@ -166,6 +181,45 @@ export function historySection(session: Session): {
     boundarySeq = seq;
   }
   return { blocks, boundarySeq };
+}
+
+/**
+ * 查找当前活跃的观察压缩待定标记：按日志顺序取最后一条 om/observe-pending，其后须无
+ * 引用它的 om/observe-invalidate（已失效），且其后的压缩边界 seq 不大于标记 seq（边界
+ * 后移说明标记期间已发生过压缩，标记过期——兜底「执行成功但失效标记未写出」的崩溃
+ * 窗口）。无活跃标记返回 undefined。
+ */
+export function findObservePending(
+  session: Session,
+): { seq: number; triggerMessageIndex: number } | undefined {
+  let pending: { seq: number; triggerMessageIndex: number } | undefined;
+  for (let seq = 0; seq < session.events.length; seq += 1) {
+    const event = session.events[seq];
+    if (!event) continue;
+    if (event.type === 'om/observe-pending') {
+      pending = { seq, triggerMessageIndex: event.data.triggerMessageIndex };
+    } else if (
+      event.type === 'om/observe-invalidate' &&
+      pending !== undefined &&
+      event.data.pendingSeq === pending.seq
+    ) {
+      pending = undefined;
+    }
+  }
+  if (pending === undefined) return undefined;
+  const { boundarySeq } = historySection(session);
+  if (boundarySeq !== undefined && boundarySeq > pending.seq) return undefined;
+  return pending;
+}
+
+/** 追加观察压缩待定标记（log-only）：记录触发点完整消息 index，返回事件 seq。 */
+function appendObservePending(session: Session, triggerMessageIndex: number): number {
+  return session.append('om/observe-pending', { key: 'observe', triggerMessageIndex }).seq;
+}
+
+/** 追加观察压缩待定失效标记（log-only）：声明指定 pending 已失效，返回事件 seq。 */
+function appendObserveInvalidate(session: Session, pendingSeq: number): number {
+  return session.append('om/observe-invalidate', { key: 'observe', pendingSeq }).seq;
 }
 
 /** 当前打开中的 turn 号（最近 turn/start 且未被 turn/end 关闭）；无则 null。 */
@@ -469,44 +523,105 @@ function measurePressureTokens(
 }
 
 /**
- * 观察：净压力 tokens（上下文压力 − 已压缩 <history> 块 token 合计 − 系统提示词
- * token 估算 − 工具定义 token 估算）≥ observeThresholdTokens 时，摘要调用把未压缩
- * 消息压缩为观察日志，追加到旧摘要并替换被压缩消息区间。失败不产生部分替换；
- * 摘要尝试全部耗尽返回失败结果（error = 最后一次尝试的实际报错/具体问题）。
+ * 观察（触发 → 待定 → 延迟执行）：无活跃待定标记时测净压力 tokens（上下文压力 − 已压缩
+ * <history> 块 token 合计 − 系统提示词 token 估算 − 工具定义 token 估算），首次 ≥
+ * observeThresholdTokens 时记录待定标记（触发点 = 当时的最后一条完整消息 index），本次
+ * 不压缩（tailMessageCount=0 当轮直接执行，不落待定标记）；已有待定标记时按新增完整
+ * 消息数 ≥ tailMessageCount 决定执行，压缩区间截至触发点（新增消息成为新未压缩尾部，
+ * 延迟窗口内压力允许短暂超阈值）。执行成功（或无可行区间）后写待定失效标记；摘要
+ * 失败保留待定，下个 pre-step 直接重试执行。摘要尝试全部耗尽返回失败结果
+ * （error = 最后一次尝试的实际报错/具体问题）。
  */
 export async function observePass(
   ctx: Context,
   agent: Agent,
   config: Readonly<PluginConfig>,
-  tailCount: number,
+  waitCount: number,
   target: RoutedTarget,
   signal?: AbortSignal,
 ): Promise<CompressPassResult> {
   const session = agent.session;
   const logger = makeLogger(ctx, config.debug);
   logger.step(
-    `观察检查（观察阈值 ${config.observeThresholdTokens} tokens，尾部保留 ${tailCount} 条）`,
+    `观察检查（观察阈值 ${config.observeThresholdTokens} tokens，延迟等待 ${waitCount} 条完整消息）`,
   );
-  const threshold = config.observeThresholdTokens;
-  const pressureTokens = measurePressureTokens(ctx, session, logger);
-  if (pressureTokens === undefined) return { failed: false };
   const { blocks } = historySection(session);
-  const historyTokens = blocks.reduce((total, block) => total + estimateTextTokens(block.text), 0);
-  const systemTokens = await estimateSystemPromptTokens(ctx, agent, logger, signal);
-  const toolsTokens = estimateToolsTokens(session, logger);
-  const netTokens = pressureTokens - historyTokens - systemTokens - toolsTokens;
-  if (netTokens < threshold) {
-    logger.step(
-      `观察：净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens} − 系统提示词 ${systemTokens} − 工具定义 ${toolsTokens}）< 阈值 ${threshold}，跳过`,
+  const pending = findObservePending(session);
+  let triggerMessageIndex: number;
+  let pendingSeq: number | undefined;
+  let triggerNote: string;
+  if (pending === undefined) {
+    const threshold = config.observeThresholdTokens;
+    const pressureTokens = measurePressureTokens(ctx, session, logger);
+    if (pressureTokens === undefined) return { failed: false };
+    const historyTokens = blocks.reduce(
+      (total, block) => total + estimateTextTokens(block.text),
+      0,
     );
-    return { failed: false };
+    const systemTokens = await estimateSystemPromptTokens(ctx, agent, logger, signal);
+    const toolsTokens = estimateToolsTokens(session, logger);
+    const netTokens = pressureTokens - historyTokens - systemTokens - toolsTokens;
+    if (netTokens < threshold) {
+      logger.step(
+        `观察：净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens} − 系统提示词 ${systemTokens} − 工具定义 ${toolsTokens}）< 阈值 ${threshold}，跳过`,
+      );
+      return { failed: false };
+    }
+    logger.step(
+      `观察：净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens} − 系统提示词 ${systemTokens} − 工具定义 ${toolsTokens}）≥ 阈值 ${threshold}，触发压缩`,
+    );
+    const lastMessageIndex = indexCompleteMessages(session).length - 1;
+    if (lastMessageIndex < 0) {
+      logger.step('观察：会话尚无完整消息，跳过');
+      return { failed: false };
+    }
+    triggerMessageIndex = lastMessageIndex;
+    if (waitCount > 0) {
+      // 记录待定标记（log-only），延迟 waitCount 条新完整消息后再执行压缩
+      try {
+        pendingSeq = appendObservePending(session, triggerMessageIndex);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn(`观察：待定标记追加失败，本轮跳过（下轮重新评估）: ${message}`);
+        return { failed: false };
+      }
+      logger.step(
+        `观察：记录待定标记（触发点完整消息 index ${triggerMessageIndex}），等待 ${waitCount} 条新完整消息后压缩`,
+      );
+      return { failed: false };
+    }
+    triggerNote = `触发点完整消息 index ${triggerMessageIndex}`;
+  } else {
+    const arrived = indexCompleteMessages(session).length - 1 - pending.triggerMessageIndex;
+    if (arrived < waitCount) {
+      logger.step(
+        `观察：待定标记等待中（触发点完整消息 index ${pending.triggerMessageIndex}，新增 ${arrived}/${waitCount} 条），跳过`,
+      );
+      return { failed: false };
+    }
+    logger.step(
+      `观察：待定标记延迟到期（触发点完整消息 index ${pending.triggerMessageIndex}，新增 ${arrived} ≥ ${waitCount} 条），执行压缩`,
+    );
+    triggerMessageIndex = pending.triggerMessageIndex;
+    pendingSeq = pending.seq;
+    triggerNote = `待定标记触发点完整消息 index ${pending.triggerMessageIndex}`;
   }
-  logger.step(
-    `观察：净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens} − 系统提示词 ${systemTokens} − 工具定义 ${toolsTokens}）≥ 阈值 ${threshold}，触发压缩`,
-  );
-  const range = computeCompressRange(session, tailCount);
+  // 执行压缩：区间 [压缩边界..触发点]；成功（或无可行区间）后写待定失效标记
+  const clearPending = (): void => {
+    if (pendingSeq === undefined) return;
+    try {
+      appendObserveInvalidate(session, pendingSeq);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(`观察：待定失效标记追加失败: ${message}`);
+    }
+  };
+  const range = computeCompressRange(session, triggerMessageIndex);
   if (!range) {
-    logger.step('观察：无可行压缩区间（边界后消息过短或配对无法平衡），跳过');
+    logger.step(
+      '观察：无可行压缩区间（边界后无消息、触发点已被压缩或配对无法平衡），清除待定标记视为完成',
+    );
+    clearPending();
     return { failed: false };
   }
   logger.step(
@@ -515,7 +630,8 @@ export async function observePass(
   const replaceSeqs = range.shadowedSeqs;
   const replaceStart = replaceSeqs[0];
   if (replaceStart === undefined) {
-    logger.step('观察：区间内无新消息（全部为压缩日志块），跳过');
+    logger.step('观察：区间内无新消息（全部为压缩日志块），清除待定标记视为完成');
+    clearPending();
     return { failed: false };
   }
   const shadowedSet = new Set(replaceSeqs);
@@ -523,13 +639,14 @@ export async function observePass(
     cm.seqs.every((seq) => shadowedSet.has(seq)),
   );
   if (inRangeCms.length === 0) {
-    logger.step('观察：区间内无完整消息，跳过');
+    logger.step('观察：区间内无完整消息，清除待定标记视为完成');
+    clearPending();
     return { failed: false };
   }
   const startIndex = inRangeCms[0]?.index ?? 0;
   const endIndex = inRangeCms[inRangeCms.length - 1]?.index ?? startIndex;
   logger.step(
-    `观察：保留旧块 ${blocks.length} 条，替换新消息 [${replaceSeqs[0]}..${range.end}]（${replaceSeqs.length} 条），尾部保留 ${tailCount} 条（不压缩、不进日志），新消息 index ${startIndex}..${endIndex}`,
+    `观察：保留旧块 ${blocks.length} 条，替换 [${replaceStart}..${range.end}]（${replaceSeqs.length} 个表层节点，压缩至${triggerNote}），新消息 index ${startIndex}..${endIndex}`,
   );
   const instruction = buildHistoryPrompt();
   const contextText = renderMessages(session, replaceSeqs);
@@ -567,6 +684,7 @@ export async function observePass(
     } catch {
       /* end 追加失败忽略（start 已记录，日志仍可诊断） */
     }
+    // 摘要失败不清除待定标记：下个 pre-step 直接重试执行（无需重新触发与等待）
     return { failed: true, error: summaryResult.error, aborted: summaryResult.aborted };
   }
   const report = summaryResult.text;
@@ -620,8 +738,10 @@ export async function observePass(
     );
     logger.step('观察提交：追加 compaction/end');
     appendCompactionEnd(session, lifecycle);
+    // 压缩成功提交后写待定失效标记（提交失败则保留待定，边界后移使其自然过期）
+    clearPending();
     logger.info(
-      `观察压缩完成（净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens}）≥ 阈值 ${threshold}，替换 ${replaceSeqs.length} 个表层节点，约 ${shadowedTokenCount} tokens）`,
+      `观察压缩完成（替换 ${replaceSeqs.length} 个表层节点，约 ${shadowedTokenCount} tokens，压缩至${triggerNote}）`,
     );
     return { failed: false };
   } catch (error) {
@@ -632,7 +752,8 @@ export async function observePass(
     } catch {
       /* end 追加失败忽略（start 已记录，日志仍可诊断） */
     }
-    // 提交失败为局部异常（摘要已成功）：记日志后继续本轮，不中断 turn
+    // 提交失败为局部异常（摘要已成功）：记日志后继续本轮，不中断 turn；
+    // 待定标记保留，边界后移后由 findObservePending 判定为过期（兜底崩溃窗口）
     return { failed: false };
   }
 }
@@ -660,7 +781,7 @@ export async function maybeCompress(
     return { failed: false };
   }
   logger.step(`会话路由：provider ${target.provider}，model ${target.model}`);
-  const tailCount = config.tailMessageCount;
+  const waitCount = config.tailMessageCount;
   logger.step('反思 pass 开始');
   const reflect = await reflectPass(ctx, agent, config, target, signal);
   if (reflect.failed) {
@@ -668,7 +789,7 @@ export async function maybeCompress(
     return reflect;
   }
   logger.step('反思 pass 结束，观察 pass 开始');
-  const observe = await observePass(ctx, agent, config, tailCount, target, signal);
+  const observe = await observePass(ctx, agent, config, waitCount, target, signal);
   logger.step('观察 pass 结束，压缩流程完成');
   return observe;
 }

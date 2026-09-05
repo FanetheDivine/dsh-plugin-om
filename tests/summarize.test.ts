@@ -47,7 +47,7 @@ describe('共享提示词 buildHistoryPrompt（观察/反思同一套）', () =>
     // 单条重要消息单独呈现
     expect(prompt).toContain('单条重要的完整消息以 <assistant index=""> 单独呈现');
     // 加载的 skill：独立块且不过多省略
-    expect(prompt).toContain('加载的 skill 属于关键信息：应当产出独立块且不过多省略');
+    expect(prompt).toContain('加载的 skill 属于**关键信息**：应当产出独立块且不过多省略');
     // index/start/end 必须连续
     expect(prompt).toContain('index/start/end 必须连续');
     expect(prompt).toContain('不跳号、不重叠、不遗漏');
