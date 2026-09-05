@@ -139,12 +139,12 @@ export type CompactionSummaryPayload = SessionEventMap['compaction/summary'] & {
 };
 
 /**
- * 插件扩展的 compaction/end 载荷：宿主类型 + diagnosticSessionId（压缩最终失败时
- * 落盘的诊断子会话 id）。宿主 append 不做 schema 剥离，扩展字段原样持久化；
+ * 插件扩展的 compaction/end 载荷：宿主类型 + diagnosticSessionId（最后一次摘要尝试
+ * 无论成功或失败时落盘的诊断子会话 id）。宿主 append 不做 schema 剥离，扩展字段原样持久化；
  * 客户端读取时按可选处理（UI 渲染行为不变）。
  */
 export type CompactionEndPayload = SessionEventMap['compaction/end'] & {
-  /** 压缩最终失败时的诊断子会话 id（落盘失败时缺失）。 */
+  /** 最后一次摘要尝试（成功或失败）落盘的诊断子会话 id（未发出请求或落盘失败时缺失）。 */
   diagnosticSessionId?: string;
 };
 
