@@ -133,14 +133,23 @@ export function ParamsPanel({ params, onChange, onReset }: ParamsPanelProps) {
             onChange={(v) => set({ injectedTokens: v })}
           />
           <SliderField
-            label="每轮新增"
-            tooltip="每轮用户消息 + 模型回复的 token 增量，双方各半"
+            label="每轮 thinking"
+            tooltip="模型输出的thinking tokens，只计算输出token，不占据上下文，但会用于消息摘要"
             unit="tok"
-            value={params.turnDeltaTokens}
-            min={500}
+            value={params.thinkingTokens}
+            min={0}
             max={10000}
             step={100}
-            onChange={(v) => set({ turnDeltaTokens: v })}
+            onChange={(v) => set({ thinkingTokens: v })}
+          />
+          <SliderField
+            label="每轮 tool result"
+            unit="tok"
+            value={params.toolResultTokens}
+            min={0}
+            max={30000}
+            step={100}
+            onChange={(v) => set({ toolResultTokens: v })}
           />
           <SliderField
             label="压缩比"

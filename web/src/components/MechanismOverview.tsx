@@ -6,19 +6,19 @@ export function MechanismOverview() {
   const items = [
     {
       title: '观察',
-      desc: '净压力 ≥ 观察阈值（默认 45k）时，把未压缩消息摘要为 history 块，替换原始消息；尾部保留最近 5 条不压缩。',
+      desc: '净压力 ≥ 观察阈值时，将未压缩消息进行摘要',
     },
     {
       title: '反思',
-      desc: 'history 块合计 ≥ 反思阈值（默认 120k）时，合并为一条更紧凑的摘要，防止摘要膨胀。',
+      desc: '消息摘要 ≥ 反思阈值时，再次摘要',
     },
     {
       title: 'dsh 注入',
-      desc: 'AGENTS.md、skill 定义等系统消息在观察压缩时渲染为空条目，不进摘要、不占上下文。',
+      desc: 'AGENTS.md、skill 定义等系统消息总是在压缩后会被再次注入',
     },
     {
       title: 'recall',
-      desc: '被压缩的消息仍完整保留在会话日志中，可通过 recall 工具按 index 区间或语义回看原始内容。',
+      desc: '模型可以回看原始消息',
     },
   ];
   return (
