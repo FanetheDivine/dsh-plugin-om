@@ -1,6 +1,7 @@
 // compress.ts 单元测试：token 估算 estimateTextTokens、观察触发净压力口径
 // （上下文压力 − 已压缩块 − 系统提示词 − 工具定义，经 apply 接线验证）、
-// 压缩区间 computeCompressRange、配对平衡 isPairBalancedAfter、压缩边界 historySection。
+// 压缩区间 computeCompressRange（区间截至触发点完整消息）、观察待定标记
+// findObservePending、配对平衡 isPairBalancedAfter、压缩边界 historySection。
 import { describe, expect, it, vi } from 'vitest';
 
 // 隔离 apply 的模型下载编排：ensureModelReady 打桩为"就绪"，避免单测触发真实下载/网络
@@ -15,6 +16,7 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
 import {
   computeCompressRange,
   estimateTextTokens,
+  findObservePending,
   historySection,
   isPairBalancedAfter,
   reflectPass,
@@ -343,23 +345,30 @@ describe('观察压缩区间 computeCompressRange', () => {
     });
   }
 
-  it('尾部保留 tailCount 条，其余压缩（区间终点回退到配对平衡点）', () => {
+  it('区间截至触发点完整消息（终点回退到配对平衡点）', () => {
     const session = makeSession({ events: singleFlow() });
-    // tailCount=1：表层 [0,1,3]，endIdx=1 落在 assistant(tool-call) 上 → 回退到 0
+    // 完整消息：0 user、1 assistant、2 toolcall（seqs [1,3]）
+    // 触发点=2：终点取 toolcall 最后事件 seq 3（结果之后平衡）→ 全部压缩
+    expect(computeCompressRange(session, 2)).toEqual({
+      start: 0,
+      end: 3,
+      shadowedSeqs: [0, 1, 3],
+    });
+    // 触发点=1：终点 assistant(seq 1) 带未闭合 tool-call → 回退到 0
     expect(computeCompressRange(session, 1)).toEqual({
       start: 0,
       end: 0,
       shadowedSeqs: [0],
     });
-    // tailCount=0：压缩全部（result 之后平衡）
+    // 触发点=0：仅压缩到 user 消息
     expect(computeCompressRange(session, 0)).toEqual({
       start: 0,
-      end: 3,
-      shadowedSeqs: [0, 1, 3],
+      end: 0,
+      shadowedSeqs: [0],
     });
   });
 
-  it('当前 turn 消息可压缩（mid-turn：区间延伸到当前 turn 已完备的消息）', () => {
+  it('当前 turn 消息可压缩（mid-turn：区间截至触发点，含当前 turn 已完备的消息）', () => {
     // 第二个流程没有 turn/end：模拟当前 turn 进行中，pre-step 时 call-result 已完备
     const events = [
       ...singleFlow(),
@@ -373,12 +382,18 @@ describe('观察压缩区间 computeCompressRange', () => {
         resultMessageId: 'result-c2',
       }),
     ];
-    const session = makeSession({ events }); // 表层 [0,1,3,5,6,8]
-    // tailCount=1：endIdx=4 落在 assistant-c2(tool-call) 上 → 回退到 3（user-c2，平衡）
-    expect(computeCompressRange(session, 1)).toEqual({
+    const session = makeSession({ events }); // 表层 [0,1,3,5,6,8]；完整消息 0..5
+    // 触发点=4（assistant-c2，seq 6 带未闭合调用）→ 回退到 3（user-c2@5，平衡）
+    expect(computeCompressRange(session, 4)).toEqual({
       start: 0,
       end: 5,
       shadowedSeqs: [0, 1, 3, 5],
+    });
+    // 触发点=5（toolcall-c2，最后事件 seq 8 结果之后平衡）→ 覆盖到当前 turn 结果
+    expect(computeCompressRange(session, 5)).toEqual({
+      start: 0,
+      end: 8,
+      shadowedSeqs: [0, 1, 3, 5, 6, 8],
     });
   });
 
@@ -389,7 +404,7 @@ describe('观察压缩区间 computeCompressRange', () => {
       callId: 'c1',
       resultText: 'r1',
     });
-    // 表层 [0,1,3]；tailCount=1 → 回退到 0
+    // 表层 [0,1,3]；触发点=1（assistant）→ 回退到 0
     expect(computeCompressRange(makeSession({ events: flow }), 1)).toEqual({
       start: 0,
       end: 0,
@@ -397,12 +412,106 @@ describe('观察压缩区间 computeCompressRange', () => {
     });
   });
 
-  it('尾部条数 ≥ 表层节点数时返回 undefined', () => {
-    expect(computeCompressRange(makeSession({ events: singleFlow() }), 5)).toBeUndefined();
+  it('触发点完整消息不存在时返回 undefined', () => {
+    expect(computeCompressRange(makeSession({ events: singleFlow() }), 99)).toBeUndefined();
   });
 
   it('空表层返回 undefined', () => {
     expect(computeCompressRange(makeSession(), 1)).toBeUndefined();
+  });
+});
+
+describe('观察待定标记 findObservePending', () => {
+  /** 构造 om/observe-pending 事件（seq 由 makeSession 按日志下标补齐）。 */
+  function pendingEvent(triggerMessageIndex: number): SessionEvent {
+    return {
+      type: 'om/observe-pending',
+      data: { key: 'observe', triggerMessageIndex },
+    } as unknown as SessionEvent;
+  }
+
+  /** 构造 om/observe-invalidate 事件。 */
+  function invalidateEvent(pendingSeq: number): SessionEvent {
+    return {
+      type: 'om/observe-invalidate',
+      data: { key: 'observe', pendingSeq },
+    } as unknown as SessionEvent;
+  }
+
+  it('无标记事件时返回 undefined', () => {
+    const session = makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+      }),
+    });
+    expect(findObservePending(session)).toBeUndefined();
+  });
+
+  it('最后一条 pending 且未被失效时活跃（返回 seq 与触发点）', () => {
+    const session = makeSession({
+      events: [
+        ...buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+        }),
+        pendingEvent(2), // seq 4
+      ],
+    });
+    expect(findObservePending(session)).toEqual({ seq: 4, triggerMessageIndex: 2 });
+  });
+
+  it('pending 被其后 invalidate 引用后视为失效', () => {
+    const session = makeSession({
+      events: [
+        ...buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+        }),
+        pendingEvent(2), // seq 4
+        invalidateEvent(4), // seq 5
+      ],
+    });
+    expect(findObservePending(session)).toBeUndefined();
+  });
+
+  it('invalidate 引用其他 pending 时不失效（以最后一条 pending 为准）', () => {
+    const session = makeSession({
+      events: [
+        ...buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+        }),
+        pendingEvent(2), // seq 4
+        invalidateEvent(99), // seq 5（引用不存在的 pending）
+        pendingEvent(3), // seq 6（新一轮触发）
+      ],
+    });
+    expect(findObservePending(session)).toEqual({ seq: 6, triggerMessageIndex: 3 });
+  });
+
+  it('pending 之后压缩边界后移（<history> 块提交）即过期（兜底崩溃窗口）', () => {
+    const session = makeSession({
+      events: [
+        ...buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+        }),
+        pendingEvent(2), // seq 4
+        historyMessage('标记之后提交的块', 'history-late'), // seq 5：boundary 5 > pending 4
+      ],
+    });
+    expect(findObservePending(session)).toBeUndefined();
   });
 });
 

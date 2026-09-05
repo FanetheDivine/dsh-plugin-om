@@ -16,7 +16,7 @@ export type PluginConfig = {
   compressMaxTokens: number | undefined;
   /** 遇 429 限流后下一次摘要请求前的等待毫秒数（全局冷却期）。 */
   rateLimitWaitMs: number;
-  /** 尾部保留的不压缩消息条数。 */
+  /** 观察触发后延迟执行的等待完整消息条数（新增完整消息数达到该值才执行压缩；0 表示触发当轮立即执行）。 */
   tailMessageCount: number;
   /** 摘要失败后的最大重试次数（不含首次）。 */
   compressRetryCount: number;
