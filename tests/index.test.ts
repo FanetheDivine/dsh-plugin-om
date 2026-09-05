@@ -465,12 +465,12 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect((smEvent.data as CompactionSummaryPayload).attemptCount).toBe(2);
     // 失败日志始终输出（含尝试次数与重试提示）
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
-    expect(
-      warns.some((w) => w.includes('摘要调用失败（第 1/3 次，模拟第 1 次失败），将重试')),
-    ).toBe(true);
-    expect(
-      warns.some((w) => w.includes('摘要调用失败（第 2/3 次，模拟第 2 次失败），将重试')),
-    ).toBe(true);
+    expect(warns.some((w) => w.includes('摘要调用失败（第 1/3 次，模拟第 1 次失败，子会话 '))).toBe(
+      true,
+    );
+    expect(warns.some((w) => w.includes('摘要调用失败（第 2/3 次，模拟第 2 次失败，子会话 '))).toBe(
+      true,
+    );
   });
 
   it('摘要失败重试耗尽：三次均抛异常，不产生替换，记录最终失败', async () => {
@@ -503,9 +503,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(session.events.some((e) => e.type === 'compaction/summary')).toBe(false);
     expect(latestHistoryText(session)).toBe('');
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
-    expect(warns.some((w) => w.includes('摘要调用失败（第 3/3 次，总是失败），重试耗尽'))).toBe(
-      true,
-    );
+    expect(warns.some((w) => w.includes('摘要调用失败（第 3/3 次，总是失败，子会话 '))).toBe(true);
     expect(
       warns.some((w) => w.includes('摘要调用最终失败（已尝试 3 次，最后错误：总是失败）')),
     ).toBe(true);

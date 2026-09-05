@@ -316,7 +316,7 @@ function appendCompactionSummary(
 
 /**
  * 追加 compaction/end（log-only，结束生命周期；error 记录失败原因，
- * diagnosticSessionId 记录最终失败时的诊断子会话 id）。
+ * diagnosticSessionId 记录最后一次摘要尝试（无论成功或失败）的诊断子会话 id）。
  */
 function appendCompactionEnd(
   session: Session,
@@ -473,7 +473,7 @@ export async function reflectPass(
       lifecycle.compactionId,
     );
     logger.step('反思提交：追加 compaction/end');
-    appendCompactionEnd(session, lifecycle);
+    appendCompactionEnd(session, lifecycle, undefined, summaryResult.diagnosticSessionId);
     logger.info(
       `反思完成（摘要 ${tokens} tokens ≥ 阈值 ${threshold}，合并 ${blocks.length} 个块为一条）`,
     );
@@ -791,7 +791,7 @@ export async function observePass(
       lifecycle.compactionId,
     );
     logger.step('观察提交：追加 compaction/end');
-    appendCompactionEnd(session, lifecycle);
+    appendCompactionEnd(session, lifecycle, undefined, summaryResult.diagnosticSessionId);
     // 压缩成功提交后写待定失效标记（提交失败则保留待定，边界后移使其自然过期）
     clearPending();
     logger.info(
