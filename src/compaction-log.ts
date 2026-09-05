@@ -1,15 +1,14 @@
 /**
- * 压缩失败诊断落盘：摘要 run 最终失败时，把每次尝试的完整提示词与模型原始输出
- * 原样落盘为一个 one-shot 诊断子会话（header origin 'subagent' + 首事件
- * subagent/descriptor），使其以 subagent 形式出现在宿主子代理列表中，便于查看
- * 失败调用的完整会话。导出 recordCompactionFailure / SummaryAttemptRecord /
- * compactionLogLabel / COMPACTION_LOG_PROVIDER。
+ * 压缩调用日志落盘：摘要 run 的每次 LLM 调用（每次尝试，无论成功失败）完成后，
+ * 把该次尝试的完整提示词与模型原始输出原样落盘为一个 one-shot 诊断子会话
+ * （header origin 'subagent' + 首事件 subagent/descriptor），使其以 subagent 形式
+ * 出现在宿主子代理列表中，便于查验每次调用的完整会话。导出 recordCompactionAttempt /
+ * SummaryAttemptRecord / compactionLogLabel / COMPACTION_LOG_PROVIDER。
  *
- * - 子会话内容零加工：每次尝试一对 user/message（实际提示词全文，含 <history> 块）
+ * - 子会话内容零加工：一对 user/message（实际提示词全文，含 <history> 块）
  *   + assistant/message（模型原始输出全文，异常/中止时为已收集的部分输出），
- *   不插入任何额外消息；失败原因不进子会话，走主会话日志与 compaction/end error 载荷
- * - 失败原因与诊断子会话 sessionId 由调用方写入主会话日志（compress.ts / index.ts）
- * - 落盘自身绝不抛错：任何失败仅 logger.warn 并返回 undefined，不影响压缩失败流程
+ *   不插入任何额外消息；成败与原因不进子会话，由调用方写入主会话日志并关联子会话 id
+ * - 落盘自身绝不抛错：任何失败仅 logger.warn 并返回 undefined，不影响压缩流程
  */
 
 import type { AssistantMessage, UserMessage } from '@deepseek-ai/dsh-llm';
@@ -23,7 +22,7 @@ import { type RoutedTarget, uuid } from './utils.ts';
 /** 诊断子会话的 descriptor provider（宿主子代理列表识别用）。 */
 export const COMPACTION_LOG_PROVIDER = 'om-compaction-log';
 
-/** 一次失败摘要尝试的完整记录：prompt=实际提示词全文（含 <history> 块），rawOutput=模型原始输出全文。 */
+/** 一次摘要尝试的完整记录：prompt=实际提示词全文（含 <history> 块），rawOutput=模型原始输出全文。 */
 export type SummaryAttemptRecord = { prompt: string; rawOutput: string };
 
 /** 压缩 pass 的中文标签（诊断子会话 label 用；未知阶段回落「压缩」）。 */
@@ -33,12 +32,12 @@ function phaseLabel(phase: 'observe' | 'reflect' | undefined): string {
   return '压缩';
 }
 
-/** 诊断子会话 label：含压缩阶段与尝试次数。 */
+/** 诊断子会话 label：含压缩阶段与尝试序号。 */
 export function compactionLogLabel(
   phase: 'observe' | 'reflect' | undefined,
-  attemptCount: number,
+  attemptNo: number,
 ): string {
-  return `OM 压缩失败日志（${phaseLabel(phase)} · ${attemptCount} 次尝试）`;
+  return `OM 压缩日志（${phaseLabel(phase)} · 第 ${attemptNo} 次尝试）`;
 }
 
 /** 追加一次尝试的「提示词 → 原始输出」消息组（surfaceOp append；id 为品牌类型，session.append 运行时校验）。 */
@@ -63,21 +62,20 @@ function appendAttemptMessages(
   } as unknown as AssistantMessage;
   child.append(
     'assistant/message',
-    // 诊断会话不运行 agent loop：turn 固定 0，step 标注尝试序号（1 起）
+    // 诊断会话不运行 agent loop：turn 固定 0，step 固定 1（子会话只含单次尝试）
     { turn: 0, step, message: assistantMessage },
     { surfaceOp: 'append' },
   );
 }
 
 /**
- * 把一次最终失败的摘要 run 落盘为诊断子会话：ctx.sessions.create 创建子会话
- * （header origin 'subagent'、parentSession 指向主会话、delegationDepth = 父 + 1、
- * cwd 继承主会话），追加 one-shot descriptor（provider om-compaction-log，label 含
- * 压缩阶段与尝试次数），逐尝试原样追加「提示词 + 原始输出」消息组，flush 持久化
- * 检查点，返回子会话 id。落盘自身绝不抛错：任何失败仅 logger.warn 并返回
- * undefined（不影响压缩失败流程）。
+ * 把一次摘要尝试落盘为诊断子会话：ctx.sessions.create 创建子会话（header origin
+ * 'subagent'、parentSession 指向主会话、delegationDepth = 父 + 1、cwd 继承主会话），
+ * 追加 one-shot descriptor（provider om-compaction-log，label 含压缩阶段与尝试序号），
+ * 原样追加「提示词 + 原始输出」消息组，flush 持久化检查点，返回子会话 id。落盘自身
+ * 绝不抛错：任何失败仅 logger.warn 并返回 undefined（不影响压缩流程）。
  */
-export async function recordCompactionFailure(
+export async function recordCompactionAttempt(
   ctx: Context,
   parentSession: Session,
   options: {
@@ -85,8 +83,10 @@ export async function recordCompactionFailure(
     phase: 'observe' | 'reflect' | undefined;
     /** 摘要调用的路由目标（assistant/message 的 model 来源标记）。 */
     target: RoutedTarget;
-    /** 逐尝试的完整记录（提示词 + 原始输出；中止在首次请求前时为空）。 */
-    attempts: readonly SummaryAttemptRecord[];
+    /** 本次尝试的完整记录（提示词 + 原始输出）。 */
+    attempt: SummaryAttemptRecord;
+    /** 尝试序号（1 起，label 与消息 step 标注用）。 */
+    attemptNo: number;
     /** 插件 debug 开关（落盘失败的 warn 是否带步骤细节）。 */
     debug: boolean;
   },
@@ -106,23 +106,19 @@ export async function recordCompactionFailure(
       version: SUBAGENT_DESCRIPTOR_VERSION,
       mode: 'one-shot',
       provider: COMPACTION_LOG_PROVIDER,
-      label: compactionLogLabel(options.phase, options.attempts.length),
+      label: compactionLogLabel(options.phase, options.attemptNo),
     });
-    for (let i = 0; i < options.attempts.length; i += 1) {
-      const attempt = options.attempts[i];
-      if (attempt === undefined) continue;
-      appendAttemptMessages(child, attempt, i + 1, options.target);
-    }
+    appendAttemptMessages(child, options.attempt, 1, options.target);
     try {
       await ctx.sessions.flush(child);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.warn(`压缩失败诊断子会话 flush 失败（子会话 ${child.id} 已创建）: ${message}`);
+      logger.warn(`压缩日志子会话 flush 失败（子会话 ${child.id} 已创建）: ${message}`);
     }
     return child.id;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    logger.warn(`压缩失败诊断子会话落盘失败: ${message}`);
+    logger.warn(`压缩日志子会话落盘失败（第 ${options.attemptNo} 次尝试）: ${message}`);
     return undefined;
   }
 }

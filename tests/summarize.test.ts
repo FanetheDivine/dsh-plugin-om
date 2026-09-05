@@ -369,8 +369,12 @@ describe('runSummarySubagent 结构化结果', () => {
     expect(result.attemptCount).toBe(2);
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
     const infos = ctx._loggerCalls.filter((c) => c.level === 'info').map((c) => String(c.args[0]));
-    expect(warns.some((w) => w.includes('摘要调用失败（第 1/2 次，网络抖动），将重试'))).toBe(true);
+    expect(warns.some((w) => w.includes('摘要调用失败（第 1/2 次，网络抖动，子会话 '))).toBe(true);
     expect(infos.some((s) => s.includes('摘要调用成功（第 2/2 次'))).toBe(true);
+    expect(infos.some((s) => s.includes('，子会话 om-compaction-log-'))).toBe(true);
+    // 成功尝试同样落盘：两次尝试各一个子会话，结果携带成功尝试的子会话 id
+    expect(ctx._createdSessions).toHaveLength(2);
+    expect(result.diagnosticSessionId).toBe(ctx._createdSessions[1]?.id);
   });
 
   it('全部尝试耗尽：返回失败结果，error 为最后一次尝试的实际报错', async () => {
@@ -452,34 +456,33 @@ describe('runSummarySubagent 最终失败的诊断子会话落盘', () => {
     ] as unknown as Parameters<typeof runSummarySubagent>;
   }
 
-  it('校验失败耗尽：每次尝试的完整提示词与模型原始输出落盘为诊断子会话', async () => {
+  it('校验失败耗尽：每次尝试各自落盘一个子会话，含该次完整提示词与模型原始输出', async () => {
     const ctx = makeCtx({
       llmStream: [{ type: 'text-delta', text: '没有 history 块的输出' }],
     });
     const result = await runSummarySubagent(...callArgsWithPhase(ctx));
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('应失败');
-    const created = ctx._createdSessions[0];
-    expect(created).toBeDefined();
-    expect(result.diagnosticSessionId).toBe(created?.id);
-    const child = created?.session;
-    expect(child?.events[0]?.type).toBe('subagent/descriptor');
-    expect(child?.events[0]?.data).toMatchObject({
-      version: 2,
-      mode: 'one-shot',
-      provider: 'om-compaction-log',
-      label: 'OM 压缩失败日志（反思 · 2 次尝试）',
-    });
-    // 每次尝试一对消息：提示词（system 指令 + 渲染输入拼接）与原始输出原样
-    expect(child?.events).toHaveLength(5);
+    // 两次尝试各落盘一个子会话，结果携带最后一次尝试的子会话 id
+    expect(ctx._createdSessions).toHaveLength(2);
+    expect(result.diagnosticSessionId).toBe(ctx._createdSessions[1]?.id);
+    const promptText = `${buildHistoryPrompt()}\n\n<history>\n<user_message index="0">旧内容</user_message>\n</history>`;
     for (let i = 0; i < 2; i += 1) {
-      const user = child?.events[1 + i * 2];
-      const assistant = child?.events[2 + i * 2];
+      const child = ctx._createdSessions[i]?.session;
+      expect(child?.events[0]?.type).toBe('subagent/descriptor');
+      expect(child?.events[0]?.data).toMatchObject({
+        version: 2,
+        mode: 'one-shot',
+        provider: 'om-compaction-log',
+        label: `OM 压缩日志（反思 · 第 ${i + 1} 次尝试）`,
+      });
+      // 单次尝试一对消息：提示词（system 指令 + 渲染输入拼接）与原始输出原样
+      expect(child?.events).toHaveLength(3);
+      const user = child?.events[1];
+      const assistant = child?.events[2];
       const userText = (user?.data as { content?: Array<{ text?: string }> } | undefined)
         ?.content?.[0]?.text;
-      expect(userText).toBe(
-        `${buildHistoryPrompt()}\n\n<history>\n<user_message index="0">旧内容</user_message>\n</history>`,
-      );
+      expect(userText).toBe(promptText);
       const rawText = (
         assistant?.data as { message?: { content?: Array<{ text?: string }> } } | undefined
       )?.message?.content?.[0]?.text;
@@ -517,7 +520,7 @@ describe('runSummarySubagent 最终失败的诊断子会话落盘', () => {
     expect(partial).toBe('');
   });
 
-  it('signal 预先中止（0 次尝试）：仍落盘仅含 descriptor 的诊断子会话', async () => {
+  it('signal 预先中止（0 次尝试）：未发出请求，不落盘任何子会话', async () => {
     const controller = new AbortController();
     controller.abort();
     const ctx = makeCtx();
@@ -525,9 +528,8 @@ describe('runSummarySubagent 最终失败的诊断子会话落盘', () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('应失败');
     expect(result.aborted).toBe(true);
-    expect(result.diagnosticSessionId).toBe(ctx._createdSessions[0]?.id);
-    expect(ctx._createdSessions[0]?.session.events).toHaveLength(1);
-    expect(ctx._createdSessions[0]?.session.events[0]?.type).toBe('subagent/descriptor');
+    expect(result.diagnosticSessionId).toBeUndefined();
+    expect(ctx._createdSessions).toHaveLength(0);
   });
 });
 
