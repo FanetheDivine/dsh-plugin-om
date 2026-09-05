@@ -548,3 +548,52 @@ export function twoCallFlow(): SessionEvent[] {
 export function textOf(value: unknown): string {
   return (value as { text: string }).text;
 }
+
+/** 一轮压缩循环的输出块（tool-call 或文本）与可选 usage / finish。 */
+export interface RoundScript {
+  /** 本轮输出的工具调用（block-end 直接携带完整 tool-call 块）。 */
+  calls?: Array<{ id: string; name: string; args?: unknown }>;
+  /** 本轮输出的文本（无工具调用时用于模拟纯文本输出）。 */
+  text?: string;
+  /** 本轮 usage chunk。 */
+  usage?: { inputTokens: number; outputTokens: number };
+  /** 本轮 finish chunk（缺省按是否有 calls 推导 stop / tool-calls）。 */
+  finish?: { kind: string; failure?: { message: string; status?: number } };
+}
+
+/** 构造一轮压缩循环的流 chunks（block-start + block-end 携带完整块，供 BlockAssembler 组装）。 */
+export function roundChunks(script: RoundScript): unknown[] {
+  const chunks: unknown[] = [];
+  let index = 0;
+  if (script.text !== undefined) {
+    chunks.push({ type: 'block-start', index, blockType: 'text' });
+    chunks.push({ type: 'text-delta', index, text: script.text });
+    chunks.push({ type: 'block-end', index, block: { type: 'text', text: script.text } });
+    index += 1;
+  }
+  for (const call of script.calls ?? []) {
+    chunks.push({ type: 'block-start', index, blockType: 'tool-call' });
+    chunks.push({
+      type: 'block-end',
+      index,
+      block: {
+        type: 'tool-call',
+        id: call.id,
+        name: call.name,
+        arguments: JSON.stringify(call.args ?? {}),
+      },
+    });
+    index += 1;
+  }
+  if (script.usage !== undefined) chunks.push({ type: 'usage', usage: script.usage });
+  const finish = script.finish ?? { kind: (script.calls ?? []).length > 0 ? 'tool-calls' : 'stop' };
+  chunks.push({ type: 'finish', reason: finish });
+  return chunks;
+}
+
+/** 构造一个消费即抛错的流（模拟请求级异常，如 429 限流）。 */
+export function throwingStream(message: string): AsyncIterable<unknown> {
+  return (async function* () {
+    throw new Error(message);
+  })();
+}

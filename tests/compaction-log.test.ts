@@ -1,7 +1,8 @@
-// compaction-log.ts 单元测试：压缩失败诊断子会话落盘 recordCompactionFailure——
-// header 元数据（origin/parentSession/delegationDepth/cwd 继承）、subagent/descriptor
-// 载荷（version/mode/provider/label）、逐尝试「提示词 + 原始输出」消息组原样结构与
-// 顺序（无额外消息）、flush 调用、落盘异常被吞（create/flush 失败仅 warn 不抛错）。
+// compaction-log.ts 单元测试：压缩会话记录落盘 recordCompressionSession 与压缩失败
+// 诊断子会话落盘 recordCompactionFailure——header 元数据（origin/parentSession/
+// delegationDepth/cwd 继承）、subagent/descriptor 载荷（version/mode/provider/label）、
+// 消息组原样结构与顺序（无额外消息）、flush 调用、落盘异常被吞（create/flush 失败
+// 仅 warn 不抛错）。
 
 import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent';
 import { describe, expect, it } from 'vitest';
@@ -9,13 +10,104 @@ import { describe, expect, it } from 'vitest';
 import {
   COMPACTION_LOG_PROVIDER,
   compactionLogLabel,
+  compressionRecordLabel,
   recordCompactionFailure,
+  recordCompressionSession,
 } from '../src/compaction-log.ts';
 import { PLUGIN_LABEL } from '../src/constants.ts';
-import type { Session, SessionEvent } from '../src/types.ts';
-import { makeCtx, makeSession, twoCallFlow } from './helpers.ts';
+import type { Message, Session, SessionEvent } from '../src/types.ts';
+import { makeCtx, makeSession, textBlock, twoCallFlow } from './helpers.ts';
 
 const TARGET = { provider: 'test', model: 'test-model' };
+
+/** 构造循环消息组：user 指令 + assistant（tool-call）+ tool-result。 */
+function loopMessages(): Message[] {
+  return [
+    {
+      id: 'm1' as never,
+      role: 'user',
+      content: [textBlock('压缩指令')],
+      source: { kind: 'plugin', plugin: PLUGIN_LABEL },
+    } as unknown as Message,
+    {
+      id: 'm2' as never,
+      role: 'assistant',
+      content: [
+        { type: 'text', text: '开始压缩' },
+        { type: 'tool-call', id: 'c1' as never, name: 'getHistory', arguments: '{}' },
+      ],
+      source: { kind: 'model', provider: 'test', model: 'test-model' },
+    } as unknown as Message,
+    {
+      id: 'm3' as never,
+      role: 'user',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'c1' as never,
+          content: [textBlock('历史条目')],
+        },
+      ],
+      source: { kind: 'tool', callId: 'c1' as never },
+    } as unknown as Message,
+  ];
+}
+
+describe('recordCompressionSession：压缩会话记录落盘', () => {
+  it('成功：循环消息组原样落盘，label 含阶段与轮数，flush 执行', async () => {
+    const ctx = makeCtx();
+    const parent = makeSession({ events: twoCallFlow() });
+    const id = await recordCompressionSession(ctx, parent, {
+      phase: 'reflect',
+      target: TARGET,
+      messages: loopMessages(),
+      rounds: 2,
+      success: true,
+      debug: false,
+    });
+    expect(id).toBe(ctx._createdSessions[0]?.id);
+    const child = ctx._createdSessions[0]?.session;
+    expect(child).toBeDefined();
+    const descriptor = child?.events.find((e) => e.type === 'subagent/descriptor');
+    expect(descriptor?.data).toEqual({
+      version: SUBAGENT_DESCRIPTOR_VERSION,
+      mode: 'one-shot',
+      provider: COMPACTION_LOG_PROVIDER,
+      label: compressionRecordLabel('reflect', 2, true),
+    });
+    expect(compressionRecordLabel('reflect', 2, true)).toContain('会话记录');
+    expect(compressionRecordLabel('observe', 1, false)).toContain('失败日志');
+    // 消息组原样：user 指令 + assistant（含 tool-call 块）+ tool-result，共 3 条
+    const userEvents = child?.events.filter((e) => e.type === 'user/message') ?? [];
+    const assistantEvents = child?.events.filter((e) => e.type === 'assistant/message') ?? [];
+    expect(userEvents).toHaveLength(2);
+    expect(assistantEvents).toHaveLength(1);
+    expect(JSON.stringify(assistantEvents)).toContain('getHistory');
+    expect(JSON.stringify(userEvents[1])).toContain('tool-result');
+    expect(ctx._flushedSessions).toHaveLength(1);
+    // 主会话未被改动
+    expect(parent.events).toHaveLength(twoCallFlow().length);
+  });
+
+  it('落盘自身失败：create 抛错时仅 warn 并返回 undefined', async () => {
+    const ctx = makeCtx();
+    (ctx.sessions as { create: unknown }).create = () => {
+      throw new Error('sessions down');
+    };
+    const id = await recordCompressionSession(ctx, makeSession(), {
+      phase: 'observe',
+      target: TARGET,
+      messages: loopMessages(),
+      rounds: 1,
+      success: false,
+      debug: false,
+    });
+    expect(id).toBeUndefined();
+    expect(
+      ctx._loggerCalls.some((c) => c.level === 'warn' && c.args.join('').includes('落盘失败')),
+    ).toBe(true);
+  });
+});
 
 /** 断言辅助：取子会话事件中第 i 次尝试的 user/assistant 消息（descriptor 占 seq 0）。 */
 function attemptEvents(child: Session, i: number): { user: SessionEvent; assistant: SessionEvent } {
