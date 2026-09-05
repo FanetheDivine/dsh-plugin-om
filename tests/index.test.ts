@@ -237,6 +237,111 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(historyText).toContain('<sys type="agent-instructions" index="0"></sys>');
   });
 
+  it('compressSkipReasoning=false：压缩输入与指令携带 <reasoning>（参考条目 + 说明两行）', async () => {
+    const session = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('请帮我完成一个任务')],
+            id: 'u-reasoning',
+          }),
+        } as unknown as SessionEvent,
+        {
+          type: 'assistant/message',
+          data: {
+            message: makeMessage({
+              role: 'assistant',
+              content: [{ type: 'reasoning', text: '先想再答' }, textBlock('这是答案')],
+              source: { kind: 'model', provider: 'test', model: 'test-model' },
+              id: 'a-reasoning',
+            }),
+          },
+        } as unknown as SessionEvent,
+      ],
+    });
+    const report = [
+      '<history>',
+      '<user_message index="0">',
+      '请帮我完成一个任务',
+      '</user_message>',
+      '<assistant index="1">',
+      '这是答案',
+      '</assistant>',
+      '</history>',
+    ].join('\n');
+    const ctx = observeCtx(report);
+    apply(ctx, {
+      tailMessageCount: 0,
+      observeThresholdTokens: 1,
+      compressSkipReasoning: false,
+    });
+    const nextCalled = await runPreStep(ctx, session);
+    expect(nextCalled).toBe(true);
+    expect(ctx._llmCalls).toHaveLength(1);
+    const options = summaryOptions(ctx);
+    // 指令保留 <reasoning> 说明两行
+    const instruction = instructionText(options);
+    expect(instruction).toContain('<reasoning>：模型的思考过程，仅作压缩参考，产物中不要出现。');
+    expect(instruction).toContain('<reasoning> 只作参考，输出产物中不包含 <reasoning> 块。');
+    // 输入携带 <reasoning> 参考条目（不占 index，assistant 文本仍为 index 1）
+    const input = (options.messages ?? [])
+      .flatMap((m) => (m.content ?? []).map((b) => (b.type === 'text' ? b.text : '')))
+      .join('');
+    expect(input).toContain('<reasoning>先想再答</reasoning>');
+    expect(input).toContain('<assistant index="1">');
+    expect(input).toContain('这是答案');
+  });
+
+  it('compressSkipReasoning 默认 true：压缩输入与指令均不含 <reasoning>', async () => {
+    const session = makeSession({
+      events: [
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('请帮我完成一个任务')],
+            id: 'u-skip',
+          }),
+        } as unknown as SessionEvent,
+        {
+          type: 'assistant/message',
+          data: {
+            message: makeMessage({
+              role: 'assistant',
+              content: [{ type: 'reasoning', text: '先想再答' }, textBlock('这是答案')],
+              source: { kind: 'model', provider: 'test', model: 'test-model' },
+              id: 'a-skip',
+            }),
+          },
+        } as unknown as SessionEvent,
+      ],
+    });
+    const report = [
+      '<history>',
+      '<user_message index="0">',
+      '请帮我完成一个任务',
+      '</user_message>',
+      '<assistant index="1">',
+      '这是答案',
+      '</assistant>',
+      '</history>',
+    ].join('\n');
+    const ctx = observeCtx(report);
+    apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1 });
+    const nextCalled = await runPreStep(ctx, session);
+    expect(nextCalled).toBe(true);
+    expect(ctx._llmCalls).toHaveLength(1);
+    const options = summaryOptions(ctx);
+    expect(instructionText(options)).not.toContain('<reasoning>');
+    const input = (options.messages ?? [])
+      .flatMap((m) => (m.content ?? []).map((b) => (b.type === 'text' ? b.text : '')))
+      .join('');
+    expect(input).not.toContain('<reasoning>');
+    expect(input).not.toContain('先想再答');
+    expect(input).toContain('<assistant index="1">');
+    expect(input).toContain('这是答案');
+  });
+
   it('系统消息缺失时压缩失败重试：模型输出缺 sys 条目 → 校验不通过，不产生替换', async () => {
     const session = makeSession({
       events: [

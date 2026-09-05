@@ -390,7 +390,7 @@ export async function reflectPass(
     return { failed: false };
   }
   const blockSeqs = blocks.map((block) => block.seq);
-  const instruction = buildHistoryPrompt();
+  const instruction = buildHistoryPrompt(config.compressSkipReasoning);
   const contextText = mergeHistoryBlocks(blocks);
   const expectedEnd = reflectExpectedEnd(contextText);
   const lifecycle: CompactionLifecycle = {
@@ -687,8 +687,8 @@ export async function observePass(
   logger.step(
     `观察：保留旧块 ${blocks.length} 条，替换 [${replaceStart}..${range.end}]（${replaceSeqs.length} 个表层节点，压缩至${triggerNote}），新消息 index ${startIndex}..${endIndex}`,
   );
-  const instruction = buildHistoryPrompt();
-  const contextText = renderMessages(session, replaceSeqs);
+  const instruction = buildHistoryPrompt(config.compressSkipReasoning);
+  const contextText = renderMessages(session, replaceSeqs, config.compressSkipReasoning);
   const lifecycle: CompactionLifecycle = {
     compactionId: newCompactionId(),
     turn: openTurnOf(session),
