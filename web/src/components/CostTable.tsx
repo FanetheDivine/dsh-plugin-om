@@ -1,7 +1,9 @@
 /**
  * 成本对比表：原始会话规模 20k–250k 逐行对比 om 开/关的三类 token 消耗、费用、
  * 压缩次数与节省额。数据由 web/src/model.ts 的 buildTable 生成。
- * 每格合并显示两个值：om 关闭（红）/ om 开启（绿），保留当前配色。
+ * 上方描述补充表格成立的假设：纯多 step 会话，thinking 只输出、tool result 只写入、
+ * toolcall 忽略，前缀缓存计费与摘要独立会话口径，摘要 thinking 按摘要输入的 50% 计入。
+ * 每格合并显示两个值：om 开启（绿）/ om 关闭（红），保留当前配色。
  */
 import {
   Table,
@@ -12,7 +14,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { formatSignedUsd, formatTokens, formatUsd } from '../format';
-import type { CostRow } from '../model';
+import { type CostRow, SUMMARY_THINKING_RATIO } from '../model';
 
 /** 成本对比表属性。 */
 type CostTableProps = {
@@ -20,13 +22,13 @@ type CostTableProps = {
   rows: CostRow[];
 };
 
-/** 合并单元格：om 关闭（红）/ om 开启（绿）双值展示，居中。 */
+/** 合并单元格：om 开启（绿）/ om 关闭（红）双值展示，居中。 */
 function MergedCell({ off, on }: { off: string; on: string }) {
   return (
     <TableCell className="text-center tabular-nums">
-      <span className="text-om-off">{off}</span>
-      <span className="text-muted-foreground"> / </span>
       <span className="text-om-on">{on}</span>
+      <span className="text-muted-foreground"> / </span>
+      <span className="text-om-off">{off}</span>
     </TableCell>
   );
 }
@@ -37,13 +39,16 @@ export function CostTable({ rows }: CostTableProps) {
     <section id="table" className="flex flex-col items-center">
       <div className="mb-4 w-full max-w-4xl text-center">
         <h2 className="text-xl font-semibold tracking-tight">成本对比</h2>
+        <p className="mt-1 text-sm text-muted-foreground">表格内展示显示 OM 开/关 情况的会话数据</p>
         <p className="mt-1 text-sm text-muted-foreground">
-          此表格展示不同上下文窗口占用情况下，是否启用OM的token和计费情况
-          <br />
-          表格显示 om 关闭/开启 的值
-          <br />
-          dsh 全程为请求打缓存标记：主会话 prompt 命中前缀缓存（读）或写入缓存（创建），
-          不产生未受缓存保护的输入；om 的摘要调用为独立新会话，其请求量计入缓存创建列
+          基于理想情况下的长对话进行计算，假设AI每轮平均地进行thinking和tool，忽略用户消息和tool-args
+        </p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          假设摘要调用产生的 thinking 是输入 tokens 的{SUMMARY_THINKING_RATIO * 100}% ，按输出计费
+        </p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          <span className="font-bold">原始规模</span>
+          指不开启OM时对话占据的上下文，完全由系统提示词和tool-result构成
         </p>
       </div>
       <div className="w-full max-w-4xl overflow-x-auto">
