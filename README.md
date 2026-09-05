@@ -10,7 +10,8 @@
   - **观察**：净压力（上下文压力 − 已压缩 `<history>` 块 token 估算合计 − 系统提示词 token 估算 − 工具定义 token 估算）≥ `observeThresholdTokens` 时，摘要未压缩消息并追加为新 `<history>` 块，精确替换被压缩的消息区间（旧块保留）
   - **反思**：全部 `<history>` 块 token 合计 ≥ `reflectThresholdTokens` 时，把多个摘要块合并为一条更紧凑的摘要
   - **输出容错**：摘要输出按首个 `<history>` 开标签到最后一个 `</history>` 定位；整块 XML 非法时按条目标签模糊提取并重建为合法块，再校验无 reasoning 与 index 连续
-  - **失败中断**：摘要尝试全部耗尽后拒绝当前 step（当前 turn 以 blocked 结束，不再继续 AI 会话；signal 中止除外），最后一次尝试的实际报错写入日志与 `compaction/end` error
+  - **失败中断**：摘要尝试全部耗尽后拒绝当前 step（当前 turn 以 blocked 结束，不再继续 AI 会话；signal 中止除外），最后一次尝试的实际报错与诊断子会话 sessionId 写入日志与 `compaction/end` error
+  - **失败诊断落盘**：摘要最终失败（含 signal 中止）时，把每次尝试的完整提示词与模型原始输出原样落盘为一个 one-shot 诊断子会话（`subagent/descriptor` 标记、以 subagent 形式出现在宿主子代理列表中；内容零加工、无额外消息），sessionId 随失败结果进主会话日志与 `compaction/end` error 载荷
   - **降级容错**：挂载失败类问题（systemPrompt 服务缺失、tokenMeter 服务异常）不阻塞压缩——systemPrompt 按 0 计、tokenMeter 计价按 0 计或跳过观察；问题始终 `console.warn` 输出到宿主进程外部，并写入 log-only `om/warning` 会话事件（同会话同一问题至多一条）。系统提示词/工具定义估算的普通运行时报错仅记日志，同样按 0 计
 - **recall 工具**：按完整消息 index 区间回看原始会话（含被压缩内容；命中消息中的图片附件随结果保留）
 - **recall-semantic 工具**：本地嵌入模型（paraphrase-multilingual-MiniLM-L12-v2）按语义检索全部完整消息（只匹配文本，纯图片消息不进候选池）
@@ -104,6 +105,7 @@ src/
 ├── embedding.ts               # 本地 ONNX 嵌入（懒加载 / 批量 / 运行时按需下载编排）
 ├── model-download.ts          # 模型下载原语（URL / 跳过判定 / 原子落盘）
 ├── summarize.ts               # 共享压缩提示词 + <history> 块渲染与输出校验 + 摘要调用
+├── compaction-log.ts          # 压缩失败诊断落盘（诊断子会话创建 + descriptor + 逐尝试原样消息组）
 ├── compress.ts                # 两级自动压缩（观察/反思）、失败中断传播与 compaction 生命周期事件
 └── client/                    # 浏览器客户端 bundle（压缩卡片）
     ├── index.ts               # 客户端入口：注册卡片定义与渲染器
