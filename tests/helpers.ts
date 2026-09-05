@@ -593,7 +593,13 @@ export function roundChunks(script: RoundScript): unknown[] {
 
 /** 构造一个消费即抛错的流（模拟请求级异常，如 429 限流）。 */
 export function throwingStream(message: string): AsyncIterable<unknown> {
-  return (async function* () {
-    throw new Error(message);
-  })();
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        async next(): Promise<IteratorResult<unknown>> {
+          throw new Error(message);
+        },
+      };
+    },
+  };
 }

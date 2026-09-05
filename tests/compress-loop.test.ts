@@ -166,7 +166,8 @@ describe('runCompressionLoop', () => {
     });
     const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
     expect(result.ok).toBe(true);
-    const messages = (ctx._llmCalls[1]?.options as { messages?: unknown[] }).messages;
+    const second = ctx._llmCalls[1];
+    const messages = second ? (second.options as { messages?: unknown[] }).messages : undefined;
     expect(JSON.stringify(messages)).toContain('未知工具 badTool');
   });
 
@@ -182,7 +183,8 @@ describe('runCompressionLoop', () => {
     expect(result.aborted).toBe(false);
     expect(ctx._llmCalls).toHaveLength(2);
     // 第二轮请求末尾追加了提醒消息
-    const messages = (ctx._llmCalls[1]?.options as { messages?: unknown[] }).messages;
+    const second = ctx._llmCalls[1];
+    const messages = second ? (second.options as { messages?: unknown[] }).messages : undefined;
     expect(JSON.stringify(messages)).toContain(COMPRESSION_NUDGE_TEXT);
     // 失败也落盘会话记录，label 为失败日志
     const descriptor = ctx._createdSessions[0]?.session.events.find(
