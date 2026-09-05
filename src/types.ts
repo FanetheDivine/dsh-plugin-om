@@ -139,6 +139,16 @@ export type CompactionSummaryPayload = SessionEventMap['compaction/summary'] & {
 };
 
 /**
+ * 插件扩展的 compaction/end 载荷：宿主类型 + diagnosticSessionId（压缩最终失败时
+ * 落盘的诊断子会话 id）。宿主 append 不做 schema 剥离，扩展字段原样持久化；
+ * 客户端读取时按可选处理（UI 渲染行为不变）。
+ */
+export type CompactionEndPayload = SessionEventMap['compaction/end'] & {
+  /** 压缩最终失败时的诊断子会话 id（落盘失败时缺失）。 */
+  diagnosticSessionId?: string;
+};
+
+/**
  * 插件扩展的 compaction/start 载荷：宿主类型 + phase（压缩 pass）。
  * 客户端读取时按可选处理，缺失回落通用压缩中文案。
  */

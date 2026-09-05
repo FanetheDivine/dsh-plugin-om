@@ -2,8 +2,9 @@
  * dsh-plugin-om 入口（tsdown 打包入口）：导出 name / inject / apply。
  * apply 注册 recall / recall-semantic 工具，并接线 agent/pre-step 自动压缩
  * （先反思后观察，仅主会话生效）。压缩摘要尝试全部耗尽时拒绝本 step 中断当前
- * turn（signal 中止除外）。压缩与检索的实现见 compress.ts / recall.ts /
- * semantic-recall.ts。
+ * turn（signal 中止除外），主会话日志记录失败原因与诊断子会话 sessionId（每次
+ * 尝试的完整提示词与模型原始输出由 compaction-log.ts 落盘为诊断子会话）。压缩与
+ * 检索的实现见 compress.ts / compaction-log.ts / recall.ts / semantic-recall.ts。
  */
 import { type CompressPassResult, maybeCompress } from './compress.ts';
 import { resolveConfig } from './config.ts';
@@ -68,7 +69,11 @@ export function apply(ctx: Context, config?: unknown): void {
       logger.warn(`pre-step 处理失败: ${error instanceof Error ? error.message : String(error)}`);
     }
     if (outcome.failed && !outcome.aborted) {
-      logger.warn(`上下文压缩失败，拒绝本 step 中断当前 turn：${outcome.error}`);
+      const diagnostic =
+        outcome.diagnosticSessionId === undefined
+          ? ''
+          : `（诊断子会话 ${outcome.diagnosticSessionId}）`;
+      logger.warn(`上下文压缩失败，拒绝本 step 中断当前 turn：${outcome.error}${diagnostic}`);
       return { kind: 'reject' };
     }
     return next();

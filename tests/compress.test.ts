@@ -19,7 +19,9 @@ import {
   findObservePending,
   historySection,
   isPairBalancedAfter,
+  reflectPass,
 } from '../src/compress.ts';
+import { resolveConfig } from '../src/config.ts';
 import { HISTORY_TAG, HISTORY_TIP, PLUGIN_LABEL } from '../src/constants.ts';
 import { apply } from '../src/index.ts';
 import type { Session, SessionEvent } from '../src/types.ts';
@@ -637,5 +639,40 @@ describe('压缩边界 historySection', () => {
     });
     expect(historySection(pluginNoTag).blocks).toEqual([]);
     expect(historySection(pluginNoTag).boundarySeq).toBeUndefined();
+  });
+});
+
+describe('反思摘要耗尽失败：诊断子会话 id 传播', () => {
+  it('摘要耗尽：CompressPassResult 与 compaction/end 载荷携带诊断子会话 sessionId', async () => {
+    const session = makeSession({
+      events: [historyMessage('<user_message index="0">旧内容</user_message>')],
+    });
+    const ctx = makeCtx({
+      llmStream: [{ type: 'text-delta', text: '没有 history 块的输出' }],
+    });
+    const config = resolveConfig({
+      reflectThresholdTokens: 1,
+      compressRetryCount: 0,
+      rateLimitWaitMs: 0,
+      debug: false,
+    });
+    const result = await reflectPass(ctx, { session } as never, config, {
+      provider: 'test',
+      model: 'test-model',
+    });
+    expect(result).toMatchObject({ failed: true, aborted: false });
+    if (!result.failed) throw new Error('应失败');
+    // 诊断子会话已创建，id 随失败结果向上传播（index.ts 主会话日志使用）
+    const created = ctx._createdSessions[0];
+    expect(created).toBeDefined();
+    expect(result.diagnosticSessionId).toBe(created?.id);
+    // compaction/end(error) 载荷带诊断子会话 sessionId
+    const end = session.events.find((e) => e.type === 'compaction/end');
+    const endData =
+      (end?.data as { error?: string; diagnosticSessionId?: string } | undefined) ?? {};
+    expect(endData.error).toContain('找不到完整的 <history> 块');
+    expect(endData.diagnosticSessionId).toBe(created?.id);
+    // 失败不产生部分替换：表层仍为 history 块自身
+    expect(session.surface.nodes).toHaveLength(1);
   });
 });

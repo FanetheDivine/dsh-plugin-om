@@ -221,11 +221,15 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(1);
   }, 30000);
 
-  it('摘要调用失败耗尽：compaction/end(error) + pre-step 拒绝本 step', async () => {
+  it('摘要调用失败耗尽：compaction/end(error) + 诊断子会话落盘 + pre-step 拒绝本 step', async () => {
     const { app, session, adapter } = await stackHarness({
       withSystemPrompt: true,
-      // 适配器始终以 error 终止（真实 LlmRuntime 将其规范化为 error finish chunk）
-      chunksFor: () => [{ type: 'finish', reason: { kind: 'error' } } as StreamChunk],
+      // 适配器先输出一段非 <history> 文本再以 error 终止（真实 LlmRuntime 将其
+      // 规范化为 error finish chunk）：校验失败 + 模型原始输出非空，落盘可断言
+      chunksFor: () => [
+        { type: 'text-delta', index: 0, text: '模型输出的非日志内容，未通过校验' } as StreamChunk,
+        { type: 'finish', reason: { kind: 'error' } } as StreamChunk,
+      ],
     });
     seedUserMessages(session, 6);
 
@@ -240,6 +244,44 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(typeof error === 'string' && error !== '').toBe(true);
     // 失败不产生部分替换：表层仍为 6 条原始消息
     expect(session.surface.nodes).toHaveLength(6);
+
+    // 诊断子会话：最终失败即落盘，header 元数据指向主会话
+    const children = app.sessions.list().filter((s) => s.header.origin === 'subagent');
+    expect(children).toHaveLength(1);
+    const child = children[0];
+    expect(child?.header.parentSession).toBe(session.id);
+    expect(child?.header.delegationDepth).toBe(1);
+    // compaction/end error 载荷带诊断子会话 sessionId（UI 渲染行为不变）
+    expect((end?.data as { diagnosticSessionId?: string } | undefined)?.diagnosticSessionId).toBe(
+      child?.id,
+    );
+    // 首事件 descriptor：one-shot + provider om-compaction-log + label 含阶段与尝试次数
+    const descriptor = child?.events[0];
+    expect(descriptor?.type).toBe('subagent/descriptor');
+    expect(descriptor?.data).toMatchObject({
+      version: 2,
+      mode: 'one-shot',
+      provider: 'om-compaction-log',
+      label: 'OM 压缩失败日志（观察 · 1 次尝试）',
+    });
+    // 子会话内容零加工：一对 user/assistant surface 消息——完整提示词与模型原始输出原样
+    expect(child?.events).toHaveLength(3);
+    expect(child?.surface.nodes).toHaveLength(2);
+    const promptText = (
+      (child?.events[1]?.data as { content?: Array<{ text?: string }> } | undefined)?.content ?? []
+    )
+      .map((b) => b.text ?? '')
+      .join('');
+    expect(promptText).toContain('压缩 <history> 消息记录'); // system 指令（实际提示词全文）
+    expect(promptText).toContain('<user_message index="0">'); // 渲染输入含 <history> 块全文
+    expect(promptText).toContain('任务0');
+    const rawText = (
+      (child?.events[2]?.data as { message?: { content?: Array<{ text?: string }> } } | undefined)
+        ?.message?.content ?? []
+    )
+      .map((b) => b.text ?? '')
+      .join('');
+    expect(rawText).toBe('模型输出的非日志内容，未通过校验');
   }, 30000);
 
   it('systemPrompt 服务未挂载：压缩不被阻塞，om/warning 每会话一条 + console 外部输出', async () => {

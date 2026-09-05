@@ -385,7 +385,12 @@ describe('runSummarySubagent 结构化结果', () => {
       },
     });
     const result = await runSummarySubagent(...callArgs(ctx));
-    expect(result).toEqual({ ok: false, error: '额度不足', aborted: false });
+    expect(result).toEqual({
+      ok: false,
+      error: '额度不足',
+      aborted: false,
+      diagnosticSessionId: expect.any(String),
+    });
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
     expect(
       warns.some((w) => w.includes('摘要调用最终失败（已尝试 2 次，最后错误：额度不足）')),
@@ -419,7 +424,109 @@ describe('runSummarySubagent 结构化结果', () => {
       },
     });
     const result = await runSummarySubagent(...callArgs(ctx, controller.signal));
-    expect(result).toEqual({ ok: false, error: COMPACTION_ABORTED_ERROR, aborted: true });
+    expect(result).toEqual({
+      ok: false,
+      error: COMPACTION_ABORTED_ERROR,
+      aborted: true,
+      diagnosticSessionId: expect.any(String),
+    });
+  });
+});
+
+describe('runSummarySubagent 最终失败的诊断子会话落盘', () => {
+  /** 直连调用的固定入参（phase 反思；agent 仅承载 session 的最小桩）。 */
+  function callArgsWithPhase(ctx: ReturnType<typeof makeCtx>, signal?: AbortSignal) {
+    const agent = { session: makeSession({ events: twoCallFlow() }) };
+    const target = { provider: 'test', model: 'test-model' };
+    return [
+      ctx,
+      agent,
+      buildHistoryPrompt(),
+      '<history>\n<user_message index="0">旧内容</user_message>\n</history>',
+      undefined,
+      target,
+      false,
+      signal,
+      { maxAttempts: 2, expected: { start: 0, end: 0 }, phase: 'reflect' as const },
+    ] as unknown as Parameters<typeof runSummarySubagent>;
+  }
+
+  it('校验失败耗尽：每次尝试的完整提示词与模型原始输出落盘为诊断子会话', async () => {
+    const ctx = makeCtx({
+      llmStream: [{ type: 'text-delta', text: '没有 history 块的输出' }],
+    });
+    const result = await runSummarySubagent(...callArgsWithPhase(ctx));
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('应失败');
+    const created = ctx._createdSessions[0];
+    expect(created).toBeDefined();
+    expect(result.diagnosticSessionId).toBe(created?.id);
+    const child = created?.session;
+    expect(child?.events[0]?.type).toBe('subagent/descriptor');
+    expect(child?.events[0]?.data).toMatchObject({
+      version: 2,
+      mode: 'one-shot',
+      provider: 'om-compaction-log',
+      label: 'OM 压缩失败日志（反思 · 2 次尝试）',
+    });
+    // 每次尝试一对消息：提示词（system 指令 + 渲染输入拼接）与原始输出原样
+    expect(child?.events).toHaveLength(5);
+    for (let i = 0; i < 2; i += 1) {
+      const user = child?.events[1 + i * 2];
+      const assistant = child?.events[2 + i * 2];
+      const userText = (user?.data as { content?: Array<{ text?: string }> } | undefined)
+        ?.content?.[0]?.text;
+      expect(userText).toBe(
+        `${buildHistoryPrompt()}\n\n<history>\n<user_message index="0">旧内容</user_message>\n</history>`,
+      );
+      const rawText = (
+        assistant?.data as { message?: { content?: Array<{ text?: string }> } } | undefined
+      )?.message?.content?.[0]?.text;
+      expect(rawText).toBe('没有 history 块的输出');
+    }
+  });
+
+  it('流异常后中止：异常尝试的部分输出也进入诊断子会话，中止结果同样落盘', async () => {
+    const controller = new AbortController();
+    const ctx = makeCtx({
+      llmStream: {
+        [Symbol.iterator]() {
+          return {
+            next() {
+              controller.abort(); // 第一次尝试流中途失败后中止，第二次尝试前检测到
+              throw new Error('模拟失败');
+            },
+          };
+        },
+      },
+    });
+    const result = await runSummarySubagent(...callArgsWithPhase(ctx, controller.signal));
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('应失败');
+    expect(result.aborted).toBe(true);
+    // 仅第一次尝试有消息组；第二次尝试在请求前中止，不产生消息
+    const created = ctx._createdSessions[0];
+    expect(created).toBeDefined();
+    expect(result.diagnosticSessionId).toBe(created?.id);
+    const child = created?.session;
+    expect(child?.events).toHaveLength(3);
+    const partial = (
+      child?.events[2]?.data as { message?: { content?: Array<{ text?: string }> } } | undefined
+    )?.message?.content?.[0]?.text;
+    expect(partial).toBe('');
+  });
+
+  it('signal 预先中止（0 次尝试）：仍落盘仅含 descriptor 的诊断子会话', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const ctx = makeCtx();
+    const result = await runSummarySubagent(...callArgsWithPhase(ctx, controller.signal));
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('应失败');
+    expect(result.aborted).toBe(true);
+    expect(result.diagnosticSessionId).toBe(ctx._createdSessions[0]?.id);
+    expect(ctx._createdSessions[0]?.session.events).toHaveLength(1);
+    expect(ctx._createdSessions[0]?.session.events[0]?.type).toBe('subagent/descriptor');
   });
 });
 

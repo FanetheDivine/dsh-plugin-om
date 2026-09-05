@@ -17,7 +17,7 @@
  * - 摘要尝试全部耗尽时 pass 返回失败结果（携带最后一次尝试的实际报错），压缩流程
  *   向上传播，pre-step 据此拒绝本 step 中断当前 turn；signal 中止标记 aborted（不中断）
  * - 提交走宿主 compaction/* 生命周期事件（start 带 phase → summary → 替换消息 → end），
- *   失败补 end(error，实际报错)；替换消息 source 标记插件标识供 UI 认领
+ *   失败补 end(error，实际报错 + 诊断子会话 sessionId)；替换消息 source 标记插件标识供 UI 认领
  * - 挂载失败类问题（systemPrompt/tokenMeter 服务异常）始终 console 到外部进程，并追加
  *   log-only om/warning 事件（客户端渲染功能降级警告行，每会话同一问题至多一次）；
  *   辅助估算的普通运行时报错仅记日志。降级与报错都不阻塞压缩（tokenMeter 压力数据
@@ -39,6 +39,7 @@ import {
 } from './summarize.ts';
 import type {
   Agent,
+  CompactionEndPayload,
   CompactionId,
   CompactionStartPayload,
   CompactionSummaryPayload,
@@ -51,10 +52,14 @@ import type {
 } from './types.ts';
 import { blocksToText, type RoutedTarget, routedTarget, textCharCount, uuid } from './utils.ts';
 
-/** 压缩 pass 结果：failed=false 表示无需中断（成功、跳过或非摘要耗尽的局部失败）；failed=true 携带最后一次尝试的实际报错与是否因 signal 中止。 */
+/**
+ * 压缩 pass 结果：failed=false 表示无需中断（成功、跳过或非摘要耗尽的局部失败）；
+ * failed=true 携带最后一次尝试的实际报错、是否因 signal 中止与诊断子会话 id
+ * （最终失败时每次尝试的完整提示词与模型原始输出落盘为诊断子会话；落盘失败时缺失）。
+ */
 export type CompressPassResult =
   | { failed: false }
-  | { failed: true; error: string; aborted: boolean };
+  | { failed: true; error: string; aborted: boolean; diagnosticSessionId?: string };
 
 /** 历史文本 token 估算：4 字符 ≈ 1 token（与宿主 dsh-token-meter 启发式一致）。 */
 export function estimateTextTokens(text: string): number {
@@ -296,17 +301,23 @@ function appendCompactionSummary(
   return session.append('compaction/summary', payload).seq;
 }
 
-/** 追加 compaction/end（log-only，结束生命周期；error 记录失败原因）。 */
+/**
+ * 追加 compaction/end（log-only，结束生命周期；error 记录失败原因，
+ * diagnosticSessionId 记录最终失败时的诊断子会话 id）。
+ */
 function appendCompactionEnd(
   session: Session,
   lifecycle: CompactionLifecycle,
   error?: string,
+  diagnosticSessionId?: string,
 ): number {
-  return session.append('compaction/end', {
+  const payload: CompactionEndPayload = {
     compactionId: lifecycle.compactionId,
     turn: lifecycle.turn,
     ...(error === undefined ? {} : { error }),
-  }).seq;
+    ...(diagnosticSessionId === undefined ? {} : { diagnosticSessionId }),
+  };
+  return session.append('compaction/end', payload).seq;
 }
 
 /** 追加 <history> 压缩日志消息（surfaceOp 替换遮蔽区间，source 标记插件自产 + compactionId）。 */
@@ -394,16 +405,31 @@ export async function reflectPass(
       maxAttempts: config.compressRetryCount + 1,
       expected: expectedEnd < 0 ? { start: 0 } : { start: 0, end: expectedEnd },
       rateLimitWaitMs: config.rateLimitWaitMs,
+      phase: 'reflect',
     },
   );
   if (!summaryResult.ok) {
-    logger.warn(`反思：摘要调用失败（${summaryResult.error}），追加 compaction/end(error)`);
+    logger.warn(
+      `反思：摘要调用失败（${summaryResult.error}），诊断子会话 ${summaryResult.diagnosticSessionId ?? '未落盘'}，追加 compaction/end(error)`,
+    );
     try {
-      appendCompactionEnd(session, lifecycle, summaryResult.error);
+      appendCompactionEnd(
+        session,
+        lifecycle,
+        summaryResult.error,
+        summaryResult.diagnosticSessionId,
+      );
     } catch {
       /* end 追加失败忽略（start 已记录，日志仍可诊断） */
     }
-    return { failed: true, error: summaryResult.error, aborted: summaryResult.aborted };
+    return {
+      failed: true,
+      error: summaryResult.error,
+      aborted: summaryResult.aborted,
+      ...(summaryResult.diagnosticSessionId === undefined
+        ? {}
+        : { diagnosticSessionId: summaryResult.diagnosticSessionId }),
+    };
   }
   const report = summaryResult.text;
   try {
@@ -675,17 +701,32 @@ export async function observePass(
       maxAttempts: config.compressRetryCount + 1,
       expected: { start: startIndex, end: endIndex },
       rateLimitWaitMs: config.rateLimitWaitMs,
+      phase: 'observe',
     },
   );
   if (!summaryResult.ok) {
-    logger.warn(`观察：摘要调用失败（${summaryResult.error}），追加 compaction/end(error)`);
+    logger.warn(
+      `观察：摘要调用失败（${summaryResult.error}），诊断子会话 ${summaryResult.diagnosticSessionId ?? '未落盘'}，追加 compaction/end(error)`,
+    );
     try {
-      appendCompactionEnd(session, lifecycle, summaryResult.error);
+      appendCompactionEnd(
+        session,
+        lifecycle,
+        summaryResult.error,
+        summaryResult.diagnosticSessionId,
+      );
     } catch {
       /* end 追加失败忽略（start 已记录，日志仍可诊断） */
     }
     // 摘要失败不清除待定标记：下个 pre-step 直接重试执行（无需重新触发与等待）
-    return { failed: true, error: summaryResult.error, aborted: summaryResult.aborted };
+    return {
+      failed: true,
+      error: summaryResult.error,
+      aborted: summaryResult.aborted,
+      ...(summaryResult.diagnosticSessionId === undefined
+        ? {}
+        : { diagnosticSessionId: summaryResult.diagnosticSessionId }),
+    };
   }
   const report = summaryResult.text;
   const attemptCount = summaryResult.attemptCount - 1;

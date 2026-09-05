@@ -4,6 +4,7 @@
 
 ### Added
 
+- 压缩失败诊断落盘（`src/compaction-log.ts`）：摘要最终失败（校验不过/异常限流/signal 中止）时，把每次尝试的完整提示词与模型原始输出原样落盘为一个 one-shot 诊断子会话（header origin `subagent` + `subagent/descriptor`，provider `om-compaction-log`，label 含压缩阶段与尝试次数），以 subagent 形式出现在宿主子代理列表中；诊断子会话 sessionId 随失败结果写入主会话日志与 `compaction/end` error 载荷（扩展字段 `diagnosticSessionId`），落盘自身失败仅 warn 不影响压缩失败流程
 - 机制说明与成本计算器站点（`web/`，独立 Vite + React 工程，发布到 GitHub Pages，不随插件包分发）：om 机制讲解、dsh 注入消息（AGENTS.md / skill 定义等）及其压缩后 `<sys>` 空条目遮蔽说明、可调参数（系统提示词 / dsh 注入 / 观察阈值 / 反思阈值 / 压缩比 / 步长 / 三类 token 价格）驱动的 20k–250k 原始会话规模成本对比表（om 开/关三类 token 消耗、费用与节省额）
 - 成本模型纯函数 `web/src/model.ts`（om 开/关全会话模拟：前缀缓存计费、观察/反思触发、注入遮蔽、压缩轮缓存截断、摘要调用按缓存创建计价）及 `tests/web/model.test.ts` 覆盖
 - `web-deploy.yml` workflow：`web/**` 变更合入 main 时构建并部署 GitHub Pages（需在仓库 Settings → Pages 选择 GitHub Actions 作为 Source）
