@@ -6,8 +6,9 @@
 
 ## 功能
 
-- **自动压缩**：仅主会话，在 agent/pre-step 阻塞串行执行。净压力达到 `observeThresholdTokens` 后再累计 `tailMessageCount` 条完整消息时，把触发点前的全部消息摘要为新 `<history>` 块并精确替换对应消息区间；全部 `<history>` 块 token 合计达到 `reflectThresholdTokens` 时把全部块内文拼合为单个 `<history>` 块送入摘要，合并为一条更紧凑的摘要。待定标记以 log-only 会话事件持久化，重启后从日志恢复
-- **输出容错**：摘要输出按 `<history>` 标签定位，整块非法时按条目标签模糊提取并重建为合法块。重试全部耗尽后拒绝当前 step，并把每次尝试的完整提示词与模型原始输出落盘为 one-shot 诊断子会话
+- **自动压缩**：仅主会话，在 agent/pre-step 阻塞串行执行。净压力达到 `observeThresholdTokens` 后再累计 `tailMessageCount` 条完整消息时，把触发点前的全部消息摘要为新 `<history>` 块并精确替换对应消息区间；全部 `<history>` 块 token 合计达到 `reflectThresholdTokens` 时把全部块内条目送入重新压缩，合并为一条更紧凑的摘要。待定标记以 log-only 会话事件持久化，重启后从日志恢复
+- **工具驱动压缩**：摘要生成走多轮工具会话，模型经 getHistory 查看区间条目、compressHistory 分批替换 assistant 条目、completeCompression 结束。首条消息仅含压缩指令与 index 区间，不含历史内容。用户消息与系统消息不可压缩且原样保留；未压缩条目原样保留；skill 块首次压缩时要求模型再次确认相关性。最终 `<history>` 块由插件构建，天然合法无需校验
+- **压缩会话记录**：每次压缩的工具循环完整对话落盘为 one-shot 子会话，成功为会话记录、失败为失败日志，便于查看模型实际的查看与压缩行为
 - **降级容错**：systemPrompt 或 tokenMeter 服务异常时按 0 计继续压缩，问题通过 console 输出与 log-only `om/warning` 会话事件上报，同会话同一问题至多一条
 - **recall 工具**：按完整消息 index 区间回看原始会话，含被压缩内容，图片附件随结果保留
 - **recall-semantic 工具**：本地嵌入模型 paraphrase-multilingual-MiniLM-L12-v2 按语义检索全部完整消息，只匹配文本，纯图片消息不进候选池
@@ -56,19 +57,18 @@ preset-agent 自带 compaction-basic 压缩，阈值为上下文窗口的 80%，
 | --- | --- | --- |
 | `observeThresholdTokens` | `45000` | 净压力达到该值时触发观察压缩 |
 | `reflectThresholdTokens` | `120000` | 全部 `<history>` 块 token 合计达到该值时触发反思合并 |
-| `compressMaxTokens` | 不设置 | 单次摘要生成上限，不设置时由模型适配器默认值决定 |
-| `rateLimitWaitMs` | `60000` | 遇 429 限流后下一次摘要请求前的等待毫秒数，`0` 不限流 |
+| `compressMaxTokens` | 不设置 | 压缩循环单轮生成上限，不设置时由模型适配器默认值决定 |
+| `rateLimitWaitMs` | `60000` | 遇 429 限流后下一次压缩请求前的等待毫秒数，`0` 不限流 |
 | `tailMessageCount` | `5` | 观察触发后等待新增完整消息达到该条数才执行压缩，`0` 表示触发当轮立即执行 |
-| `compressRetryCount` | `5` | 摘要失败后的最大重试次数，不含首次 |
 | `modelDir` | 共享目录 | recall-semantic 嵌入模型目录，默认 `$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>`，onnx 缺失且启用语义召回时运行时自动下载 |
 | `omEnabled` | `true` | 是否启用自动压缩，关闭后 recall 工具不受影响 |
-| `debug` | dev | 步骤级日志开关，缺省按 `NODE_ENV` 非 production 判定，压缩尝试结果与失败日志始终输出 |
+| `debug` | dev | 步骤级日志开关，缺省按 `NODE_ENV` 非 production 判定，压缩结果与失败日志始终输出 |
 | `recallEnabled` | `true` | 是否注册 `recall` 工具 |
 | `semanticRecallEnabled` | `true` | 是否注册 `recall-semantic` 工具，关闭时不触发模型下载 |
 
 > 不建议把观察阈值设置得过高：越早压缩收益越高，且机制依赖模型对消息计数，过多消息会导致历史混乱。
 
-> 想直观理解机制并估算不同参数下的 token 成本，可打开交互式[机制说明与成本计算器](https://fanethedivine.github.io/dsh-plugin-om/)，部署在 GitHub Pages，不随插件包分发。
+> 想直观理解机制并估算不同参数下的 token 成本，可打开交互式[机制说明与成本计算器](https://fanethedivine.github.io/dsh-plugin-om/)，部署在 GitHub Pages，不随插件包分发。当前站点尚未覆盖工具驱动压缩的多轮成本模型，待后续按实际数据更新。
 
 ## npm 命令
 
@@ -89,21 +89,23 @@ cordis.patch.yml                 # bundle patch，dsh plugin add 后作为组合
 src/
 ├── index.ts                     # 打包入口：注册 recall 工具并接线 pre-step 自动压缩
 ├── config.ts                    # 配置默认值与宽松合并，未知键忽略、非法值回退默认
-├── constants.ts                 # 共享常量：插件标识、history 标签、完整消息定义
+├── constants.ts                 # 共享常量：插件标识、history 标签、完整消息定义、格式说明注释
 ├── degrade.ts                   # 挂载失败降级上报：console 外部输出与 om/warning 会话事件
 ├── types.ts                     # type-only：宿主类型再导出与领域类型
 ├── utils.ts                     # 零依赖工具函数：文本渲染、主会话判定、路由解析
 ├── json-schema.ts               # zod schema 到工具 wire 参数 JSON Schema 的转换
 ├── logger.ts                    # 插件日志门面，step 按 debug 开关过滤
 ├── rate-limit.ts                # 全局 429 限流冷却门，进程级共享状态
-├── log-index.ts                 # 完整消息索引与渲染，recall 与摘要共用同一套编号
+├── log-index.ts                 # 完整消息索引与渲染，recall 与压缩共用同一套编号
 ├── recall.ts                    # recall 工具：按完整消息 index 区间回看
 ├── recall-output.ts             # recall 输出契约：{ text, images } 与 render 投影
 ├── semantic-recall.ts           # recall-semantic 工具：本地嵌入语义检索
 ├── embedding.ts                 # 本地 ONNX 嵌入：懒加载、批量、运行时按需下载编排
 ├── model-download.ts            # 模型下载原语：URL、跳过判定、原子落盘
-├── summarize.ts                 # 共享压缩提示词、history 块渲染与输出校验、摘要调用
-├── compaction-log.ts            # 压缩失败诊断落盘：诊断子会话创建与逐尝试原样消息组
+├── compress-view.ts             # 压缩视图：观察与反思区间到统一条目序列的投影与渲染
+├── compress-tools.ts            # 压缩工具状态机：getHistory/compressHistory/completeCompression 与最终块构建
+├── compress-loop.ts             # 工具压缩循环：多轮请求、工具执行、限流与失败判定、usage 汇总
+├── compaction-log.ts            # 压缩会话记录落盘：循环对话消息组子会话（成功记录与失败日志）
 ├── compress.ts                  # 两级自动压缩：观察与反思、失败中断传播、compaction 生命周期事件
 └── client/                      # 浏览器客户端 bundle：压缩卡片
     ├── index.ts                 # 客户端入口：注册卡片定义与渲染器
