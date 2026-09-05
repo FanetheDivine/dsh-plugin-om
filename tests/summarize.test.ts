@@ -39,11 +39,12 @@ describe('共享提示词 buildHistoryPrompt（观察/反思同一套）', () =>
     // 压缩要求：用户/系统条目从输入逐条保留（含 XML 转义形式，不解码）
     expect(prompt).toContain('条目从输入中逐条保留，不做任何处理');
     expect(prompt).toContain('<reasoning> 只作参考，输出产物中不包含 <reasoning> 块');
-    // 具有关联性的 assistant 块合并
+    // 具有关联性的 assistant 块合并；块内描述行为逻辑，强调结论/产出/任务，文件保留完整路径
     expect(prompt).toContain('将具有关联性的 <assistant> 消息');
-    expect(prompt).toContain('目的、行为与结果');
-    expect(prompt).toContain('合并简写');
     expect(prompt).toContain('内在逻辑连贯性');
+    expect(prompt).toContain('描述**行为逻辑**');
+    expect(prompt).toContain('强调关键的**结论、产出和任务**');
+    expect(prompt).toContain('保留完整路径');
     // 单条重要消息单独呈现
     expect(prompt).toContain('单条重要的完整消息以 <assistant index=""> 单独呈现');
     // 加载的 skill：独立块且不过多省略
