@@ -60,6 +60,7 @@ preset-agent 自带 compaction-basic 压缩，阈值为上下文窗口的 80%，
 | `rateLimitWaitMs` | `60000` | 遇 429 限流后下一次摘要请求前的等待毫秒数，`0` 不限流 |
 | `tailMessageCount` | `5` | 观察触发后等待新增完整消息达到该条数才执行压缩，`0` 表示触发当轮立即执行 |
 | `compressRetryCount` | `5` | 摘要失败后的最大重试次数，不含首次 |
+| `compressSkipReasoning` | `true` | 观察压缩请求是否携带被压缩 assistant 消息的 reasoning 思考文本，`true` 时不携带 `<reasoning>` 参考条目，压缩指令同步省略对应说明 |
 | `modelDir` | 共享目录 | recall-semantic 嵌入模型目录，默认 `$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>`，onnx 缺失且启用语义召回时运行时自动下载 |
 | `omEnabled` | `true` | 是否启用自动压缩，关闭后 recall 工具不受影响 |
 | `debug` | dev | 步骤级日志开关，缺省按 `NODE_ENV` 非 production 判定，压缩尝试结果与失败日志始终输出 |

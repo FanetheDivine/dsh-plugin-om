@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- 新增配置 `compressSkipReasoning`（默认 `true`）：观察压缩请求不携带被压缩 assistant 消息的 `<reasoning>` 思考文本参考条目，压缩指令同步省略对应说明；显式设为 `false` 时恢复携带
+
 ### Changed
 
 - 压缩日志改为每次实际发出的摘要调用完成后立即落盘一个 one-shot 诊断子会话，成功与失败均落盘，label 改为中性的「OM 压缩日志（阶段 · 第 N 次尝试）」；compaction/end 成功载荷携带最后一次尝试的子会话 id

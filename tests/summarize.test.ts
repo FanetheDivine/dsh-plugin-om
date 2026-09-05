@@ -482,6 +482,20 @@ describe('runSummarySubagent 最终失败的诊断子会话落盘', () => {
   });
 });
 
+describe('共享压缩提示词 buildHistoryPrompt', () => {
+  it('skipReasoning=true（默认）省略 <reasoning> 说明；false 保留', () => {
+    expect(buildHistoryPrompt()).not.toContain('<reasoning>');
+    expect(buildHistoryPrompt(true)).not.toContain('<reasoning>');
+    const withRef = buildHistoryPrompt(false);
+    expect(withRef).toContain('<reasoning>：模型的思考过程，仅作压缩参考，产物中不要出现。');
+    expect(withRef).toContain('<reasoning> 只作参考，输出产物中不包含 <reasoning> 块。');
+    // 非 reasoning 的定义与要求不受开关影响
+    expect(withRef).toContain(
+      '- <assistant index="N">：单条完整消息（模型输出文本，或 toolcall 及其 result）。',
+    );
+  });
+});
+
 describe('消息渲染 renderMessages', () => {
   it('完整消息渲染：<user_message index> + <assistant index>（文本与 toolcall 分条）', () => {
     const flow = buildToolCallFlow({
@@ -512,7 +526,7 @@ describe('消息渲染 renderMessages', () => {
     expect(text).not.toContain('message_id');
   });
 
-  it('用户消息图片/文件块以注释补充（文本原样），assistant reasoning 输出 <reasoning> 参考条目', () => {
+  it('用户消息图片/文件块以注释补充（文本原样）；assistant reasoning 默认不进压缩输入', () => {
     const events = [
       {
         type: 'user/message',
@@ -554,13 +568,37 @@ describe('消息渲染 renderMessages', () => {
     expect(text).toContain('看图说话');
     expect(text).toContain('<!-- 图片附件：图.png（image/png 800×600，1024 bytes） -->');
     expect(text).toContain('<!-- file 块 -->');
-    // reasoning 参考条目（产物中没有，但输入保留；DOM 序列化紧凑、文本自动转义）；assistant 文本原样
-    expect(text).toContain('<reasoning>先看图再回答</reasoning>');
+    // reasoning 默认（skipReasoning=true）不进入压缩输入：无 <reasoning> 参考条目
+    expect(text).not.toContain('<reasoning>');
+    expect(text).not.toContain('先看图再回答');
+    // assistant 文本原样，index 布局不受影响
     expect(text).toContain('<assistant index="1">');
     expect(text).toContain('这是答案');
-    // reasoning 不是完整消息：不占 index（assistant 文本仍为 index 1）
-    expect(text).toContain('<user_message index="0">');
-    expect(text).toContain('<assistant index="1">');
+  });
+
+  it('skipReasoning=false：assistant reasoning 输出 <reasoning> 参考条目（不占 index）', () => {
+    const session = makeSession({
+      events: [
+        {
+          type: 'assistant/message',
+          data: {
+            message: makeMessage({
+              role: 'assistant',
+              content: [{ type: 'reasoning', text: '先看图再回答' }, textBlock('这是答案')],
+              source: { kind: 'model', provider: 'test', model: 'test-model' },
+              id: 'a-think',
+            }),
+          },
+        } as unknown as SessionEvent,
+      ],
+    });
+    const text = renderMessages(session, [0], false);
+    // reasoning 参考条目（输入保留；DOM 序列化紧凑、文本自动转义）
+    expect(text).toContain('<reasoning>先看图再回答</reasoning>');
+    // assistant 文本原样；reasoning 不是完整消息：不占 index（assistant 文本仍为 index 0）
+    expect(text).toContain('<assistant index="0">');
+    expect(text).toContain('这是答案');
+    expect(text).not.toContain('<assistant index="1">');
   });
 
   it('相邻用户消息各占一条（index 0/1）；区间外完整消息不渲染', () => {

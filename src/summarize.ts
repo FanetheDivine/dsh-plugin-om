@@ -38,8 +38,10 @@ import { type RoutedTarget, uuid } from './utils.ts';
 /**
  * 共享压缩提示词（观察/反思同一套）：定义 history 块（模型消息 + index 的表达形式）、
  * 完整消息定义、压缩要求、输出格式与数据源说明。
+ * skipReasoning=true（默认，与 compressSkipReasoning 默认一致）时压缩输入不含
+ * <reasoning> 参考条目，提示词相应省略 <reasoning> 的说明两行。
  */
-export function buildHistoryPrompt(): string {
+export function buildHistoryPrompt(skipReasoning = true): string {
   const lines: string[] = [
     '压缩 <history> 消息记录。你应当输出**单个**合法的 <history> 块。',
     '',
@@ -47,13 +49,13 @@ export function buildHistoryPrompt(): string {
     '- <history> 是历史消息的记录块。',
     '- <user_message index="N">：用户消息条目。',
     '- <sys type="(kind)" index="N">：系统消息条目。',
-    '- <reasoning>：模型的思考过程，仅作压缩参考，产物中不要出现。',
+    ...(skipReasoning ? [] : ['- <reasoning>：模型的思考过程，仅作压缩参考，产物中不要出现。']),
     '- <assistant index="N">：单条完整消息（模型输出文本，或 toolcall 及其 result）。',
     '- <assistant start="A" end="B">：多条连续完整消息聚合的模块（A/B 为模块首尾完整消息的 index）。',
     '',
     '【压缩要求】',
     '- <user_message> <sys> 条目从输入中逐条保留，不做任何处理。',
-    '- <reasoning> 只作参考，输出产物中不包含 <reasoning> 块。',
+    ...(skipReasoning ? [] : ['- <reasoning> 只作参考，输出产物中不包含 <reasoning> 块。']),
     '- 将具有关联性的 <assistant> 消息按内在逻辑连贯性划分为连续模块，聚合为 <assistant start="" end=""> 块',
     '- 单条重要的完整消息以 <assistant index=""> 单独呈现',
     '- 压缩后的 <assistant> 块内，应当描述**行为逻辑**，强调关键的**结论、产出和任务**；涉及到的具体文件保留完整路径',
@@ -125,23 +127,31 @@ function renderUserEntry(doc: Document, session: Session, cm: CompleteMessage): 
 
 /**
  * 渲染完整消息记录（观察输入）：输出一个合法的 <history> 块——
- * user → <user_message>（文本原样、图片注释）、sys → <sys> 空块、assistant 的
- * reasoning → <reasoning>（参考条目）、assistant/toolcall → <assistant>（原样文本）。
+ * user → <user_message>（文本原样、图片注释）、sys → <sys> 空块、
+ * assistant/toolcall → <assistant>（原样文本）；skipReasoning=false 时另把
+ * assistant 的 reasoning → <reasoning>（参考条目）。
  * 文本经 XML 序列化自动转义；仅渲染 seqs 全部落在给定集合内的完整消息。
  */
-export function renderMessages(session: Session, seqs: readonly number[]): string {
+export function renderMessages(
+  session: Session,
+  seqs: readonly number[],
+  skipReasoning = true,
+): string {
   const shadowed = new Set(seqs);
   const reasoningBySeq = new Map<number, string[]>();
-  for (const seq of seqs) {
-    const event = session.events[seq];
-    if (event?.type !== 'assistant/message') continue;
-    const message = event.data.message;
-    if (!message || !Array.isArray(message.content)) continue;
-    const reasonings: string[] = [];
-    for (const block of message.content) {
-      if (block.type === 'reasoning' && typeof block.text === 'string') reasonings.push(block.text);
+  if (!skipReasoning) {
+    for (const seq of seqs) {
+      const event = session.events[seq];
+      if (event?.type !== 'assistant/message') continue;
+      const message = event.data.message;
+      if (!message || !Array.isArray(message.content)) continue;
+      const reasonings: string[] = [];
+      for (const block of message.content) {
+        if (block.type === 'reasoning' && typeof block.text === 'string')
+          reasonings.push(block.text);
+      }
+      if (reasonings.length > 0) reasoningBySeq.set(seq, reasonings);
     }
-    if (reasonings.length > 0) reasoningBySeq.set(seq, reasonings);
   }
   const emittedReasoning = new Set<number>();
   const doc = newQuietParser().parseFromString(`<${HISTORY_TAG} />`, 'text/xml');
@@ -162,10 +172,15 @@ export function renderMessages(session: Session, seqs: readonly number[]): strin
       if (rendered === null) continue;
       entries.push(rendered);
     } else {
-      // assistant / toolcall 条目：先输出所属 assistant 消息的 reasoning（每条消息一次）
+      // assistant / toolcall 条目：skipReasoning=false 时先输出所属 assistant 消息的 reasoning（每条消息一次）
       const callSeq = cm.seqs[0];
       const reasonings = callSeq === undefined ? undefined : reasoningBySeq.get(callSeq);
-      if (callSeq !== undefined && reasonings !== undefined && !emittedReasoning.has(callSeq)) {
+      if (
+        !skipReasoning &&
+        callSeq !== undefined &&
+        reasonings !== undefined &&
+        !emittedReasoning.has(callSeq)
+      ) {
         emittedReasoning.add(callSeq);
         for (const text of reasonings) {
           const re = doc.createElement('reasoning');

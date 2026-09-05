@@ -20,6 +20,8 @@ export type PluginConfig = {
   tailMessageCount: number;
   /** 摘要失败后的最大重试次数（不含首次）。 */
   compressRetryCount: number;
+  /** 压缩输入是否携带被压缩消息的 reasoning 思考文本（true 时压缩请求不含 <reasoning> 参考条目，压缩提示词也省略其说明）。 */
+  compressSkipReasoning: boolean;
   /** 是否启用自动压缩（观察/反思）。 */
   omEnabled: boolean;
   /** 步骤级日志开关（缺省按 NODE_ENV !== 'production' 判定）。 */
@@ -40,6 +42,7 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   rateLimitWaitMs: 60000,
   tailMessageCount: 5,
   compressRetryCount: 5,
+  compressSkipReasoning: true,
   omEnabled: true,
   debug: false,
   recallEnabled: true,
@@ -94,6 +97,7 @@ export function resolveConfig(raw?: unknown): Readonly<PluginConfig> {
     if (integer && !Number.isInteger(value)) continue;
     config[key] = value as number;
   }
+  config.compressSkipReasoning = resolveBoolean(input.compressSkipReasoning, true);
   config.omEnabled = resolveBoolean(input.omEnabled, true);
   config.debug = resolveBoolean(input.debug, process.env.NODE_ENV !== 'production');
   config.recallEnabled = resolveBoolean(input.recallEnabled, true);
