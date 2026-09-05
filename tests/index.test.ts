@@ -15,7 +15,7 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
 import { HISTORY_TAG, PLUGIN_LABEL } from '../src/constants.ts';
 import { ensureModelReady } from '../src/embedding.ts';
 import { apply, inject, name } from '../src/index.ts';
-import { buildHistoryPrompt } from '../src/summarize.ts';
+import { buildHistoryPrompt, HISTORY_FORMAT_NOTE } from '../src/summarize.ts';
 import type { CompactionSummaryPayload, Session, SessionEvent, UserMessage } from '../src/types.ts';
 import {
   buildToolCallFlow,
@@ -743,6 +743,14 @@ describe('apply 接线（OM 反思压缩）', () => {
     return String(o.system ?? '');
   }
 
+  /** 提取摘要调用的 user 输入文本（渲染消息，唯一 user 消息的首个 text 块）。 */
+  function inputText(ctx: ReturnType<typeof makeCtx>): string {
+    const call = ctx._llmCalls[0] as
+      | { options?: { messages?: Array<{ content?: Array<{ text?: string }> }> } }
+      | undefined;
+    return String(call?.options?.messages?.[0]?.content?.[0]?.text ?? '');
+  }
+
   it('摘要超反思阈值：摘要调用精简合并并把整个块区段替换为一条', async () => {
     // 单块摘要（X*40 + tip 标签约 26 tokens）；反思阈值 1 → 触发反思；
     // 上下文压力远小于观察阈值（保持默认 45000）→ 观察不触发
@@ -804,6 +812,15 @@ describe('apply 接线（OM 反思压缩）', () => {
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(1);
     expect(instructionText(ctx._llmCalls[0]?.options)).toBe(buildHistoryPrompt()); // 反思与观察共用同一套提示词
+    // 摘要输入为全部块内文拼合的单个 <history> 块（无 tip 属性、仅一对开闭标签）
+    const input = inputText(ctx);
+    expect(input.startsWith(`<${HISTORY_TAG}>\n`)).toBe(true);
+    expect(input.endsWith(`\n</${HISTORY_TAG}>`)).toBe(true);
+    expect(input).not.toContain(' tip=');
+    expect(input.match(/<history>/g)).toHaveLength(1);
+    expect(input.match(/<\/history>/g)).toHaveLength(1);
+    expect(input).toContain('X'.repeat(40)); // 两块内文按序合并
+    expect(input).toContain('Y'.repeat(40));
     expect(session.surface.nodes.length).toBe(before - 1); // 两块合并为一条
     expect(latestHistoryText(session)).toContain('MERGED');
     expect(latestHistoryText(session)).not.toContain('X'.repeat(40)); // 全部旧块被替换
@@ -815,6 +832,50 @@ describe('apply 接线（OM 反思压缩）', () => {
     expect(summaryEvent.data.shadowedRange).toEqual({ start: 0, end: 1 });
     expect(summaryEvent.data.shadowedSeqs).toEqual([0, 1]);
     expect((summaryEvent.data as CompactionSummaryPayload).shadowedCharCount).toBe(80); // 两块 X*40 + Y*40
+  });
+
+  it('多块反思输入：剥离各块块首格式说明注释，正文条目内的同名串原样保留', async () => {
+    // 块 1 顶部带真实提取产物特有的格式说明注释；块 2 正文条目内含同形注释串与 tip 文本，
+    // 拼合仅剥离块首注释，正文串不动（防止误伤块内部）
+    const noteInContent = '<!-- 完整消息：正文条目内的同名注释串 -->';
+    const session = makeSession({
+      events: [
+        historyMessage(
+          `${HISTORY_FORMAT_NOTE}\n<user_message index="0">\nOLD-SUMMARY-1\n</user_message>`,
+        ),
+        historyMessage(
+          `<user_message index="1">\n${noteInContent}\ntip="正文内的 tip 文本"\n</user_message>`,
+          'h2',
+        ),
+        ...buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+          withTurnEnd: true,
+        }),
+      ],
+    });
+    const ctx = makeCtx({
+      llmStream: [
+        {
+          type: 'text-delta',
+          text:
+            '<history>\n<user_message index="0">\n合并后的历史条目内容\n</user_message>\n' +
+            '<user_message index="1">\n续接条目\n</user_message>\n</history>',
+        },
+      ],
+    });
+    apply(ctx, { reflectThresholdTokens: 1 });
+    await runPreStep(ctx, session);
+    expect(ctx._llmCalls).toHaveLength(1);
+    const input = inputText(ctx);
+    expect(input.startsWith(`<${HISTORY_TAG}>\n<user_message index="0">`)).toBe(true); // 块 1 块首注释已剥离
+    expect(input).not.toContain(HISTORY_FORMAT_NOTE);
+    expect(input).toContain('OLD-SUMMARY-1'); // 两块内文按序合并
+    expect(input).toContain(noteInContent); // 正文条目内的同名注释串原样保留
+    expect(input).toContain('tip="正文内的 tip 文本"'); // 正文内的 tip 同形文本原样保留
+    expect(input.startsWith(`<${HISTORY_TAG}>\n`)).toBe(true); // 输入开标签无属性
   });
 
   it('先反思后观察串行：反思合并旧块，观察在其后追加独立新块', async () => {

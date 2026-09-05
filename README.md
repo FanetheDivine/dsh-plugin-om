@@ -6,7 +6,7 @@
 
 ## 功能
 
-- **自动压缩**：仅主会话，在 agent/pre-step 阻塞串行执行。净压力达到 `observeThresholdTokens` 后再累计 `tailMessageCount` 条完整消息时，把触发点前的全部消息摘要为新 `<history>` 块并精确替换对应消息区间；全部 `<history>` 块 token 合计达到 `reflectThresholdTokens` 时把多个摘要块合并为一条更紧凑的摘要。待定标记以 log-only 会话事件持久化，重启后从日志恢复
+- **自动压缩**：仅主会话，在 agent/pre-step 阻塞串行执行。净压力达到 `observeThresholdTokens` 后再累计 `tailMessageCount` 条完整消息时，把触发点前的全部消息摘要为新 `<history>` 块并精确替换对应消息区间；全部 `<history>` 块 token 合计达到 `reflectThresholdTokens` 时把全部块内文拼合为单个 `<history>` 块送入摘要，合并为一条更紧凑的摘要。待定标记以 log-only 会话事件持久化，重启后从日志恢复
 - **输出容错**：摘要输出按 `<history>` 标签定位，整块非法时按条目标签模糊提取并重建为合法块。重试全部耗尽后拒绝当前 step，并把每次尝试的完整提示词与模型原始输出落盘为 one-shot 诊断子会话
 - **降级容错**：systemPrompt 或 tokenMeter 服务异常时按 0 计继续压缩，问题通过 console 输出与 log-only `om/warning` 会话事件上报，同会话同一问题至多一条
 - **recall 工具**：按完整消息 index 区间回看原始会话，含被压缩内容，图片附件随结果保留
