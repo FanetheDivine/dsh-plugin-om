@@ -134,7 +134,7 @@ export function ParamsPanel({ params, onChange, onReset }: ParamsPanelProps) {
           />
           <SliderField
             label="每轮 thinking"
-            tooltip="模型输出的thinking tokens，只计算输出token，不占据上下文，但会用于消息摘要"
+            tooltip="模型输出的thinking tokens，只计算输出token，不占据上下文，观察压缩时随被压缩消息一并输入OM"
             unit="tok"
             value={params.thinkingTokens}
             min={0}
@@ -153,6 +153,7 @@ export function ParamsPanel({ params, onChange, onReset }: ParamsPanelProps) {
           />
           <SliderField
             label="压缩比"
+            tooltip="摘要输出 / 被压缩消息（观察时含 thinking），只决定压缩后 history 块在上下文中的大小，不参与计费"
             unit="%"
             value={Math.round(params.compressionRatio * 1000) / 10}
             min={0.5}
@@ -183,6 +184,16 @@ export function ParamsPanel({ params, onChange, onReset }: ParamsPanelProps) {
             max={400000}
             step={5000}
             onChange={(v) => set({ reflectThresholdTokens: v })}
+          />
+          <SliderField
+            label="OM token消耗比"
+            tooltip="OM观察/摘要时，输出token相对输入消息的token的比值，按输出计费"
+            unit="%"
+            value={Math.round(params.omTokenRatio * 100)}
+            min={0}
+            max={200}
+            step={5}
+            onChange={(v) => set({ omTokenRatio: v / 100 })}
           />
           <SliderField
             label="表格步长"
