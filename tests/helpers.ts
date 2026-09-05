@@ -79,7 +79,7 @@ interface MockSessionOptions {
     tools?: unknown[];
   };
   /** 会话创建元数据（子代理会话传 { origin: 'subagent' }）。 */
-  header?: { origin?: 'subagent' };
+  header?: { origin?: 'subagent'; cwd?: string; delegationDepth?: number };
 }
 
 /** 极简会话模拟（复刻 append/replace 表层语义，seq = 数组下标）。 */
@@ -282,6 +282,23 @@ export function makeCtx({
     meter.measure = () => {
       throw meterThrows;
     };
+  /** ctx.sessions.create 调用记录（诊断子会话落盘断言用：id/ meta / 返回的会话对象）。 */
+  const createdSessions: Array<{ id: string; options: unknown; session: Session }> = [];
+  /** sessions 服务 mock：create 返回可 append 的极简会话并记录；flush 记录被 flush 的会话。 */
+  const flushedSessions: Session[] = [];
+  const sessions = {
+    create: (id: unknown, options: unknown) => {
+      const session = makeSession();
+      const created = { id: String(id), options, session };
+      createdSessions.push(created);
+      Object.defineProperty(session, 'id', { value: created.id });
+      return session;
+    },
+    flush: async (session: Session) => {
+      flushedSessions.push(session);
+      return true;
+    },
+  };
   const systemPromptStub = {
     section: (s: unknown) => {
       sections.push(s);
@@ -323,6 +340,7 @@ export function makeCtx({
       },
     },
     tokenMeter: meter,
+    sessions,
     on(type: string, fn: (...args: unknown[]) => unknown) {
       let list = onCallbacks.get(type);
       if (!list) {
@@ -343,6 +361,8 @@ export function makeCtx({
     _assembleCalls: assembleCalls,
     _llmCalls: llmCalls,
     _loggerCalls: loggerCalls,
+    _createdSessions: createdSessions,
+    _flushedSessions: flushedSessions,
   };
   // 与真实 cordis 一致：服务未挂载时属性访问抛错（回归验证压缩必须经 ctx.get 容错读取）
   Object.defineProperty(ctx, 'systemPrompt', {
@@ -361,6 +381,8 @@ export function makeCtx({
     _assembleCalls: unknown[];
     _llmCalls: Array<{ options: unknown }>;
     _loggerCalls: Array<{ level: 'debug' | 'info' | 'warn'; args: unknown[] }>;
+    _createdSessions: Array<{ id: string; options: unknown; session: Session }>;
+    _flushedSessions: Session[];
   };
 }
 

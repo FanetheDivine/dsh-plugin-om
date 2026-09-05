@@ -7,13 +7,16 @@
  * 定位与校验（首个 <history> 开标签到最后一个 </history>；整块 XML 非法时按条目标签
  * 模糊提取重建 / 无 reasoning / index 连续），失败按 maxAttempts 重试；每次尝试的
  * 结果或报错始终写入日志（成功 info / 失败 warn，失败原因说明具体问题而非解析器
- * 原始报错）；全部耗尽返回失败结果（携带最后一次尝试的实际报错）。每次请求前
+ * 原始报错）；全部耗尽返回失败结果（携带最后一次尝试的实际报错）。最终失败
+ * （含 signal 中止）时把每次尝试的完整提示词与模型原始输出经 compaction-log.ts
+ * 原样落盘为诊断子会话，sessionId 随失败结果向上传播进主会话日志。每次请求前
  * 过全局限流等待门；token usage 归入主会话记录。
  */
 
 import type { FinishReason, GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
 import type { Document, Element } from '@xmldom/xmldom';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
+import { recordCompactionFailure, type SummaryAttemptRecord } from './compaction-log.ts';
 import {
   COMPACTION_ABORTED_ERROR,
   COMPLETE_MESSAGE_DEFINITION,
@@ -190,13 +193,15 @@ export type SummarySuccess = {
   attemptCount: number;
 };
 
-/** 摘要调用失败结果：最后一次尝试的实际报错/具体问题 + 是否因 signal 中止。 */
+/** 摘要调用失败结果：最后一次尝试的实际报错/具体问题 + 是否因 signal 中止 + 诊断子会话 id。 */
 export type SummaryFailure = {
   ok: false;
   /** 最后一次尝试的实际报错（异常消息）或未通过校验的具体问题说明。 */
   error: string;
   /** 因 signal 中止（含限流等待被中止）而放弃；此时 error 为 COMPACTION_ABORTED_ERROR。 */
   aborted: boolean;
+  /** 诊断子会话 id（最终失败时每次尝试的完整提示词与模型原始输出落盘处；落盘失败时缺失）。 */
+  diagnosticSessionId?: string;
 };
 
 /** 摘要调用结果（成功/失败二选一）。 */
@@ -552,9 +557,10 @@ type AttemptFailure = { error?: string; reason?: string };
  * 直连 LLM 执行一次摘要（观察或反思），返回文本与可选 token usage。
  * 失败（抛异常 / 空输出 / 非 stop 结束 / 校验不通过）均记录日志并重试，每次尝试的
  * 结果或报错始终写入日志（成功 info / 失败 warn，不受 debug 影响）；全部尝试耗尽
- * 返回失败结果（携带最后一次尝试的实际报错/具体问题，不产生任何日志变更）。
- * signal 中止（含限流等待被中止）立即放弃并标记 aborted。每次请求发出前先过全局
- * 限流等待门。
+ * 返回失败结果（携带最后一次尝试的实际报错/具体问题）。最终失败（耗尽或 signal
+ * 中止）时把每次尝试的完整提示词与模型原始输出原样落盘为诊断子会话（phase 标注
+ * 观察或反思），诊断子会话 id 随失败结果返回。signal 中止（含限流等待被中止）
+ * 立即放弃并标记 aborted。每次请求发出前先过全局限流等待门。
  */
 export async function runSummarySubagent(
   ctx: Context,
@@ -565,18 +571,41 @@ export async function runSummarySubagent(
   target: RoutedTarget,
   debug: boolean,
   signal?: AbortSignal,
-  options?: { maxAttempts?: number; expected?: SummaryValidationRange; rateLimitWaitMs?: number },
+  options?: {
+    maxAttempts?: number;
+    expected?: SummaryValidationRange;
+    rateLimitWaitMs?: number;
+    /** 压缩 pass（诊断子会话 label 标注观察/反思；未提供时 label 回落「压缩」）。 */
+    phase?: 'observe' | 'reflect';
+  },
 ): Promise<SummaryOutcome> {
   const session = agent.session;
   const logger = makeLogger(ctx, debug);
   const maxAttempts = options?.maxAttempts ?? SUMMARY_DEFAULT_MAX_ATTEMPTS;
   let lastFailure: AttemptFailure = {};
+  /** 逐尝试的完整记录（提示词 + 原始输出原样收集，仅最终失败时落盘）。 */
+  const attempts: SummaryAttemptRecord[] = [];
+  /** 最终失败的统一出口：落盘诊断子会话并携带其 id 返回。 */
+  const finishFailure = async (error: string, aborted: boolean): Promise<SummaryFailure> => {
+    const diagnosticSessionId = await recordCompactionFailure(ctx, session, {
+      phase: options?.phase,
+      target,
+      attempts,
+      debug,
+    });
+    return {
+      ok: false,
+      error,
+      aborted,
+      ...(diagnosticSessionId === undefined ? {} : { diagnosticSessionId }),
+    };
+  };
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (signal?.aborted) {
       logger.warn(
         `摘要调用中止（第 ${attempt}/${maxAttempts} 次尝试前 signal 已中止），放弃本次压缩`,
       );
-      return { ok: false, error: COMPACTION_ABORTED_ERROR, aborted: true };
+      return await finishFailure(COMPACTION_ABORTED_ERROR, true);
     }
     const rateLimitWaitMs = options?.rateLimitWaitMs ?? RATE_LIMIT_WAIT_MS_DEFAULT;
     const gated = await gateRateLimit(rateLimitWaitMs, signal);
@@ -584,13 +613,18 @@ export async function runSummarySubagent(
       logger.warn(
         `摘要调用中止（第 ${attempt}/${maxAttempts} 次尝试前限流等待被 signal 中止），放弃本次压缩`,
       );
-      return { ok: false, error: COMPACTION_ABORTED_ERROR, aborted: true };
+      return await finishFailure(COMPACTION_ABORTED_ERROR, true);
     }
     logger.step(
       `摘要调用开始（第 ${attempt}/${maxAttempts} 次，provider ${target.provider}，model ${target.model}，maxTokens ${
         maxTokens === undefined ? '未设置' : String(maxTokens)
       }）`,
     );
+    // 实际提示词全文（system 指令 + 渲染输入，模型实际看到的完整内容）；流中途
+    // 抛异常时 collector 持有已收集的部分输出，两者均原样进入诊断记录
+    const prompt = `${instruction}\n\n${contextText ?? ''}`;
+    const collector = new StreamCollector();
+    let streamCompleted = false;
     try {
       const requestOptions = buildSummaryOptions(
         session,
@@ -600,8 +634,9 @@ export async function runSummarySubagent(
         target,
         signal,
       );
-      const collector = new StreamCollector();
       for await (const chunk of ctx.llm.stream(requestOptions)) collector.push(chunk);
+      streamCompleted = true;
+      attempts.push({ prompt, rawOutput: collector.text });
       const extracted = extractSummaryDetailed(collector.text, options?.expected);
       const finish = collector.finish;
       if (finish.kind !== 'stop') {
@@ -631,6 +666,7 @@ export async function runSummarySubagent(
       );
       return { ok: true, text, attemptCount: attempt, ...(usage === undefined ? {} : { usage }) };
     } catch (error) {
+      if (!streamCompleted) attempts.push({ prompt, rawOutput: collector.text });
       const message = error instanceof Error ? error.message : String(error);
       if (isRateLimitError(message)) {
         noteRateLimit();
@@ -649,5 +685,5 @@ export async function runSummarySubagent(
   logger.warn(
     `摘要调用最终失败（已尝试 ${maxAttempts} 次，最后错误：${lastError}），拒绝放行本轮 step`,
   );
-  return { ok: false, error: lastError, aborted: false };
+  return await finishFailure(lastError, false);
 }
