@@ -19,7 +19,7 @@ import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import { recordCompactionFailure, type SummaryAttemptRecord } from './compaction-log.ts';
 import {
   COMPACTION_ABORTED_ERROR,
-  COMPLETE_MESSAGE_DEFINITION,
+  HISTORY_FORMAT_NOTE,
   HISTORY_TAG,
   HISTORY_TIP,
   PLUGIN_LABEL,
@@ -34,6 +34,9 @@ import {
 } from './rate-limit.ts';
 import type { Agent, CompleteMessage, Context, Session, TokenUsage, UserMessage } from './types.ts';
 import { type RoutedTarget, uuid } from './utils.ts';
+
+// HISTORY_FORMAT_NOTE 常量已集中到 constants.ts；此处再导出维持既有导入路径（本文件移除后消失）
+export { HISTORY_FORMAT_NOTE } from './constants.ts';
 
 /**
  * 共享压缩提示词（观察/反思同一套）：定义 history 块（模型消息 + index 的表达形式）、
@@ -282,9 +285,6 @@ function buildSummaryOptions(
 
 /** 日志最小有效长度：<history> 中间内容小于该长度视为不合法。 */
 export const MIN_HISTORY_LENGTH = 10;
-
-/** 产出日志后插入首个 <history> 后的格式说明（XML 注释，完整消息定义 + 条目标签语义）。 */
-export const HISTORY_FORMAT_NOTE = `<!-- 完整消息：${COMPLETE_MESSAGE_DEFINITION} <TAG index="N">表示单条完整消息，<TAG start="A" end="B"> 表示连续模块，start/end 是首尾完整消息的 index；<sys type="KIND" index="N"> 表示被压缩的系统消息，块中为空 -->`;
 
 /**
  * 剥离 <history> 块内文块首的格式说明注释（HISTORY_FORMAT_NOTE 整体精确匹配，仅块首
