@@ -13,7 +13,7 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
 
 import { apply } from '../src/index.ts';
 import type { Session } from '../src/types.ts';
-import { buildToolCallFlow, makeCtx, makeSession } from './helpers.ts';
+import { buildToolCallFlow, makeCtx, makeSession, roundChunks } from './helpers.ts';
 
 describe('挂载失败降级（om/warning 事件 + console 外部输出，不阻塞压缩）', () => {
   /** 运行 pre-step 监听器。 */
@@ -22,13 +22,23 @@ describe('挂载失败降级（om/warning 事件 + console 外部输出，不阻
     await listeners?.[0]?.({ agent: { session }, signal: new AbortController().signal }, () => {});
   }
 
-  /** 固定观察报告（覆盖夹具完整消息 index 区间）。 */
-  const observeReport = [
-    '<history>',
-    '<user_message index="0">ok</user_message>',
-    '<assistant start="1" end="2">toolcall index:2 purpose:任务A summary:完成</assistant>',
-    '</history>',
-  ].join('\n');
+  /** 成功完成压缩的工具轮工厂（观察照常触发的判定 mock）。 */
+  function successFactory() {
+    return (index: number) => {
+      if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+      if (index === 1)
+        return roundChunks({
+          calls: [
+            {
+              id: 't2',
+              name: 'compressHistory',
+              args: { start: 1, end: 2, content: '完成' },
+            },
+          ],
+        });
+      return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
+    };
+  }
 
   /** 读取 om/warning 事件（session.events 中的 log-only 警告）。 */
   function warningsOf(session: Session): Array<{ problem: string; message: string }> {
@@ -50,7 +60,7 @@ describe('挂载失败降级（om/warning 事件 + console 外部输出，不阻
     const ctx = makeCtx({
       systemPromptMounted: false,
       meterTotalTokens: 50,
-      llmStream: [{ type: 'text-delta', text: observeReport }],
+      llmStreamFactory: successFactory(),
     });
     apply(ctx, { observeThresholdTokens: 10, tailMessageCount: 0 });
     let consoleText = '';
@@ -62,7 +72,7 @@ describe('挂载失败降级（om/warning 事件 + console 外部输出，不阻
       consoleSpy.mockRestore();
     }
     // 未挂载时按 0 计：净压力 50 ≥ 阈值 10 → 观察照常触发（压缩不被阻塞）
-    expect(ctx._llmCalls).toHaveLength(1);
+    expect(ctx._llmCalls).toHaveLength(3);
     expect(ctx._assembleCalls).toHaveLength(0);
     // console 外部输出一次 + om/warning 事件一条（同会话去重）
     expect(consoleText).toContain('dsh-plugin-om: 系统提示词服务未挂载');
@@ -160,11 +170,11 @@ describe('挂载失败降级（om/warning 事件 + console 外部输出，不阻
         tools: [],
         variables: {},
       }),
-      llmStream: [{ type: 'text-delta', text: observeReport }],
+      llmStreamFactory: successFactory(),
     });
     apply(ctx, { observeThresholdTokens: 10, tailMessageCount: 0 });
     await runPreStep(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(1);
+    expect(ctx._llmCalls).toHaveLength(3);
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
     expect(warns.some((s) => s.includes('工具定义 tokens 估算失败，按 0 计: header gone'))).toBe(
       true,
@@ -185,7 +195,7 @@ describe('挂载失败降级（om/warning 事件 + console 外部输出，不阻
     const ctx = makeCtx({
       meterTotalTokens: 500000,
       meterThrows: new Error('meter offline'),
-      llmStream: [{ type: 'text-delta', text: observeReport }],
+      llmStreamFactory: successFactory(),
     });
     apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
     let consoleText = '';
@@ -219,7 +229,7 @@ describe('挂载失败降级（om/warning 事件 + console 外部输出，不阻
         tools: [],
         variables: {},
       }),
-      llmStream: [{ type: 'text-delta', text: observeReport }],
+      llmStreamFactory: successFactory(),
     });
     // measure 正常（压力注入 500000），仅 commit 阶段的 estimateMessage 抛错
     const meter = ctx.tokenMeter as unknown as {
@@ -237,8 +247,8 @@ describe('挂载失败降级（om/warning 事件 + console 外部输出，不阻
     } finally {
       consoleSpy.mockRestore();
     }
-    // 摘要调用与替换照常完成（estimateMessage 失败按 0 计）
-    expect(ctx._llmCalls).toHaveLength(1);
+    // 压缩循环与替换照常完成（estimateMessage 失败按 0 计）
+    expect(ctx._llmCalls).toHaveLength(3);
     const types = session.events.map((e) => e.type);
     expect(types).toContain('compaction/summary');
     expect(types).toContain('compaction/end');

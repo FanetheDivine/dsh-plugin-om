@@ -228,7 +228,7 @@ describe('omCompactionDefinition.buildViewNode', () => {
         summaryTokenCount: 4,
         running: false,
         phase: null,
-        retryCount: 0, // 首次尝试即成功
+        rounds: 0,
       },
     });
   });
@@ -337,7 +337,7 @@ describe('omCompactionDefinition.buildViewNode', () => {
         shadowedCharCount: null,
         summaryCharCount: null,
         summaryTokenCount: null,
-        retryCount: null,
+        rounds: null,
       },
     });
   });
@@ -399,7 +399,7 @@ describe('omCompactionDefinition.buildViewNode', () => {
         shadowedCharCount: null,
         summaryCharCount: null,
         summaryTokenCount: null,
-        retryCount: null,
+        rounds: null,
       },
     });
   });
@@ -421,7 +421,7 @@ describe('omCompactionDefinition.buildViewNode', () => {
     });
   });
 
-  it('summary 载荷 attemptCount 3 → retryCount 3', () => {
+  it('summary 载荷 attemptCount 3 → rounds 3（压缩循环轮数）', () => {
     const summary = matchOf(
       lifecycle('compaction/summary', 6, {
         compactionId: 'om-1',
@@ -436,13 +436,13 @@ describe('omCompactionDefinition.buildViewNode', () => {
     const node = omCompactionDefinition.buildViewNode?.(contextOf([summary, checkpoint], state));
     expect(node).not.toBeNull();
     expect(node?.data).toMatchObject({
-      retryCount: 3,
+      rounds: 3,
       running: false,
       phase: null,
     });
   });
 
-  it('旧载荷无 attemptCount（首版插件）时 retryCount 为 null', () => {
+  it('旧载荷无 attemptCount（首版插件）时 rounds 为 null', () => {
     const summary = matchOf(
       lifecycle('compaction/summary', 6, {
         compactionId: 'om-1',
@@ -453,7 +453,7 @@ describe('omCompactionDefinition.buildViewNode', () => {
     );
     const state = { summary, checkpoint };
     const node = omCompactionDefinition.buildViewNode?.(contextOf([summary, checkpoint], state));
-    expect(node?.data).toMatchObject({ retryCount: null });
+    expect(node?.data).toMatchObject({ rounds: null });
   });
 });
 

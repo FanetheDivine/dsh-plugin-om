@@ -221,6 +221,32 @@ describe('runCompressionLoop', () => {
     expect(result.aborted).toBe(false);
   });
 
+  it('流以 error 终态结束且带部分文本输出：部分输出计入会话记录（诊断价值）', async () => {
+    const ctx = makeCtx({
+      llmStreamFactory: () =>
+        roundChunks({ text: '部分输出', finish: { kind: 'error', failure: { message: 'boom' } } }),
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // 会话记录：指令 + assistant（部分输出原样）
+    const events = ctx._createdSessions[0]?.session.events ?? [];
+    const assistantEvents = events.filter((e) => e.type === 'assistant/message');
+    expect(assistantEvents).toHaveLength(1);
+    expect(JSON.stringify(assistantEvents)).toContain('部分输出');
+  });
+
+  it('流以 error 终态结束但无 failure 详情：以兜底描述失败，不抛错', async () => {
+    const ctx = makeCtx({
+      llmStreamFactory: () => roundChunks({ finish: { kind: 'error' } }),
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('流以 error 终态结束（无失败详情）');
+    expect(result.aborted).toBe(false);
+  });
+
   it('signal 已中止：不发请求直接失败（aborted）', async () => {
     const ctx = makeCtx({
       llmStreamFactory: () => roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] }),

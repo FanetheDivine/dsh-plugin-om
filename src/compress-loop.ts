@@ -156,6 +156,27 @@ function toolResultOf(call: ToolCallBlock, result: ToolCallResult): Message {
   });
 }
 
+/**
+ * 把本轮已组装的部分 assistant 输出计入会话记录（error 终态时的诊断价值）。
+ * 无任何文本/工具调用块（空流）时不追加。
+ */
+function pushPartialAssistant(
+  assembler: BlockAssembler,
+  messages: Message[],
+  target: RoutedTarget,
+): void {
+  const blocks = assembler.blocks();
+  if (blocks.length === 0) return;
+  if (blocks.every((block) => block.type === 'text' && block.text.trim() === '')) return;
+  messages.push(
+    assembler.message({
+      kind: 'model',
+      provider: target.provider,
+      model: target.model,
+    }),
+  );
+}
+
 /** 累加两份 token usage（可选字段任一存在即求和保留）。 */
 function addUsage(total: TokenUsage | undefined, add: TokenUsage): TokenUsage {
   if (total === undefined) return { ...add };
@@ -252,13 +273,21 @@ export async function runCompressionLoop(
       return await failWith(COMPACTION_ABORTED_ERROR, true);
     }
     if (finish.kind === 'error') {
-      const failureMessage = finish.failure.message;
-      if (isRateLimitFailure(failureMessage, finish.failure.status)) {
+      // failure 缺失时（非规范流）以 finish kind 兜底描述，不因读取 undefined 抛错
+      const failureMessage =
+        typeof finish.failure?.message === 'string' && finish.failure.message !== ''
+          ? finish.failure.message
+          : '流以 error 终态结束（无失败详情）';
+      const failureStatus =
+        typeof finish.failure?.status === 'number' ? finish.failure.status : undefined;
+      if (isRateLimitFailure(failureMessage, failureStatus)) {
         noteRateLimit();
         logger.warn(`压缩循环触发限流（429），等待 ${options.rateLimitWaitMs}ms 后重试`);
         continue;
       }
       logger.warn(`压缩循环请求失败: ${failureMessage}`);
+      // 已收集的部分输出（文本/工具调用）计入会话记录（诊断价值）
+      pushPartialAssistant(assembler, messages, options.target);
       return await failWith(failureMessage, false);
     }
     rounds += 1;

@@ -1,10 +1,12 @@
 /**
  * dsh-plugin-om 入口（tsdown 打包入口）：导出 name / inject / apply。
  * apply 注册 recall / recall-semantic 工具，并接线 agent/pre-step 自动压缩
- * （先反思后观察，仅主会话生效）。压缩摘要尝试全部耗尽时拒绝本 step 中断当前
- * turn（signal 中止除外），主会话日志记录失败原因与诊断子会话 sessionId（每次
- * 尝试的完整提示词与模型原始输出由 compaction-log.ts 落盘为诊断子会话）。压缩与
- * 检索的实现见 compress.ts / compaction-log.ts / recall.ts / semantic-recall.ts。
+ * （先反思后观察，仅主会话生效）。压缩走工具驱动的压缩循环（模型经 getHistory /
+ * compressHistory / completeCompression 工具完成，见 compress-loop.ts）；最终失败
+ * （连续无工具调用 / 请求级错误）时拒绝本 step 中断当前 turn（signal 中止除外），
+ * 主会话日志记录失败原因与诊断子会话 sessionId（完整循环会话由 compaction-log.ts
+ * 落盘为子会话）。压缩与检索的实现见 compress.ts / compress-loop.ts /
+ * compaction-log.ts / recall.ts / semantic-recall.ts。
  */
 import { type CompressPassResult, maybeCompress } from './compress.ts';
 import { resolveConfig } from './config.ts';
@@ -52,7 +54,7 @@ export function apply(ctx: Context, config?: unknown): void {
   }
 
   // 两级自动压缩：pre-step 阻塞串行（先反思后观察）；仅主会话生效。
-  // 摘要尝试全部耗尽（非 signal 中止）时拒绝本 step：当前 turn 以 blocked 结束，
+  // 压缩循环最终失败（非 signal 中止）时拒绝本 step：当前 turn 以 blocked 结束，
   // 不再继续 AI 会话（实际报错已写入日志与 compaction/end error，UI 渲染失败行）。
   ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
     let outcome: CompressPassResult = { failed: false };

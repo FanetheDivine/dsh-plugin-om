@@ -31,6 +31,7 @@ import {
   makeCtx,
   makeMessage,
   makeSession,
+  roundChunks,
   textBlock,
 } from './helpers.ts';
 
@@ -50,13 +51,23 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     await listeners?.[0]?.({ agent: { session }, signal: new AbortController().signal }, () => {});
   }
 
-  /** 固定观察报告（覆盖夹具完整消息 index 区间）。 */
-  const observeReport = [
-    '<history>',
-    '<user_message index="0">ok</user_message>',
-    '<assistant start="1" end="2">toolcall index:2 purpose:任务A summary:完成</assistant>',
-    '</history>',
-  ].join('\n');
+  /** 成功完成压缩的工具轮工厂（触发判定的 mock：压缩循环能走通即视为触发）。 */
+  function successFactory() {
+    return (index: number) => {
+      if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+      if (index === 1)
+        return roundChunks({
+          calls: [
+            {
+              id: 't2',
+              name: 'compressHistory',
+              args: { start: 1, end: 2, content: 'toolcall index:2 purpose:任务A summary:完成' },
+            },
+          ],
+        });
+      return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
+    };
+  }
 
   it('压力取 measure().totalTokens：真实 usage 远大于表层启发式时也触发', async () => {
     const session = makeSession({
@@ -70,12 +81,12 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     });
     const ctx = makeCtx({
       meterTotalTokens: 500000,
-      llmStream: [{ type: 'text-delta', text: observeReport }],
+      llmStreamFactory: successFactory(),
     });
     apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
     await runPreStep(ctx, session);
     // 表层启发式远小于阈值，但注入的真实压力 500000 ≥ 100000 → 触发观察压缩
-    expect(ctx._llmCalls).toHaveLength(1);
+    expect(ctx._llmCalls).toHaveLength(3);
   });
 
   it('压力低于阈值跳过（日志说明上下文压力）', async () => {
@@ -112,10 +123,10 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
         withTurnEnd: true,
       }),
     });
-    const ctx = makeCtx({ llmStream: [{ type: 'text-delta', text: observeReport }] });
+    const ctx = makeCtx({ llmStreamFactory: successFactory() });
     apply(ctx, { observeThresholdTokens: 1, tailMessageCount: 0 });
     await runPreStep(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(1);
+    expect(ctx._llmCalls).toHaveLength(3);
   });
 
   it('已压缩块 token 从压力中扣除：净压力低于阈值跳过', async () => {
@@ -201,7 +212,7 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     const pressure = 100000 + 10; // 扣除系统提示词后恰好达到阈值
     const ctx = makeCtx({
       meterTotalTokens: pressure,
-      llmStream: [{ type: 'text-delta', text: observeReport }],
+      llmStreamFactory: successFactory(),
       systemPromptAssemble: async () => ({
         sections: [{ name: 'stub', text: sysText }],
         contexts: [],
@@ -211,7 +222,7 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     });
     apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
     await runPreStep(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(1);
+    expect(ctx._llmCalls).toHaveLength(3);
     expect(ctx._assembleCalls).toHaveLength(1);
     const call = ctx._assembleCalls[0] as { agent?: { session?: unknown }; signal?: unknown };
     expect(call.agent?.session).toBe(session);
@@ -298,11 +309,11 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     const pressure = 100000 + toolsTokens;
     const ctx = makeCtx({
       meterTotalTokens: pressure,
-      llmStream: [{ type: 'text-delta', text: observeReport }],
+      llmStreamFactory: successFactory(),
     });
     apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
     await runPreStep(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(1);
+    expect(ctx._llmCalls).toHaveLength(3);
   });
 
   it('已压缩块 token 从压力中扣除：扣除后净压力仍达阈值则触发', async () => {
@@ -325,11 +336,11 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     // 注入压力 = 阈值 + 历史块 tokens → 净压力恰达阈值（触发）
     const ctx = makeCtx({
       meterTotalTokens: 100000 + historyTokens,
-      llmStream: [{ type: 'text-delta', text: observeReport }],
+      llmStreamFactory: successFactory(),
     });
     apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
     await runPreStep(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(1);
+    expect(ctx._llmCalls).toHaveLength(3);
   });
 });
 
@@ -642,17 +653,16 @@ describe('压缩边界 historySection', () => {
   });
 });
 
-describe('反思摘要耗尽失败：诊断子会话 id 传播', () => {
-  it('摘要耗尽：CompressPassResult 与 compaction/end 载荷携带诊断子会话 sessionId', async () => {
+describe('反思压缩循环失败：诊断子会话 id 传播', () => {
+  it('循环失败：CompressPassResult 与 compaction/end 载荷携带诊断子会话 sessionId', async () => {
     const session = makeSession({
       events: [historyMessage('<user_message index="0">旧内容</user_message>')],
     });
     const ctx = makeCtx({
-      llmStream: [{ type: 'text-delta', text: '没有 history 块的输出' }],
+      llmStreamFactory: () => roundChunks({ text: '不调用压缩工具' }),
     });
     const config = resolveConfig({
       reflectThresholdTokens: 1,
-      compressRetryCount: 0,
       rateLimitWaitMs: 0,
       debug: false,
     });
@@ -670,7 +680,7 @@ describe('反思摘要耗尽失败：诊断子会话 id 传播', () => {
     const end = session.events.find((e) => e.type === 'compaction/end');
     const endData =
       (end?.data as { error?: string; diagnosticSessionId?: string } | undefined) ?? {};
-    expect(endData.error).toContain('找不到完整的 <history> 块');
+    expect(endData.error).toContain('未调用压缩工具');
     expect(endData.diagnosticSessionId).toBe(created?.id);
     // 失败不产生部分替换：表层仍为 history 块自身
     expect(session.surface.nodes).toHaveLength(1);
