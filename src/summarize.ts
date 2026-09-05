@@ -16,7 +16,7 @@
 import type { FinishReason, GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
 import type { Document, Element } from '@xmldom/xmldom';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
-import { recordCompactionFailure, type SummaryAttemptRecord } from './compaction-log.ts';
+import { recordCompactionAttempt } from './compaction-log.ts';
 import {
   COMPACTION_ABORTED_ERROR,
   COMPLETE_MESSAGE_DEFINITION,
@@ -38,8 +38,10 @@ import { type RoutedTarget, uuid } from './utils.ts';
 /**
  * 共享压缩提示词（观察/反思同一套）：定义 history 块（模型消息 + index 的表达形式）、
  * 完整消息定义、压缩要求、输出格式与数据源说明。
+ * skipReasoning=true（默认，与 compressSkipReasoning 默认一致）时压缩输入不含
+ * <reasoning> 参考条目，提示词相应省略 <reasoning> 的说明两行。
  */
-export function buildHistoryPrompt(): string {
+export function buildHistoryPrompt(skipReasoning = true): string {
   const lines: string[] = [
     '压缩 <history> 消息记录。你应当输出**单个**合法的 <history> 块。',
     '',
@@ -47,17 +49,18 @@ export function buildHistoryPrompt(): string {
     '- <history> 是历史消息的记录块。',
     '- <user_message index="N">：用户消息条目。',
     '- <sys type="(kind)" index="N">：系统消息条目。',
-    '- <reasoning>：模型的思考过程，仅作压缩参考，产物中不要出现。',
+    ...(skipReasoning ? [] : ['- <reasoning>：模型的思考过程，仅作压缩参考，产物中不要出现。']),
     '- <assistant index="N">：单条完整消息（模型输出文本，或 toolcall 及其 result）。',
     '- <assistant start="A" end="B">：多条连续完整消息聚合的模块（A/B 为模块首尾完整消息的 index）。',
     '',
     '【压缩要求】',
     '- <user_message> <sys> 条目从输入中逐条保留，不做任何处理。',
-    '- <reasoning> 只作参考，输出产物中不包含 <reasoning> 块。',
-    '- 将具有关联性的 <assistant> 消息按内在逻辑连贯性划分为连续模块，聚合为 <assistant start="" end=""> 块：块内描述模块的目的、行为与结果；涉及的具体文件保留在模块内容中，多个前缀相同的路径合并简写。',
-    '- 单条重要的完整消息以 <assistant index=""> 单独呈现，内容不受限制。',
+    ...(skipReasoning ? [] : ['- <reasoning> 只作参考，输出产物中不包含 <reasoning> 块。']),
+    '- 将具有关联性的 <assistant> 消息按内在逻辑连贯性划分为连续模块，聚合为 <assistant start="" end=""> 块',
+    '- 单条重要的完整消息以 <assistant index=""> 单独呈现',
+    '- 压缩后的 <assistant> 块内，应当描述**行为逻辑**，强调关键的**结论、产出和任务**；涉及到的具体文件保留完整路径',
     '- 加载的 skill 属于**关键信息**：应当产出独立块且不过多省略。',
-    '- 条目按 index 顺序覆盖本次压缩的全部完整消息：index/start/end 必须连续（区间内 index 连续、相邻条目相接），不跳号、不重叠、不遗漏。',
+    '- 压缩后的消息，区间边界与输入的消息必须完全相同，内部 index/start/end 必须连续，相邻区间的左右界必须相邻，',
     '',
     '【摘要粒度】',
     '- 越往后越细：靠近末尾（最近）的完整消息保留更多细节（关键文件、改动与结论），开头（较早）的完整消息可适当从简。',
@@ -124,23 +127,31 @@ function renderUserEntry(doc: Document, session: Session, cm: CompleteMessage): 
 
 /**
  * 渲染完整消息记录（观察输入）：输出一个合法的 <history> 块——
- * user → <user_message>（文本原样、图片注释）、sys → <sys> 空块、assistant 的
- * reasoning → <reasoning>（参考条目）、assistant/toolcall → <assistant>（原样文本）。
+ * user → <user_message>（文本原样、图片注释）、sys → <sys> 空块、
+ * assistant/toolcall → <assistant>（原样文本）；skipReasoning=false 时另把
+ * assistant 的 reasoning → <reasoning>（参考条目）。
  * 文本经 XML 序列化自动转义；仅渲染 seqs 全部落在给定集合内的完整消息。
  */
-export function renderMessages(session: Session, seqs: readonly number[]): string {
+export function renderMessages(
+  session: Session,
+  seqs: readonly number[],
+  skipReasoning = true,
+): string {
   const shadowed = new Set(seqs);
   const reasoningBySeq = new Map<number, string[]>();
-  for (const seq of seqs) {
-    const event = session.events[seq];
-    if (event?.type !== 'assistant/message') continue;
-    const message = event.data.message;
-    if (!message || !Array.isArray(message.content)) continue;
-    const reasonings: string[] = [];
-    for (const block of message.content) {
-      if (block.type === 'reasoning' && typeof block.text === 'string') reasonings.push(block.text);
+  if (!skipReasoning) {
+    for (const seq of seqs) {
+      const event = session.events[seq];
+      if (event?.type !== 'assistant/message') continue;
+      const message = event.data.message;
+      if (!message || !Array.isArray(message.content)) continue;
+      const reasonings: string[] = [];
+      for (const block of message.content) {
+        if (block.type === 'reasoning' && typeof block.text === 'string')
+          reasonings.push(block.text);
+      }
+      if (reasonings.length > 0) reasoningBySeq.set(seq, reasonings);
     }
-    if (reasonings.length > 0) reasoningBySeq.set(seq, reasonings);
   }
   const emittedReasoning = new Set<number>();
   const doc = newQuietParser().parseFromString(`<${HISTORY_TAG} />`, 'text/xml');
@@ -161,10 +172,15 @@ export function renderMessages(session: Session, seqs: readonly number[]): strin
       if (rendered === null) continue;
       entries.push(rendered);
     } else {
-      // assistant / toolcall 条目：先输出所属 assistant 消息的 reasoning（每条消息一次）
+      // assistant / toolcall 条目：skipReasoning=false 时先输出所属 assistant 消息的 reasoning（每条消息一次）
       const callSeq = cm.seqs[0];
       const reasonings = callSeq === undefined ? undefined : reasoningBySeq.get(callSeq);
-      if (callSeq !== undefined && reasonings !== undefined && !emittedReasoning.has(callSeq)) {
+      if (
+        !skipReasoning &&
+        callSeq !== undefined &&
+        reasonings !== undefined &&
+        !emittedReasoning.has(callSeq)
+      ) {
         emittedReasoning.add(callSeq);
         for (const text of reasonings) {
           const re = doc.createElement('reasoning');
@@ -184,13 +200,15 @@ export function renderMessages(session: Session, seqs: readonly number[]): strin
   return `<${HISTORY_TAG}>\n${entries.map((el) => serializer.serializeToString(el)).join('\n')}\n</${HISTORY_TAG}>`;
 }
 
-/** 摘要调用成功结果：文本 + 可选 token usage + 尝试次数。 */
+/** 摘要调用成功结果：文本 + 可选 token usage + 尝试次数 + 诊断子会话 id。 */
 export type SummarySuccess = {
   ok: true;
   text: string;
   usage?: TokenUsage;
   /** 成功时的尝试次数（1 起；载荷层换算为重试次数 = 该值 - 1）。 */
   attemptCount: number;
+  /** 本次成功尝试落盘的诊断子会话 id（落盘失败时缺失）。 */
+  diagnosticSessionId?: string;
 };
 
 /** 摘要调用失败结果：最后一次尝试的实际报错/具体问题 + 是否因 signal 中止 + 诊断子会话 id。 */
@@ -200,7 +218,7 @@ export type SummaryFailure = {
   error: string;
   /** 因 signal 中止（含限流等待被中止）而放弃；此时 error 为 COMPACTION_ABORTED_ERROR。 */
   aborted: boolean;
-  /** 诊断子会话 id（最终失败时每次尝试的完整提示词与模型原始输出落盘处；落盘失败时缺失）。 */
+  /** 最后一次尝试落盘的诊断子会话 id（每次尝试各自落盘；该次未发出请求或落盘失败时缺失）。 */
   diagnosticSessionId?: string;
 };
 
@@ -559,17 +577,18 @@ export function extractSummaryLog(raw: string, expected?: SummaryValidationRange
 /** 摘要调用总尝试次数兜底（无 options.maxAttempts 时；实际由 config.compressRetryCount + 1 传入）。 */
 export const SUMMARY_DEFAULT_MAX_ATTEMPTS = 11;
 
-/** 尝试失败的简短记录（供重试日志与最终失败日志使用）：error=实际报错，reason=校验/完成度问题的具体说明。 */
-type AttemptFailure = { error?: string; reason?: string };
+/** 尝试失败的简短记录（供重试日志与最终失败日志使用）：error=实际报错，reason=校验/完成度问题的具体说明，diagnosticSessionId=该次尝试落盘的诊断子会话 id。 */
+type AttemptFailure = { error?: string; reason?: string; diagnosticSessionId?: string };
 
 /**
  * 直连 LLM 执行一次摘要（观察或反思），返回文本与可选 token usage。
- * 失败（抛异常 / 空输出 / 非 stop 结束 / 校验不通过）均记录日志并重试，每次尝试的
- * 结果或报错始终写入日志（成功 info / 失败 warn，不受 debug 影响）；全部尝试耗尽
- * 返回失败结果（携带最后一次尝试的实际报错/具体问题）。最终失败（耗尽或 signal
- * 中止）时把每次尝试的完整提示词与模型原始输出原样落盘为诊断子会话（phase 标注
- * 观察或反思），诊断子会话 id 随失败结果返回。signal 中止（含限流等待被中止）
- * 立即放弃并标记 aborted。每次请求发出前先过全局限流等待门。
+ * 每次实际发出的 LLM 调用（无论成功、校验不通过、非 stop 结束还是异常）完成后，
+ * 立即把该次尝试的完整提示词与模型原始输出原样落盘为诊断子会话（phase 标注观察
+ * 或反思），子会话 id 写入该次尝试的主会话日志；请求发出前被中止的尝试（无实际
+ * 调用）不落盘。失败（抛异常 / 空输出 / 非 stop 结束 / 校验不通过）记录日志并重试；
+ * 全部尝试耗尽返回失败结果（携带最后一次尝试的实际报错/具体问题与其诊断子会话 id）。
+ * signal 中止（含限流等待被中止）立即放弃并标记 aborted。每次请求发出前先过全局
+ * 限流等待门。
  */
 export async function runSummarySubagent(
   ctx: Context,
@@ -592,29 +611,19 @@ export async function runSummarySubagent(
   const logger = makeLogger(ctx, debug);
   const maxAttempts = options?.maxAttempts ?? SUMMARY_DEFAULT_MAX_ATTEMPTS;
   let lastFailure: AttemptFailure = {};
-  /** 逐尝试的完整记录（提示词 + 原始输出原样收集，仅最终失败时落盘）。 */
-  const attempts: SummaryAttemptRecord[] = [];
-  /** 最终失败的统一出口：落盘诊断子会话并携带其 id 返回。 */
-  const finishFailure = async (error: string, aborted: boolean): Promise<SummaryFailure> => {
-    const diagnosticSessionId = await recordCompactionFailure(ctx, session, {
-      phase: options?.phase,
-      target,
-      attempts,
-      debug,
-    });
-    return {
-      ok: false,
-      error,
-      aborted,
-      ...(diagnosticSessionId === undefined ? {} : { diagnosticSessionId }),
-    };
-  };
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (signal?.aborted) {
       logger.warn(
         `摘要调用中止（第 ${attempt}/${maxAttempts} 次尝试前 signal 已中止），放弃本次压缩`,
       );
-      return await finishFailure(COMPACTION_ABORTED_ERROR, true);
+      return {
+        ok: false,
+        error: COMPACTION_ABORTED_ERROR,
+        aborted: true,
+        ...(lastFailure.diagnosticSessionId === undefined
+          ? {}
+          : { diagnosticSessionId: lastFailure.diagnosticSessionId }),
+      };
     }
     const rateLimitWaitMs = options?.rateLimitWaitMs ?? RATE_LIMIT_WAIT_MS_DEFAULT;
     const gated = await gateRateLimit(rateLimitWaitMs, signal);
@@ -622,7 +631,14 @@ export async function runSummarySubagent(
       logger.warn(
         `摘要调用中止（第 ${attempt}/${maxAttempts} 次尝试前限流等待被 signal 中止），放弃本次压缩`,
       );
-      return await finishFailure(COMPACTION_ABORTED_ERROR, true);
+      return {
+        ok: false,
+        error: COMPACTION_ABORTED_ERROR,
+        aborted: true,
+        ...(lastFailure.diagnosticSessionId === undefined
+          ? {}
+          : { diagnosticSessionId: lastFailure.diagnosticSessionId }),
+      };
     }
     logger.step(
       `摘要调用开始（第 ${attempt}/${maxAttempts} 次，provider ${target.provider}，model ${target.model}，maxTokens ${
@@ -630,10 +646,19 @@ export async function runSummarySubagent(
       }）`,
     );
     // 实际提示词全文（system 指令 + 渲染输入，模型实际看到的完整内容）；流中途
-    // 抛异常时 collector 持有已收集的部分输出，两者均原样进入诊断记录
+    // 抛异常时 collector 持有已收集的部分输出，两者均原样落盘为诊断子会话
     const prompt = `${instruction}\n\n${contextText ?? ''}`;
     const collector = new StreamCollector();
     let streamCompleted = false;
+    /** 本次尝试的诊断子会话 id（调用完成后立即落盘；落盘失败时缺失）。 */
+    const logAttempt = async (): Promise<string | undefined> =>
+      recordCompactionAttempt(ctx, session, {
+        phase: options?.phase,
+        target,
+        attempt: { prompt, rawOutput: collector.text },
+        attemptNo: attempt,
+        debug,
+      });
     try {
       const requestOptions = buildSummaryOptions(
         session,
@@ -645,21 +670,27 @@ export async function runSummarySubagent(
       );
       for await (const chunk of ctx.llm.stream(requestOptions)) collector.push(chunk);
       streamCompleted = true;
-      attempts.push({ prompt, rawOutput: collector.text });
+      const diagnosticSessionId = await logAttempt();
       const extracted = extractSummaryDetailed(collector.text, options?.expected);
       const finish = collector.finish;
       if (finish.kind !== 'stop') {
-        lastFailure = { reason: `摘要流以 ${String(finish.kind)} 结束（非正常完成）` };
+        lastFailure = {
+          reason: `摘要流以 ${String(finish.kind)} 结束（非正常完成）`,
+          ...(diagnosticSessionId === undefined ? {} : { diagnosticSessionId }),
+        };
         logger.warn(
-          `摘要未完成（第 ${attempt}/${maxAttempts} 次，${lastFailure.reason}）` +
+          `摘要未完成（第 ${attempt}/${maxAttempts} 次，${lastFailure.reason}，子会话 ${diagnosticSessionId ?? '未落盘'}）` +
             (attempt < maxAttempts ? '，将重试' : '，重试耗尽，放弃本次压缩'),
         );
         continue;
       }
       if ('error' in extracted) {
-        lastFailure = { reason: extracted.error };
+        lastFailure = {
+          reason: extracted.error,
+          ...(diagnosticSessionId === undefined ? {} : { diagnosticSessionId }),
+        };
         logger.warn(
-          `摘要输出未通过校验（第 ${attempt}/${maxAttempts} 次，${extracted.error}）` +
+          `摘要输出未通过校验（第 ${attempt}/${maxAttempts} 次，${extracted.error}，子会话 ${diagnosticSessionId ?? '未落盘'}）` +
             (attempt < maxAttempts ? '，将重试' : '，重试耗尽，放弃本次压缩'),
         );
         continue;
@@ -671,11 +702,19 @@ export async function runSummarySubagent(
           (usage === undefined
             ? ''
             : `，input ${String(usage.inputTokens ?? '?')} / output ${String(usage.outputTokens ?? '?')} tokens`) +
+          `，子会话 ${diagnosticSessionId ?? '未落盘'}` +
           '）',
       );
-      return { ok: true, text, attemptCount: attempt, ...(usage === undefined ? {} : { usage }) };
+      return {
+        ok: true,
+        text,
+        attemptCount: attempt,
+        ...(usage === undefined ? {} : { usage }),
+        ...(diagnosticSessionId === undefined ? {} : { diagnosticSessionId }),
+      };
     } catch (error) {
-      if (!streamCompleted) attempts.push({ prompt, rawOutput: collector.text });
+      // 实际发出了请求即落盘：流完成后才抛出的异常不会重复落盘（该次已记日志）
+      const diagnosticSessionId = streamCompleted ? undefined : await logAttempt();
       const message = error instanceof Error ? error.message : String(error);
       if (isRateLimitError(message)) {
         noteRateLimit();
@@ -683,9 +722,12 @@ export async function runSummarySubagent(
           `摘要调用触发限流（429，第 ${attempt}/${maxAttempts} 次），下一次请求前至少等待 ${rateLimitWaitMs}ms`,
         );
       }
-      lastFailure = { error: message };
+      lastFailure = {
+        error: message,
+        ...(diagnosticSessionId === undefined ? {} : { diagnosticSessionId }),
+      };
       logger.warn(
-        `摘要调用失败（第 ${attempt}/${maxAttempts} 次，${message}）` +
+        `摘要调用失败（第 ${attempt}/${maxAttempts} 次，${message}，子会话 ${diagnosticSessionId ?? '未落盘'}）` +
           (attempt < maxAttempts ? '，将重试' : '，重试耗尽，放弃本次压缩'),
       );
     }
@@ -694,5 +736,12 @@ export async function runSummarySubagent(
   logger.warn(
     `摘要调用最终失败（已尝试 ${maxAttempts} 次，最后错误：${lastError}），拒绝放行本轮 step`,
   );
-  return await finishFailure(lastError, false);
+  return {
+    ok: false,
+    error: lastError,
+    aborted: false,
+    ...(lastFailure.diagnosticSessionId === undefined
+      ? {}
+      : { diagnosticSessionId: lastFailure.diagnosticSessionId }),
+  };
 }

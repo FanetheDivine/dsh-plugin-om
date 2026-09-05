@@ -23,56 +23,6 @@ import {
   twoCallFlow,
 } from './helpers.ts';
 
-describe('共享提示词 buildHistoryPrompt（观察/反思同一套）', () => {
-  it('定义 history 块 / 完整消息定义串 / 压缩要求（a-f）/ 输出格式 / 数据源', () => {
-    const prompt = buildHistoryPrompt();
-    // 任务声明：压缩下方 <history> 记录
-    expect(prompt).toContain('压缩 <history> 消息记录。你应当输出**单个**合法的 <history> 块');
-    expect(prompt).not.toContain('停止一切现有任务');
-    // history 块定义（条目标签语义）
-    expect(prompt).toContain('<history> 是历史消息的记录块');
-    expect(prompt).toContain('<user_message index="N">：用户消息条目');
-    expect(prompt).toContain('<sys type="(kind)" index="N">：系统消息条目');
-    expect(prompt).toContain('<reasoning>：模型的思考过程，仅作压缩参考，产物中不要出现');
-    expect(prompt).toContain('<assistant index="N">：单条完整消息');
-    expect(prompt).toContain('<assistant start="A" end="B">：多条连续完整消息聚合的模块');
-    // 压缩要求：用户/系统条目从输入逐条保留（含 XML 转义形式，不解码）
-    expect(prompt).toContain('条目从输入中逐条保留，不做任何处理');
-    expect(prompt).toContain('<reasoning> 只作参考，输出产物中不包含 <reasoning> 块');
-    // 具有关联性的 assistant 块合并
-    expect(prompt).toContain('将具有关联性的 <assistant> 消息');
-    expect(prompt).toContain('目的、行为与结果');
-    expect(prompt).toContain('合并简写');
-    expect(prompt).toContain('内在逻辑连贯性');
-    // 单条重要消息单独呈现
-    expect(prompt).toContain('单条重要的完整消息以 <assistant index=""> 单独呈现');
-    // 加载的 skill：独立块且不过多省略
-    expect(prompt).toContain('加载的 skill 属于**关键信息**：应当产出独立块且不过多省略');
-    // index/start/end 必须连续
-    expect(prompt).toContain('index/start/end 必须连续');
-    expect(prompt).toContain('不跳号、不重叠、不遗漏');
-    // 输出格式：一个合法 <history> 块（无 reasoning），含 <sys> 空块示例
-    expect(prompt).toContain('【输出格式】输出单个合法的 <history> 块，**不包含其他任何内容**');
-    expect(prompt).toContain('<user_message index="(index)">');
-    expect(prompt).toContain('<sys type="(kind)" index="(index)"></sys>');
-    expect(prompt).toContain('<assistant start="(起始 index)" end="(结束 index)">');
-    expect(prompt).toContain('<assistant index="(index)">');
-    // 数据源说明
-    expect(prompt).toContain('【数据源】下方的 <history> 消息记录是本次要压缩的全部消息');
-    expect(prompt).not.toContain('message_id');
-    expect(prompt).not.toContain('[interrupted]');
-  });
-
-  it('摘要粒度：越往后越细（靠前简略、靠后详细），用户消息不受约束', () => {
-    const prompt = buildHistoryPrompt();
-    expect(prompt).toContain('【摘要粒度】');
-    expect(prompt).toContain('越往后越细');
-    expect(prompt).toContain('靠近末尾（最近）的完整消息保留更多细节');
-    expect(prompt).toContain('开头（较早）的完整消息可适当从简');
-    expect(prompt).toContain('用户消息不受此约束：始终逐条保留原文，不做概括与省略');
-  });
-});
-
 describe('history 条目解析与连续性 parseHistoryEntries / historyContinuity', () => {
   it('解析 user_message/assistant index 与 assistant start..end（合法 <history> 块内）', () => {
     const text = [
@@ -368,8 +318,12 @@ describe('runSummarySubagent 结构化结果', () => {
     expect(result.attemptCount).toBe(2);
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
     const infos = ctx._loggerCalls.filter((c) => c.level === 'info').map((c) => String(c.args[0]));
-    expect(warns.some((w) => w.includes('摘要调用失败（第 1/2 次，网络抖动），将重试'))).toBe(true);
+    expect(warns.some((w) => w.includes('摘要调用失败（第 1/2 次，网络抖动，子会话 '))).toBe(true);
     expect(infos.some((s) => s.includes('摘要调用成功（第 2/2 次'))).toBe(true);
+    expect(infos.some((s) => s.includes('，子会话 om-compaction-log-'))).toBe(true);
+    // 成功尝试同样落盘：两次尝试各一个子会话，结果携带成功尝试的子会话 id
+    expect(ctx._createdSessions).toHaveLength(2);
+    expect(result.diagnosticSessionId).toBe(ctx._createdSessions[1]?.id);
   });
 
   it('全部尝试耗尽：返回失败结果，error 为最后一次尝试的实际报错', async () => {
@@ -451,34 +405,33 @@ describe('runSummarySubagent 最终失败的诊断子会话落盘', () => {
     ] as unknown as Parameters<typeof runSummarySubagent>;
   }
 
-  it('校验失败耗尽：每次尝试的完整提示词与模型原始输出落盘为诊断子会话', async () => {
+  it('校验失败耗尽：每次尝试各自落盘一个子会话，含该次完整提示词与模型原始输出', async () => {
     const ctx = makeCtx({
       llmStream: [{ type: 'text-delta', text: '没有 history 块的输出' }],
     });
     const result = await runSummarySubagent(...callArgsWithPhase(ctx));
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('应失败');
-    const created = ctx._createdSessions[0];
-    expect(created).toBeDefined();
-    expect(result.diagnosticSessionId).toBe(created?.id);
-    const child = created?.session;
-    expect(child?.events[0]?.type).toBe('subagent/descriptor');
-    expect(child?.events[0]?.data).toMatchObject({
-      version: 2,
-      mode: 'one-shot',
-      provider: 'om-compaction-log',
-      label: 'OM 压缩失败日志（反思 · 2 次尝试）',
-    });
-    // 每次尝试一对消息：提示词（system 指令 + 渲染输入拼接）与原始输出原样
-    expect(child?.events).toHaveLength(5);
+    // 两次尝试各落盘一个子会话，结果携带最后一次尝试的子会话 id
+    expect(ctx._createdSessions).toHaveLength(2);
+    expect(result.diagnosticSessionId).toBe(ctx._createdSessions[1]?.id);
+    const promptText = `${buildHistoryPrompt()}\n\n<history>\n<user_message index="0">旧内容</user_message>\n</history>`;
     for (let i = 0; i < 2; i += 1) {
-      const user = child?.events[1 + i * 2];
-      const assistant = child?.events[2 + i * 2];
+      const child = ctx._createdSessions[i]?.session;
+      expect(child?.events[0]?.type).toBe('subagent/descriptor');
+      expect(child?.events[0]?.data).toMatchObject({
+        version: 2,
+        mode: 'one-shot',
+        provider: 'om-compaction-log',
+        label: `OM 压缩日志（反思 · 第 ${i + 1} 次尝试）`,
+      });
+      // 单次尝试一对消息：提示词（system 指令 + 渲染输入拼接）与原始输出原样
+      expect(child?.events).toHaveLength(3);
+      const user = child?.events[1];
+      const assistant = child?.events[2];
       const userText = (user?.data as { content?: Array<{ text?: string }> } | undefined)
         ?.content?.[0]?.text;
-      expect(userText).toBe(
-        `${buildHistoryPrompt()}\n\n<history>\n<user_message index="0">旧内容</user_message>\n</history>`,
-      );
+      expect(userText).toBe(promptText);
       const rawText = (
         assistant?.data as { message?: { content?: Array<{ text?: string }> } } | undefined
       )?.message?.content?.[0]?.text;
@@ -516,7 +469,7 @@ describe('runSummarySubagent 最终失败的诊断子会话落盘', () => {
     expect(partial).toBe('');
   });
 
-  it('signal 预先中止（0 次尝试）：仍落盘仅含 descriptor 的诊断子会话', async () => {
+  it('signal 预先中止（0 次尝试）：未发出请求，不落盘任何子会话', async () => {
     const controller = new AbortController();
     controller.abort();
     const ctx = makeCtx();
@@ -524,9 +477,22 @@ describe('runSummarySubagent 最终失败的诊断子会话落盘', () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('应失败');
     expect(result.aborted).toBe(true);
-    expect(result.diagnosticSessionId).toBe(ctx._createdSessions[0]?.id);
-    expect(ctx._createdSessions[0]?.session.events).toHaveLength(1);
-    expect(ctx._createdSessions[0]?.session.events[0]?.type).toBe('subagent/descriptor');
+    expect(result.diagnosticSessionId).toBeUndefined();
+    expect(ctx._createdSessions).toHaveLength(0);
+  });
+});
+
+describe('共享压缩提示词 buildHistoryPrompt', () => {
+  it('skipReasoning=true（默认）省略 <reasoning> 说明；false 保留', () => {
+    expect(buildHistoryPrompt()).not.toContain('<reasoning>');
+    expect(buildHistoryPrompt(true)).not.toContain('<reasoning>');
+    const withRef = buildHistoryPrompt(false);
+    expect(withRef).toContain('<reasoning>：模型的思考过程，仅作压缩参考，产物中不要出现。');
+    expect(withRef).toContain('<reasoning> 只作参考，输出产物中不包含 <reasoning> 块。');
+    // 非 reasoning 的定义与要求不受开关影响
+    expect(withRef).toContain(
+      '- <assistant index="N">：单条完整消息（模型输出文本，或 toolcall 及其 result）。',
+    );
   });
 });
 
@@ -560,7 +526,7 @@ describe('消息渲染 renderMessages', () => {
     expect(text).not.toContain('message_id');
   });
 
-  it('用户消息图片/文件块以注释补充（文本原样），assistant reasoning 输出 <reasoning> 参考条目', () => {
+  it('用户消息图片/文件块以注释补充（文本原样）；assistant reasoning 默认不进压缩输入', () => {
     const events = [
       {
         type: 'user/message',
@@ -602,13 +568,37 @@ describe('消息渲染 renderMessages', () => {
     expect(text).toContain('看图说话');
     expect(text).toContain('<!-- 图片附件：图.png（image/png 800×600，1024 bytes） -->');
     expect(text).toContain('<!-- file 块 -->');
-    // reasoning 参考条目（产物中没有，但输入保留；DOM 序列化紧凑、文本自动转义）；assistant 文本原样
-    expect(text).toContain('<reasoning>先看图再回答</reasoning>');
+    // reasoning 默认（skipReasoning=true）不进入压缩输入：无 <reasoning> 参考条目
+    expect(text).not.toContain('<reasoning>');
+    expect(text).not.toContain('先看图再回答');
+    // assistant 文本原样，index 布局不受影响
     expect(text).toContain('<assistant index="1">');
     expect(text).toContain('这是答案');
-    // reasoning 不是完整消息：不占 index（assistant 文本仍为 index 1）
-    expect(text).toContain('<user_message index="0">');
-    expect(text).toContain('<assistant index="1">');
+  });
+
+  it('skipReasoning=false：assistant reasoning 输出 <reasoning> 参考条目（不占 index）', () => {
+    const session = makeSession({
+      events: [
+        {
+          type: 'assistant/message',
+          data: {
+            message: makeMessage({
+              role: 'assistant',
+              content: [{ type: 'reasoning', text: '先看图再回答' }, textBlock('这是答案')],
+              source: { kind: 'model', provider: 'test', model: 'test-model' },
+              id: 'a-think',
+            }),
+          },
+        } as unknown as SessionEvent,
+      ],
+    });
+    const text = renderMessages(session, [0], false);
+    // reasoning 参考条目（输入保留；DOM 序列化紧凑、文本自动转义）
+    expect(text).toContain('<reasoning>先看图再回答</reasoning>');
+    // assistant 文本原样；reasoning 不是完整消息：不占 index（assistant 文本仍为 index 0）
+    expect(text).toContain('<assistant index="0">');
+    expect(text).toContain('这是答案');
+    expect(text).not.toContain('<assistant index="1">');
   });
 
   it('相邻用户消息各占一条（index 0/1）；区间外完整消息不渲染', () => {

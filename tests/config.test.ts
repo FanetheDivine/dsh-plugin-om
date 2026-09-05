@@ -13,6 +13,7 @@ describe('配置校验 resolveConfig', () => {
     expect(d.compressMaxTokens).toBeUndefined(); // 默认不设置 maxTokens
     expect(d.tailMessageCount).toBe(5);
     expect(d.compressRetryCount).toBe(5); // 失败后最大重试次数（不含首次）
+    expect(d.compressSkipReasoning).toBe(true); // 缺省压缩输入不携带 reasoning
     expect(d.omEnabled).toBe(true); // 缺省启用 OM
     expect(d.debug).toBe(process.env.NODE_ENV !== 'production'); // 缺省按 NODE_ENV 判定
     expect(d.recallEnabled).toBe(true);
@@ -64,6 +65,7 @@ describe('配置校验 resolveConfig', () => {
       expect(d.compressMaxTokens).toBeUndefined();
       expect(d.tailMessageCount).toBe(5);
       expect(d.compressRetryCount).toBe(5);
+      expect(d.compressSkipReasoning).toBe(true);
       expect(d.omEnabled).toBe(true);
       expect(d.recallEnabled).toBe(true);
       expect(d.semanticRecallEnabled).toBe(true);
@@ -171,6 +173,26 @@ describe('omEnabled 配置键', () => {
   it('summaryMode 不再是配置键（忽略、回归默认）', () => {
     expect(resolveConfig({ summaryMode: 'new' }).omEnabled).toBe(true); // 未知键忽略
     expect(resolveConfig({ summaryMode: 'fork' })).not.toHaveProperty('summaryMode');
+  });
+});
+
+describe('compressSkipReasoning 配置键', () => {
+  it('缺省跳过（true）；留空（null/空串）回退默认', () => {
+    expect(resolveConfig({}).compressSkipReasoning).toBe(true);
+    expect(resolveConfig({ compressSkipReasoning: null }).compressSkipReasoning).toBe(true);
+    expect(resolveConfig({ compressSkipReasoning: '' }).compressSkipReasoning).toBe(true);
+    expect(resolveConfig({ compressSkipReasoning: '   ' }).compressSkipReasoning).toBe(true);
+  });
+
+  it('true / false 显式开关（true 不携带 reasoning，false 携带）', () => {
+    expect(resolveConfig({ compressSkipReasoning: true }).compressSkipReasoning).toBe(true);
+    expect(resolveConfig({ compressSkipReasoning: false }).compressSkipReasoning).toBe(false);
+  });
+
+  it('不合法值回退默认（跳过）', () => {
+    expect(resolveConfig({ compressSkipReasoning: 'false' }).compressSkipReasoning).toBe(true); // 字符串不合法
+    expect(resolveConfig({ compressSkipReasoning: 0 }).compressSkipReasoning).toBe(true);
+    expect(resolveConfig({ compressSkipReasoning: 'bogus' }).compressSkipReasoning).toBe(true);
   });
 });
 

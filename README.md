@@ -7,7 +7,7 @@
 ## 功能
 
 - **自动压缩**：仅主会话，在 agent/pre-step 阻塞串行执行。净压力达到 `observeThresholdTokens` 后再累计 `tailMessageCount` 条完整消息时，把触发点前的全部消息摘要为新 `<history>` 块并精确替换对应消息区间；全部 `<history>` 块 token 合计达到 `reflectThresholdTokens` 时把全部块内文拼合为单个 `<history>` 块送入摘要，合并为一条更紧凑的摘要。待定标记以 log-only 会话事件持久化，重启后从日志恢复
-- **输出容错**：摘要输出按 `<history>` 标签定位，整块非法时按条目标签模糊提取并重建为合法块。重试全部耗尽后拒绝当前 step，并把每次尝试的完整提示词与模型原始输出落盘为 one-shot 诊断子会话
+- **输出容错**：摘要输出按 `<history>` 标签定位，整块非法时按条目标签模糊提取并重建为合法块。重试全部耗尽后拒绝当前 step；每次实际发出的摘要调用无论成功失败都把完整提示词与模型原始输出即时落盘为 one-shot 诊断子会话
 - **降级容错**：systemPrompt 或 tokenMeter 服务异常时按 0 计继续压缩，问题通过 console 输出与 log-only `om/warning` 会话事件上报，同会话同一问题至多一条
 - **recall 工具**：按完整消息 index 区间回看原始会话，含被压缩内容，图片附件随结果保留
 - **recall-semantic 工具**：本地嵌入模型 paraphrase-multilingual-MiniLM-L12-v2 按语义检索全部完整消息，只匹配文本，纯图片消息不进候选池
@@ -60,6 +60,7 @@ preset-agent 自带 compaction-basic 压缩，阈值为上下文窗口的 80%，
 | `rateLimitWaitMs` | `60000` | 遇 429 限流后下一次摘要请求前的等待毫秒数，`0` 不限流 |
 | `tailMessageCount` | `5` | 观察触发后等待新增完整消息达到该条数才执行压缩，`0` 表示触发当轮立即执行 |
 | `compressRetryCount` | `5` | 摘要失败后的最大重试次数，不含首次 |
+| `compressSkipReasoning` | `true` | 观察压缩请求是否携带被压缩 assistant 消息的 reasoning 思考文本，`true` 时不携带 `<reasoning>` 参考条目，压缩指令同步省略对应说明 |
 | `modelDir` | 共享目录 | recall-semantic 嵌入模型目录，默认 `$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>`，onnx 缺失且启用语义召回时运行时自动下载 |
 | `omEnabled` | `true` | 是否启用自动压缩，关闭后 recall 工具不受影响 |
 | `debug` | dev | 步骤级日志开关，缺省按 `NODE_ENV` 非 production 判定，压缩尝试结果与失败日志始终输出 |
@@ -103,7 +104,7 @@ src/
 ├── embedding.ts                 # 本地 ONNX 嵌入：懒加载、批量、运行时按需下载编排
 ├── model-download.ts            # 模型下载原语：URL、跳过判定、原子落盘
 ├── summarize.ts                 # 共享压缩提示词、history 块渲染与输出校验、摘要调用
-├── compaction-log.ts            # 压缩失败诊断落盘：诊断子会话创建与逐尝试原样消息组
+├── compaction-log.ts            # 压缩日志落盘：诊断子会话创建与单次尝试原样消息组
 ├── compress.ts                  # 两级自动压缩：观察与反思、失败中断传播、compaction 生命周期事件
 └── client/                      # 浏览器客户端 bundle：压缩卡片
     ├── index.ts                 # 客户端入口：注册卡片定义与渲染器

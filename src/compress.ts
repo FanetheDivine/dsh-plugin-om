@@ -316,7 +316,7 @@ function appendCompactionSummary(
 
 /**
  * 追加 compaction/end（log-only，结束生命周期；error 记录失败原因，
- * diagnosticSessionId 记录最终失败时的诊断子会话 id）。
+ * diagnosticSessionId 记录最后一次摘要尝试（无论成功或失败）的诊断子会话 id）。
  */
 function appendCompactionEnd(
   session: Session,
@@ -390,7 +390,7 @@ export async function reflectPass(
     return { failed: false };
   }
   const blockSeqs = blocks.map((block) => block.seq);
-  const instruction = buildHistoryPrompt();
+  const instruction = buildHistoryPrompt(config.compressSkipReasoning);
   const contextText = mergeHistoryBlocks(blocks);
   const expectedEnd = reflectExpectedEnd(contextText);
   const lifecycle: CompactionLifecycle = {
@@ -473,7 +473,7 @@ export async function reflectPass(
       lifecycle.compactionId,
     );
     logger.step('反思提交：追加 compaction/end');
-    appendCompactionEnd(session, lifecycle);
+    appendCompactionEnd(session, lifecycle, undefined, summaryResult.diagnosticSessionId);
     logger.info(
       `反思完成（摘要 ${tokens} tokens ≥ 阈值 ${threshold}，合并 ${blocks.length} 个块为一条）`,
     );
@@ -687,8 +687,8 @@ export async function observePass(
   logger.step(
     `观察：保留旧块 ${blocks.length} 条，替换 [${replaceStart}..${range.end}]（${replaceSeqs.length} 个表层节点，压缩至${triggerNote}），新消息 index ${startIndex}..${endIndex}`,
   );
-  const instruction = buildHistoryPrompt();
-  const contextText = renderMessages(session, replaceSeqs);
+  const instruction = buildHistoryPrompt(config.compressSkipReasoning);
+  const contextText = renderMessages(session, replaceSeqs, config.compressSkipReasoning);
   const lifecycle: CompactionLifecycle = {
     compactionId: newCompactionId(),
     turn: openTurnOf(session),
@@ -791,7 +791,7 @@ export async function observePass(
       lifecycle.compactionId,
     );
     logger.step('观察提交：追加 compaction/end');
-    appendCompactionEnd(session, lifecycle);
+    appendCompactionEnd(session, lifecycle, undefined, summaryResult.diagnosticSessionId);
     // 压缩成功提交后写待定失效标记（提交失败则保留待定，边界后移使其自然过期）
     clearPending();
     logger.info(
