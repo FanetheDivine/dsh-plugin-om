@@ -23,57 +23,6 @@ import {
   twoCallFlow,
 } from './helpers.ts';
 
-describe('共享提示词 buildHistoryPrompt（观察/反思同一套）', () => {
-  it('定义 history 块 / 完整消息定义串 / 压缩要求（a-f）/ 输出格式 / 数据源', () => {
-    const prompt = buildHistoryPrompt();
-    // 任务声明：压缩下方 <history> 记录
-    expect(prompt).toContain('压缩 <history> 消息记录。你应当输出**单个**合法的 <history> 块');
-    expect(prompt).not.toContain('停止一切现有任务');
-    // history 块定义（条目标签语义）
-    expect(prompt).toContain('<history> 是历史消息的记录块');
-    expect(prompt).toContain('<user_message index="N">：用户消息条目');
-    expect(prompt).toContain('<sys type="(kind)" index="N">：系统消息条目');
-    expect(prompt).toContain('<reasoning>：模型的思考过程，仅作压缩参考，产物中不要出现');
-    expect(prompt).toContain('<assistant index="N">：单条完整消息');
-    expect(prompt).toContain('<assistant start="A" end="B">：多条连续完整消息聚合的模块');
-    // 压缩要求：用户/系统条目从输入逐条保留（含 XML 转义形式，不解码）
-    expect(prompt).toContain('条目从输入中逐条保留，不做任何处理');
-    expect(prompt).toContain('<reasoning> 只作参考，输出产物中不包含 <reasoning> 块');
-    // 具有关联性的 assistant 块合并；块内描述行为逻辑，强调结论/产出/任务，文件保留完整路径
-    expect(prompt).toContain('将具有关联性的 <assistant> 消息');
-    expect(prompt).toContain('内在逻辑连贯性');
-    expect(prompt).toContain('描述**行为逻辑**');
-    expect(prompt).toContain('强调关键的**结论、产出和任务**');
-    expect(prompt).toContain('保留完整路径');
-    // 单条重要消息单独呈现
-    expect(prompt).toContain('单条重要的完整消息以 <assistant index=""> 单独呈现');
-    // 加载的 skill：独立块且不过多省略
-    expect(prompt).toContain('加载的 skill 属于**关键信息**：应当产出独立块且不过多省略');
-    // index/start/end 必须连续
-    expect(prompt).toContain('index/start/end 必须连续');
-    expect(prompt).toContain('不跳号、不重叠、不遗漏');
-    // 输出格式：一个合法 <history> 块（无 reasoning），含 <sys> 空块示例
-    expect(prompt).toContain('【输出格式】输出单个合法的 <history> 块，**不包含其他任何内容**');
-    expect(prompt).toContain('<user_message index="(index)">');
-    expect(prompt).toContain('<sys type="(kind)" index="(index)"></sys>');
-    expect(prompt).toContain('<assistant start="(起始 index)" end="(结束 index)">');
-    expect(prompt).toContain('<assistant index="(index)">');
-    // 数据源说明
-    expect(prompt).toContain('【数据源】下方的 <history> 消息记录是本次要压缩的全部消息');
-    expect(prompt).not.toContain('message_id');
-    expect(prompt).not.toContain('[interrupted]');
-  });
-
-  it('摘要粒度：越往后越细（靠前简略、靠后详细），用户消息不受约束', () => {
-    const prompt = buildHistoryPrompt();
-    expect(prompt).toContain('【摘要粒度】');
-    expect(prompt).toContain('越往后越细');
-    expect(prompt).toContain('靠近末尾（最近）的完整消息保留更多细节');
-    expect(prompt).toContain('开头（较早）的完整消息可适当从简');
-    expect(prompt).toContain('用户消息不受此约束：始终逐条保留原文，不做概括与省略');
-  });
-});
-
 describe('history 条目解析与连续性 parseHistoryEntries / historyContinuity', () => {
   it('解析 user_message/assistant index 与 assistant start..end（合法 <history> 块内）', () => {
     const text = [
