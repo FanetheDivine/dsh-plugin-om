@@ -11,6 +11,7 @@
 
 ### Changed
 
+- 观察压缩改为延迟执行：净压力首次达到观察阈值时记录待定标记（log-only `om/observe-pending` 事件，触发点 = 当时的最后一条完整消息 index）本次不压缩；待定后新增完整消息数达到 `tailMessageCount` 才把压缩边界至触发点的全部内容摘要为新 `<history>` 块（等待期消息成为新的未压缩尾部；`tailMessageCount=0` 保持触发当轮立即执行）。待定标记持久化在会话日志中（重启后从日志恢复），摘要失败保留待定、下个 pre-step 直接重试，执行成功后写 `om/observe-invalidate` 失效标记
 - `pnpm-workspace.yaml` 新增 `web` 包与 `esbuild` 构建白名单（web 构建依赖）
 - `web/` 成本计算器 UI 重构为 Tailwind CSS + shadcn/ui：左侧参数侧边栏（滑块 + 数字输入联动）、右侧合并单元格成本表（每格显示 om 关闭红 / om 开启绿两个值）
 - `web/` 参数数字输入支持任意非负值（不受滑块最小值钳制），编辑期间可清空、失焦回落到受控值；模型对每轮新增 Δ ≤ 0 返回 0 轮、表格步长按 1000 下限执行（行数防护）

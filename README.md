@@ -7,7 +7,7 @@
 ## 功能
 
 - **自动压缩**（仅主会话，`agent/pre-step` 时阻塞串行执行）：
-  - **观察**：净压力（上下文压力 − 已压缩 `<history>` 块 token 估算合计 − 系统提示词 token 估算 − 工具定义 token 估算）≥ `observeThresholdTokens` 时，摘要未压缩消息并追加为新 `<history>` 块，精确替换被压缩的消息区间（旧块保留）
+  - **观察**：净压力（上下文压力 − 已压缩 `<history>` 块 token 估算合计 − 系统提示词 token 估算 − 工具定义 token 估算）首次 ≥ `observeThresholdTokens` 时记录待定标记（触发点 = 当时的最后一条完整消息），本次不压缩；待定后新增完整消息数达到 `tailMessageCount` 时，摘要压缩边界至触发点的全部消息并追加为新 `<history>` 块，精确替换被压缩的消息区间（旧块保留，等待期消息成为新的未压缩尾部）。待定标记以 log-only `om/observe-pending` / `om/observe-invalidate` 会话事件持久化（重启后从日志恢复），摘要失败保留待定、下个 pre-step 直接重试；`tailMessageCount=0` 时触发当轮立即执行
   - **反思**：全部 `<history>` 块 token 合计 ≥ `reflectThresholdTokens` 时，把多个摘要块合并为一条更紧凑的摘要
   - **输出容错**：摘要输出按首个 `<history>` 开标签到最后一个 `</history>` 定位；整块 XML 非法时按条目标签模糊提取并重建为合法块，再校验无 reasoning 与 index 连续
   - **失败中断**：摘要尝试全部耗尽后拒绝当前 step（当前 turn 以 blocked 结束，不再继续 AI 会话；signal 中止除外），最后一次尝试的实际报错写入日志与 `compaction/end` error
@@ -60,7 +60,7 @@ preset-agent 自带 `compaction-basic` 压缩，也会压缩上下文，其压�
 | `reflectThresholdTokens` | `120000` | 反思阈值（tokens）：全部 `<history>` 块 token 合计 ≥ 该值时触发合并 |
 | `compressMaxTokens` | 不设置 | 单次摘要生成上限（不设置时由模型适配器默认值决定） |
 | `rateLimitWaitMs` | `60000` | 遇 429 限流后下一次摘要请求前的等待毫秒数（全局冷却期；`0` 不限流） |
-| `tailMessageCount` | `5` | 尾部保留的不压缩消息条数 |
+| `tailMessageCount` | `5` | 观察触发后延迟执行的等待完整消息条数（新增完整消息数达到该值才执行压缩；`0` 表示触发当轮立即执行） |
 | `compressRetryCount` | `5` | 摘要失败后的最大重试次数（不含首次） |
 | `modelDir` | 共享目录 | recall-semantic 嵌入模型目录（默认 `$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>`，onnx 缺失且启用语义召回时运行时自动下载） |
 | `omEnabled` | `true` | 是否启用自动压缩（`false` 时关闭，recall 工具不受影响） |
