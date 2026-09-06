@@ -20,7 +20,7 @@ export const zh = {
   'compaction.failed': '上下文压缩失败',
   'compaction.failed.observe': '上下文压缩失败（观察）',
   'compaction.failed.reflect': '上下文压缩失败（反思）',
-  'compaction.retries': '重试 {count} 次',
+  'compaction.retries': '{count} 轮',
   warning: '上下文压缩功能降级',
 } as const;
 
@@ -38,7 +38,7 @@ export const en: Record<keyof typeof zh, string> = {
   'compaction.failed': 'Context compaction failed',
   'compaction.failed.observe': 'Context compaction failed (observation)',
   'compaction.failed.reflect': 'Context compaction failed (reflection)',
-  'compaction.retries': 'Retried {count} times',
+  'compaction.retries': '{count} rounds',
   warning: 'Context compaction degraded',
 };
 

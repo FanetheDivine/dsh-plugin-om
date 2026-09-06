@@ -67,7 +67,6 @@ async function stackHarness(options: {
     observeThresholdTokens: number;
     reflectThresholdTokens: number;
     tailMessageCount: number;
-    compressRetryCount: number;
     recallEnabled: boolean;
     semanticRecallEnabled: boolean;
     debug: boolean;
@@ -92,7 +91,6 @@ async function stackHarness(options: {
       observeThresholdTokens: 100,
       reflectThresholdTokens: 1000000,
       tailMessageCount: 0,
-      compressRetryCount: 0,
       rateLimitWaitMs: 0,
       recallEnabled: false,
       semanticRecallEnabled: false,
@@ -125,19 +123,35 @@ function seedUserMessages(session: Session, count: number, chars = 600, from = 0
   }
 }
 
-/** 产出覆盖完整消息 index from..to 的合法 <history> 观察块。 */
-function observeHistoryRange(from: number, to: number): string {
-  const entries = Array.from(
-    { length: to - from + 1 },
-    (_, i) =>
-      `<user_message index="${from + i}">压缩条目${from + i}：任务要点与结论完整保留</user_message>`,
-  );
-  return `<history>\n${entries.join('\n')}\n</history>`;
-}
-
-/** 产出覆盖完整消息 index 0..last 的合法 <history> 观察块。 */
-function observeHistory(last: number): string {
-  return observeHistoryRange(0, last);
+/**
+ * 成功完成压缩循环的 mock 分块工厂：按请求消息状态产出
+ * getHistory → completeCompression（会话状态驱动，不依赖全局调用序号）。
+ * 末消息为指令（纯文本 user 消息）→ getHistory；已回填工具结果（含 tool-result 块的
+ * user 消息）→ completeCompression。场景全部由 user 消息构成时（无可压缩条目），
+ * 空提交完成（未替换条目原样保留）。
+ */
+function toolRoundChunks() {
+  return (options: GenerateOptions, _callIndex: number): StreamChunk[] => {
+    const last = options.messages.at(-1);
+    const hasToolResult =
+      last?.role === 'user' &&
+      Array.isArray(last.content) &&
+      last.content.some((b) => b.type === 'tool-result');
+    const nextTool = hasToolResult ? 'completeCompression' : 'getHistory';
+    return [
+      {
+        type: 'block-end',
+        index: 0,
+        block: {
+          type: 'tool-call',
+          id: nextTool === 'getHistory' ? ('g1' as CallId) : ('c9' as CallId),
+          name: nextTool,
+          arguments: '{}',
+        },
+      } as StreamChunk,
+      { type: 'finish', reason: { kind: 'tool-calls' } } as StreamChunk,
+    ];
+  };
 }
 
 /** 读取消息事件的文本内容。 */
@@ -162,13 +176,11 @@ async function runPreStep(app: Context, session: Session): Promise<unknown> {
 }
 
 describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链路', () => {
-  it('观察压缩完整链路：摘要调用 → compaction 生命周期 → 表层替换 → 压力下降', async () => {
+  it('观察压缩完整链路：压缩循环 → compaction 生命周期 → 表层替换（user 原样保留）', async () => {
+    // 场景全部为 user 消息：compressHistory 无法压缩，空提交（未替换条目原样保留）
     const { app, session, adapter } = await stackHarness({
       withSystemPrompt: true,
-      chunksFor: () => [
-        { type: 'text-delta', index: 0, text: observeHistory(5) } as StreamChunk,
-        { type: 'finish', reason: { kind: 'stop' } } as StreamChunk,
-      ],
+      chunksFor: toolRoundChunks(),
     });
     seedUserMessages(session, 6);
     const meterBefore = app.tokenMeter.measure(session).totalTokens;
@@ -177,9 +189,9 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     const decision = await runPreStep(app, session);
     expect(decision).toEqual({ kind: 'enter', messages: [] }); // 未拒绝，step 放行
 
-    // mock adapter 收到一次 compaction 摘要调用，请求形态正确
+    // mock adapter 收到压缩循环调用（getHistory → completeCompression），请求形态正确
     const summaryCalls = adapter.calls.filter((c) => c.purpose === 'compaction');
-    expect(summaryCalls).toHaveLength(1);
+    expect(summaryCalls.length).toBeGreaterThanOrEqual(2);
     expect(summaryCalls[0]?.provider).toBe('mock');
     expect(summaryCalls[0]?.model).toBe('mock-model');
     expect(typeof summaryCalls[0]?.system).toBe('string');
@@ -208,25 +220,22 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(shadowed).toHaveLength(7);
     expect(shadowed.slice(1).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6]);
 
-    // 表层收缩为单一 <history> 节点，内容为带 tip 开标签的合法观察块
+    // 表层收缩为单一 <history> 节点：未压缩 user 条目原样保留
     expect(session.surface.nodes).toHaveLength(1);
     expect(textOf(checkpoint)).toContain('<history tip=');
     expect(textOf(checkpoint)).toContain('<user_message index="0">');
-
-    // 压力下降：替换后的表层启发式总量远小于压缩前
-    const meterAfter = app.tokenMeter.measure(session).totalTokens;
-    expect(meterAfter).toBeLessThan(meterBefore);
+    expect(textOf(checkpoint)).toContain('任务0');
 
     // 第二次 pre-step：压缩边界后无新消息，不重复压缩
+    const callsBefore = adapter.calls.filter((c) => c.purpose === 'compaction').length;
     await runPreStep(app, session);
-    expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(1);
+    expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(callsBefore);
   }, 30000);
 
-  it('摘要调用失败耗尽：compaction/end(error) + 诊断子会话落盘 + pre-step 拒绝本 step', async () => {
+  it('压缩循环失败：compaction/end(error) + 诊断子会话落盘 + pre-step 拒绝本 step', async () => {
     const { app, session, adapter } = await stackHarness({
       withSystemPrompt: true,
-      // 适配器先输出一段非 <history> 文本再以 error 终止（真实 LlmRuntime 将其
-      // 规范化为 error finish chunk）：校验失败 + 模型原始输出非空，落盘可断言
+      // 适配器输出纯文本（无工具调用）再以 error 终止：两轮无工具调用判失败
       chunksFor: () => [
         { type: 'text-delta', index: 0, text: '模型输出的非日志内容，未通过校验' } as StreamChunk,
         { type: 'finish', reason: { kind: 'error' } } as StreamChunk,
@@ -236,7 +245,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
 
     const decision = await runPreStep(app, session);
     expect(decision).toEqual({ kind: 'reject' });
-    expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(1); // 重试 0 次
+    expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(1);
     const types = session.events.map((e) => e.type);
     expect(types).toContain('compaction/start');
     expect(types).toContain('compaction/end');
@@ -256,26 +265,23 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect((end?.data as { diagnosticSessionId?: string } | undefined)?.diagnosticSessionId).toBe(
       child?.id,
     );
-    // 首事件 descriptor：one-shot + provider om-compaction-log + label 含阶段与尝试次数
+    // 首事件 descriptor：one-shot + provider om-compaction-log + label 含阶段与轮数
     const descriptor = child?.events[0];
     expect(descriptor?.type).toBe('subagent/descriptor');
     expect(descriptor?.data).toMatchObject({
       version: 2,
       mode: 'one-shot',
       provider: 'om-compaction-log',
-      label: 'OM会话-观察',
+      label: 'OM 压缩失败日志（观察 · 0 轮）', // 首轮请求即 error：无完成的模型轮
     });
-    // 子会话内容零加工：一对 user/assistant surface 消息——完整提示词与模型原始输出原样
-    expect(child?.events).toHaveLength(3);
-    expect(child?.surface.nodes).toHaveLength(2);
+    // 子会话内容零加工：指令 + assistant（含模型原始输出）
     const promptText = (
       (child?.events[1]?.data as { content?: Array<{ text?: string }> } | undefined)?.content ?? []
     )
       .map((b) => b.text ?? '')
       .join('');
-    expect(promptText).toContain('压缩 <history> 消息记录'); // system 指令（实际提示词全文）
-    expect(promptText).toContain('<user_message index="0">'); // 渲染输入含 <history> 块全文
-    expect(promptText).toContain('任务0');
+    expect(promptText).toContain('压缩完整消息区间'); // user 指令（压缩指令 + 区间）
+    expect(promptText).not.toContain('任务0'); // 历史内容不进指令
     const rawText = (
       (child?.events[2]?.data as { message?: { content?: Array<{ text?: string }> } } | undefined)
         ?.message?.content ?? []
@@ -288,10 +294,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
   it('systemPrompt 服务未挂载：压缩不被阻塞，om 警告事件每会话一条 + console 外部输出', async () => {
     const { app, session, adapter } = await stackHarness({
       withSystemPrompt: false,
-      chunksFor: () => [
-        { type: 'text-delta', index: 0, text: observeHistory(5) } as StreamChunk,
-        { type: 'finish', reason: { kind: 'stop' } } as StreamChunk,
-      ],
+      chunksFor: toolRoundChunks(),
     });
     seedUserMessages(session, 6);
     expect(app.get('systemPrompt')).toBeUndefined(); // 堆叠本身未挂载 systemPrompt
@@ -306,7 +309,8 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     }
 
     // 挂载失败不阻塞：压缩照常完成
-    expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(1);
+    const callsAfter = adapter.calls.filter((c) => c.purpose === 'compaction').length;
+    expect(callsAfter).toBeGreaterThanOrEqual(1);
     expect(session.events.map((e) => e.type)).toContain('compaction/end');
     // console 外部输出 + om 警告信封事件（同会话去重）
     expect(consoleText).toContain(`${PLUGIN_LABEL}: ${SYSTEM_PROMPT_MISSING}`);
@@ -329,46 +333,33 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
   it('systemPrompt 服务已挂载：组装成功计价、不产生 om 警告事件（回归：ctx.get 容错读取不抛错）', async () => {
     const { app, session, adapter } = await stackHarness({
       withSystemPrompt: true,
-      chunksFor: () => [
-        { type: 'text-delta', index: 0, text: observeHistory(5) } as StreamChunk,
-        { type: 'finish', reason: { kind: 'stop' } } as StreamChunk,
-      ],
+      chunksFor: toolRoundChunks(),
     });
     seedUserMessages(session, 6);
 
     await runPreStep(app, session);
 
     expect(app.get('systemPrompt')).toBeDefined();
-    expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(1);
+    expect(adapter.calls.filter((c) => c.purpose === 'compaction').length).toBeGreaterThanOrEqual(
+      1,
+    );
     expect(findOmEvents(session, 'om/warning')).toHaveLength(0);
   }, 30000);
 
-  it('观察→反思两级压缩全链路：单块观察 → 反思合并 → 新消息观察，两块并存', async () => {
+  it('观察→反思两级压缩全链路：单块观察 → 反思（空提交重建）→ 新消息观察，两块并存', async () => {
     const { app, session, adapter } = await stackHarness({
       withSystemPrompt: true,
       configOverrides: { reflectThresholdTokens: 10 },
-      chunksFor: (_options, callIndex) => {
-        // call 0：观察 0..5；call 1：反思合并（覆盖 0..5）；call 2：观察新消息 6..11
-        if (callIndex <= 1)
-          return [
-            { type: 'text-delta', index: 0, text: observeHistory(5) } as StreamChunk,
-            { type: 'finish', reason: { kind: 'stop' } } as StreamChunk,
-          ];
-        return [
-          { type: 'text-delta', index: 0, text: observeHistoryRange(6, 11) } as StreamChunk,
-          { type: 'finish', reason: { kind: 'stop' } } as StreamChunk,
-        ];
-      },
+      chunksFor: toolRoundChunks(),
     });
     seedUserMessages(session, 6);
     await runPreStep(app, session); // 第一轮：仅观察压缩（反思无块跳过）
 
     seedUserMessages(session, 6, 600, 6);
-    await runPreStep(app, session); // 第二轮：反思合并旧块 + 观察压缩新消息
+    await runPreStep(app, session); // 第二轮：反思（块内 user 条目不可压缩 → 空提交重建）+ 观察压缩新消息
 
-    // 三次摘要调用：观察 → 反思 → 观察
-    expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(3);
-    // compaction/start 的 phase 序列：observe → reflect → observe
+    // 三个压缩循环（每个 2 轮：getHistory → completeCompression）：观察 → 反思 → 观察
+    expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(6); // compaction/start 的 phase 序列：observe → reflect → observe
     const phases = session.events
       .filter((e) => e.type === 'compaction/start')
       .map((e) => (e.data as { phase?: string }).phase);
@@ -379,7 +370,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     for (const end of ends) {
       expect((end.data as { error?: string }).error).toBeUndefined();
     }
-    // 表层两块并存：反思合并块（0..5）+ 新观察块（6..11）
+    // 表层两块并存：重建块（0..5）+ 新观察块（6..11），未压缩条目原样保留
     expect(session.surface.nodes).toHaveLength(2);
     const texts = session.surface.nodes.map((seq) => textOf(session.events[seq as number]));
     expect(texts[0]).toContain('<history tip=');
@@ -393,10 +384,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     const { app, session } = await stackHarness({
       withSystemPrompt: true,
       configOverrides: { recallEnabled: true },
-      chunksFor: () => [
-        { type: 'text-delta', index: 0, text: observeHistory(5) } as StreamChunk,
-        { type: 'finish', reason: { kind: 'stop' } } as StreamChunk,
-      ],
+      chunksFor: toolRoundChunks(),
     });
     // recallEnabled 注册、semanticRecallEnabled 未启用不注册
     expect(app.tools.get('recall')).toBeDefined();

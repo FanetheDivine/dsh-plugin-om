@@ -12,8 +12,7 @@ describe('配置校验 resolveConfig', () => {
     expect(d.reflectThresholdTokens).toBe(120000);
     expect(d.compressMaxTokens).toBeUndefined(); // 默认不设置 maxTokens
     expect(d.tailMessageCount).toBe(5);
-    expect(d.compressRetryCount).toBe(5); // 失败后最大重试次数（不含首次）
-    expect(d.compressSkipReasoning).toBe(true); // 缺省压缩输入不携带 reasoning
+    expect(d.compressSkipReasoning).toBe(true); // 缺省 getHistory 不携带 reasoning 参考条目
     expect(d.omEnabled).toBe(true); // 缺省启用 OM
     expect(d.debug).toBe(process.env.NODE_ENV !== 'production'); // 缺省按 NODE_ENV 判定
     expect(d.recallEnabled).toBe(true);
@@ -24,6 +23,7 @@ describe('配置校验 resolveConfig', () => {
     expect(d).not.toHaveProperty('recallMaxMessages');
     expect(d).not.toHaveProperty('auto');
     expect(d).not.toHaveProperty('evalEnabled');
+    expect(d).not.toHaveProperty('compressRetryCount'); // compressRetryCount 已移除
   });
 
   it('覆盖项生效', () => {
@@ -37,14 +37,6 @@ describe('配置校验 resolveConfig', () => {
     expect(resolveConfig({ tailMessageCount: 3 }).tailMessageCount).toBe(3);
     expect(resolveConfig({ tailMessageCount: 0 }).tailMessageCount).toBe(0); // 无区间限制
     expect(resolveConfig({ tailMessageCount: 2.5 }).tailMessageCount).toBe(5); // 非整数回退默认
-  });
-
-  it('compressRetryCount：默认 5（失败后最大重试次数），整数可覆盖，非整数回退默认', () => {
-    expect(resolveConfig({}).compressRetryCount).toBe(5);
-    expect(resolveConfig({ compressRetryCount: 3 }).compressRetryCount).toBe(3);
-    expect(resolveConfig({ compressRetryCount: 0 }).compressRetryCount).toBe(0); // 无区间限制
-    expect(resolveConfig({ compressRetryCount: 2.5 }).compressRetryCount).toBe(5); // 非整数回退默认
-    expect(resolveConfig({ compressRetryCount: '5' }).compressRetryCount).toBe(5); // 非数值回退默认
   });
 
   it('rateLimitWaitMs：默认 60000（429 后下一次请求前至少等待的毫秒数），整数可覆盖，非整数回退默认', () => {
@@ -64,7 +56,6 @@ describe('配置校验 resolveConfig', () => {
       expect(d.reflectThresholdTokens).toBe(120000);
       expect(d.compressMaxTokens).toBeUndefined();
       expect(d.tailMessageCount).toBe(5);
-      expect(d.compressRetryCount).toBe(5);
       expect(d.compressSkipReasoning).toBe(true);
       expect(d.omEnabled).toBe(true);
       expect(d.recallEnabled).toBe(true);

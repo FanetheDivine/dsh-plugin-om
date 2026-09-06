@@ -3,21 +3,27 @@
  * 导出 estimateTextTokens / isPairBalancedAfter / computeCompressRange / historySection /
  * findObservePending / reflectPass / observePass / maybeCompress。
  *
- * - 反思：全部 <history> 块 token 合计 ≥ reflectThresholdTokens 时，块内文拼合为单个
- *   <history> 块输入摘要，合并为一条
+ * - 摘要生成走工具驱动的压缩循环（compress-loop.ts runCompressionLoop）：首条 user
+ *   消息仅含压缩指令与 start/end 区间，模型经 getHistory / compressHistory /
+ *   completeCompression 工具完成压缩；最终 <history> 块由插件从视图与替换记录构建，
+ *   全程无需整块校验
+ * - 反思：全部 <history> 块 token 合计 ≥ reflectThresholdTokens 时，把全部块条目作为
+ *   压缩视图重新压缩合并（视图无条目时跳过，如全部为不可解析的历史遗留块）
  * - 观察（触发 → 待定 → 延迟执行）：净压力（上下文压力 − 已压缩块 token 合计 − 系统提示词
  *   token 估算 − 工具定义 token 估算）首次 ≥ observeThresholdTokens 时记录待定标记
  *   （触发点 = 当时的最后一条完整消息 index），本次不压缩；待定后新增完整消息数 ≥
- *   tailMessageCount 时，把压缩边界至触发点的全部消息摘要为新 <history> 块并精确替换
- *   被压缩区间（旧块保留），等待期间的新消息成为下一轮未压缩尾部（延迟窗口内压力允许
+ *   tailMessageCount 时，把压缩边界至触发点的全部消息作为压缩视图替换为新 <history>
+ *   块（旧块保留），等待期间的新消息成为下一轮未压缩尾部（延迟窗口内压力允许
  *   短暂超阈值）；tailMessageCount=0 时触发当轮直接执行（不落待定标记）
  * - 待定标记以 log-only om 信封事件（借用 feedback/record，kind 为 om/observe-pending /
  *   om/observe-invalidate，见 om-event.ts）持久化在会话日志中（重启后从日志恢复）；
- *   摘要失败保留待定，下个 pre-step 直接重试执行
+ *   压缩失败保留待定，下个 pre-step 直接重试执行
  * - 两级在 pre-step 阻塞串行执行（先反思后观察）；仅主会话生效；omEnabled=false 关闭
  * - 压缩边界：最后一个合法 <history> 块之后的消息视为未压缩，其前不重复压缩
- * - 摘要尝试全部耗尽时 pass 返回失败结果（携带最后一次尝试的实际报错），压缩流程
- *   向上传播，pre-step 据此拒绝本 step 中断当前 turn；signal 中止标记 aborted（不中断）
+ * - 压缩循环最终失败（连续无工具调用 / 请求级错误）时 pass 返回失败结果（携带最后一次
+ *   错误），压缩流程向上传播，pre-step 据此拒绝本 step 中断当前 turn；signal 中止标记
+ *   aborted（不中断）；成功与失败均落盘压缩会话记录子会话（失败时其 id 随结果传播为
+ *   诊断子会话 id）
  * - 提交走宿主 compaction/* 生命周期事件（start 带 phase → summary → 替换消息 → end），
  *   失败补 end(error，实际报错 + 诊断子会话 sessionId)；替换消息 source 标记插件标识供 UI 认领
  * - 挂载失败类问题（systemPrompt/tokenMeter 服务异常）始终 console 到外部进程，并追加
@@ -29,19 +35,19 @@
 import { scopeOf } from '@deepseek-ai/dsh-scope';
 import type { AssembleContext } from '@deepseek-ai/dsh-system-prompt';
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt';
+import {
+  buildCompressionTaskText,
+  type CompressionLoopOptions,
+  type CompressionOutcome,
+  runCompressionLoop,
+} from './compress-loop.ts';
+import { buildObserveView, buildReflectView } from './compress-view.ts';
 import { HISTORY_TAG, isPluginOwnedSource, PLUGIN_LABEL } from './constants.ts';
 import { reportDegrade } from './degrade.ts';
 import { indexCompleteMessages, surfaceIndexOf } from './log-index.ts';
 import type { PluginLogger } from './logger.ts';
 import { makeLogger } from './logger.ts';
 import { appendOmEvent, readOmEvent } from './om-event.ts';
-import {
-  buildHistoryPrompt,
-  parseHistoryEntries,
-  renderMessages,
-  runSummarySubagent,
-  stripLeadingFormatNote,
-} from './summarize.ts';
 import type {
   Agent,
   CompactionEndPayload,
@@ -58,9 +64,9 @@ import type {
 import { blocksToText, type RoutedTarget, routedTarget, textCharCount, uuid } from './utils.ts';
 
 /**
- * 压缩 pass 结果：failed=false 表示无需中断（成功、跳过或非摘要耗尽的局部失败）；
- * failed=true 携带最后一次尝试的实际报错、是否因 signal 中止与诊断子会话 id
- * （最终失败时每次尝试的完整提示词与模型原始输出落盘为诊断子会话；落盘失败时缺失）。
+ * 压缩 pass 结果：failed=false 表示无需中断（成功、跳过或非最终的局部失败）；
+ * failed=true 携带最后一次错误、是否因 signal 中止与诊断子会话 id（压缩会话记录
+ * 子会话；落盘失败时缺失）。
  */
 export type CompressPassResult =
   | { failed: false }
@@ -72,16 +78,33 @@ export function estimateTextTokens(text: string): number {
 }
 
 /**
- * 反思输入块引用的最大完整消息 index（解析全部条目取最大 end；无条目返回 -1）。
- * 反思输出必须覆盖输入引用的完整 index 区间（0..max），连续性校验据此约束。
+ * 运行压缩循环并归一化结果：失败统一追加 compaction/end(error)（携带诊断子会话 id），
+ * 成功记会话记录日志；返回循环结果（成功时由调用方提交）。
  */
-function reflectExpectedEnd(contextText: string): number {
-  let max = -1;
-  for (const e of parseHistoryEntries(contextText)) {
-    const hi = e.kind === 'assistant' && e.end !== undefined ? e.end : (e.index ?? 0);
-    if (hi > max) max = hi;
+async function runPassLoop(
+  ctx: Context,
+  session: Session,
+  lifecycle: CompactionLifecycle,
+  options: CompressionLoopOptions,
+  logger: PluginLogger,
+  phase: 'observe' | 'reflect',
+): Promise<CompressionOutcome> {
+  const outcome = await runCompressionLoop(ctx, session, options);
+  if (!outcome.ok) {
+    logger.warn(
+      `${phase === 'reflect' ? '反思' : '观察'}：压缩循环失败（${outcome.error}），诊断子会话 ${outcome.recordSessionId ?? '未落盘'}，追加 compaction/end(error)`,
+    );
+    try {
+      appendCompactionEnd(session, lifecycle, outcome.error, outcome.recordSessionId);
+    } catch {
+      /* end 追加失败忽略（start 已记录，日志仍可诊断） */
+    }
+    return outcome;
   }
-  return max;
+  if (outcome.recordSessionId !== undefined) {
+    logger.step(`压缩会话记录子会话 ${outcome.recordSessionId}`);
+  }
+  return outcome;
 }
 
 /**
@@ -111,17 +134,6 @@ function historyInnerText(text: string): string {
   const gt = text.indexOf('>', open);
   if (gt === -1 || gt >= close) return text;
   return text.slice(gt + 1, close).trim();
-}
-
-/**
- * 反思输入拼合：全部块内文（historyInnerText 去掉开标签属性，块首格式说明注释剥离）
- * 按序合并进单个 <history> 块。正文条目内出现的属性/注释同名串原样保留。
- */
-function mergeHistoryBlocks(blocks: Array<{ text: string }>): string {
-  const inner = blocks
-    .map((block) => stripLeadingFormatNote(historyInnerText(block.text)))
-    .join('\n');
-  return `<${HISTORY_TAG}>\n${inner}\n</${HISTORY_TAG}>`;
 }
 
 /**
@@ -355,9 +367,10 @@ function appendHistoryMessage(
 }
 
 /**
- * 反思：全部 <history> 块 token 合计 ≥ reflectThresholdTokens 时，全部块内文拼合为
- * 单个 <history> 块送入摘要调用，整个块区段合并替换为一条更紧凑的摘要。失败不产生
- * 部分替换；摘要尝试全部耗尽返回失败结果（error = 最后一次尝试的实际报错/具体问题）。
+ * 反思：全部 <history> 块 token 合计 ≥ reflectThresholdTokens 时，把全部块内条目作为
+ * 压缩视图送入工具压缩循环，整个块区段合并替换为一条更紧凑的摘要。视图无条目（全部
+ * 为不可解析的历史遗留块）时跳过。失败不产生部分替换；最终失败返回失败结果
+ * （error = 最后一次错误）。
  */
 export async function reflectPass(
   ctx: Context,
@@ -393,59 +406,50 @@ export async function reflectPass(
     logger.step('反思：块区段缺失，跳过');
     return { failed: false };
   }
+  const view = buildReflectView(blocks, { skipReasoning: config.compressSkipReasoning });
+  if (view.minIndex === undefined || view.maxIndex === undefined) {
+    logger.step('反思：块内无可定位条目（历史遗留块），跳过');
+    return { failed: false };
+  }
   const blockSeqs = blocks.map((block) => block.seq);
-  const instruction = buildHistoryPrompt(config.compressSkipReasoning);
-  const contextText = mergeHistoryBlocks(blocks);
-  const expectedEnd = reflectExpectedEnd(contextText);
   const lifecycle: CompactionLifecycle = {
     compactionId: newCompactionId(),
     turn: openTurnOf(session),
   };
   try {
-    logger.step('反思：追加 compaction/start（摘要调用前开启压缩中提示）');
+    logger.step('反思：追加 compaction/start（压缩循环前开启压缩中提示）');
     appendCompactionStart(session, lifecycle, 'reflect');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(`反思压缩启动失败: ${message}`);
     return { failed: false };
   }
-  const summaryResult = await runSummarySubagent(
+  const summaryResult = await runPassLoop(
     ctx,
-    agent,
-    instruction,
-    contextText,
-    config.compressMaxTokens,
-    target,
-    config.debug,
-    signal,
+    session,
+    lifecycle,
     {
-      maxAttempts: config.compressRetryCount + 1,
-      expected: expectedEnd < 0 ? { start: 0 } : { start: 0, end: expectedEnd },
-      rateLimitWaitMs: config.rateLimitWaitMs,
+      view,
       phase: 'reflect',
-    },
+      taskText: buildCompressionTaskText('reflect', view.minIndex, view.maxIndex),
+      target,
+      maxTokens: config.compressMaxTokens,
+      rateLimitWaitMs: config.rateLimitWaitMs,
+      skipReasoning: config.compressSkipReasoning,
+      debug: config.debug,
+      ...(signal === undefined ? {} : { signal }),
+    } satisfies CompressionLoopOptions,
+    logger,
+    'reflect',
   );
   if (!summaryResult.ok) {
-    logger.warn(
-      `反思：摘要调用失败（${summaryResult.error}），诊断子会话 ${summaryResult.diagnosticSessionId ?? '未落盘'}，追加 compaction/end(error)`,
-    );
-    try {
-      appendCompactionEnd(
-        session,
-        lifecycle,
-        summaryResult.error,
-        summaryResult.diagnosticSessionId,
-      );
-    } catch {
-      /* end 追加失败忽略（start 已记录，日志仍可诊断） */
-    }
     return {
       failed: true,
       error: summaryResult.error,
       aborted: summaryResult.aborted,
-      ...(summaryResult.diagnosticSessionId === undefined
+      ...(summaryResult.recordSessionId === undefined
         ? {}
-        : { diagnosticSessionId: summaryResult.diagnosticSessionId }),
+        : { diagnosticSessionId: summaryResult.recordSessionId }),
     };
   }
   const report = summaryResult.text;
@@ -461,7 +465,7 @@ export async function reflectPass(
       provider: target.provider,
       model: target.model,
       maxTokens: config.compressMaxTokens,
-      attemptCount: summaryResult.attemptCount - 1,
+      attemptCount: summaryResult.rounds,
       ...(summaryResult.usage === undefined ? {} : { usage: summaryResult.usage }),
     });
     logger.step('反思提交：替换整个 <history> 块区段为合并摘要');
@@ -477,7 +481,7 @@ export async function reflectPass(
       lifecycle.compactionId,
     );
     logger.step('反思提交：追加 compaction/end');
-    appendCompactionEnd(session, lifecycle, undefined, summaryResult.diagnosticSessionId);
+    appendCompactionEnd(session, lifecycle, undefined, summaryResult.recordSessionId);
     logger.info(
       `反思完成（摘要 ${tokens} tokens ≥ 阈值 ${threshold}，合并 ${blocks.length} 个块为一条）`,
     );
@@ -490,7 +494,7 @@ export async function reflectPass(
     } catch {
       /* end 追加失败忽略（start 已记录，日志仍可诊断） */
     }
-    // 提交失败为局部异常（摘要已成功）：记日志后继续本轮，不中断 turn
+    // 提交失败为局部异常（压缩已成功）：记日志后继续本轮，不中断 turn
     return { failed: false };
   }
 }
@@ -571,9 +575,9 @@ function measurePressureTokens(
  * observeThresholdTokens 时记录待定标记（触发点 = 当时的最后一条完整消息 index），本次
  * 不压缩（tailMessageCount=0 当轮直接执行，不落待定标记）；已有待定标记时按新增完整
  * 消息数 ≥ tailMessageCount 决定执行，压缩区间截至触发点（新增消息成为新未压缩尾部，
- * 延迟窗口内压力允许短暂超阈值）。执行成功（或无可行区间）后写待定失效标记；摘要
- * 失败保留待定，下个 pre-step 直接重试执行。摘要尝试全部耗尽返回失败结果
- * （error = 最后一次尝试的实际报错/具体问题）。
+ * 延迟窗口内压力允许短暂超阈值）。执行成功（或无可行区间）后写待定失效标记；压缩
+ * 失败保留待定，下个 pre-step 直接重试执行。最终失败返回失败结果
+ * （error = 最后一次错误）。
  */
 export async function observePass(
   ctx: Context,
@@ -686,67 +690,59 @@ export async function observePass(
     clearPending();
     return { failed: false };
   }
-  const startIndex = inRangeCms[0]?.index ?? 0;
-  const endIndex = inRangeCms[inRangeCms.length - 1]?.index ?? startIndex;
+  const view = buildObserveView(session, replaceSeqs, {
+    skipReasoning: config.compressSkipReasoning,
+  });
+  if (view.minIndex === undefined || view.maxIndex === undefined) {
+    logger.step('观察：区间内无可定位条目，清除待定标记视为完成');
+    clearPending();
+    return { failed: false };
+  }
   logger.step(
-    `观察：保留旧块 ${blocks.length} 条，替换 [${replaceStart}..${range.end}]（${replaceSeqs.length} 个表层节点，压缩至${triggerNote}），新消息 index ${startIndex}..${endIndex}`,
+    `观察：保留旧块 ${blocks.length} 条，替换 [${replaceStart}..${range.end}]（${replaceSeqs.length} 个表层节点，压缩至${triggerNote}），视图区间 ${view.minIndex}..${view.maxIndex}`,
   );
-  const instruction = buildHistoryPrompt(config.compressSkipReasoning);
-  const contextText = renderMessages(session, replaceSeqs, config.compressSkipReasoning);
   const lifecycle: CompactionLifecycle = {
     compactionId: newCompactionId(),
     turn: openTurnOf(session),
   };
   try {
-    logger.step('观察：追加 compaction/start（摘要调用前开启压缩中提示）');
+    logger.step('观察：追加 compaction/start（压缩循环前开启压缩中提示）');
     appendCompactionStart(session, lifecycle, 'observe');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(`观察压缩启动失败: ${message}`);
     return { failed: false };
   }
-  const summaryResult = await runSummarySubagent(
+  const summaryResult = await runPassLoop(
     ctx,
-    agent,
-    instruction,
-    contextText,
-    config.compressMaxTokens,
-    target,
-    config.debug,
-    signal,
+    session,
+    lifecycle,
     {
-      maxAttempts: config.compressRetryCount + 1,
-      expected: { start: startIndex, end: endIndex },
-      rateLimitWaitMs: config.rateLimitWaitMs,
+      view,
       phase: 'observe',
-    },
+      taskText: buildCompressionTaskText('observe', view.minIndex, view.maxIndex),
+      target,
+      maxTokens: config.compressMaxTokens,
+      rateLimitWaitMs: config.rateLimitWaitMs,
+      skipReasoning: config.compressSkipReasoning,
+      debug: config.debug,
+      ...(signal === undefined ? {} : { signal }),
+    } satisfies CompressionLoopOptions,
+    logger,
+    'observe',
   );
   if (!summaryResult.ok) {
-    logger.warn(
-      `观察：摘要调用失败（${summaryResult.error}），诊断子会话 ${summaryResult.diagnosticSessionId ?? '未落盘'}，追加 compaction/end(error)`,
-    );
-    try {
-      appendCompactionEnd(
-        session,
-        lifecycle,
-        summaryResult.error,
-        summaryResult.diagnosticSessionId,
-      );
-    } catch {
-      /* end 追加失败忽略（start 已记录，日志仍可诊断） */
-    }
-    // 摘要失败不清除待定标记：下个 pre-step 直接重试执行（无需重新触发与等待）
+    // 压缩失败不清除待定标记：下个 pre-step 直接重试执行（无需重新触发与等待）
     return {
       failed: true,
       error: summaryResult.error,
       aborted: summaryResult.aborted,
-      ...(summaryResult.diagnosticSessionId === undefined
+      ...(summaryResult.recordSessionId === undefined
         ? {}
-        : { diagnosticSessionId: summaryResult.diagnosticSessionId }),
+        : { diagnosticSessionId: summaryResult.recordSessionId }),
     };
   }
   const report = summaryResult.text;
-  const attemptCount = summaryResult.attemptCount - 1;
   const usage = summaryResult.usage;
   // 单条消息计价失败按 0 计（tokenMeter 异常属挂载类降级：console 外部 + om 警告事件每会话一次）
   const shadowedTokenCount = replaceSeqs.reduce((total, seq) => {
@@ -779,7 +775,7 @@ export async function observePass(
       provider: target.provider,
       model: target.model,
       maxTokens: config.compressMaxTokens,
-      attemptCount,
+      attemptCount: summaryResult.rounds,
       ...(usage === undefined ? {} : { usage }),
     });
     logger.step('观察提交：替换被压缩新消息区间为 <history>（旧块保留）');
@@ -795,7 +791,7 @@ export async function observePass(
       lifecycle.compactionId,
     );
     logger.step('观察提交：追加 compaction/end');
-    appendCompactionEnd(session, lifecycle, undefined, summaryResult.diagnosticSessionId);
+    appendCompactionEnd(session, lifecycle, undefined, summaryResult.recordSessionId);
     // 压缩成功提交后写待定失效标记（提交失败则保留待定，边界后移使其自然过期）
     clearPending();
     logger.info(
@@ -810,7 +806,7 @@ export async function observePass(
     } catch {
       /* end 追加失败忽略（start 已记录，日志仍可诊断） */
     }
-    // 提交失败为局部异常（摘要已成功）：记日志后继续本轮，不中断 turn；
+    // 提交失败为局部异常（压缩已成功）：记日志后继续本轮，不中断 turn；
     // 待定标记保留，边界后移后由 findObservePending 判定为过期（兜底崩溃窗口）
     return { failed: false };
   }

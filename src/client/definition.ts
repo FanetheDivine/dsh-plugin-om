@@ -56,8 +56,8 @@ export interface OmCompactionChatData {
   readonly summaryCharCount: number | null;
   /** 压缩后的估算 token 数（4 字符 ≈ 1 token），summary 不可用或非法时为 null。 */
   readonly summaryTokenCount: number | null;
-  /** 摘要调用重试次数，载荷缺失或非法时为 null。 */
-  readonly retryCount: number | null;
+  /** 压缩循环的模型请求轮数，载荷缺失或非法时为 null。 */
+  readonly rounds: number | null;
   /** 压缩失败的错误文案（来自 compaction/end 载荷 error）；非失败节点为 null。 */
   readonly error: string | null;
 }
@@ -111,7 +111,7 @@ function compactSummaryData(summaryMatch: ConversationMatch | undefined): OmComp
   let shadowedItemCount: number | null = null;
   let shadowedTokenCount: number | null = null;
   let shadowedCharCount: number | null = null;
-  let retryCount: number | null = null;
+  let rounds: number | null = null;
   if (summaryMatch?.event.type === 'compaction/summary') {
     // 宿主载荷类型是 union 且不含插件扩展字段，读取处收窄为插件扩展类型
     const data = summaryMatch.event.data as CompactionSummaryPayload;
@@ -134,7 +134,7 @@ function compactSummaryData(summaryMatch: ConversationMatch | undefined): OmComp
       data.shadowedCharCount >= 0
         ? data.shadowedCharCount
         : null;
-    retryCount =
+    rounds =
       data.attemptCount !== undefined &&
       Number.isSafeInteger(data.attemptCount) &&
       data.attemptCount >= 0
@@ -152,7 +152,7 @@ function compactSummaryData(summaryMatch: ConversationMatch | undefined): OmComp
     shadowedCharCount,
     summaryCharCount: summary === null ? null : summary.length,
     summaryTokenCount: summary === null ? null : Math.ceil(summary.length / 4),
-    retryCount,
+    rounds,
   };
 }
 
@@ -175,7 +175,7 @@ function runningData(start: ConversationMatch | undefined): OmCompactionChatData
     shadowedCharCount: null,
     summaryCharCount: null,
     summaryTokenCount: null,
-    retryCount: null,
+    rounds: null,
   };
 }
 
@@ -200,7 +200,7 @@ function failureData(
     shadowedCharCount: null,
     summaryCharCount: null,
     summaryTokenCount: null,
-    retryCount: null,
+    rounds: null,
   };
 }
 

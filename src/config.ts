@@ -18,9 +18,7 @@ export type PluginConfig = {
   rateLimitWaitMs: number;
   /** 观察触发后延迟执行的等待完整消息条数（新增完整消息数达到该值才执行压缩；0 表示触发当轮立即执行）。 */
   tailMessageCount: number;
-  /** 摘要失败后的最大重试次数（不含首次）。 */
-  compressRetryCount: number;
-  /** 压缩输入是否携带被压缩消息的 reasoning 思考文本（true 时压缩请求不含 <reasoning> 参考条目，压缩提示词也省略其说明）。 */
+  /** 工具循环 getHistory 输出是否携带 reasoning 参考条目（true 时不携带，压缩指令也省略其说明行）。 */
   compressSkipReasoning: boolean;
   /** 是否启用自动压缩（观察/反思）。 */
   omEnabled: boolean;
@@ -41,7 +39,6 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   compressMaxTokens: undefined,
   rateLimitWaitMs: 60000,
   tailMessageCount: 5,
-  compressRetryCount: 5,
   compressSkipReasoning: true,
   omEnabled: true,
   debug: false,
@@ -56,8 +53,7 @@ type NumberKey =
   | 'reflectThresholdTokens'
   | 'compressMaxTokens'
   | 'rateLimitWaitMs'
-  | 'tailMessageCount'
-  | 'compressRetryCount';
+  | 'tailMessageCount';
 
 /** 数值键校验参数表：键名 + [是否必须为整数]。 */
 const NUMBER_KEYS: Array<[NumberKey, boolean]> = [
@@ -66,7 +62,6 @@ const NUMBER_KEYS: Array<[NumberKey, boolean]> = [
   ['compressMaxTokens', true],
   ['rateLimitWaitMs', true],
   ['tailMessageCount', true],
-  ['compressRetryCount', true],
 ];
 
 /** 归一化原始配置输入：缺省 / null / 空串 / 非对象视为空对象。 */

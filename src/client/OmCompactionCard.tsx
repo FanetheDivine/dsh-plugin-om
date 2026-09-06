@@ -115,7 +115,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCo
   }
   const expandable = data.summary !== null;
   const open = expandable && expanded;
-  // 统计行：优先完整压缩前后统计，载荷字段不全时逐级回落；重试次数仅在有重试时追加
+  // 统计行：优先完整压缩前后统计，载荷字段不全时逐级回落；轮数仅多于 1 轮时追加
   const stats =
     data.shadowedItemCount !== null &&
     data.shadowedCharCount !== null &&
@@ -137,9 +137,9 @@ export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCo
         : expandable
           ? t('compaction.expand')
           : t('compaction.unavailable');
-  const retry =
-    data.retryCount !== null && data.retryCount > 0
-      ? ` \u00b7 ${t('compaction.retries', { count: data.retryCount })}`
+  const roundsNote =
+    data.rounds !== null && data.rounds > 1
+      ? ` \u00b7 ${t('compaction.retries', { count: data.rounds })}`
       : '';
   return (
     <div style={styles.row}>
@@ -153,7 +153,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCo
             <span className={css.sep} aria-hidden />
             <span className={css.summary} data-om-compaction-summary>
               {stats}
-              {retry}
+              {roundsNote}
             </span>
           </>
         }

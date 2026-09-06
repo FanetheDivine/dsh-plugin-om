@@ -1,43 +1,76 @@
-// compaction-log.ts 单元测试：压缩调用日志子会话落盘 recordCompactionAttempt——
-// header 元数据（origin/parentSession/delegationDepth/cwd 继承）、subagent/descriptor
-// 载荷（version/mode/provider/label）、「提示词 + 完整输出内容块」消息组原样结构与顺序
-//（reasoning → text → tool-call，无额外消息）、flush 调用、落盘异常被吞（create/flush 失败仅 warn 不抛错）。
+// compaction-log.ts 单元测试：压缩会话记录落盘 recordCompressionSession——header
+// 元数据（origin/parentSession/delegationDepth/cwd 继承）、subagent/descriptor 载荷
+// （version/mode/provider/label 成功与失败形态）、循环消息组原样结构与顺序（无额外
+// 消息）、flush 调用、落盘异常被吞（create/flush 失败仅 warn 不抛错）。
 
-import type { CallId } from '@deepseek-ai/dsh-llm';
 import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent';
 import { describe, expect, it } from 'vitest';
 
 import {
   COMPACTION_LOG_PROVIDER,
-  compactionLogLabel,
-  recordCompactionAttempt,
+  compressionRecordLabel,
+  recordCompressionSession,
 } from '../src/compaction-log.ts';
 import { PLUGIN_LABEL } from '../src/constants.ts';
-import type { Session, SessionEvent } from '../src/types.ts';
-import { makeCtx, makeSession, twoCallFlow } from './helpers.ts';
+import type { Message, Session } from '../src/types.ts';
+import { makeCtx, makeSession, textBlock, twoCallFlow } from './helpers.ts';
 
 const TARGET = { provider: 'test', model: 'test-model' };
 
-/** 断言辅助：取子会话事件中本组尝试的 user/assistant 消息（descriptor 占 seq 0）。 */
-function attemptEvents(child: Session): { user: SessionEvent; assistant: SessionEvent } {
-  const user = child.events[1];
-  const assistant = child.events[2];
-  if (!user || !assistant) throw new Error('诊断消息组缺失');
-  return { user, assistant } as { user: SessionEvent; assistant: SessionEvent };
+/** 构造循环消息组：user 指令 + assistant（tool-call）+ tool-result。 */
+function loopMessages(): Message[] {
+  return [
+    {
+      id: 'm1' as never,
+      role: 'user',
+      content: [textBlock('压缩指令')],
+      source: { kind: 'plugin', plugin: PLUGIN_LABEL },
+    } as unknown as Message,
+    {
+      id: 'm2' as never,
+      role: 'assistant',
+      content: [
+        { type: 'text', text: '开始压缩' },
+        { type: 'tool-call', id: 'c1' as never, name: 'getHistory', arguments: '{}' },
+      ],
+      source: { kind: 'model', provider: 'test', model: 'test-model' },
+    } as unknown as Message,
+    {
+      id: 'm3' as never,
+      role: 'user',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'c1' as never,
+          content: [textBlock('历史条目')],
+        },
+      ],
+      source: { kind: 'tool', callId: 'c1' as never },
+    } as unknown as Message,
+  ];
 }
 
-describe('recordCompactionAttempt：压缩日志子会话落盘', () => {
+/** 断言辅助：取子会话事件中的 user/assistant 消息（descriptor 占 seq 0）。 */
+function messageEvents(child: Session): { user: unknown[]; assistant: unknown[] } {
+  return {
+    user: child.events.filter((e) => e.type === 'user/message'),
+    assistant: child.events.filter((e) => e.type === 'assistant/message'),
+  };
+}
+
+describe('recordCompressionSession：压缩会话记录落盘', () => {
   it('header 元数据：origin subagent + parentSession + delegationDepth = 父 + 1 + cwd 继承', async () => {
     const ctx = makeCtx();
     const parent = makeSession({
       events: twoCallFlow(),
       header: { cwd: 'D:\\work\\proj', delegationDepth: 2 },
     });
-    const id = await recordCompactionAttempt(ctx, parent, {
+    const id = await recordCompressionSession(ctx, parent, {
       phase: 'observe',
       target: TARGET,
-      attempt: { prompt: 'P', rawOutput: 'R' },
-      attemptNo: 1,
+      messages: loopMessages(),
+      rounds: 1,
+      success: true,
       debug: false,
     });
     expect(id).toBe(ctx._createdSessions[0]?.id);
@@ -57,166 +90,88 @@ describe('recordCompactionAttempt：压缩日志子会话落盘', () => {
     expect(ctx._flushedSessions[0]?.id).toBe(created?.session.id);
   });
 
-  it('descriptor 载荷：version 2 / mode one-shot / provider om-compaction-log / label 含阶段与尝试序号', async () => {
+  it('成功：descriptor 载荷与循环消息组原样落盘', async () => {
     const ctx = makeCtx();
-    const parent = makeSession();
-    await recordCompactionAttempt(ctx, parent, {
+    const parent = makeSession({ events: twoCallFlow() });
+    const id = await recordCompressionSession(ctx, parent, {
       phase: 'reflect',
       target: TARGET,
-      attempt: { prompt: 'P2', rawOutput: 'R2' },
-      attemptNo: 2,
+      messages: loopMessages(),
+      rounds: 2,
+      success: true,
       debug: false,
     });
+    expect(id).toBe(ctx._createdSessions[0]?.id);
     const child = ctx._createdSessions[0]?.session;
     expect(child).toBeDefined();
-    const descriptor = child?.events[0];
-    expect(descriptor?.type).toBe('subagent/descriptor');
+    const descriptor = child?.events.find((e) => e.type === 'subagent/descriptor');
     expect(descriptor?.data).toEqual({
       version: SUBAGENT_DESCRIPTOR_VERSION,
       mode: 'one-shot',
       provider: COMPACTION_LOG_PROVIDER,
-      label: compactionLogLabel('reflect', 2),
+      label: compressionRecordLabel('reflect', 2, true),
     });
-    expect(compactionLogLabel('reflect', 2)).toBe('OM会话-反思-重试1');
-    expect(compactionLogLabel('observe', 1)).toBe('OM会话-观察');
-    expect(compactionLogLabel(undefined, 3)).toBe('OM会话-压缩-重试2');
+    expect(compressionRecordLabel('reflect', 2, true)).toContain('会话记录');
+    expect(compressionRecordLabel('observe', 1, false)).toContain('失败日志');
+    // 消息组原样：user 指令 + assistant（含 tool-call 块）+ tool-result，共 3 条
+    const { user, assistant } = child ? messageEvents(child) : { user: [], assistant: [] };
+    expect(user).toHaveLength(2);
+    expect(assistant).toHaveLength(1);
+    expect(JSON.stringify(assistant)).toContain('getHistory');
+    expect(JSON.stringify(user[1])).toContain('tool-result');
   });
 
-  it('消息组零加工：单次尝试一对 user/assistant surface 消息，提示词与原始输出原样、无额外内容', async () => {
+  it('失败：label 为失败日志，消息组同样原样落盘', async () => {
     const ctx = makeCtx();
     const parent = makeSession();
-    const attempt = {
-      prompt: '完整提示词\n<history>\n<user_message index="0">旧内容</user_message>\n</history>',
-      rawOutput: '模型原始输出（截断）',
-    };
-    const id = await recordCompactionAttempt(ctx, parent, {
+    await recordCompressionSession(ctx, parent, {
       phase: 'observe',
       target: TARGET,
-      attempt,
-      attemptNo: 1,
+      messages: loopMessages(),
+      rounds: 1,
+      success: false,
       debug: false,
     });
     const child = ctx._createdSessions[0]?.session;
-    expect(child).toBeDefined();
-    expect(id).toBe(child?.id);
-    // 事件面：descriptor + 1 组消息，共 3 条；surface 仅为 2 条消息
-    expect(child?.events).toHaveLength(3);
-    expect(child?.surface.nodes).toHaveLength(2);
-    const { user, assistant } = attemptEvents(child as Session);
-    expect(user.type).toBe('user/message');
-    expect((user.data as { content?: Array<{ text?: string }> }).content?.[0]?.text).toBe(
-      attempt.prompt,
-    );
-    expect((user.data as { source?: { kind?: string; plugin?: string } }).source).toEqual({
-      kind: 'plugin',
-      plugin: PLUGIN_LABEL,
-    });
-    expect((user as { surfaceOp?: unknown }).surfaceOp).toBe('append');
-    expect(assistant.type).toBe('assistant/message');
-    const data = assistant.data as {
-      turn: number;
-      step: number;
-      message: {
-        content?: Array<{ type?: string; text?: string }>;
-        source?: { kind?: string; provider?: string; model?: string };
-      };
-    };
-    expect(data.turn).toBe(0);
-    // 子会话只含单次尝试：step 固定 1（不随 attemptNo 递增）
-    expect(data.step).toBe(1);
-    // 无 reasoning/toolCalls 时仅单个 text 块
-    expect(data.message.content).toEqual([{ type: 'text', text: attempt.rawOutput }]);
-    expect(data.message.source).toEqual({
-      kind: 'model',
-      provider: TARGET.provider,
-      model: TARGET.model,
-    });
-    expect((assistant as { surfaceOp?: unknown }).surfaceOp).toBe('append');
+    const descriptor = child?.events.find((e) => e.type === 'subagent/descriptor');
+    expect((descriptor?.data as { label?: string })?.label).toContain('失败日志');
   });
 
-  it('完整输出内容块：reasoning/toolCalls 按序还原为 reasoning → text → tool-call 块', async () => {
+  it('落盘自身失败：create 抛错时仅 warn 并返回 undefined', async () => {
     const ctx = makeCtx();
-    const parent = makeSession();
-    const attempt = {
-      prompt: 'P',
-      rawOutput: '输出文本',
-      reasoning: '思考过程',
-      toolCalls: [
-        {
-          type: 'tool-call' as const,
-          id: 'call-1' as CallId,
-          name: 'read_file',
-          arguments: '{"p":"a.ts"}',
-        },
-      ],
+    (ctx.sessions as { create: unknown }).create = () => {
+      throw new Error('sessions down');
     };
-    await recordCompactionAttempt(ctx, parent, {
-      phase: 'reflect',
-      target: TARGET,
-      attempt,
-      attemptNo: 1,
-      debug: false,
-    });
-    const child = ctx._createdSessions[0]?.session;
-    const { assistant } = attemptEvents(child as Session);
-    const data = assistant.data as {
-      message: {
-        content?: Array<{
-          type?: string;
-          text?: string;
-          id?: string;
-          name?: string;
-          arguments?: string;
-        }>;
-      };
-    };
-    expect(data.message.content).toEqual([
-      { type: 'reasoning', text: '思考过程' },
-      { type: 'text', text: '输出文本' },
-      { type: 'tool-call', id: 'call-1', name: 'read_file', arguments: '{"p":"a.ts"}' },
-    ]);
-  });
-
-  it('ctx.sessions.create 抛错：返回 undefined、仅 warn、不向上抛（不影响压缩流程）', async () => {
-    const ctx = makeCtx();
-    (ctx as unknown as { sessions: { create: () => never } }).sessions = {
-      create: () => {
-        throw new Error('store 故障');
-      },
-    } as never;
-    const id = await recordCompactionAttempt(ctx, makeSession(), {
+    const id = await recordCompressionSession(ctx, makeSession(), {
       phase: 'observe',
       target: TARGET,
-      attempt: { prompt: 'P', rawOutput: 'R' },
-      attemptNo: 2,
+      messages: loopMessages(),
+      rounds: 1,
+      success: false,
       debug: false,
     });
     expect(id).toBeUndefined();
-    const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
     expect(
-      warns.some(
-        (w) => w.includes('压缩日志子会话落盘失败（第 2 次尝试）') && w.includes('store 故障'),
-      ),
+      ctx._loggerCalls.some((c) => c.level === 'warn' && c.args.join('').includes('落盘失败')),
     ).toBe(true);
   });
 
-  it('flush 抛错：子会话已创建仍返回 id，flush 失败仅 warn', async () => {
+  it('flush 抛错：仅 warn，子会话 id 仍返回', async () => {
     const ctx = makeCtx();
-    (ctx as unknown as { sessions: { flush: () => Promise<never> } }).sessions = {
-      ...(ctx.sessions as unknown as object),
-      flush: async () => {
-        throw new Error('持久化故障');
-      },
-    } as never;
-    const id = await recordCompactionAttempt(ctx, makeSession(), {
+    (ctx.sessions as { flush: unknown }).flush = async () => {
+      throw new Error('flush down');
+    };
+    const id = await recordCompressionSession(ctx, makeSession(), {
       phase: 'observe',
       target: TARGET,
-      attempt: { prompt: 'P', rawOutput: 'R' },
-      attemptNo: 1,
+      messages: loopMessages(),
+      rounds: 1,
+      success: true,
       debug: false,
     });
     expect(id).toBe(ctx._createdSessions[0]?.id);
-    const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
-    expect(warns.some((w) => w.includes('压缩日志子会话 flush 失败'))).toBe(true);
+    expect(
+      ctx._loggerCalls.some((c) => c.level === 'warn' && c.args.join('').includes('flush 失败')),
+    ).toBe(true);
   });
 });

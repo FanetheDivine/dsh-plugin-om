@@ -110,7 +110,7 @@ export type CompleteMessage = {
 export type CompactionSummaryPayload = SessionEventMap['compaction/summary'] & {
   /** 被压缩内容的字符数（压缩前文本长度合计；UI 标题统计用）。 */
   shadowedCharCount?: number;
-  /** 摘要重试次数（观察分块为各块重试之和，反思为尝试次数 - 1）。 */
+  /** 压缩循环的模型请求轮数（旧会话载荷为重试次数，读取时按可选处理）。 */
   attemptCount?: number;
 };
 

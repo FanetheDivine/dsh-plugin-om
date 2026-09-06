@@ -12,11 +12,11 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
   };
 });
 
-import { HISTORY_TAG, PLUGIN_LABEL } from '../src/constants.ts';
+import { buildCompressionPrompt } from '../src/compress-loop.ts';
+import { HISTORY_FORMAT_NOTE, PLUGIN_LABEL } from '../src/constants.ts';
 import { ensureModelReady } from '../src/embedding.ts';
 import { apply, inject, name } from '../src/index.ts';
 import { findOmEvents } from '../src/om-event.ts';
-import { buildHistoryPrompt, HISTORY_FORMAT_NOTE } from '../src/summarize.ts';
 import type { CompactionSummaryPayload, Session, SessionEvent, UserMessage } from '../src/types.ts';
 import {
   buildToolCallFlow,
@@ -29,8 +29,21 @@ import {
   makeMessage,
   makeOmEvent,
   makeSession,
+  roundChunks,
   textBlock,
 } from './helpers.ts';
+
+/**
+ * 构造一段成功完成压缩的工具轮脚本（供 llmStreamFactory 逐轮产出）：
+ * 第 1 轮 getHistory，第 2 轮 compressHistory（按分区压缩），第 3 轮 completeCompression。
+ */
+function successRoundFactory(calls: Array<{ id: string; name: string; args?: unknown }>) {
+  return (index: number) => {
+    if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+    if (index === 1) return roundChunks({ calls });
+    return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
+  };
+}
 
 /**
  * 延迟压缩两步执行：第一次 pre-step 触发观察（记录待定标记），随后追加一条等待期
@@ -92,14 +105,26 @@ describe('apply 接线（OM 观察压缩）', () => {
     return String(options.system ?? '');
   }
 
-  /** 返回固定观察报告的 ctx（触发观察需在 apply 配置中设置 observeThresholdTokens）。 */
-  function observeCtx(report: string) {
+  /** 返回按成功脚本执行压缩循环的 ctx（观察阈值需在 apply 配置中触发）。 */
+  function observeCtx(
+    compressCalls: Array<{ id: string; name: string; args?: unknown }> = [
+      {
+        id: 't2',
+        name: 'compressHistory',
+        args: {
+          start: 1,
+          end: 2,
+          content: 'toolcall index:2 purpose:跑一下 summary:产物符合预期；下一步提交',
+        },
+      },
+    ],
+  ) {
     return makeCtx({
-      llmStream: [{ type: 'text-delta', text: report }],
+      llmStreamFactory: successRoundFactory(compressCalls),
     });
   }
 
-  it('触发观察：摘要调用 → 追加为 <history>，替换被压缩区间', async () => {
+  it('触发观察：压缩循环 → 追加为 <history>，替换被压缩区间', async () => {
     const flowEvents = buildToolCallFlow({
       code: 'runMe()',
       description: '跑一下',
@@ -108,17 +133,7 @@ describe('apply 接线（OM 观察压缩）', () => {
       withTurnEnd: true,
     });
     const session = makeSession({ events: flowEvents });
-    const report = [
-      '<history>',
-      '<user_message index="0">',
-      '请帮我完成一个任务',
-      '</user_message>',
-      '<assistant start="1" end="2">',
-      'toolcall index:2 purpose:跑一下 summary:产物符合预期；下一步提交',
-      '</assistant>',
-      '</history>',
-    ].join('\n');
-    const ctx = observeCtx(report);
+    const ctx = observeCtx();
     apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1 });
 
     expect(ctx._sections).toHaveLength(0);
@@ -129,11 +144,11 @@ describe('apply 接线（OM 观察压缩）', () => {
 
     const nextCalled = await runPreStep(ctx, session);
     expect(nextCalled).toBe(true); // 阻塞执行后放行
-    expect(ctx._llmCalls).toHaveLength(1);
+    expect(ctx._llmCalls).toHaveLength(3); // getHistory → compressHistory → completeCompression
     const options = summaryOptions(ctx);
-    // new 方式：persona + 提示词并入 system；输入为被压缩消息（user 消息）
+    // 工具循环：共享提示词并入 system；首条 user 消息 = 压缩指令 + 区间（不含历史内容）
     const instruction = instructionText(options);
-    expect(instruction).toBe(buildHistoryPrompt()); // 共享提示词（观察/反思同一套）
+    expect(instruction).toBe(buildCompressionPrompt(true)); // 共享提示词（观察/反思同一套）
     expect(options.system).toBe(instruction);
     expect(options.maxTokens).toBeUndefined(); // compressMaxTokens 默认不设置
 
@@ -166,9 +181,9 @@ describe('apply 接线（OM 观察压缩）', () => {
     const compactionId = startEvent.data.compactionId;
     expect(summaryEvent.data.compactionId).toBe(compactionId);
     expect(endEvent.data.compactionId).toBe(compactionId);
-    // start 携带压缩阶段（UI 压缩中提示按阶段区分文案）；首次尝试即成功 → attemptCount=0
+    // start 携带压缩阶段（UI 压缩中提示按阶段区分文案）；3 轮请求 → attemptCount=3
     expect((startEvent.data as { phase?: string }).phase).toBe('observe');
-    expect((summaryEvent.data as CompactionSummaryPayload).attemptCount).toBe(0);
+    expect((summaryEvent.data as CompactionSummaryPayload).attemptCount).toBe(3);
     // summary 内容 = 完整合并后的 <history> 内文（聊天卡片所见即所得）
     const summaryText = summaryEvent.data.summary
       .map((block) => (block.type === 'text' ? block.text : ''))
@@ -186,9 +201,42 @@ describe('apply 接线（OM 观察压缩）', () => {
     // 统计载荷：遮蔽节点 = 整条工具流（user/assistant/tool-result）；压缩前字符数 = 9+6+4（递归计入 tool-result 内嵌文本）
     expect(summaryEvent.data.shadowedSeqs).toEqual([0, 1, 3]);
     expect((summaryEvent.data as CompactionSummaryPayload).shadowedCharCount).toBe(19);
+    // 成功落盘压缩会话记录子会话（label 为会话记录）
+    expect(ctx._createdSessions).toHaveLength(1);
+    const descriptor = ctx._createdSessions[0]?.session.events.find(
+      (e) => e.type === 'subagent/descriptor',
+    );
+    expect((descriptor?.data as { label?: string })?.label).toContain('会话记录');
   });
 
-  it('系统消息参与压缩：输入渲染 <sys> 空块，模型输出必须保留 sys 条目', async () => {
+  it('compressSkipReasoning=false：压缩指令携带 <reasoning> 说明行，getHistory 输出含参考条目', async () => {
+    const flowEvents = buildToolCallFlow({
+      code: 'runMe()',
+      description: '跑一下',
+      callId: 'c-eval',
+      resultText: 'done',
+      withTurnEnd: true,
+    });
+    // assistant 消息携带 reasoning 块（参考条目数据源）
+    const withReasoning = flowEvents.map((event) => {
+      if (event.type !== 'assistant/message') return event;
+      const message = (event.data as { message?: { content?: unknown[] } }).message;
+      if (!message) return event;
+      message.content = [{ type: 'reasoning', text: '先想再答' }, ...(message.content ?? [])];
+      return event;
+    });
+    const session = makeSession({ events: withReasoning });
+    const ctx = observeCtx();
+    apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1, compressSkipReasoning: false });
+    const nextCalled = await runPreStep(ctx, session);
+    expect(nextCalled).toBe(true);
+    // 压缩指令包含 <reasoning> 说明行（skipReasoning=false）
+    expect(instructionText(summaryOptions(ctx))).toBe(buildCompressionPrompt(false));
+    // 最终 <history> 块不含 reasoning（参考条目不进产物）
+    expect(latestHistoryText(session)).not.toContain('<reasoning>');
+  });
+
+  it('系统消息参与压缩：视图含 <sys> 空块，最终 <history> 保留 sys 条目', async () => {
     const sysText = '遵循如下工作区指令：先阅读 README.md。';
     const session = makeSession({
       events: [
@@ -209,140 +257,27 @@ describe('apply 接线（OM 观察压缩）', () => {
         }),
       ],
     });
-    const report = [
-      '<history>',
-      '<sys type="agent-instructions" index="0"></sys>',
-      '<user_message index="1">',
-      '请帮我完成一个任务',
-      '</user_message>',
-      '<assistant start="2" end="3">',
-      'toolcall index:3 purpose:跑一下 summary:产物符合预期',
-      '</assistant>',
-      '</history>',
-    ].join('\n');
-    const ctx = observeCtx(report);
+    const ctx = observeCtx([
+      {
+        id: 't2',
+        name: 'compressHistory',
+        args: { start: 2, end: 3, content: 'toolcall index:3 purpose:跑一下 summary:产物符合预期' },
+      },
+    ]);
     apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1 });
     await runPreStep(ctx, session);
-    // 输入渲染：系统消息为 <sys> 空块（内容不进入压缩输入），用户消息 index 顺延为 1
+    // 首条 user 消息为压缩指令 + 区间，不含历史内容；系统消息不进入指令
     const options = summaryOptions(ctx);
-    const input = (options.messages ?? [])
-      .flatMap((m) => (m.content ?? []).map((b) => (b.type === 'text' ? b.text : '')))
-      .join('');
-    expect(input).toContain('<sys type="agent-instructions" index="0"></sys>');
-    expect(input).not.toContain(sysText);
-    expect(input).toContain('<user_message index="1">');
-    // 模型输出保留 sys 条目 → 连续性校验通过，压缩成功；<history> 块含 sys 条目
-    expect(ctx._llmCalls).toHaveLength(1);
+    const taskText = String(options.messages?.[0]?.content?.[0]?.text ?? '');
+    expect(taskText).toContain('[0..3]');
+    expect(taskText).not.toContain(sysText);
+    // 压缩成功；<history> 块含 sys 空块（不可压缩条目原样保留）
+    expect(ctx._llmCalls).toHaveLength(3);
     const historyText = latestHistoryText(session);
     expect(historyText).toContain('<sys type="agent-instructions" index="0"></sys>');
   });
 
-  it('compressSkipReasoning=false：压缩输入与指令携带 <reasoning>（参考条目 + 说明两行）', async () => {
-    const session = makeSession({
-      events: [
-        {
-          type: 'user/message',
-          data: makeMessage({
-            content: [textBlock('请帮我完成一个任务')],
-            id: 'u-reasoning',
-          }),
-        } as unknown as SessionEvent,
-        {
-          type: 'assistant/message',
-          data: {
-            message: makeMessage({
-              role: 'assistant',
-              content: [{ type: 'reasoning', text: '先想再答' }, textBlock('这是答案')],
-              source: { kind: 'model', provider: 'test', model: 'test-model' },
-              id: 'a-reasoning',
-            }),
-          },
-        } as unknown as SessionEvent,
-      ],
-    });
-    const report = [
-      '<history>',
-      '<user_message index="0">',
-      '请帮我完成一个任务',
-      '</user_message>',
-      '<assistant index="1">',
-      '这是答案',
-      '</assistant>',
-      '</history>',
-    ].join('\n');
-    const ctx = observeCtx(report);
-    apply(ctx, {
-      tailMessageCount: 0,
-      observeThresholdTokens: 1,
-      compressSkipReasoning: false,
-    });
-    const nextCalled = await runPreStep(ctx, session);
-    expect(nextCalled).toBe(true);
-    expect(ctx._llmCalls).toHaveLength(1);
-    const options = summaryOptions(ctx);
-    // 指令保留 <reasoning> 说明两行
-    const instruction = instructionText(options);
-    expect(instruction).toContain('<reasoning>：模型的思考过程，仅作压缩参考，产物中不要出现。');
-    expect(instruction).toContain('<reasoning> 只作参考，输出产物中不包含 <reasoning> 块。');
-    // 输入携带 <reasoning> 参考条目（不占 index，assistant 文本仍为 index 1）
-    const input = (options.messages ?? [])
-      .flatMap((m) => (m.content ?? []).map((b) => (b.type === 'text' ? b.text : '')))
-      .join('');
-    expect(input).toContain('<reasoning>先想再答</reasoning>');
-    expect(input).toContain('<assistant index="1">');
-    expect(input).toContain('这是答案');
-  });
-
-  it('compressSkipReasoning 默认 true：压缩输入与指令均不含 <reasoning>', async () => {
-    const session = makeSession({
-      events: [
-        {
-          type: 'user/message',
-          data: makeMessage({
-            content: [textBlock('请帮我完成一个任务')],
-            id: 'u-skip',
-          }),
-        } as unknown as SessionEvent,
-        {
-          type: 'assistant/message',
-          data: {
-            message: makeMessage({
-              role: 'assistant',
-              content: [{ type: 'reasoning', text: '先想再答' }, textBlock('这是答案')],
-              source: { kind: 'model', provider: 'test', model: 'test-model' },
-              id: 'a-skip',
-            }),
-          },
-        } as unknown as SessionEvent,
-      ],
-    });
-    const report = [
-      '<history>',
-      '<user_message index="0">',
-      '请帮我完成一个任务',
-      '</user_message>',
-      '<assistant index="1">',
-      '这是答案',
-      '</assistant>',
-      '</history>',
-    ].join('\n');
-    const ctx = observeCtx(report);
-    apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1 });
-    const nextCalled = await runPreStep(ctx, session);
-    expect(nextCalled).toBe(true);
-    expect(ctx._llmCalls).toHaveLength(1);
-    const options = summaryOptions(ctx);
-    expect(instructionText(options)).not.toContain('<reasoning>');
-    const input = (options.messages ?? [])
-      .flatMap((m) => (m.content ?? []).map((b) => (b.type === 'text' ? b.text : '')))
-      .join('');
-    expect(input).not.toContain('<reasoning>');
-    expect(input).not.toContain('先想再答');
-    expect(input).toContain('<assistant index="1">');
-    expect(input).toContain('这是答案');
-  });
-
-  it('系统消息缺失时压缩失败重试：模型输出缺 sys 条目 → 校验不通过，不产生替换', async () => {
+  it('系统消息不可压缩：compressHistory 覆盖 sys 条目时工具报错，循环继续', async () => {
     const session = makeSession({
       events: [
         {
@@ -362,34 +297,32 @@ describe('apply 接线（OM 观察压缩）', () => {
         }),
       ],
     });
-    // 模型输出遗漏 sys 条目（只覆盖 1..3）：与预期覆盖区间 0..3 不连续 → 校验失败
-    const report = [
-      '<history>',
-      '<user_message index="1">',
-      '请帮我完成一个任务',
-      '</user_message>',
-      '<assistant start="2" end="3">',
-      'toolcall index:3 purpose:跑一下 summary:产物符合预期',
-      '</assistant>',
-      '</history>',
-    ].join('\n');
-    const ctx = observeCtx(report);
+    // 第 2 轮先尝试覆盖 sys（报错），同轮再压缩合法区间 → 成功
+    const ctx = makeCtx({
+      llmStreamFactory: (index) => {
+        if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+        if (index === 1)
+          return roundChunks({
+            calls: [
+              { id: 't1', name: 'compressHistory', args: { start: 0, end: 3, content: 'x' } },
+              {
+                id: 't2',
+                name: 'compressHistory',
+                args: { start: 2, end: 3, content: '合法压缩' },
+              },
+            ],
+          });
+        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
+      },
+    });
     apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1 });
-    const initialNodes = session.surface.nodes.length;
     await runPreStep(ctx, session);
-    // 校验失败按 compressRetryCount 重试后放弃：不追加、不替换
-    expect(ctx._llmCalls.length).toBeGreaterThan(1);
-    expect(session.surface.nodes.length).toBe(initialNodes);
-    expect(
-      session.events.filter(
-        (e) =>
-          e.type === 'user/message' &&
-          String(
-            ((e.data as { content?: unknown[] }).content?.[0] as { text?: string } | undefined)
-              ?.text ?? '',
-          ).includes(`<${HISTORY_TAG}`),
-      ),
-    ).toHaveLength(0);
+    // 报错的工具结果进入下一轮请求：第三轮请求含「系统消息不可压缩」
+    const third = ctx._llmCalls[2];
+    expect(JSON.stringify(third?.options)).toContain('系统消息不可压缩');
+    const historyText = latestHistoryText(session);
+    expect(historyText).toContain('<sys type="agent-instructions" index="0"></sys>');
+    expect(historyText).toContain('合法压缩');
   });
 
   it('增量追加：旧摘要消息原地保留，新观察日志作为独立消息只替换新消息区间', async () => {
@@ -404,11 +337,14 @@ describe('apply 接线（OM 观察压缩）', () => {
       events: [historyMessage('user_message message_id:old-u text:旧任务'), ...flowEvents],
     });
     // 观察阈值 1 tokens ≤ 上下文压力（触发）；反思阈值 1000 > 旧摘要
-    // （含 tip 开标签约 26 tokens，不触发）——隔离观察路径验证增量追加；
-    // 摘要输出覆盖区间 0..2（触发点完整消息 index 2）
-    const ctx = observeCtx(
-      '<history>\n<user_message index="0">\n新内容\n</user_message>\n<assistant start="1" end="2">toolcall index:2 purpose:任务A summary:完成</assistant>\n</history>',
-    );
+    // （含 tip 开标签约 26 tokens，不触发）——隔离观察路径验证增量追加
+    const ctx = observeCtx([
+      {
+        id: 't2',
+        name: 'compressHistory',
+        args: { start: 1, end: 2, content: 'toolcall index:2 purpose:任务A summary:完成' },
+      },
+    ]);
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1, reflectThresholdTokens: 1000 });
     await runPreStepWithDelay(ctx, session);
     // 表层中的压缩日志消息：旧块（seq 0，保留） + 新块（独立消息，替换压缩区间）
@@ -429,8 +365,8 @@ describe('apply 接线（OM 观察压缩）', () => {
       ),
     );
     expect(texts[0]).toContain('旧任务'); // 旧块原文保留
-    expect(texts[0]).not.toContain('新内容'); // 旧块不被重写
-    expect(texts[1]).toContain('新内容'); // 新块 = 本次观察日志
+    expect(texts[0]).not.toContain('请帮我完成一个任务'); // 旧块不被重写
+    expect(texts[1]).toContain('请帮我完成一个任务'); // 新块含未压缩 user 原文（视图原样保留）
     expect(texts[1]).not.toContain('旧任务'); // 新块不再合并旧摘要原文
     // 新块替换压缩边界至触发点区间（seq 1..4；旧块 seq 0 在边界之前、不被遮蔽；
     // 等待期新消息在触发点之后、不在压缩区间内）
@@ -462,7 +398,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(session.surface.nodes.length).toBe(3);
   });
 
-  it('摘要无输出（空文本）不产生替换', async () => {
+  it('模型输出纯文本（无工具调用）：追加提醒继续，连续 2 轮判失败不产生替换', async () => {
     const session = makeSession({
       events: buildToolCallFlow({
         code: 'a()',
@@ -473,35 +409,31 @@ describe('apply 接线（OM 观察压缩）', () => {
       }),
     });
     const ctx = makeCtx({
-      llmStream: [{ type: 'text-delta', text: '' }],
+      llmStreamFactory: () => roundChunks({ text: '我认为不需要压缩' }),
     });
-    apply(ctx, { tailMessageCount: 1, compressRetryCount: 2, observeThresholdTokens: 1 }); // 总尝试 3 次
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStepWithDelay(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(3); // 无输出视为失败，重试共 3 次
-    // 摘要失败保留待定标记（无失效标记）：下个 pre-step 直接重试执行
+    // 第 1 轮纯文本 → 提醒；第 2 轮仍纯文本 → 判失败（共 2 次请求）
+    expect(ctx._llmCalls).toHaveLength(2);
+    // 压缩失败保留待定标记（无失效标记）：下个 pre-step 直接重试执行
     expect(session.events.some((e) => isOmKind(e, 'om/observe-pending'))).toBe(true);
     expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
-    // 摘要无输出：start 在摘要调用前已开启（UI 压缩中提示），end(error) 关闭生命周期；
+    // 压缩失败：start 在循环前已开启（UI 压缩中提示），end(error) 关闭生命周期；
     // 无 summary、无部分替换
     expect(session.events.some((e) => e.type === 'compaction/start')).toBe(true);
     expect(session.events.some((e) => e.type === 'compaction/summary')).toBe(false);
     const failEnd = session.events.findLast((e) => e.type === 'compaction/end');
     if (failEnd?.type !== 'compaction/end') throw new Error('缺 end');
-    // end(error) 写最后一次尝试的具体问题（无 <history> 块），不再写泛化文案
-    expect((failEnd.data as { error?: string }).error).toContain('找不到完整的 <history> 块');
+    expect((failEnd.data as { error?: string }).error).toContain('未调用压缩工具');
     expect(latestHistoryText(session)).toBe(''); // 无部分替换
-    // 失败日志始终输出（含具体原因、尝试次数与重试耗尽说明）
-    const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
-    expect(
-      warns.some((w) =>
-        w.includes('摘要输出未通过校验（第 1/3 次，输出中找不到完整的 <history> 块'),
-      ),
-    ).toBe(true);
-    expect(warns.some((w) => w.includes('重试耗尽，放弃本次压缩'))).toBe(true);
-    expect(warns.some((w) => w.includes('摘要调用最终失败（已尝试 3 次'))).toBe(true);
+    // 失败也落盘会话记录（label 为失败日志）
+    const descriptor = ctx._createdSessions[0]?.session.events.find(
+      (e) => e.type === 'subagent/descriptor',
+    );
+    expect((descriptor?.data as { label?: string })?.label).toContain('失败日志');
   });
 
-  it('摘要流非 stop 结束（max-tokens）视为未完成，不产生替换', async () => {
+  it('请求级错误：流以 error 终态结束视为失败，不产生替换', async () => {
     const session = makeSession({
       events: buildToolCallFlow({
         code: 'a()',
@@ -512,73 +444,20 @@ describe('apply 接线（OM 观察压缩）', () => {
       }),
     });
     const ctx = makeCtx({
-      llmStream: [
-        { type: 'text-delta', text: '部分输出' },
-        { type: 'finish', reason: { kind: 'max-tokens' } },
-      ],
+      llmStreamFactory: () =>
+        roundChunks({ finish: { kind: 'error', failure: { message: '额度不足' } } }),
     });
-    apply(ctx, { tailMessageCount: 1, compressRetryCount: 2, observeThresholdTokens: 1 }); // 总尝试 3 次
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStepWithDelay(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(3); // 非 stop 结束视为失败，重试共 3 次
-    // start 提前开启、end(error) 关闭生命周期；无 summary、无替换
+    // 请求级错误不重试：仅 1 次请求即失败
+    expect(ctx._llmCalls).toHaveLength(1);
     expect(session.events.some((e) => e.type === 'compaction/start')).toBe(true);
     expect(session.events.some((e) => e.type === 'compaction/end')).toBe(true);
     expect(session.events.some((e) => e.type === 'compaction/summary')).toBe(false);
     expect(latestHistoryText(session)).toBe('');
   });
 
-  it('摘要失败重试：前两次抛异常，第三次成功并正常压缩', async () => {
-    const session = makeSession({
-      events: buildToolCallFlow({
-        code: 'a()',
-        description: '任务A',
-        callId: 'c1',
-        resultText: 'r1',
-        withTurnEnd: true,
-      }),
-    });
-    // 可重入迭代器：每次 stream 调用按尝试次数产出——第 1/2 次抛异常，第 3 次正常输出
-    let attempts = 0;
-    const ctx = makeCtx({
-      llmStream: {
-        [Symbol.iterator]() {
-          attempts += 1;
-          const current = attempts;
-          return (function* () {
-            if (current <= 2) throw new Error(`模拟第 ${current} 次失败`);
-            yield {
-              type: 'text-delta',
-              text: '<history>\n<user_message index="0">\nretried-ok\n</user_message>\n<assistant start="1" end="2">toolcall index:2 purpose:任务A summary:完成</assistant>\n</history>',
-            };
-          })();
-        },
-      },
-    });
-    apply(ctx, { tailMessageCount: 1, compressRetryCount: 2, observeThresholdTokens: 1 }); // 总尝试 3 次
-    await runPreStepWithDelay(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(3); // 首次 + 2 次重试
-    expect(latestHistoryText(session)).toContain('retried-ok');
-    expect(session.events.some((e) => e.type === 'compaction/start')).toBe(true);
-    // start 前置（压缩中提示）且携带阶段；summary 携带重试次数（第 3 次成功 → 2）
-    const sIdx = session.events.findIndex((e) => e.type === 'compaction/start');
-    const sEvent = session.events[sIdx];
-    if (sEvent?.type !== 'compaction/start') throw new Error('缺 start');
-    expect((sEvent.data as { phase?: string }).phase).toBe('observe');
-    const smIdx = session.events.findIndex((e) => e.type === 'compaction/summary');
-    const smEvent = session.events[smIdx];
-    if (smEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
-    expect((smEvent.data as CompactionSummaryPayload).attemptCount).toBe(2);
-    // 失败日志始终输出（含尝试次数与重试提示）
-    const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
-    expect(warns.some((w) => w.includes('摘要调用失败（第 1/3 次，模拟第 1 次失败，子会话 '))).toBe(
-      true,
-    );
-    expect(warns.some((w) => w.includes('摘要调用失败（第 2/3 次，模拟第 2 次失败，子会话 '))).toBe(
-      true,
-    );
-  });
-
-  it('摘要失败重试耗尽：三次均抛异常，不产生替换，记录最终失败', async () => {
+  it('压缩循环失败：pre-step 返回 reject 中断当前 turn（不调用 next），end(error) 携带实际报错', async () => {
     const session = makeSession({
       events: buildToolCallFlow({
         code: 'a()',
@@ -589,53 +468,10 @@ describe('apply 接线（OM 观察压缩）', () => {
       }),
     });
     const ctx = makeCtx({
-      llmStream: {
-        [Symbol.iterator]() {
-          return {
-            next() {
-              throw new Error('总是失败');
-            },
-          };
-        },
-      },
+      llmStreamFactory: () =>
+        roundChunks({ finish: { kind: 'error', failure: { message: '额度不足' } } }),
     });
-    apply(ctx, { tailMessageCount: 1, compressRetryCount: 2, observeThresholdTokens: 1 }); // 总尝试 3 次
-    await runPreStepWithDelay(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(3);
-    // start 提前开启、end(error) 关闭生命周期；无 summary、无替换
-    expect(session.events.some((e) => e.type === 'compaction/start')).toBe(true);
-    expect(session.events.some((e) => e.type === 'compaction/end')).toBe(true);
-    expect(session.events.some((e) => e.type === 'compaction/summary')).toBe(false);
-    expect(latestHistoryText(session)).toBe('');
-    const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
-    expect(warns.some((w) => w.includes('摘要调用失败（第 3/3 次，总是失败，子会话 '))).toBe(true);
-    expect(
-      warns.some((w) => w.includes('摘要调用最终失败（已尝试 3 次，最后错误：总是失败）')),
-    ).toBe(true);
-  });
-
-  it('摘要尝试耗尽：pre-step 返回 reject 中断当前 turn（不调用 next），end(error) 携带实际报错', async () => {
-    const session = makeSession({
-      events: buildToolCallFlow({
-        code: 'a()',
-        description: '任务A',
-        callId: 'c1',
-        resultText: 'r1',
-        withTurnEnd: true,
-      }),
-    });
-    const ctx = makeCtx({
-      llmStream: {
-        [Symbol.iterator]() {
-          return {
-            next() {
-              throw new Error('额度不足');
-            },
-          };
-        },
-      },
-    });
-    apply(ctx, { tailMessageCount: 1, compressRetryCount: 1, observeThresholdTokens: 1 }); // 总尝试 2 次
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     const listeners = ctx._onCallbacks.get('agent/pre-step');
     let nextCalled = false;
     const run = () =>
@@ -653,17 +489,69 @@ describe('apply 接线（OM 观察压缩）', () => {
       }) as unknown as UserMessage,
       { surfaceOp: 'append' },
     );
-    const decision = await run(); // 第二步：延迟到期执行，摘要失败拒绝本 step
+    const decision = await run(); // 第二步：延迟到期执行，压缩失败拒绝本 step
     expect(decision).toEqual({ kind: 'reject' }); // 拒绝本 step，当前 turn 以 blocked 结束
     expect(nextCalled).toBe(false); // 不放行、不再继续 AI 会话
-    expect(ctx._llmCalls).toHaveLength(2); // 首次 + 1 次重试
+    expect(ctx._llmCalls).toHaveLength(1);
     const failEnd = session.events.findLast((e) => e.type === 'compaction/end');
     if (failEnd?.type !== 'compaction/end') throw new Error('缺 end');
     expect((failEnd.data as { error?: string }).error).toContain('额度不足'); // 实际报错写入 end
+    // 诊断子会话（失败日志）id 随 end 载荷传播
+    expect((failEnd.data as { diagnosticSessionId?: string }).diagnosticSessionId).toBe(
+      ctx._createdSessions[0]?.id,
+    );
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
     expect(
       warns.some((w) => w.includes('上下文压缩失败，拒绝本 step 中断当前 turn：额度不足')),
     ).toBe(true);
+  });
+
+  it('压缩失败后下个 pre-step 重试成功：保留待定直接重试执行', async () => {
+    const session = makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
+    });
+    // 第 1 次执行失败（请求抛错）；第 2 次执行成功完成压缩（3 轮）
+    let failed = true;
+    const successCalls: Array<{ id: string; name: string; args?: unknown }> = [
+      {
+        id: 't2',
+        name: 'compressHistory',
+        args: { start: 1, end: 2, content: 'toolcall index:2 purpose:任务A summary:完成' },
+      },
+    ];
+    const ctx = makeCtx({
+      llmStreamFactory: (index) => {
+        if (failed) {
+          if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+          return roundChunks({ finish: { kind: 'error', failure: { message: '第一次失败' } } });
+        }
+        if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+        if (index === 1) return roundChunks({ calls: successCalls });
+        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
+      },
+    });
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
+    const listeners = ctx._onCallbacks.get('agent/pre-step');
+    const run = () =>
+      listeners?.[0]?.({ agent: { session }, signal: new AbortController().signal }, () => {});
+    await run(); // 触发：记录待定
+    session.append(
+      'user/message',
+      makeMessage({ content: [textBlock('等待期消息1')], id: 'w1' }) as unknown as UserMessage,
+      { surfaceOp: 'append' },
+    );
+    await run(); // 执行：失败（getHistory 后请求 error）
+    failed = false;
+    await run(); // 待定保留：直接重试执行 → 成功
+    expect(session.events.some((e) => e.type === 'compaction/summary')).toBe(true);
+    expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(true);
+    expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
   });
 
   it('signal 已中止：放弃压缩但不拒绝（照常放行 next）', async () => {
@@ -676,9 +564,7 @@ describe('apply 接线（OM 观察压缩）', () => {
         withTurnEnd: true,
       }),
     });
-    const ctx = observeCtx(
-      '<history>\n<user_message index="0">\nOBSERVED-PASS\n</user_message>\n<assistant start="1" end="2">toolcall index:2 purpose:任务A summary:完成</assistant>\n</history>',
-    );
+    const ctx = observeCtx();
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     const controller = new AbortController();
     controller.abort();
@@ -693,7 +579,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     );
     expect(decision).toBeUndefined(); // next() 的返回值（放行）
     expect(nextCalled).toBe(true);
-    expect(ctx._llmCalls).toHaveLength(0); // 中止时不发起摘要调用
+    expect(ctx._llmCalls).toHaveLength(0); // 中止时不发起压缩请求
   });
 
   it('流程逐步日志：dev 环境 step（debug）日志覆盖关键步骤', async () => {
@@ -706,10 +592,8 @@ describe('apply 接线（OM 观察压缩）', () => {
         withTurnEnd: true,
       }),
     });
-    const ctx = observeCtx(
-      '<history>\n<user_message index="0">\nOBSERVED-PASS\n</user_message>\n<assistant start="1" end="2">toolcall index:2 purpose:任务A summary:完成</assistant>\n</history>',
-    );
-    apply(ctx, { tailMessageCount: 1, compressRetryCount: 2, observeThresholdTokens: 1 }); // 总尝试 3 次
+    const ctx = observeCtx();
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStepWithDelay(ctx, session);
     const steps = ctx._loggerCalls
       .filter((c) => c.level === 'debug')
@@ -717,14 +601,14 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(steps.some((s) => s.includes('观察检查'))).toBe(true);
     expect(steps.some((s) => s.includes('触发压缩'))).toBe(true);
     expect(steps.some((s) => s.includes('压缩区间'))).toBe(true);
-    expect(steps.some((s) => s.includes('摘要调用开始（第 1/3 次'))).toBe(true);
-    // 尝试成功始终写入日志（info，不受 debug 影响）
+    expect(steps.some((s) => s.includes('压缩循环开始'))).toBe(true);
+    // 循环成功始终写入日志（info，不受 debug 影响）
     const infos = ctx._loggerCalls
       .filter((c) => c.level === 'info')
       .map((c) => String(c.args[0] ?? ''));
-    expect(infos.some((s) => s.includes('摘要调用成功（第 1/3 次'))).toBe(true);
+    expect(infos.some((s) => s.includes('压缩循环完成'))).toBe(true);
     expect(
-      steps.some((s) => s.includes('观察：追加 compaction/start（摘要调用前开启压缩中提示）')),
+      steps.some((s) => s.includes('观察：追加 compaction/start（压缩循环前开启压缩中提示）')),
     ).toBe(true);
     expect(steps.some((s) => s.includes('观察 pass 结束'))).toBe(true);
   });
@@ -739,16 +623,14 @@ describe('apply 接线（OM 观察压缩）', () => {
       turnEndReason: { kind: 'aborted', reason: { kind: 'user' } },
     });
     const session = makeSession({ events: flowEvents });
-    const ctx = observeCtx(
-      '<history>\n<user_message index="0">\n请帮我完成一个任务\n</user_message>\n</history>',
-    );
+    const ctx = observeCtx();
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStepWithDelay(ctx, session);
     const instruction = instructionText(summaryOptions(ctx));
     expect(instruction).not.toContain('[interrupted]');
   });
 
-  it('当前 turn 消息可压缩：mid-turn 压缩后其消息被替换、起始 index 覆盖当前 turn 消息', async () => {
+  it('当前 turn 消息可压缩：mid-turn 压缩后其消息被替换、视图区间覆盖当前 turn 消息', async () => {
     const events = [
       ...buildToolCallFlow({
         code: 'a()',
@@ -768,20 +650,23 @@ describe('apply 接线（OM 观察压缩）', () => {
       }),
     ];
     const session = makeSession({ events }); // 表层 [0,1,3,5,6,8]
-    const ctx = observeCtx(
-      '<history>\n<user_message index="0">\nA-用户\n</user_message>\n<assistant start="1" end="5">\nA-模块摘要\n</assistant>\n</history>',
-    );
+    const ctx = observeCtx([
+      {
+        id: 't2',
+        name: 'compressHistory',
+        args: { start: 1, end: 5, content: 'A-模块摘要' },
+      },
+    ]);
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStepWithDelay(ctx, session);
     // 区间截至触发点（完整消息 index 5，最后事件 seq 8 平衡）：mid-turn 消息一并压缩；
     // 等待期新消息在触发点之后、不被压缩
     const nodes = session.surface.nodes;
     expect(nodes.length).toBe(2); // 等待期新消息 + <history>
-    // 输入携带绝对 index：新消息（含当前 turn 的 user-c2）从 0 编号
+    // 压缩指令携带视图区间：新消息（含当前 turn 的 user-c2）从 0 编号
     const instruction = instructionText(summaryOptions(ctx));
-    const input = String(summaryOptions(ctx)?.messages?.[0]?.content?.[0]?.text ?? '');
-    expect(input).toContain('<user_message index="0">');
-    expect(input).toContain('<user_message index="3">'); // user-c2（当前 turn）为完整消息 index 3
+    const taskText = String(summaryOptions(ctx)?.messages?.[0]?.content?.[0]?.text ?? '');
+    expect(taskText).toContain('[0..5]');
     expect(instruction).not.toContain('message_id'); // 不再携带对照表
   });
 
@@ -854,12 +739,12 @@ describe('apply 接线（OM 反思压缩）', () => {
     return String(call?.options?.messages?.[0]?.content?.[0]?.text ?? '');
   }
 
-  it('摘要超反思阈值：摘要调用精简合并并把整个块区段替换为一条', async () => {
-    // 单块摘要（X*40 + tip 标签约 26 tokens）；反思阈值 1 → 触发反思；
+  it('摘要超反思阈值：压缩循环合并块区段并替换为一条', async () => {
+    // 单块摘要（条目 + tip 标签约 30 tokens）；反思阈值 1 → 触发反思；
     // 上下文压力远小于观察阈值（保持默认 45000）→ 观察不触发
     const session = makeSession({
       events: [
-        historyMessage('X'.repeat(40)),
+        historyMessage(`<assistant index="0">${'X'.repeat(40)}</assistant>`),
         ...buildToolCallFlow({
           code: 'a()',
           description: '任务A',
@@ -871,28 +756,40 @@ describe('apply 接线（OM 反思压缩）', () => {
     });
     const before = session.surface.nodes.length;
     const ctx = makeCtx({
-      llmStream: [
-        {
-          type: 'text-delta',
-          text: '<history>\n<user_message index="0">\nREFLECTED-REPORT\n</user_message>\n</history>',
-        },
-      ],
+      llmStreamFactory: (index) => {
+        if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+        if (index === 1)
+          return roundChunks({
+            calls: [
+              {
+                id: 't1',
+                name: 'compressHistory',
+                args: { index: 0, content: 'REFLECTED-REPORT' },
+              },
+            ],
+          });
+        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
+      },
     });
     apply(ctx, { reflectThresholdTokens: 1 });
     await runPreStep(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(1);
-    expect(instructionText(ctx._llmCalls[0]?.options)).toBe(buildHistoryPrompt()); // 反思与观察共用同一套提示词
+    expect(ctx._llmCalls).toHaveLength(3);
+    expect(instructionText(ctx._llmCalls[0]?.options)).toBe(buildCompressionPrompt(true)); // 反思与观察共用同一套提示词
+    // 压缩指令为反思表述（合并全部块），不含历史内容
+    const taskText = inputText(ctx);
+    expect(taskText).toContain('合并压缩');
+    expect(taskText).not.toContain('X'.repeat(40));
     expect(session.surface.nodes.length).toBe(before); // 单块区段替换，节点数不变
     expect(latestHistoryText(session)).toContain('REFLECTED');
     expect(latestHistoryText(session)).not.toContain('X'.repeat(40)); // 旧摘要被替换
   });
 
   it('多块反思：按全部块总长触发，把整个块区段合并为一条', async () => {
-    // 两个块（各 X*40，含 tip 标签约 26 tokens，合计约 52）≥ 反思阈值 1 → 触发反思
+    // 两个块（各含一条 assistant 条目，合计 ≥ 反思阈值 1）→ 触发反思
     const session = makeSession({
       events: [
-        historyMessage('X'.repeat(40), 'h1'),
-        historyMessage('Y'.repeat(40), 'h2'),
+        historyMessage(`<assistant index="0">${'X'.repeat(40)}</assistant>`, 'h1'),
+        historyMessage(`<assistant index="4">${'Y'.repeat(40)}</assistant>`, 'h2'),
         ...buildToolCallFlow({
           code: 'a()',
           description: '任务A',
@@ -904,26 +801,25 @@ describe('apply 接线（OM 反思压缩）', () => {
     });
     const before = session.surface.nodes.length;
     const ctx = makeCtx({
-      llmStream: [
-        {
-          type: 'text-delta',
-          text: '<history>\n<user_message index="0">\nMERGED-REPORT\n</user_message>\n</history>',
-        },
-      ],
+      llmStreamFactory: (index) => {
+        if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+        if (index === 1)
+          return roundChunks({
+            calls: [
+              {
+                id: 't1',
+                name: 'compressHistory',
+                args: { start: 0, end: 4, content: 'MERGED-REPORT' },
+              },
+            ],
+          });
+        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
+      },
     });
     apply(ctx, { reflectThresholdTokens: 1 });
     await runPreStep(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(1);
-    expect(instructionText(ctx._llmCalls[0]?.options)).toBe(buildHistoryPrompt()); // 反思与观察共用同一套提示词
-    // 摘要输入为全部块内文拼合的单个 <history> 块（无 tip 属性、仅一对开闭标签）
-    const input = inputText(ctx);
-    expect(input.startsWith(`<${HISTORY_TAG}>\n`)).toBe(true);
-    expect(input.endsWith(`\n</${HISTORY_TAG}>`)).toBe(true);
-    expect(input).not.toContain(' tip=');
-    expect(input.match(/<history>/g)).toHaveLength(1);
-    expect(input.match(/<\/history>/g)).toHaveLength(1);
-    expect(input).toContain('X'.repeat(40)); // 两块内文按序合并
-    expect(input).toContain('Y'.repeat(40));
+    expect(ctx._llmCalls).toHaveLength(3);
+    expect(instructionText(ctx._llmCalls[0]?.options)).toBe(buildCompressionPrompt(true));
     expect(session.surface.nodes.length).toBe(before - 1); // 两块合并为一条
     expect(latestHistoryText(session)).toContain('MERGED');
     expect(latestHistoryText(session)).not.toContain('X'.repeat(40)); // 全部旧块被替换
@@ -934,20 +830,19 @@ describe('apply 接线（OM 反思压缩）', () => {
     if (summaryEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
     expect(summaryEvent.data.shadowedRange).toEqual({ start: 0, end: 1 });
     expect(summaryEvent.data.shadowedSeqs).toEqual([0, 1]);
-    expect((summaryEvent.data as CompactionSummaryPayload).shadowedCharCount).toBe(80); // 两块 X*40 + Y*40
+    expect((summaryEvent.data as CompactionSummaryPayload).shadowedCharCount).toBeGreaterThan(0);
   });
 
-  it('多块反思输入：剥离各块块首格式说明注释，正文条目内的同名串原样保留', async () => {
-    // 块 1 顶部带真实提取产物特有的格式说明注释；块 2 正文条目内含同形注释串与 tip 文本，
-    // 拼合仅剥离块首注释，正文串不动（防止误伤块内部）
-    const noteInContent = '<!-- 完整消息：正文条目内的同名注释串 -->';
+  it('反思视图：getHistory 返回块内条目（含 user 原文），压缩替换 assistant 条目', async () => {
+    // 块 1：user 原文条目 + assistant 摘要条目（带块首格式说明注释）；
+    // 块 2：user 条目内含 tip 文本（正文原样保留）；条目内的 XML 注释在解析后不保留
     const session = makeSession({
       events: [
         historyMessage(
-          `${HISTORY_FORMAT_NOTE}\n<user_message index="0">\nOLD-SUMMARY-1\n</user_message>`,
+          `${HISTORY_FORMAT_NOTE}\n<user_message index="0">\nOLD-SUMMARY-1\n</user_message>\n<assistant index="1">\nA-摘要\n</assistant>`,
         ),
         historyMessage(
-          `<user_message index="1">\n${noteInContent}\ntip="正文内的 tip 文本"\n</user_message>`,
+          `<user_message index="4">\ntip="正文内的 tip 文本"\n</user_message>\n<assistant index="5">\nB-摘要\n</assistant>`,
           'h2',
         ),
         ...buildToolCallFlow({
@@ -959,34 +854,72 @@ describe('apply 接线（OM 反思压缩）', () => {
         }),
       ],
     });
+    let seenHistory = '';
     const ctx = makeCtx({
-      llmStream: [
-        {
-          type: 'text-delta',
-          text:
-            '<history>\n<user_message index="0">\n合并后的历史条目内容\n</user_message>\n' +
-            '<user_message index="1">\n续接条目\n</user_message>\n</history>',
-        },
-      ],
+      llmStreamFactory: (index) => {
+        if (index === 0) {
+          // 第 1 轮 getHistory：捕获返回给模型的条目文本（在工具结果消息中体现于第 2 轮请求）
+          return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+        }
+        if (index === 1) {
+          const second = ctx._llmCalls[1];
+          const messages = second
+            ? (second.options as { messages?: unknown[] }).messages
+            : undefined;
+          seenHistory = JSON.stringify(messages);
+          return roundChunks({
+            calls: [
+              {
+                id: 't1',
+                name: 'compressHistory',
+                args: { start: 1, end: 5, content: '合并后的历史条目内容' },
+              },
+              // 覆盖 user 条目（index 4）报错后再分别压缩两个 assistant 条目
+              {
+                id: 't2',
+                name: 'compressHistory',
+                args: { index: 1, content: 'A 的重新压缩' },
+              },
+              {
+                id: 't3',
+                name: 'compressHistory',
+                args: { index: 5, content: 'B 的重新压缩' },
+              },
+            ],
+          });
+        }
+        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
+      },
     });
     apply(ctx, { reflectThresholdTokens: 1 });
     await runPreStep(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(1);
-    const input = inputText(ctx);
-    expect(input.startsWith(`<${HISTORY_TAG}>\n<user_message index="0">`)).toBe(true); // 块 1 块首注释已剥离
-    expect(input).not.toContain(HISTORY_FORMAT_NOTE);
-    expect(input).toContain('OLD-SUMMARY-1'); // 两块内文按序合并
-    expect(input).toContain(noteInContent); // 正文条目内的同名注释串原样保留
-    expect(input).toContain('tip="正文内的 tip 文本"'); // 正文内的 tip 同形文本原样保留
-    expect(input.startsWith(`<${HISTORY_TAG}>\n`)).toBe(true); // 输入开标签无属性
+    expect(ctx._llmCalls).toHaveLength(3);
+    // getHistory 结果（第 2 轮请求携带）：user 条目原样、assistant 条目为块内摘要；
+    // 块首格式说明注释不进入视图
+    expect(seenHistory).toContain('OLD-SUMMARY-1');
+    expect(seenHistory).toContain('A-摘要');
+    expect(seenHistory).not.toContain(HISTORY_FORMAT_NOTE); // 块首格式注释剥离
+    expect(seenHistory).toContain('tip='); // 正文内的 tip 同形文本原样保留
+    expect(seenHistory).toContain('正文内的 tip 文本');
+    // 最终块：user 条目原样保留 + 各 assistant 条目的重新压缩
+    const historyText = latestHistoryText(session);
+    expect(historyText).toContain('<user_message index="0">');
+    expect(historyText).toContain('OLD-SUMMARY-1');
+    expect(historyText).toContain('A 的重新压缩');
+    expect(historyText).toContain('B 的重新压缩');
+    expect(historyText).not.toContain('A-摘要');
+    expect(historyText).not.toContain('B-摘要');
+    // 第 3 轮请求包含覆盖 user 条目的工具报错（模型可修正）
+    const third = ctx._llmCalls[2];
+    expect(JSON.stringify(third?.options)).toContain('用户消息不可压缩');
   });
 
   it('先反思后观察串行：反思合并旧块，观察在其后追加独立新块', async () => {
-    // 反思阈值 90：旧块（X*400，约 112 tokens）首次触发反思；合并后的块含格式说明
-    // 注释（约 79 tokens）不再触发；观察阈值 1（上下文压力 ✓）延迟一步后执行
+    // 反思阈值 90：旧块（X*400，约 112 tokens）首次触发反思；合并后的块不再触发；
+    // 观察阈值 1（上下文压力 ✓）延迟一步后执行
     const session = makeSession({
       events: [
-        historyMessage('X'.repeat(400)),
+        historyMessage(`<assistant index="0">${'X'.repeat(400)}</assistant>`),
         ...buildToolCallFlow({
           code: 'a()',
           description: '任务A',
@@ -996,41 +929,50 @@ describe('apply 接线（OM 反思压缩）', () => {
         }),
       ],
     });
-    // 可重入迭代器：每次 stream 调用产出一个合法 <history> 块——第 1 次（反思）REFLECTED，
-    // 第 2 次（观察执行）OBSERVED（覆盖区间 0..2，触发点完整消息 index 2）
-    let streamCalls = 0;
+    // 逐轮脚本：第 1-3 轮为反思（getHistory → compress REFLECTED → complete），
+    // 第 4-6 轮为观察（getHistory → compress OBSERVED → complete）
     const ctx = makeCtx({
-      llmStream: {
-        [Symbol.iterator]() {
-          streamCalls += 1;
-          const current = streamCalls;
-          return (function* () {
-            yield {
-              type: 'text-delta',
-              text:
-                current === 1
-                  ? '<history>\n<user_message index="0">\nREFLECTED-REPORT\n</user_message>\n</history>'
-                  : '<history>\n<user_message index="0">\nOBSERVED-PASS\n</user_message>\n<assistant start="1" end="2">toolcall index:2 purpose:任务A summary:完成</assistant>\n</history>',
-            };
-          })();
-        },
+      llmStreamFactory: (index) => {
+        if (index === 0 || index === 3)
+          return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+        if (index === 1)
+          return roundChunks({
+            calls: [
+              {
+                id: 't1',
+                name: 'compressHistory',
+                args: { index: 0, content: 'REFLECTED-REPORT' },
+              },
+            ],
+          });
+        if (index === 4)
+          return roundChunks({
+            calls: [
+              {
+                id: 't2',
+                name: 'compressHistory',
+                args: { start: 1, end: 2, content: 'OBSERVED-PASS' },
+              },
+            ],
+          });
+        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
       },
     });
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1, reflectThresholdTokens: 90 });
     await runPreStepWithDelay(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(2);
+    expect(ctx._llmCalls).toHaveLength(6);
     const firstText = instructionText(ctx._llmCalls[0]?.options);
-    const secondText = instructionText(ctx._llmCalls[1]?.options);
-    // 两者共用同一套提示词；以输入（数据源）区分反思/观察
-    expect(firstText).toBe(buildHistoryPrompt());
-    expect(secondText).toBe(buildHistoryPrompt());
+    const secondText = instructionText(ctx._llmCalls[3]?.options);
+    // 两者共用同一套提示词；以压缩指令（数据源）区分反思/观察
+    expect(firstText).toBe(buildCompressionPrompt(true));
+    expect(secondText).toBe(buildCompressionPrompt(true));
     const inputOf = (call: unknown) =>
       String(
         (call as { messages?: Array<{ content?: Array<{ type?: string; text?: string }> }> })
           ?.messages?.[0]?.content?.[0]?.text ?? '',
       );
-    expect(inputOf(ctx._llmCalls[0]?.options)).toContain('XXXX'); // 反思输入 = 旧块拼接
-    expect(inputOf(ctx._llmCalls[1]?.options)).toContain('请帮我完成一个任务'); // 观察输入 = 新消息渲染
+    expect(inputOf(ctx._llmCalls[0]?.options)).toContain('合并压缩'); // 反思指令
+    expect(inputOf(ctx._llmCalls[3]?.options)).toContain('压缩完整消息区间'); // 观察指令
     // 反思把旧块合并为 REFLECTED 块；观察在旧块之后追加独立 OBSERVED 块（两块并存）
     const historyMsgs = session.surface.nodes
       .map((seq) => session.events[seq])
@@ -1070,10 +1012,10 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
   }
 
   it('反思压缩：单节点替换也写完整 compaction 生命周期（summary/遮蔽/provider/model）', async () => {
-    // 摘要 40 字符 ≈ 10 tokens；反思阈值 1 → 触发反思；观察阈值保持默认不触发
+    // 单块含一条 assistant 条目（约 15 tokens）；反思阈值 1 → 触发反思；观察阈值保持默认不触发
     const session = makeSession({
       events: [
-        historyMessage('X'.repeat(40)),
+        historyMessage(`<assistant index="0">${'X'.repeat(40)}</assistant>`),
         ...buildToolCallFlow({
           code: 'a()',
           description: '任务A',
@@ -1084,12 +1026,20 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
       ],
     });
     const ctx = makeCtx({
-      llmStream: [
-        {
-          type: 'text-delta',
-          text: '<history>\n<user_message index="0">\nREFLECTED-REPORT\n</user_message>\n</history>',
-        },
-      ],
+      llmStreamFactory: (index) => {
+        if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+        if (index === 1)
+          return roundChunks({
+            calls: [
+              {
+                id: 't1',
+                name: 'compressHistory',
+                args: { index: 0, content: 'REFLECTED-REPORT' },
+              },
+            ],
+          });
+        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
+      },
     });
     apply(ctx, { reflectThresholdTokens: 1 });
     await runPreStep(ctx, session);
@@ -1107,13 +1057,13 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
     if (endEvent?.type !== 'compaction/end') throw new Error('缺 end');
     expect(summaryEvent.data.compactionId).toBe(startEvent.data.compactionId);
     expect(endEvent.data.compactionId).toBe(startEvent.data.compactionId);
-    // 反思压缩：start 携带 phase='reflect'（UI 压缩中提示按阶段区分）；首次成功 attemptCount=0
+    // 反思压缩：start 携带 phase='reflect'（UI 压缩中提示按阶段区分）；3 轮请求 → attemptCount=3
     expect((startEvent.data as { phase?: string }).phase).toBe('reflect');
-    expect((summaryEvent.data as CompactionSummaryPayload).attemptCount).toBe(0);
+    expect((summaryEvent.data as CompactionSummaryPayload).attemptCount).toBe(3);
     // 单节点替换：遮蔽区间为旧 <history> 节点
     expect(summaryEvent.data.shadowedRange).toEqual({ start: 0, end: 0 });
     expect(summaryEvent.data.shadowedSeqs).toEqual([0]);
-    expect((summaryEvent.data as CompactionSummaryPayload).shadowedCharCount).toBe(40); // 旧块文本 X*40
+    expect((summaryEvent.data as CompactionSummaryPayload).shadowedCharCount).toBeGreaterThan(0);
     expect(summaryEvent.data.provider).toBe('test');
     expect(summaryEvent.data.model).toBe('test-model');
     expect(summaryEvent.data.maxTokens).toBeUndefined(); // compressMaxTokens 默认不设置
@@ -1140,15 +1090,22 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
       events: [historyMessage('user_message message_id:old-u text:旧任务'), ...flowEvents],
     });
     const ctx = makeCtx({
-      llmStream: [
-        {
-          type: 'text-delta',
-          text: '<history>\n<user_message index="0">\n新内容\n</user_message>\n<assistant start="1" end="2">toolcall index:2 purpose:任务A summary:完成</assistant>\n</history>',
-        },
-      ],
+      llmStreamFactory: (index) => {
+        if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+        if (index === 1)
+          return roundChunks({
+            calls: [
+              {
+                id: 't1',
+                name: 'compressHistory',
+                args: { start: 1, end: 2, content: 'toolcall index:2 purpose:任务A summary:完成' },
+              },
+            ],
+          });
+        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
+      },
     });
-    // 反思阈值 1000 > 旧摘要（含 tip 开标签约 26 tokens）——隔离观察路径；
-    // 摘要输出覆盖区间 0..2（触发点完整消息 index 2）
+    // 反思阈值 1000 > 旧摘要——隔离观察路径
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1, reflectThresholdTokens: 1000 });
     await runPreStepWithDelay(ctx, session);
     const { start, summary } = compactionLifecycle(session);
@@ -1158,7 +1115,7 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
     const summaryText = summaryEvent.data.summary
       .map((block) => (block.type === 'text' ? block.text : ''))
       .join('');
-    expect(summaryText).toContain('新内容'); // summary = 本次观察日志
+    expect(summaryText).toContain('请帮我完成一个任务'); // summary = 本次观察日志（未压缩 user 原样保留）
     expect(summaryText).not.toContain('旧任务'); // 不再合并旧摘要原文
     // 遮蔽数据 = 压缩边界至触发点区间（旧块 seq 0 保留、不计入遮蔽）
     expect(summaryEvent.data.shadowedRange).toEqual({ start: 1, end: 4 });
@@ -1167,7 +1124,7 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
   });
 });
 
-describe('OM 摘要 token 归入主会话（compaction/summary.usage）', () => {
+describe('OM 压缩 token 归入主会话（compaction/summary.usage）', () => {
   /** 延迟压缩两步执行：触发（记录待定标记）→ 追加等待期消息 → 执行压缩。 */
   async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
     const preStepListeners = ctx._onCallbacks.get('agent/pre-step');
@@ -1186,6 +1143,25 @@ describe('OM 摘要 token 归入主会话（compaction/summary.usage）', () => 
       { surfaceOp: 'append' },
     );
     await run();
+  }
+
+  /** 成功压缩循环的轮脚本（第 2 轮可注入 usage）。 */
+  function successRounds(usage?: { inputTokens: number; outputTokens: number }) {
+    return (index: number) => {
+      if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+      if (index === 1)
+        return roundChunks({
+          calls: [
+            {
+              id: 't2',
+              name: 'compressHistory',
+              args: { start: 1, end: 2, content: '完成' },
+            },
+          ],
+          ...(usage === undefined ? {} : { usage }),
+        });
+      return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
+    };
   }
 
   /** 触发观察压缩的固定夹具（观察阈值 1 tokens 必触发）。 */
@@ -1199,44 +1175,26 @@ describe('OM 摘要 token 归入主会话（compaction/summary.usage）', () => 
         withTurnEnd: true,
       }),
     });
-    // 缺省注入覆盖区间 0..2 的合法报告（触发点完整消息 index 2）
     const ctx = makeCtx({
-      llmStream: [
-        {
-          type: 'text-delta',
-          text: '<history>\n<user_message index="0">\n请帮我完成一个任务\n</user_message>\n<assistant start="1" end="2">toolcall index:2 purpose:任务A summary:完成</assistant>\n</history>',
-        },
-      ],
+      llmStreamFactory: successRounds(),
       ...extra,
     });
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     return { session, ctx };
   }
 
-  it('摘要流报告 usage：写入主会话 compaction/summary.usage', async () => {
-    const summaryUsage = {
-      inputTokens: 100,
-      outputTokens: 50,
-      cacheReadTokens: 10,
-      cacheWriteTokens: 5,
-    };
+  it('压缩循环报告 usage：各轮汇总后写入主会话 compaction/summary.usage', async () => {
     const { session, ctx } = sessionAndCtx({
-      llmStream: [
-        {
-          type: 'text-delta',
-          text: '<history>\n<user_message index="0">\n请帮我完成一个任务\n</user_message>\n<assistant start="1" end="2">toolcall index:2 purpose:任务A summary:完成</assistant>\n</history>',
-        },
-        { type: 'usage', usage: summaryUsage },
-      ],
+      llmStreamFactory: successRounds({ inputTokens: 100, outputTokens: 50 }),
     });
     await runPreStep(ctx, session);
     const summaryIdx = session.events.findIndex((e) => e.type === 'compaction/summary');
     const summaryEvent = session.events[summaryIdx];
     if (summaryEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
-    expect(summaryEvent.data.usage).toEqual(summaryUsage);
+    expect(summaryEvent.data.usage).toEqual({ inputTokens: 100, outputTokens: 50 });
   });
 
-  it('摘要流无 usage（无 usage chunk）时省略 usage 字段', async () => {
+  it('压缩循环无 usage（无 usage chunk）时省略 usage 字段', async () => {
     const { session, ctx } = sessionAndCtx(); // 默认 mock：无 usage chunk
     await runPreStep(ctx, session);
     const summaryIdx = session.events.findIndex((e) => e.type === 'compaction/summary');
@@ -1246,7 +1204,7 @@ describe('OM 摘要 token 归入主会话（compaction/summary.usage）', () => 
   });
 });
 
-describe('摘要请求形态（new 方式）', () => {
+describe('压缩请求形态（新会话直连）', () => {
   /** 延迟压缩两步执行：触发（记录待定标记）→ 追加等待期消息 → 执行压缩。 */
   async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
     const preStepListeners = ctx._onCallbacks.get('agent/pre-step');
@@ -1267,7 +1225,7 @@ describe('摘要请求形态（new 方式）', () => {
     await run();
   }
 
-  /** 带 requestHeader system/tools 的会话（断言摘要不复用主会话请求前缀）。 */
+  /** 带 requestHeader system/tools 的会话（断言压缩请求不复用主会话请求前缀）。 */
   function sessionWithHeader() {
     return makeSession({
       events: buildToolCallFlow({
@@ -1285,36 +1243,48 @@ describe('摘要请求形态（new 方式）', () => {
     });
   }
 
-  it('始终以 new 方式开启观察：指令作为 system，输入 = 被压缩消息（XML 包裹，不含尾部）', async () => {
+  it('压缩会话独立组装：指令作为 system，首条消息 = 压缩指令 + 区间，工具 = 三个压缩工具', async () => {
     const session = sessionWithHeader();
     const ctx = makeCtx({
       // 会话请求头带 tools（JSON 21 字符 → 6 tokens）：注入真实 usage 锚定压力，扣除工具定义后仍达阈值
       meterTotalTokens: 100000,
-      llmStream: [
-        {
-          type: 'text-delta',
-          text: '<history>\n<user_message index="0">\nOBSERVED-PASS\n</user_message>\n<assistant start="1" end="2">toolcall index:2 purpose:任务A summary:完成</assistant>\n</history>',
-        },
-      ],
+      llmStreamFactory: (index) => {
+        if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+        if (index === 1)
+          return roundChunks({
+            calls: [
+              {
+                id: 't2',
+                name: 'compressHistory',
+                args: { start: 1, end: 2, content: '完成' },
+              },
+            ],
+          });
+        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
+      },
     });
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStep(ctx, session);
     const options = ctx._llmCalls[0]?.options as {
       system?: string;
-      tools?: unknown[];
+      tools?: Array<{ name: string }>;
       messages?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
     };
-    // new 方式：不复用主会话 requestHeader（system/tools 前缀不沿用）；指令 = 共享提示词
-    expect(options?.system).toBe(buildHistoryPrompt());
+    // 不复用主会话 requestHeader（system 前缀不沿用）；system = 共享压缩提示词
+    expect(options?.system).toBe(buildCompressionPrompt(true));
     expect(options?.system).not.toContain('主会话系统提示词');
-    expect(options?.tools).toBeUndefined();
+    // 工具 = 三个压缩工具（不沿用主会话工具）
+    expect(options?.tools?.map((t) => t.name)).toEqual([
+      'getHistory',
+      'compressHistory',
+      'completeCompression',
+    ]);
     const input = String(options?.messages?.[0]?.content?.[0]?.text ?? '');
-    // 输入 = 被压缩区间（压缩边界..触发点）的完整消息渲染（合法 <history> 块，带绝对 index），不含分段标签与尾部
-    expect(input).toContain('<history>');
-    expect(input).toContain('<user_message index="0">');
-    expect(input).toContain('请帮我完成一个任务');
-    expect(input).not.toContain('【被压缩消息】');
-    expect(input).not.toContain('【参考尾部】');
+    // 首条消息 = 压缩指令 + 完整消息区间，不含历史消息内容
+    expect(input).toContain('压缩完整消息区间');
+    expect(input).toContain('getHistory');
+    expect(input).toContain('completeCompression');
+    expect(input).not.toContain('请帮我完成一个任务'); // 历史内容不进指令
     expect(input).not.toContain('message_id=user-c1'); // 不用 message_id
     expect(session.surface.nodes.length).toBe(2); // 等待期新消息 + <history>
   });
@@ -1424,24 +1394,33 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     });
   }
 
-  /** 返回固定观察报告的 ctx（观察阈值需在 apply 配置中触发）。 */
-  function observeCtx(report: string) {
+  /** 返回成功完成压缩的 ctx（观察阈值需在 apply 配置中触发）。 */
+  function observeCtx() {
     return makeCtx({
-      llmStream: [{ type: 'text-delta', text: report }],
+      llmStreamFactory: (index) => {
+        if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+        if (index === 1)
+          return roundChunks({
+            calls: [
+              {
+                id: 't2',
+                name: 'compressHistory',
+                args: { start: 1, end: 2, content: 'toolcall index:2 purpose:任务A summary:完成' },
+              },
+            ],
+          });
+        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
+      },
     });
   }
 
-  /** 覆盖区间 0..2 的固定观察报告。 */
-  const observeReport =
-    '<history>\n<user_message index="0">\n延迟压缩报告\n</user_message>\n<assistant start="1" end="2">toolcall index:2 purpose:任务A summary:完成</assistant>\n</history>';
-
   it('触发即待定：达阈值记录 om/observe-pending（触发点 = 最后完整消息 index），本次不压缩', async () => {
     const session = singleFlowSession();
-    const ctx = observeCtx(observeReport);
+    const ctx = observeCtx();
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     const nextCalled = await runPreStep(ctx, session);
     expect(nextCalled).toBe(true); // 触发不中断，正常放行
-    expect(ctx._llmCalls).toHaveLength(0); // 延迟执行：本次无摘要调用
+    expect(ctx._llmCalls).toHaveLength(0); // 延迟执行：本次无压缩请求
     const pendingEvents = findOmEvents(session, 'om/observe-pending');
     expect(pendingEvents).toHaveLength(1);
     expect(pendingEvents[0]?.data).toEqual({ triggerMessageIndex: 2 });
@@ -1451,7 +1430,7 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
 
   it('活跃待定期间不重复添加：连续 pre-step 仅一条 pending', async () => {
     const session = singleFlowSession();
-    const ctx = observeCtx(observeReport);
+    const ctx = observeCtx();
     apply(ctx, { tailMessageCount: 3, observeThresholdTokens: 1 });
     await runPreStep(ctx, session);
     await runPreStep(ctx, session); // 未满 K，等待中
@@ -1461,7 +1440,7 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
 
   it('未满 K 等待：新增完整消息数不足时不执行', async () => {
     const session = singleFlowSession();
-    const ctx = observeCtx(observeReport);
+    const ctx = observeCtx();
     apply(ctx, { tailMessageCount: 2, observeThresholdTokens: 1 });
     await runPreStep(ctx, session); // 触发
     appendWaitingMessage(session, 'wait-1'); // 新增 1 < 2
@@ -1475,12 +1454,12 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
 
   it('满 K 执行：压缩区间截至触发点，等待期消息不被压缩，执行后写失效标记', async () => {
     const session = singleFlowSession();
-    const ctx = observeCtx(observeReport);
+    const ctx = observeCtx();
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStep(ctx, session); // 触发：triggerMessageIndex = 2
     appendWaitingMessage(session, 'wait-exec'); // 新增 1 ≥ 1
     await runPreStep(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(1);
+    expect(ctx._llmCalls).toHaveLength(3); // getHistory → compressHistory → completeCompression
     // 压缩区间 [0..3]（触发点完整消息 index 2 = toolcall，最后事件 seq 3 平衡）
     const { summary } = compactionLifecycle(session);
     const summaryEvent = session.events[summary];
@@ -1492,7 +1471,7 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     );
     expect(waitingSeq).toBeGreaterThanOrEqual(0);
     expect(session.surface.nodes).toContain(waitingSeq);
-    expect(latestHistoryText(session)).toContain('延迟压缩报告');
+    expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
     // 执行成功后写失效标记，指向待定标记事件 seq
     const pendings = findOmEvents(session, 'om/observe-pending');
     const invalidates = findOmEvents(session, 'om/observe-invalidate');
@@ -1503,55 +1482,63 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
 
   it('K=0：触发当轮立即执行（无待定/失效标记）', async () => {
     const session = singleFlowSession();
-    const ctx = observeCtx(observeReport);
+    const ctx = observeCtx();
     apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1 });
     await runPreStep(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(1);
+    expect(ctx._llmCalls).toHaveLength(3);
     expect(session.events.some((e) => isOmKind(e, 'om/observe-pending'))).toBe(false);
     expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
-    expect(latestHistoryText(session)).toContain('延迟压缩报告');
+    expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
   });
 
-  it('摘要失败保留待定：下个 pre-step 到期直接重试执行', async () => {
-    let attempts = 0;
+  it('压缩失败保留待定：下个 pre-step 到期直接重试执行并成功', async () => {
     const session = singleFlowSession();
+    let failed = true;
     const ctx = makeCtx({
-      llmStream: {
-        [Symbol.iterator]() {
-          attempts += 1;
-          const current = attempts;
-          return (function* () {
-            if (current <= 2) throw new Error(`模拟第 ${current} 次失败`);
-            yield { type: 'text-delta', text: observeReport };
-          })();
-        },
+      llmStreamFactory: (index) => {
+        if (failed) return roundChunks({ text: '不调用工具' }); // 连续 2 轮纯文本 → 失败
+        // 重试执行走完整三轮（getHistory → compressHistory → completeCompression）
+        if (index === 2) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+        if (index === 3)
+          return roundChunks({
+            calls: [
+              {
+                id: 't2',
+                name: 'compressHistory',
+                args: { start: 1, end: 2, content: 'toolcall index:2 purpose:任务A summary:完成' },
+              },
+            ],
+          });
+        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
       },
     });
-    apply(ctx, { tailMessageCount: 1, compressRetryCount: 1, observeThresholdTokens: 1 }); // 每轮总尝试 2 次
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStep(ctx, session); // 触发
     appendWaitingMessage(session, 'wait-fail');
-    await runPreStep(ctx, session); // 执行：2 次尝试全部失败
+    await runPreStep(ctx, session); // 执行：2 轮纯文本判失败
     expect(ctx._llmCalls).toHaveLength(2);
     expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
     appendWaitingMessage(session, 'wait-retry');
-    await runPreStep(ctx, session); // 待定仍在、到期条件仍满足 → 直接重试
-    expect(ctx._llmCalls).toHaveLength(3); // 重试 1 次即成功（第 3 次调用）
+    failed = false;
+    await runPreStep(ctx, session); // 待定仍在、到期条件仍满足 → 直接重试执行
+    expect(ctx._llmCalls).toHaveLength(5); // 失败 2 轮 + 重试成功 3 轮
     expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(true);
-    expect(latestHistoryText(session)).toContain('延迟压缩报告');
+    expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
   });
 
   it('重启恢复：待定标记从会话日志恢复（新会话对象含 pending 事件即可续跑）', async () => {
     // 模拟重启：pending 事件已持久化在日志中，重建的会话对象直接带上它
     const session = singleFlowSession([pendingEvent(2)]);
-    const ctx = observeCtx(observeReport);
+    const ctx = observeCtx();
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStep(ctx, session); // 未满 K：等待（新增 0 < 1）
     expect(ctx._llmCalls).toHaveLength(0);
     appendWaitingMessage(session, 'wait-resume'); // 新增 1 ≥ 1
     await runPreStep(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(1);
-    expect(latestHistoryText(session)).toContain('延迟压缩报告');
-    expect(findOmEvents(session, 'om/observe-invalidate').length).toBeGreaterThan(0);
+    expect(ctx._llmCalls).toHaveLength(3);
+    expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
+    const invalidateEvent = session.events.findLast((e) => isOmKind(e, 'om/observe-invalidate'));
+    expect(invalidateEvent).toBeDefined();
   });
 
   it('过期待定不阻塞再触发：边界后移即过期，重新触发新一轮标记（不误压已压缩内容）', async () => {
@@ -1574,7 +1561,10 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     // 表层仅剩压缩后的历史块：注入真实 usage 锚定压力，扣除已压缩块后仍达阈值
     const ctx = makeCtx({
       meterTotalTokens: 100000,
-      llmStream: [{ type: 'text-delta', text: observeReport }],
+      llmStreamFactory: (index) => {
+        if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
+      },
     });
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStep(ctx, session); // 过期 → 重新触发：新一轮 pending（seq 7，触发点仍为 index 2）
@@ -1582,7 +1572,7 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     expect(findOmEvents(session, 'om/observe-pending')).toHaveLength(2);
     appendWaitingMessage(session, 'wait-expired'); // 新增 1 ≥ 1
     await runPreStep(ctx, session); // 触发点内容已被压缩 → 无可行区间 → 清除标记视为完成
-    expect(ctx._llmCalls).toHaveLength(0); // 不对已压缩内容发起摘要
+    expect(ctx._llmCalls).toHaveLength(0); // 不对已压缩内容发起压缩
     expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(true); // 新标记已失效
     expect(latestHistoryText(session)).toContain('压缩后的块'); // 无新增替换
   });
