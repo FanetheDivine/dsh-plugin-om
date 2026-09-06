@@ -73,7 +73,7 @@ preset-agent 自带 compaction-basic 压缩，阈值为上下文窗口的 80%，
 
 > 不建议把观察阈值设置得过高：越早压缩收益越高，且机制依赖模型对消息计数，过多消息会导致历史混乱。
 
-> 想直观理解机制并估算不同参数下的 token 成本，可打开交互式[机制说明与成本计算器](https://fanethedivine.github.io/dsh-plugin-om/)，部署在 GitHub Pages，不随插件包分发。当前站点尚未覆盖工具驱动压缩的多轮成本模型，待后续按实际数据更新。
+> 想直观理解机制并估算不同参数下的 token 成本，可打开交互式[机制说明与成本计算器](https://fanethedivine.github.io/dsh-plugin-om/)。
 
 ## npm 命令
 
