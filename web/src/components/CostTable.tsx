@@ -2,7 +2,7 @@
  * 成本对比表：原始会话规模 20k–250k 逐行对比 om 开/关的三类 token 消耗、费用、
  * 压缩次数与节省额。数据由 web/src/model.ts 的 buildTable 生成。
  * 上方描述补充表格成立的假设：纯多 step 会话，thinking 只输出、tool result 只写入、
- * toolcall 忽略，前缀缓存计费与摘要独立会话口径，摘要 thinking 按摘要输入的 50% 计入。
+ * toolcall 忽略，前缀缓存计费与摘要独立会话口径；「原始规模」说明置于表头 tooltip。
  * 每格合并显示两个值：om 开启（绿）/ om 关闭（红），保留当前配色。
  */
 import {
@@ -13,8 +13,9 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatSignedUsd, formatTokens, formatUsd } from '../format';
-import { type CostRow, SUMMARY_THINKING_RATIO } from '../model';
+import type { CostRow } from '../model';
 
 /** 成本对比表属性。 */
 type CostTableProps = {
@@ -39,23 +40,28 @@ export function CostTable({ rows }: CostTableProps) {
     <section id="table" className="flex flex-col items-center">
       <div className="mb-4 w-full max-w-4xl text-center">
         <h2 className="text-xl font-semibold tracking-tight">成本对比</h2>
-        <p className="mt-1 text-sm text-muted-foreground">表格内展示显示 OM 开/关 情况的会话数据</p>
         <p className="mt-1 text-sm text-muted-foreground">
-          基于理想情况下的长对话进行计算，假设AI每轮平均地进行thinking和tool，忽略用户消息和tool-args
-        </p>
-        <p className="mt-1 text-sm text-muted-foreground">
-          假设摘要调用产生的 thinking 是输入 tokens 的{SUMMARY_THINKING_RATIO * 100}% ，按输出计费
-        </p>
-        <p className="mt-1 text-sm text-muted-foreground">
-          <span className="font-bold">原始规模</span>
-          指不开启OM时对话占据的上下文，完全由系统提示词和tool-result构成
+          表格内展示 OM 开/关 情况的会话数据，基于理想情况下的长对话进行计算，
+          假设AI每轮平均地进行thinking和tool，忽略用户消息和tool-args
         </p>
       </div>
       <div className="w-full max-w-4xl overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="text-center">原始规模</TableHead>
+              <TableHead className="text-center">
+                <span className="inline-flex items-center gap-1">
+                  原始规模
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="cursor-help text-[10px] text-muted-foreground/70">ⓘ</span>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-48">
+                      不开启OM时对话占据的上下文，完全由系统提示词和tool-result构成
+                    </TooltipContent>
+                  </Tooltip>
+                </span>
+              </TableHead>
               <TableHead className="text-center">输出</TableHead>
               <TableHead className="text-center">缓存读取</TableHead>
               <TableHead className="text-center">缓存创建</TableHead>
