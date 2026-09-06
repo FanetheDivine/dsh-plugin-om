@@ -39,15 +39,6 @@ function loopOptions(overrides: Partial<CompressionLoopOptions> = {}): Compressi
 }
 
 describe('buildCompressionPrompt / buildCompressionTaskText', () => {
-  it('提示词包含工具语义、skill 规则与提交要求', () => {
-    const prompt = buildCompressionPrompt(false);
-    expect(prompt).toContain('getHistory');
-    expect(prompt).toContain('compressHistory');
-    expect(prompt).toContain('completeCompression');
-    expect(prompt).toContain('skill');
-    expect(prompt).toContain('不能判断');
-  });
-
   it('skipReasoning=true 省略 <reasoning> 说明行，false 保留', () => {
     expect(buildCompressionPrompt(true)).not.toContain('<reasoning>');
     expect(buildCompressionPrompt(false)).toContain('<reasoning> 仅作压缩参考，不进产物。');

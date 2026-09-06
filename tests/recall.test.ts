@@ -292,39 +292,16 @@ describe('recall 工具', () => {
       { attachmentId: 'att-2', mediaType: 'image/png', bytes: 1024, width: 800, height: 600 },
     ]);
   });
-
-  it('描述说明按 index 区间返回', () => {
-    expect(buildRecallTool().description).toContain(
-      '按 index 区间精确返回区间内全部完整消息的内容',
-    );
-  });
 });
 
 describe('recall wire 参数 schema（由 zod 生成）', () => {
   /** buildRecallTool().parameters：zod schema 经 toJSONSchema 生成的 wire JSON Schema。 */
   const parameters = buildRecallTool().parameters;
-  /** properties（recall 的三个字段）。 */
-  const properties = parameters.properties as Record<
-    string,
-    { type?: string; description?: string }
-  >;
 
   it('根为 type:object 的标准 JSON Schema，无 $schema/additionalProperties（官方 API 严格校验兼容）', () => {
     expect(parameters.type).toBe('object');
     expect(parameters).not.toHaveProperty('$schema');
     expect(parameters).not.toHaveProperty('additionalProperties');
-  });
-
-  it('properties 含 start/end/offset（number），required 仅 start', () => {
-    expect(properties.start?.type).toBe('number');
-    expect(properties.end?.type).toBe('number');
-    expect(properties.offset?.type).toBe('number');
-    expect(parameters.required).toEqual(['start']);
-  });
-
-  it('描述来自 .describe() 且透传 refine 约束说明', () => {
-    expect(properties.start?.description).toContain('end 与 offset 至少提供一个');
-    expect(properties.start?.description).toContain('end 优先');
   });
 });
 

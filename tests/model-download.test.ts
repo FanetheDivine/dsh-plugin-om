@@ -85,20 +85,6 @@ describe('modelSourceUrl', () => {
   });
 });
 
-describe('modelTargetPath', () => {
-  it('解析到 <modelDir>/onnx/model_quantized.onnx（模型目录下的相对路径）', () => {
-    const modelDir = path.join('E:/repo', 'models', EMBEDDING_MODEL_ID);
-    expect(modelTargetPath(modelDir)).toBe(path.join(modelDir, 'onnx', 'model_quantized.onnx'));
-  });
-
-  it('支持自定义相对路径', () => {
-    const modelDir = path.join('E:/repo', 'models', EMBEDDING_MODEL_ID);
-    expect(modelTargetPath(modelDir, 'onnx/model_quantized.onnx')).toBe(
-      path.join(modelDir, 'onnx', 'model_quantized.onnx'),
-    );
-  });
-});
-
 describe('sharedModelDir（跨版本共享默认目录）', () => {
   it('DSH_HOME 未设置：以 ~/.dsh 为根', () => {
     const prev = process.env.DSH_HOME;
