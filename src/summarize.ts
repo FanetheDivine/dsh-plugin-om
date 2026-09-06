@@ -14,6 +14,7 @@
  */
 
 import type {
+  CallId,
   FinishReason,
   GenerateOptions,
   StreamChunk,
@@ -235,7 +236,7 @@ class StreamCollector {
   private textBuf = '';
   private reasoningBuf = '';
   /** tool-call-delta 按 index 聚合（id/name 首次给定后固定，arguments 增量拼接）。 */
-  private readonly toolCallParts = new Map<number, { id: string; name?: string; args: string }>();
+  private readonly toolCallParts = new Map<number, { id: CallId; name?: string; args: string }>();
   private _usage: TokenUsage | undefined;
   private _finish: FinishReason | undefined;
 

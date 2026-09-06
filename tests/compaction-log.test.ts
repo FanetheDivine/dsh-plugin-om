@@ -3,6 +3,7 @@
 // 载荷（version/mode/provider/label）、「提示词 + 完整输出内容块」消息组原样结构与顺序
 //（reasoning → text → tool-call，无额外消息）、flush 调用、落盘异常被吞（create/flush 失败仅 warn 不抛错）。
 
+import type { CallId } from '@deepseek-ai/dsh-llm';
 import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent';
 import { describe, expect, it } from 'vitest';
 
@@ -141,7 +142,12 @@ describe('recordCompactionAttempt：压缩日志子会话落盘', () => {
       rawOutput: '输出文本',
       reasoning: '思考过程',
       toolCalls: [
-        { type: 'tool-call' as const, id: 'call-1', name: 'read_file', arguments: '{"p":"a.ts"}' },
+        {
+          type: 'tool-call' as const,
+          id: 'call-1' as CallId,
+          name: 'read_file',
+          arguments: '{"p":"a.ts"}',
+        },
       ],
     };
     await recordCompactionAttempt(ctx, parent, {
