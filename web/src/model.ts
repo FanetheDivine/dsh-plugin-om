@@ -10,14 +10,15 @@
  *   每轮请求重复发送；按前缀缓存计费：首轮缓存创建完整前缀，
  *   此后每轮缓存读取上一轮 prompt、缓存创建本轮新增量
  * - thinking 只输出：按补全价计费，不进主会话上下文与缓存、不计入未压缩对话量；
- *   观察压缩时随被压缩消息一并作为 OM 摘要输入
+ *   开启压缩 thinking 时，观察压缩随被压缩消息一并作为 OM 摘要输入
  * - 工具调用 tokens 忽略；tool result 只写入：计入未压缩对话量并驱动上下文增长，
  *   每轮新增 toolResultTokens 是原始对话量增长的唯一来源，本身不计补全价
  * - om 关闭：上下文每轮按 toolResultTokens 增长，
  *   n = (T − S − D) / toolResultTokens 轮后原始会话达到 T
  * - om 开启：pre-step 先反思后观察；净压力 ≈ 未压缩 tool result 量 + 未遮蔽注入量
  *   （thinking 不占上下文、不进净压力），≥ 观察阈值触发观察压缩
- *   （被压缩消息 = 未压缩 tool result + 这些轮的 thinking，旧块保留、未压缩量清零）；
+ *   （被压缩消息 = 未压缩 tool result，开启压缩 thinking 时含这些轮的 thinking，
+ *   旧块保留、未压缩量清零）；
  *   首次观察把 dsh 注入消息遮蔽为 <sys> 空条目（内容不再占上下文、不进摘要输入）；
  *   history 块合计 ≥ 反思阈值触发合并（全部块压缩为一条）
  * - 摘要调用为独立新会话：请求同样写入缓存，input = 指令 + 被压缩消息
@@ -77,11 +78,14 @@ export type ModelParams = {
   observeThresholdTokens: number;
   /** 反思阈值（tokens）：history 块合计 ≥ 该值触发合并。 */
   reflectThresholdTokens: number;
-  /** 压缩比：摘要输出 / 被压缩消息（观察时含 thinking），只决定压缩后 history 块在上下文中的大小，不参与计费。 */
+  /** 压缩比：摘要输出 / 被压缩消息，只决定压缩后 history 块在上下文中的大小，不参与计费。 */
   compressionRatio: number;
   /** OM token消耗比：压缩过程消耗（摘要 output 与 thinking 合并）/ 被压缩消息，按输出计费。 */
   omTokenRatio: number;
-  /** 每轮 thinking 输出 tokens：只计补全价，不进主会话上下文与缓存；观察压缩时随被压缩消息一并输入 OM。 */
+  /** 压缩 thinking：开启时观察压缩把自上次观察以来的 thinking 随被压缩消息一并输入 OM
+   *  （计入摘要输入与 OM token消耗比基数）；关闭时 thinking 只按输出计费、不进 OM。 */
+  compressThinking: boolean;
+  /** 每轮 thinking 输出 tokens：只计补全价，不进主会话上下文与缓存。 */
   thinkingTokens: number;
   /** 每轮工具结果 tokens：只写入缓存并计入原始对话量（驱动轮数与观察），不计补全；工具调用 tokens 忽略。 */
   toolResultTokens: number;
@@ -112,12 +116,13 @@ export const TABLE_MAX_TOKENS = 250_000;
 
 /** 默认参数：阈值取插件当前默认值，thinking/tool result 与价格取需求默认值。 */
 export const DEFAULT_PARAMS: Readonly<ModelParams> = Object.freeze({
-  systemPromptTokens: 5000,
+  systemPromptTokens: 10_000,
   injectedTokens: 5000,
   observeThresholdTokens: 45_000,
   reflectThresholdTokens: 120_000,
   compressionRatio: 0.03,
   omTokenRatio: 0.5,
+  compressThinking: false,
   thinkingTokens: 1200,
   toolResultTokens: 800,
   tableStepTokens: 10_000,
@@ -191,8 +196,8 @@ export function simulateWithoutOm(
  * - 每次摘要调用的压缩过程消耗 = OM token消耗比 × 被压缩消息，只计补全价
  *   （摘要 output 与 thinking 合并，不入缓存、不影响 history 块大小）
  * - 观察：净压力（未压缩 tool result 量 + 未遮蔽注入量）≥ 观察阈值时压缩全部未压缩消息
- *   （被压缩消息 = 未压缩 tool result + 这些轮的 thinking，不含注入内容；
- *   摘要 input = 指令 + 被压缩消息），旧块保留、未压缩量清零、
+ *   （被压缩消息 = 未压缩 tool result，开启压缩 thinking 时含这些轮的 thinking，
+ *   不含注入内容；摘要 input = 指令 + 被压缩消息），旧块保留、未压缩量清零、
  *   注入量遮蔽为残留常数；主请求缓存读取系统提示词 + 旧块
  * - 压缩轮之外：主请求缓存读取上一轮 prompt、缓存创建本轮 tool result
  */
@@ -211,7 +216,7 @@ export function simulateWithOm(
   let observeCount = 0;
   let reflectCount = 0;
   let uncompressed = 0; // 未压缩 tool result 量 W（thinking 不占上下文、不进净压力）
-  let uncompressedThinking = 0; // 自上次观察以来的 thinking 量：观察时随 W 一并作为摘要输入
+  let uncompressedThinking = 0; // 自上次观察以来的 thinking 量：开启压缩 thinking 时随 W 一并作为摘要输入
   let history = 0; // <history> 块 token 合计 H
   let injectedActive = params.injectedTokens; // 未遮蔽的注入量（首次观察后降为残留常数）
   let prevPrompt: number | null = null;
@@ -231,7 +236,8 @@ export function simulateWithOm(
     const netPressure = uncompressed + injectedActive;
     if (netPressure >= params.observeThresholdTokens) {
       const preservedBlocks = history; // 旧块保留在缓存前缀中
-      const compressed = uncompressed + uncompressedThinking; // 被压缩消息 = tool result + thinking
+      // 被压缩消息 = tool result（开启压缩 thinking 时含 thinking）
+      const compressed = uncompressed + (params.compressThinking ? uncompressedThinking : 0);
       summaryInput += INSTRUCTION_TOKENS + compressed;
       summaryOutput += compressed * omRatio;
       history += compressed * ratio;
@@ -255,7 +261,7 @@ export function simulateWithOm(
     usage.completion += thinking;
     peak = Math.max(peak, prompt);
     prevPrompt = prompt;
-    // 本轮工具结果写回未压缩量；thinking 只输出、不占上下文，但累计到观察时一并输入 OM
+    // 本轮工具结果写回未压缩量；thinking 只输出、不占上下文，但累计供观察时一并输入 OM
     uncompressed += step;
     uncompressedThinking += thinking;
   }
