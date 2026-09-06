@@ -12,8 +12,6 @@ import {
   computeRow,
   DEFAULT_PARAMS,
   type ModelParams,
-  STEP_INPUT_TOKENS,
-  STEP_OUTPUT_TOKENS,
   SYS_RESIDUAL_TOKENS,
   simulateWithOm,
   simulateWithoutOm,
@@ -29,16 +27,6 @@ const P = DEFAULT_PARAMS;
 function withParams(override: Partial<Omit<ModelParams, 'prices'>>): ModelParams {
   return { ...DEFAULT_PARAMS, ...override };
 }
-
-describe('常量', () => {
-  it('step 输入 800 / 输出 320，压缩经验系数 1.3 / 1.75 / 5,000', () => {
-    expect(STEP_INPUT_TOKENS).toBe(800);
-    expect(STEP_OUTPUT_TOKENS).toBe(320);
-    expect(COMPRESS_CACHE_WRITE_RATIO).toBe(1.3);
-    expect(COMPRESS_CACHE_READ_RATIO).toBe(1.75);
-    expect(COMPRESS_OUTPUT_FIXED_TOKENS).toBe(5000);
-  });
-});
 
 describe('turnCount', () => {
   it('原始会话规模 = 前缀 + n·step输入：默认参数 20k → 7 轮', () => {

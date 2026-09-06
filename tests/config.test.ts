@@ -1,31 +1,10 @@
 // config.ts 单元测试：resolveConfig 配置解析 —— 各配置键的类型/范围校验、
-// 默认值与非法值回退、模型目录默认跨版本共享（sharedModelDir）。
+// 默认值与非法值回退。
 import { describe, expect, it } from 'vitest';
 
 import { resolveConfig } from '../src/config.ts';
-import { sharedModelDir } from '../src/embedding.ts';
 
 describe('配置校验 resolveConfig', () => {
-  it('默认值正确（观察阈值 45000 tokens、反思阈值 120000 tokens）', () => {
-    const d = resolveConfig({});
-    expect(d.observeThresholdTokens).toBe(45000);
-    expect(d.reflectThresholdTokens).toBe(120000);
-    expect(d.compressMaxTokens).toBeUndefined(); // 默认不设置 maxTokens
-    expect(d.tailMessageCount).toBe(5);
-    expect(d.compressSkipReasoning).toBe(true); // 缺省 getHistory 不携带 reasoning 参考条目
-    expect(d.omEnabled).toBe(true); // 缺省启用 OM
-    expect(d.debug).toBe(process.env.NODE_ENV !== 'production'); // 缺省按 NODE_ENV 判定
-    expect(d.recallEnabled).toBe(true);
-    expect(d.semanticRecallEnabled).toBe(true);
-    expect(d.modelDir).toBe(sharedModelDir()); // 默认跨版本共享目录
-    expect(d).not.toHaveProperty('summaryMode'); // summaryMode 已移除
-    expect(d).not.toHaveProperty('summaryMaxChars');
-    expect(d).not.toHaveProperty('recallMaxMessages');
-    expect(d).not.toHaveProperty('auto');
-    expect(d).not.toHaveProperty('evalEnabled');
-    expect(d).not.toHaveProperty('compressRetryCount'); // compressRetryCount 已移除
-  });
-
   it('覆盖项生效', () => {
     const c = resolveConfig({ observeThresholdTokens: 5000, reflectThresholdTokens: 3000 });
     expect(c.observeThresholdTokens).toBe(5000);

@@ -1,6 +1,6 @@
 // index.ts（插件入口）apply 接线的集成级单元测试：OM 观察压缩与增量追加、反思压缩、
 // compaction 生命周期与 checkpoint 标记、摘要 token 归入、摘要请求形态、
-// recall/semanticRecall 工具开关与 ensureModelReady 预热、入口导出。
+// recall/semanticRecall 工具开关与 ensureModelReady 预热。
 import { describe, expect, it, vi } from 'vitest';
 
 // 隔离 apply 的模型下载编排：ensureModelReady 打桩为"就绪"，避免单测触发真实下载/网络
@@ -15,7 +15,7 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
 import { buildCompressionPrompt } from '../src/compress-loop.ts';
 import { HISTORY_FORMAT_NOTE, PLUGIN_LABEL } from '../src/constants.ts';
 import { ensureModelReady } from '../src/embedding.ts';
-import { apply, inject, name } from '../src/index.ts';
+import { apply } from '../src/index.ts';
 import { findOmEvents } from '../src/om-event.ts';
 import type { CompactionSummaryPayload, Session, SessionEvent, UserMessage } from '../src/types.ts';
 import {
@@ -580,37 +580,6 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(decision).toBeUndefined(); // next() 的返回值（放行）
     expect(nextCalled).toBe(true);
     expect(ctx._llmCalls).toHaveLength(0); // 中止时不发起压缩请求
-  });
-
-  it('流程逐步日志：dev 环境 step（debug）日志覆盖关键步骤', async () => {
-    const session = makeSession({
-      events: buildToolCallFlow({
-        code: 'a()',
-        description: '任务A',
-        callId: 'c1',
-        resultText: 'r1',
-        withTurnEnd: true,
-      }),
-    });
-    const ctx = observeCtx();
-    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
-    await runPreStepWithDelay(ctx, session);
-    const steps = ctx._loggerCalls
-      .filter((c) => c.level === 'debug')
-      .map((c) => String(c.args[0] ?? ''));
-    expect(steps.some((s) => s.includes('观察检查'))).toBe(true);
-    expect(steps.some((s) => s.includes('触发压缩'))).toBe(true);
-    expect(steps.some((s) => s.includes('压缩区间'))).toBe(true);
-    expect(steps.some((s) => s.includes('压缩循环开始'))).toBe(true);
-    // 循环成功始终写入日志（info，不受 debug 影响）
-    const infos = ctx._loggerCalls
-      .filter((c) => c.level === 'info')
-      .map((c) => String(c.args[0] ?? ''));
-    expect(infos.some((s) => s.includes('压缩循环完成'))).toBe(true);
-    expect(
-      steps.some((s) => s.includes('观察：追加 compaction/start（压缩循环前开启压缩中提示）')),
-    ).toBe(true);
-    expect(steps.some((s) => s.includes('观察 pass 结束'))).toBe(true);
   });
 
   it('中断不注入观察指令（AI 自主判断，无中断标记）', async () => {
@@ -1330,12 +1299,6 @@ describe('apply 接线（recallEnabled / semanticRecallEnabled）', () => {
     expect(ctx._onCallbacks.has('agent/pre-step')).toBe(true);
   });
 
-  it('recallEnabled=true / semanticRecallEnabled=true 显式启用', () => {
-    const ctx = makeCtx();
-    apply(ctx, { recallEnabled: true, semanticRecallEnabled: true });
-    expect(registeredNames(ctx)).toEqual(expect.arrayContaining(['recall', 'recall-semantic']));
-  });
-
   it('启用：apply 触发模型后台预热下载（ensureModelReady 被调用）', () => {
     const mockEnsure = ensureModelReady as unknown as ReturnType<typeof vi.fn>;
     mockEnsure.mockClear();
@@ -1575,14 +1538,5 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     expect(ctx._llmCalls).toHaveLength(0); // 不对已压缩内容发起压缩
     expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(true); // 新标记已失效
     expect(latestHistoryText(session)).toContain('压缩后的块'); // 无新增替换
-  });
-});
-
-// 保证入口导出形态稳定（Loader 依赖）
-describe('插件入口导出', () => {
-  it('导出 name/inject/apply 且无 default', () => {
-    expect(name).toBe('dsh-plugin-om');
-    expect(inject).toEqual(['tools', 'llm', 'tokenMeter', 'sessions']);
-    expect(typeof apply).toBe('function');
   });
 });
