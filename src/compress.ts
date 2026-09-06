@@ -11,8 +11,9 @@
  *   tailMessageCount 时，把压缩边界至触发点的全部消息摘要为新 <history> 块并精确替换
  *   被压缩区间（旧块保留），等待期间的新消息成为下一轮未压缩尾部（延迟窗口内压力允许
  *   短暂超阈值）；tailMessageCount=0 时触发当轮直接执行（不落待定标记）
- * - 待定标记以 log-only om/observe-pending / om/observe-invalidate 事件持久化在会话
- *   日志中（重启后从日志恢复）；摘要失败保留待定，下个 pre-step 直接重试执行
+ * - 待定标记以 log-only om 信封事件（借用 feedback/record，kind 为 om/observe-pending /
+ *   om/observe-invalidate，见 om-event.ts）持久化在会话日志中（重启后从日志恢复）；
+ *   摘要失败保留待定，下个 pre-step 直接重试执行
  * - 两级在 pre-step 阻塞串行执行（先反思后观察）；仅主会话生效；omEnabled=false 关闭
  * - 压缩边界：最后一个合法 <history> 块之后的消息视为未压缩，其前不重复压缩
  * - 摘要尝试全部耗尽时 pass 返回失败结果（携带最后一次尝试的实际报错），压缩流程
@@ -20,7 +21,8 @@
  * - 提交走宿主 compaction/* 生命周期事件（start 带 phase → summary → 替换消息 → end），
  *   失败补 end(error，实际报错 + 诊断子会话 sessionId)；替换消息 source 标记插件标识供 UI 认领
  * - 挂载失败类问题（systemPrompt/tokenMeter 服务异常）始终 console 到外部进程，并追加
- *   log-only om/warning 事件（客户端渲染功能降级警告行，每会话同一问题至多一次）；
+ *   log-only om 警告事件（借用 feedback/record，客户端渲染功能降级警告行，每会话同一
+ *   问题至多一次）；
  *   辅助估算的普通运行时报错仅记日志。降级与报错都不阻塞压缩（tokenMeter 压力数据
  *   缺失时本轮跳过观察）
  */
@@ -32,6 +34,7 @@ import { reportDegrade } from './degrade.ts';
 import { indexCompleteMessages, surfaceIndexOf } from './log-index.ts';
 import type { PluginLogger } from './logger.ts';
 import { makeLogger } from './logger.ts';
+import { appendOmEvent, readOmEvent } from './om-event.ts';
 import {
   buildHistoryPrompt,
   parseHistoryEntries,
@@ -202,10 +205,10 @@ export function historySection(session: Session): {
 }
 
 /**
- * 查找当前活跃的观察压缩待定标记：按日志顺序取最后一条 om/observe-pending，其后须无
- * 引用它的 om/observe-invalidate（已失效），且其后的压缩边界 seq 不大于标记 seq（边界
- * 后移说明标记期间已发生过压缩，标记过期——兜底「执行成功但失效标记未写出」的崩溃
- * 窗口）。无活跃标记返回 undefined。
+ * 查找当前活跃的观察压缩待定标记：按日志顺序取最后一条 om/observe-pending 信封事件，
+ * 其后须无引用它的 om/observe-invalidate（已失效），且其后的压缩边界 seq 不大于标记
+ * seq（边界后移说明标记期间已发生过压缩，标记过期——兜底「执行成功但失效标记未写出」
+ * 的崩溃窗口）。无活跃标记返回 undefined。
  */
 export function findObservePending(
   session: Session,
@@ -214,12 +217,13 @@ export function findObservePending(
   for (let seq = 0; seq < session.events.length; seq += 1) {
     const event = session.events[seq];
     if (!event) continue;
-    if (event.type === 'om/observe-pending') {
-      pending = { seq, triggerMessageIndex: event.data.triggerMessageIndex };
+    const om = readOmEvent(event);
+    if (om?.kind === 'om/observe-pending') {
+      pending = { seq, triggerMessageIndex: om.data.triggerMessageIndex };
     } else if (
-      event.type === 'om/observe-invalidate' &&
+      om?.kind === 'om/observe-invalidate' &&
       pending !== undefined &&
-      event.data.pendingSeq === pending.seq
+      om.data.pendingSeq === pending.seq
     ) {
       pending = undefined;
     }
@@ -230,14 +234,14 @@ export function findObservePending(
   return pending;
 }
 
-/** 追加观察压缩待定标记（log-only）：记录触发点完整消息 index，返回事件 seq。 */
+/** 追加观察压缩待定标记（log-only om 信封事件）：记录触发点完整消息 index，返回事件 seq。 */
 function appendObservePending(session: Session, triggerMessageIndex: number): number {
-  return session.append('om/observe-pending', { key: 'observe', triggerMessageIndex }).seq;
+  return appendOmEvent(session, 'om/observe-pending', { triggerMessageIndex });
 }
 
-/** 追加观察压缩待定失效标记（log-only）：声明指定 pending 已失效，返回事件 seq。 */
+/** 追加观察压缩待定失效标记（log-only om 信封事件）：声明指定 pending 已失效，返回事件 seq。 */
 function appendObserveInvalidate(session: Session, pendingSeq: number): number {
-  return session.append('om/observe-invalidate', { key: 'observe', pendingSeq }).seq;
+  return appendOmEvent(session, 'om/observe-invalidate', { pendingSeq });
 }
 
 /** 当前打开中的 turn 号（最近 turn/start 且未被 turn/end 关闭）；无则 null。 */
@@ -495,7 +499,7 @@ export async function reflectPass(
  * 估算系统提示词 tokens：按 agent 作用域组装并渲染系统提示词，按长度/4 启发式计。
  * systemPrompt 服务经 ctx.get 容错读取（ctx 属性访问在服务未挂载时抛错）；服务缺失
  * 或组装/渲染失败时按 0 计——只影响观察触发时机（偏早触发），不阻塞压缩。
- * 服务缺失属挂载失败：console 外部 + om/warning 事件每会话报告一次；组装失败仅记日志。
+ * 服务缺失属挂载失败：console 外部 + om 警告事件每会话报告一次；组装失败仅记日志。
  */
 async function estimateSystemPromptTokens(
   ctx: Context,
@@ -543,7 +547,7 @@ function estimateToolsTokens(session: Session, logger: PluginLogger): number {
 
 /**
  * 读取上下文压力 tokens（tokenMeter.measure 的 totalTokens）。tokenMeter 调用异常时
- * 记日志并报告降级（console 外部 + om/warning 每会话一次），返回 undefined——本轮
+ * 记日志并报告降级（console 外部 + om 警告事件每会话一次），返回 undefined——本轮
  * 跳过观察压缩（无压力数据不触发），不阻塞 turn。
  */
 function measurePressureTokens(
@@ -744,7 +748,7 @@ export async function observePass(
   const report = summaryResult.text;
   const attemptCount = summaryResult.attemptCount - 1;
   const usage = summaryResult.usage;
-  // 单条消息计价失败按 0 计（tokenMeter 异常属挂载类降级：console 外部 + om/warning 每会话一次）
+  // 单条消息计价失败按 0 计（tokenMeter 异常属挂载类降级：console 外部 + om 警告事件每会话一次）
   const shadowedTokenCount = replaceSeqs.reduce((total, seq) => {
     const event = session.events[seq];
     const message = event ? session.deriveEventMessage(event) : null;

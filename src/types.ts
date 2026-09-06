@@ -28,37 +28,13 @@ export type { PluginConfig } from './config.ts';
 declare module '@deepseek-ai/dsh-session/types' {
   interface SessionEventMap {
     /**
-     * 插件功能降级警告（log-only，不进 surface）：压缩流程的挂载失败/辅助失败
-     * 按会话去重后追加，客户端渲染为「功能降级」警告行。
-     * 同一会话同一 problem 至多一条；problem 取值与 message 文案见 degrade.ts。
+     * 借用通道（log-only，不进 surface）：dsh-command-feedback 声明的用户反馈
+     * 审计事件（{ text: string }），位于宿主 KNOWN_SESSION_EVENT_TYPES 目录内，
+     * 历史会话加载不受读取路径的未知类型拒绝影响。本插件以 `om:1:` 前缀 JSON
+     * 信封在其 text 字段承载私有事件（编解码见 om-event.ts）。声明与所有者一致，
+     * 所有者类型包加入编译依赖后此处移除。
      */
-    'om/warning': {
-      /** 降级问题标识（会话内去重键）。 */
-      problem: string;
-      /** 面向用户的简短说明。 */
-      message: string;
-    };
-    /**
-     * 观察压缩待定标记（log-only，不进 surface）：净压力首次达到观察阈值时追加，
-     * 记录触发点完整消息 index，本次不压缩；延迟等待 tailMessageCount 条新完整消息后
-     * 执行压缩（区间截至触发点）。同一会话同时至多一条活跃待定标记（key 固定 'observe'）。
-     */
-    'om/observe-pending': {
-      /** 标记键（固定 'observe'，与 om/observe-invalidate 配对）。 */
-      key: 'observe';
-      /** 触发点：追加时的最后一条完整消息 index。 */
-      triggerMessageIndex: number;
-    };
-    /**
-     * 观察压缩待定失效标记（log-only，不进 surface）：待定标记对应的压缩执行完成
-     * （成功提交或无可行区间）后追加，声明指定 pending 已失效、可重新触发观察。
-     */
-    'om/observe-invalidate': {
-      /** 标记键（固定 'observe'）。 */
-      key: 'observe';
-      /** 被失效的 om/observe-pending 事件 seq。 */
-      pendingSeq: number;
-    };
+    'feedback/record': { text: string };
   }
 }
 

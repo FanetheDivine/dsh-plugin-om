@@ -8,11 +8,15 @@
 
 - **自动压缩**：仅主会话，在 agent/pre-step 阻塞串行执行。净压力达到 `observeThresholdTokens` 后再累计 `tailMessageCount` 条完整消息时，把触发点前的全部消息摘要为新 `<history>` 块并精确替换对应消息区间；全部 `<history>` 块 token 合计达到 `reflectThresholdTokens` 时把全部块内文拼合为单个 `<history>` 块送入摘要，合并为一条更紧凑的摘要。待定标记以 log-only 会话事件持久化，重启后从日志恢复
 - **输出容错**：摘要输出按 `<history>` 标签定位，整块非法时按条目标签模糊提取并重建为合法块。重试全部耗尽后拒绝当前 step；每次实际发出的摘要调用无论成功失败都把完整提示词与模型原始输出即时落盘为 one-shot 诊断子会话
-- **降级容错**：systemPrompt 或 tokenMeter 服务异常时按 0 计继续压缩，问题通过 console 输出与 log-only `om/warning` 会话事件上报，同会话同一问题至多一条
+- **降级容错**：systemPrompt 或 tokenMeter 服务异常时按 0 计继续压缩，问题通过 console 输出与 log-only 会话事件上报，同会话同一问题至多一条
 - **recall 工具**：按完整消息 index 区间回看原始会话，含被压缩内容，图片附件随结果保留
 - **recall-semantic 工具**：本地嵌入模型 paraphrase-multilingual-MiniLM-L12-v2 按语义检索全部完整消息，只匹配文本，纯图片消息不进候选池
 - **压缩卡片**：浏览器客户端渲染折叠式已压缩卡片、压缩中提示行与可展开的失败错误行
-- **降级警告行**：浏览器客户端把 `om/warning` 事件渲染为可展开的警告行
+- **降级警告行**：浏览器客户端把 om 警告会话事件渲染为可展开的警告行
+
+## 已知风险
+
+- **借用 `feedback/record` 事件**：插件的 log-only 会话事件（警告与观察压缩标记）写入宿主已知类型 `feedback/record` 的 `text` 字段（`om:1:` 前缀 JSON 信封，见 `src/om-event.ts`）。原因是持久化读取路径拒绝目录外未知事件类型而 `Session.append` 不提供 ignorable 写入途径，借用宿主目录内的无配对审计事件是插件写入私有事件的唯一可行通道
 
 ## 安装与启用
 
@@ -91,7 +95,8 @@ src/
 ├── index.ts                     # 打包入口：注册 recall 工具并接线 pre-step 自动压缩
 ├── config.ts                    # 配置默认值与宽松合并，未知键忽略、非法值回退默认
 ├── constants.ts                 # 共享常量：插件标识、history 标签、完整消息定义
-├── degrade.ts                   # 挂载失败降级上报：console 外部输出与 om/warning 会话事件
+├── degrade.ts                   # 挂载失败降级上报：console 外部输出与 om 警告会话事件
+├── om-event.ts                  # om 事件借用通道：feedback/record 信封的编解码与读写
 ├── types.ts                     # type-only：宿主类型再导出与领域类型
 ├── utils.ts                     # 零依赖工具函数：文本渲染、主会话判定、路由解析
 ├── json-schema.ts               # zod schema 到工具 wire 参数 JSON Schema 的转换
@@ -108,7 +113,7 @@ src/
 ├── compress.ts                  # 两级自动压缩：观察与反思、失败中断传播、compaction 生命周期事件
 └── client/                      # 浏览器客户端 bundle：压缩卡片
     ├── index.ts                 # 客户端入口：注册卡片定义与渲染器
-    ├── definition.ts            # 压缩卡片业务定义：认领生命周期事件、检查点替换与 om/warning
+    ├── definition.ts            # 压缩卡片业务定义：认领生命周期事件、检查点替换与 om 警告事件
     ├── OmCompactionCard.tsx     # 折叠卡片渲染器：统计标题与 summary、失败报错展开
     ├── OmWarningCard.tsx        # 功能降级警告行渲染器：折叠摘要与完整说明展开
     ├── format.ts                # 统计数字紧凑格式化：k、w、M

@@ -15,6 +15,7 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
 import { HISTORY_TAG, PLUGIN_LABEL } from '../src/constants.ts';
 import { ensureModelReady } from '../src/embedding.ts';
 import { apply, inject, name } from '../src/index.ts';
+import { findOmEvents } from '../src/om-event.ts';
 import { buildHistoryPrompt, HISTORY_FORMAT_NOTE } from '../src/summarize.ts';
 import type { CompactionSummaryPayload, Session, SessionEvent, UserMessage } from '../src/types.ts';
 import {
@@ -22,9 +23,11 @@ import {
   checkpointSourceOf,
   compactionLifecycle,
   historyMessage,
+  isOmKind,
   latestHistoryText,
   makeCtx,
   makeMessage,
+  makeOmEvent,
   makeSession,
   textBlock,
 } from './helpers.ts';
@@ -52,12 +55,9 @@ async function runPreStepWithDelay(
   await run(); // 第二步：新增完整消息数达到 tailMessageCount → 执行压缩
 }
 
-/** 构造 om/observe-pending 事件（seq 由 makeSession 按日志下标补齐）。 */
+/** 构造 om/observe-pending 信封事件（seq 由 makeSession 按日志下标补齐）。 */
 function pendingEvent(triggerMessageIndex: number): SessionEvent {
-  return {
-    type: 'om/observe-pending',
-    data: { key: 'observe', triggerMessageIndex },
-  } as unknown as SessionEvent;
+  return makeOmEvent('om/observe-pending', { triggerMessageIndex });
 }
 
 describe('apply 接线（OM 观察压缩）', () => {
@@ -479,8 +479,8 @@ describe('apply 接线（OM 观察压缩）', () => {
     await runPreStepWithDelay(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3); // 无输出视为失败，重试共 3 次
     // 摘要失败保留待定标记（无失效标记）：下个 pre-step 直接重试执行
-    expect(session.events.some((e) => e.type === 'om/observe-pending')).toBe(true);
-    expect(session.events.some((e) => e.type === 'om/observe-invalidate')).toBe(false);
+    expect(session.events.some((e) => isOmKind(e, 'om/observe-pending'))).toBe(true);
+    expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
     // 摘要无输出：start 在摘要调用前已开启（UI 压缩中提示），end(error) 关闭生命周期；
     // 无 summary、无部分替换
     expect(session.events.some((e) => e.type === 'compaction/start')).toBe(true);
@@ -1386,7 +1386,8 @@ describe('apply 接线（recallEnabled / semanticRecallEnabled）', () => {
 // apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行）：净压力首次达阈值时记录
 // om/observe-pending 待定标记（触发点 = 最后一条完整消息 index）本次不压缩；待定后
 // 新增完整消息数 ≥ tailMessageCount 时执行压缩（区间截至触发点）并写 om/observe-invalidate
-// 失效标记；摘要失败保留待定直接重试；标记持久化在会话日志中，重启后从日志恢复。
+// 失效标记；摘要失败保留待定直接重试；标记以 om 信封事件（借用 feedback/record）
+// 持久化在会话日志中，重启后从日志恢复。
 describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行）', () => {
   /** 运行一次 pre-step 监听器，返回 next 是否被调用。 */
   async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
@@ -1441,11 +1442,10 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     const nextCalled = await runPreStep(ctx, session);
     expect(nextCalled).toBe(true); // 触发不中断，正常放行
     expect(ctx._llmCalls).toHaveLength(0); // 延迟执行：本次无摘要调用
-    const pendingEvents = session.events.filter((e) => e.type === 'om/observe-pending');
+    const pendingEvents = findOmEvents(session, 'om/observe-pending');
     expect(pendingEvents).toHaveLength(1);
-    const pending = pendingEvents[0] as { data: { key: string; triggerMessageIndex: number } };
-    expect(pending.data).toEqual({ key: 'observe', triggerMessageIndex: 2 });
-    expect(session.events.some((e) => e.type === 'om/observe-invalidate')).toBe(false);
+    expect(pendingEvents[0]?.data).toEqual({ triggerMessageIndex: 2 });
+    expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
     expect(session.surface.nodes.length).toBe(3); // 表层不变
   });
 
@@ -1455,7 +1455,7 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     apply(ctx, { tailMessageCount: 3, observeThresholdTokens: 1 });
     await runPreStep(ctx, session);
     await runPreStep(ctx, session); // 未满 K，等待中
-    expect(session.events.filter((e) => e.type === 'om/observe-pending')).toHaveLength(1);
+    expect(findOmEvents(session, 'om/observe-pending')).toHaveLength(1);
     expect(ctx._llmCalls).toHaveLength(0);
   });
 
@@ -1494,12 +1494,11 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     expect(session.surface.nodes).toContain(waitingSeq);
     expect(latestHistoryText(session)).toContain('延迟压缩报告');
     // 执行成功后写失效标记，指向待定标记事件 seq
-    const pendingEvent = session.events.find((e) => e.type === 'om/observe-pending');
-    const invalidateEvent = session.events.find((e) => e.type === 'om/observe-invalidate');
-    expect(pendingEvent).toBeDefined();
-    expect(invalidateEvent).toBeDefined();
-    if (invalidateEvent?.type !== 'om/observe-invalidate') throw new Error('缺 invalidate');
-    expect(invalidateEvent.data.pendingSeq).toBe(pendingEvent?.seq);
+    const pendings = findOmEvents(session, 'om/observe-pending');
+    const invalidates = findOmEvents(session, 'om/observe-invalidate');
+    expect(pendings).toHaveLength(1);
+    expect(invalidates).toHaveLength(1);
+    expect(invalidates[0]?.data.pendingSeq).toBe(pendings[0]?.seq);
   });
 
   it('K=0：触发当轮立即执行（无待定/失效标记）', async () => {
@@ -1508,8 +1507,8 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(1);
-    expect(session.events.some((e) => e.type === 'om/observe-pending')).toBe(false);
-    expect(session.events.some((e) => e.type === 'om/observe-invalidate')).toBe(false);
+    expect(session.events.some((e) => isOmKind(e, 'om/observe-pending'))).toBe(false);
+    expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
     expect(latestHistoryText(session)).toContain('延迟压缩报告');
   });
 
@@ -1533,11 +1532,11 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     appendWaitingMessage(session, 'wait-fail');
     await runPreStep(ctx, session); // 执行：2 次尝试全部失败
     expect(ctx._llmCalls).toHaveLength(2);
-    expect(session.events.some((e) => e.type === 'om/observe-invalidate')).toBe(false);
+    expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
     appendWaitingMessage(session, 'wait-retry');
     await runPreStep(ctx, session); // 待定仍在、到期条件仍满足 → 直接重试
     expect(ctx._llmCalls).toHaveLength(3); // 重试 1 次即成功（第 3 次调用）
-    expect(session.events.some((e) => e.type === 'om/observe-invalidate')).toBe(true);
+    expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(true);
     expect(latestHistoryText(session)).toContain('延迟压缩报告');
   });
 
@@ -1552,8 +1551,7 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(1);
     expect(latestHistoryText(session)).toContain('延迟压缩报告');
-    const invalidateEvent = session.events.findLast((e) => e.type === 'om/observe-invalidate');
-    expect(invalidateEvent).toBeDefined();
+    expect(findOmEvents(session, 'om/observe-invalidate').length).toBeGreaterThan(0);
   });
 
   it('过期待定不阻塞再触发：边界后移即过期，重新触发新一轮标记（不误压已压缩内容）', async () => {
@@ -1581,11 +1579,11 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStep(ctx, session); // 过期 → 重新触发：新一轮 pending（seq 7，触发点仍为 index 2）
     expect(ctx._llmCalls).toHaveLength(0);
-    expect(session.events.filter((e) => e.type === 'om/observe-pending')).toHaveLength(2);
+    expect(findOmEvents(session, 'om/observe-pending')).toHaveLength(2);
     appendWaitingMessage(session, 'wait-expired'); // 新增 1 ≥ 1
     await runPreStep(ctx, session); // 触发点内容已被压缩 → 无可行区间 → 清除标记视为完成
     expect(ctx._llmCalls).toHaveLength(0); // 不对已压缩内容发起摘要
-    expect(session.events.some((e) => e.type === 'om/observe-invalidate')).toBe(true); // 新标记已失效
+    expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(true); // 新标记已失效
     expect(latestHistoryText(session)).toContain('压缩后的块'); // 无新增替换
   });
 });

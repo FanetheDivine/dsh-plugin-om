@@ -1,7 +1,8 @@
 /**
  * 压缩卡片业务定义：认领插件自产的压缩生命周期事件（compaction/start|summary|end）
  * 与替换检查点（source.plugin = 'dsh-plugin-om'），聚合出可渲染的摘要卡片节点；
- * 并认领 om/warning 功能降级警告事件渲染为警告行。
+ * 并认领 om 警告信封事件（借用 feedback/record，kind 为 om/warning，见 om-event.ts）
+ * 渲染为警告行。
  * 导出 COMPACTION_CARD_KIND / OmCompactionChatData / checkpointCompactionId /
  * omCompactionDefinition / OM_WARNING_CARD_KIND / OmWarningChatData / omWarningDefinition。
  * 宿主的 'compact' 检查点由宿主自己渲染，本定义不认领
@@ -17,6 +18,7 @@ import type { ChatNode, ChatNodeDataMap } from '@deepseek-ai/dsh-client-ui-conve
 import type {} from '@deepseek-ai/dsh-compaction/types';
 import type { SessionEvent } from '@deepseek-ai/dsh-session/types';
 import { COMPACTION_ABORTED_ERROR, PLUGIN_LABEL } from '../constants.ts';
+import { readOmEvent } from '../om-event.ts';
 import type { CompactionSummaryPayload } from '../types.ts';
 
 /** 压缩卡片渲染器分发键（合并进 ChatNodeDataMap）。 */
@@ -314,23 +316,24 @@ export const omCompactionDefinition: ConversationNodeDefinition<OmCompactionStat
   },
 };
 
-/** 功能降级警告行载荷：降级问题标识与面向用户的说明（载荷非法时为 null）。 */
+/** 功能降级警告行载荷：降级问题标识与面向用户的说明（信封载荷非法时为 null）。 */
 export interface OmWarningChatData {
-  /** 降级问题标识（om/warning 载荷 problem）。 */
+  /** 降级问题标识（om/warning 信封载荷 problem）。 */
   readonly problem: string | null;
-  /** 面向用户的降级说明（om/warning 载荷 message）。 */
+  /** 面向用户的降级说明（om/warning 信封载荷 message）。 */
   readonly message: string | null;
 }
 
 /**
- * 插件功能降级警告定义：每条 om/warning 事件独立成节点（id 含 seq），渲染为可展开的
- * 「功能降级」警告行。服务端按会话同问题去重后追加，每会话同一问题至多一行。
+ * 插件功能降级警告定义：每条 om/warning 信封事件独立成节点（id 含 seq），渲染为可
+ * 展开的「功能降级」警告行。服务端按会话同问题去重后追加，每会话同一问题至多一行；
+ * 不带 om 信封的 feedback/record 记录（用户自写反馈）不认领。
  */
 export const omWarningDefinition: ConversationNodeDefinition = {
   kind: OM_WARNING_CARD_KIND,
   target: 'chat',
   match: (event) => {
-    if (event.type !== 'om/warning') return null;
+    if (readOmEvent(event)?.kind !== 'om/warning') return null;
     return { id: `om-warning:${event.seq}`, role: 'start' };
   },
   start: () => ({}),
@@ -338,9 +341,10 @@ export const omWarningDefinition: ConversationNodeDefinition = {
   buildViewNode: (context) => {
     const start = context.start;
     if (start === undefined) return null;
-    const data = start.event.data as { problem?: unknown; message?: unknown } | undefined;
-    const problem = typeof data?.problem === 'string' && data.problem !== '' ? data.problem : null;
-    const message = typeof data?.message === 'string' && data.message !== '' ? data.message : null;
+    const om = readOmEvent(start.event);
+    if (om?.kind !== 'om/warning') return null;
+    const problem = om.data.problem !== '' ? om.data.problem : null;
+    const message = om.data.message !== '' ? om.data.message : null;
     if (problem === null && message === null) return null;
     return chatNode(context, OM_WARNING_CARD_KIND, start.event.seq, { problem, message });
   },
