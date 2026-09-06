@@ -1,8 +1,8 @@
 /**
  * 成本对比表：原始会话规模 20k–250k 逐行对比 om 开/关的三类 token 消耗、费用、
  * 压缩次数与节省额。数据由 web/src/model.ts 的 buildTable 生成。
- * 上方描述补充表格成立的假设：纯多 step 会话，thinking 只输出、tool result 只写入、
- * toolcall 忽略，前缀缓存计费与摘要独立会话口径；「原始规模」说明置于表头 tooltip。
+ * 下方列出表格成立的假设：step token 均匀增长、step 输出不计入公式、thinking 始终不压缩、
+ * 压缩会话经验公式计费与前缀缓存口径；「原始规模」说明置于表头 tooltip。
  * 每格合并显示两个值：om 开启（绿）/ om 关闭（红），保留当前配色。
  */
 import {
@@ -40,10 +40,6 @@ export function CostTable({ rows }: CostTableProps) {
     <section id="table" className="flex flex-col items-center">
       <div className="mb-4 w-full max-w-4xl text-center">
         <h2 className="text-xl font-semibold tracking-tight">成本对比</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          表格内展示 OM 开/关 情况的会话数据，基于理想情况下的长对话进行计算，
-          假设AI每轮平均地进行thinking和tool，忽略用户消息和tool-args
-        </p>
       </div>
       <div className="w-full max-w-4xl overflow-x-auto">
         <Table>
@@ -57,7 +53,7 @@ export function CostTable({ rows }: CostTableProps) {
                       <span className="cursor-help text-[10px] text-muted-foreground/70">ⓘ</span>
                     </TooltipTrigger>
                     <TooltipContent className="max-w-48">
-                      不开启OM时对话占据的上下文，完全由系统提示词和tool-result构成
+                      不开启 OM 时对话占据的上下文，由系统提示词、dsh 注入消息与各 step 输入构成
                     </TooltipContent>
                   </Tooltip>
                 </span>
@@ -103,6 +99,26 @@ export function CostTable({ rows }: CostTableProps) {
             ))}
           </TableBody>
         </Table>
+      </div>
+      <div className="mt-4 w-full max-w-4xl">
+        <p className="text-sm text-muted-foreground">
+          表格内展示 OM 开/关情况的会话数据，基于理想情况下的长对话进行计算，并做如下假设：
+        </p>
+        <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+          <li>
+            每个 step 的 token 均匀增长：每 step 模型接受 800 token
+            数据（text、tool-args、用户&系统消息、tool-result）
+          </li>
+          <li>每 step 的 320 token 输出（thinking、text、tool-args）不计入公式</li>
+          <li>thinking 始终不压缩</li>
+          <li>
+            每次压缩（观察/反思）按公式计费：缓存创建 ≈ 1.3 × 输入，缓存读 ≈ 1.75 × 输入，输出 ≈
+            压缩比 × 输入 + 5,000
+          </li>
+          <li>
+            前缀缓存：首轮整段缓存创建，之后每轮缓存读取上一轮、缓存写入本轮新增；压缩替换后重建
+          </li>
+        </ul>
       </div>
     </section>
   );
