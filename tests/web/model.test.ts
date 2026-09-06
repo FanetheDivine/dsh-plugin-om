@@ -1,8 +1,8 @@
 // om 成本计算器模型回归测试：无 om 基线、观察/反思触发、注入遮蔽、缓存失效与表格生成。
 // 模型口径见 web/src/model.ts 文件头（页面成本表上方「表格假设」同步展示）。
-// 会话为纯多 step 工具循环：thinking 只计补全、不占上下文，默认不进 OM
+// 会话为纯多 step 工具循环：step 平均输出只计补全、不占上下文，默认不进 OM
 //（开启「压缩 thinking」时观察压缩随被压缩消息一并输入 OM）；
-// tool result 只写入驱动轮数。
+// step 平均输入只写入驱动轮数。
 import { describe, expect, it } from 'vitest';
 import {
   buildTable,
@@ -18,16 +18,20 @@ import {
   turnCount,
 } from '../../web/src/model.ts';
 
-/** 默认参数（冻结对象，测试内以展开方式做局部覆盖）。 */
-const P = DEFAULT_PARAMS;
+/** 模型回归基准参数：在默认参数上固定 step 平均输出/输入，使各测试的 token 推导与默认值解耦。 */
+const P: Readonly<ModelParams> = {
+  ...DEFAULT_PARAMS,
+  stepOutputTokens: 1200,
+  stepInputTokens: 800,
+};
 
-/** 局部覆盖默认参数的便捷构造。 */
+/** 局部覆盖基准参数的便捷构造。 */
 function withParams(override: Partial<Omit<ModelParams, 'prices'>>): ModelParams {
-  return { ...DEFAULT_PARAMS, ...override };
+  return { ...P, ...override };
 }
 
 describe('turnCount', () => {
-  it('原始会话规模 = 前缀 + n·toolResult：默认参数 20k → 7 轮', () => {
+  it('原始会话规模 = 前缀 + n·stepInput：基准参数 20k → 7 轮', () => {
     // (20000 - 10000 - 5000) / 800 = 6.25 → 7
     expect(turnCount(P, 20_000)).toBe(7);
   });
@@ -42,19 +46,19 @@ describe('turnCount', () => {
     expect(turnCount(P, 17_000)).toBe(3); // (17000-15000)/800=2.5 → 3
   });
 
-  it('thinking 只输出不影响轮数：置 0 轮数不变', () => {
-    expect(turnCount(withParams({ thinkingTokens: 0 }), 250_000)).toBe(294);
+  it('step平均输出只计补全、不影响轮数：置 0 轮数不变', () => {
+    expect(turnCount(withParams({ stepOutputTokens: 0 }), 250_000)).toBe(294);
   });
 
-  it('toolResult ≤ 0 视为会话不增长：任意规模均为 0 轮', () => {
-    expect(turnCount(withParams({ toolResultTokens: 0 }), 250_000)).toBe(0);
-    expect(turnCount(withParams({ toolResultTokens: -100 }), 250_000)).toBe(0);
+  it('stepInput ≤ 0 视为会话不增长：任意规模均为 0 轮', () => {
+    expect(turnCount(withParams({ stepInputTokens: 0 }), 250_000)).toBe(0);
+    expect(turnCount(withParams({ stepInputTokens: -100 }), 250_000)).toBe(0);
   });
 });
 
 describe('simulateWithoutOm', () => {
   it('基线三类 token 按闭式公式累计', () => {
-    // n=7、thinking=1200、toolResult=800、prefix=15000：
+    // n=7、step输出=1200、step输入=800、prefix=15000：
     // prompt_t = 15000 + (t-1)·800
     // cacheWrite = 15000 + 6×800 = 19800
     // cacheRead = 6×15000 + 800×(0+…+5) = 90000 + 12000 = 102000
@@ -90,7 +94,7 @@ describe('simulateWithOm（默认阈值）', () => {
     const r = simulateWithOm(P, 60_000);
     // n = (60000-15000)/800 = 56.25 → 57 轮；W 在第 51 轮 pre-step 时为 50×800 = 40000
     expect(r.observeCount).toBe(1);
-    // 被压缩消息 = 未压缩 tool result 40000（默认不压缩 thinking）
+    // 被压缩消息 = 未压缩 step 输入 40000（默认不压缩 thinking）
     // 摘要 input = 指令 + 40000（注入内容不进摘要输入）；压缩过程消耗 = 50% × 40000 = 20000
     expect(r.summaryInputTokens).toBe(INSTRUCTION_TOKENS + 40_000);
     expect(r.summaryOutputTokens).toBe(0.5 * 40_000);
@@ -118,7 +122,7 @@ describe('simulateWithOm（默认阈值）', () => {
     const withThinking = simulateWithOm(withParams({ compressThinking: true }), 60_000);
     const noThinking = simulateWithOm(P, 60_000);
     expect(withThinking.observeCount).toBe(noThinking.observeCount);
-    // 第 51 轮观察时被压缩消息 = 50×800 tool result（开启压缩 thinking 时含 50×1200 thinking）
+    // 第 51 轮观察时被压缩消息 = 50×800 step输入（开启压缩 thinking 时含 50×1200 step输出）
     expect(noThinking.summaryInputTokens).toBe(INSTRUCTION_TOKENS + 50 * 800);
     expect(withThinking.summaryInputTokens).toBe(INSTRUCTION_TOKENS + 50 * 800 + 50 * 1200);
     // 缓存创建差值 = 摘要 input 中多出的 thinking + 观察轮重建时块增量（压缩比 × thinking）
@@ -131,7 +135,7 @@ describe('simulateWithOm（默认阈值）', () => {
 
   it('压缩过程消耗按 OM token消耗比 × 被压缩消息计入 completion，不入缓存桶', () => {
     const r = simulateWithOm(P, 60_000);
-    // n=57：主请求 thinking 57×1200 = 68400；压缩过程消耗 = 50% × 40000 = 20000
+    // n=57：主请求 step输出 57×1200 = 68400；压缩过程消耗 = 50% × 40000 = 20000
     expect(r.summaryOutputTokens).toBe(20_000);
     expect(r.completion).toBe(57 * 1_200 + 20_000);
     // 缓存创建只含摘要 input（1000+40000），不含压缩过程消耗
@@ -176,7 +180,7 @@ describe('simulateWithOm（默认阈值）', () => {
     const r = simulateWithOm(P, 60_000);
     expect(r.cacheRead).toBe(1_675_800 + 10_000 + 79_500);
     expect(r.cacheWrite).toBe(15_000 + 49 * 800 + 1_250 + 6 * 800 + INSTRUCTION_TOKENS + 40_000);
-    // om-off 对照：无截断，每轮读取完整上一轮 prompt
+    // om-off 对照：无截断，每个 step 读取完整上一轮 prompt
     const off = simulateWithoutOm(P, 60_000);
     expect(off.cacheRead).toBeGreaterThan(r.cacheRead);
     expect(off.cacheWrite).toBe(15_000 + 56 * 800);
@@ -209,7 +213,7 @@ describe('simulateWithOm（注入遮蔽与反思）', () => {
     expect(r.summaryOutputTokens).toBeCloseTo(0.5 * (40_000 + 45_600 + 2_568), 5);
   });
 
-  it('反思在观察产生块之后的 pre-step 触发（每轮 pre-step 先反思后观察）', () => {
+  it('反思在观察产生块之后的 pre-step 触发（每个 step pre-step 先反思后观察）', () => {
     const params = withParams({ reflectThresholdTokens: 100, observeThresholdTokens: 45_000 });
     const r = simulateWithOm(params, 120_000);
     // 观察 2 次（第 51/108 轮）；反思 2 次：第 52 轮（H=1200）、第 109 轮（H=36+1368=1404）
