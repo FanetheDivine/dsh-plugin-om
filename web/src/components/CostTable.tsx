@@ -1,8 +1,8 @@
 /**
  * 成本对比表：原始会话规模 20k–250k 逐行对比 om 开/关的三类 token 消耗、费用、
  * 压缩次数与节省额。数据由 web/src/model.ts 的 buildTable 生成。
- * 上方描述补充表格成立的假设：纯多 step 会话，thinking 只输出、tool result 只写入、
- * toolcall 忽略，前缀缓存计费与摘要独立会话口径；「原始规模」说明置于表头 tooltip。
+ * 上方描述补充表格成立的假设：纯多 step 会话，step平均输出 780 / step平均输入 660
+ * 为实测的平均结果；「原始规模」说明置于表头 tooltip。
  * 每格合并显示两个值：om 开启（绿）/ om 关闭（红），保留当前配色。
  */
 import {
@@ -42,7 +42,8 @@ export function CostTable({ rows }: CostTableProps) {
         <h2 className="text-xl font-semibold tracking-tight">成本对比</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           表格内展示 OM 开/关 情况的会话数据，基于理想情况下的长对话进行计算，
-          假设AI每轮平均地进行thinking和tool，忽略用户消息和tool-args
+          假设AI每个step平均地进行thinking和tool，忽略用户消息和tool-args，
+          step平均输出780、step平均输入660为实测的平均结果
         </p>
       </div>
       <div className="w-full max-w-4xl overflow-x-auto">
@@ -57,7 +58,7 @@ export function CostTable({ rows }: CostTableProps) {
                       <span className="cursor-help text-[10px] text-muted-foreground/70">ⓘ</span>
                     </TooltipTrigger>
                     <TooltipContent className="max-w-48">
-                      不开启OM时对话占据的上下文，完全由系统提示词和tool-result构成
+                      不开启OM时对话占据的上下文，完全由系统提示词和step平均输入构成
                     </TooltipContent>
                   </Tooltip>
                 </span>

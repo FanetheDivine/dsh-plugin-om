@@ -170,23 +170,24 @@ export function ParamsPanel({ params, onChange, onReset }: ParamsPanelProps) {
             onChange={(v) => set({ injectedTokens: v })}
           />
           <SliderField
-            label="每轮 thinking"
-            tooltip="模型输出的thinking tokens，只计算输出token，不占据上下文；开启「压缩 thinking」时观察压缩随被压缩消息一并输入OM"
+            label="step平均输出"
+            tooltip="每个step模型输出的thinking、text、tool-args"
             unit="tok"
-            value={params.thinkingTokens}
+            value={params.stepOutputTokens}
             min={0}
             max={10000}
             step={100}
-            onChange={(v) => set({ thinkingTokens: v })}
+            onChange={(v) => set({ stepOutputTokens: v })}
           />
           <SliderField
-            label="每轮 tool result"
+            label="step平均输入"
+            tooltip="每个step输入给模型的text、用户或系统消息、tool-result"
             unit="tok"
-            value={params.toolResultTokens}
+            value={params.stepInputTokens}
             min={0}
             max={30000}
             step={100}
-            onChange={(v) => set({ toolResultTokens: v })}
+            onChange={(v) => set({ stepInputTokens: v })}
           />
           <SliderField
             label="压缩比"
