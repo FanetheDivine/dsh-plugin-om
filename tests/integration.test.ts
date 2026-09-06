@@ -29,6 +29,7 @@ import { PLUGIN_LABEL } from '../src/constants.ts';
 // 命中 vi.mock 打桩后的模块（ensureModelReady 为 vi.fn，可断言预热调用）
 import * as embedding from '../src/embedding.ts';
 import { apply, name } from '../src/index.ts';
+import { findOmEvents } from '../src/om-event.ts';
 
 /** mock LLM adapter：只实现 stream()，按注入的分块工厂回放响应并记录调用。 */
 class MockAdapter extends LlmAdapter {
@@ -47,7 +48,7 @@ class MockAdapter extends LlmAdapter {
   }
 }
 
-/** 阈值以下的固定降级说明（服务端 reportDegrade 文案，断言 om/warning 载荷用）。 */
+/** 阈值以下的固定降级说明（服务端 reportDegrade 文案，断言 om 警告信封载荷用）。 */
 const SYSTEM_PROMPT_MISSING = '系统提示词服务未挂载';
 
 /** 生成一段指定字符数的中文文本（4 字符 ≈ 1 token，配合低阈值稳定触发观察）。 */
@@ -284,7 +285,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(rawText).toBe('模型输出的非日志内容，未通过校验');
   }, 30000);
 
-  it('systemPrompt 服务未挂载：压缩不被阻塞，om/warning 每会话一条 + console 外部输出', async () => {
+  it('systemPrompt 服务未挂载：压缩不被阻塞，om 警告事件每会话一条 + console 外部输出', async () => {
     const { app, session, adapter } = await stackHarness({
       withSystemPrompt: false,
       chunksFor: () => [
@@ -307,15 +308,13 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     // 挂载失败不阻塞：压缩照常完成
     expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(1);
     expect(session.events.map((e) => e.type)).toContain('compaction/end');
-    // console 外部输出 + om/warning 事件（同会话去重）
+    // console 外部输出 + om 警告信封事件（同会话去重）
     expect(consoleText).toContain(`${PLUGIN_LABEL}: ${SYSTEM_PROMPT_MISSING}`);
-    const warnings = session.events.filter((e) => e.type === 'om/warning');
+    const warnings = findOmEvents(session, 'om/warning');
     expect(warnings).toHaveLength(1);
-    expect((warnings[0]?.data as { problem?: string } | undefined)?.problem).toBe(
-      'systemPrompt-missing',
-    );
+    expect(warnings[0]?.data.problem).toBe('systemPrompt-missing');
 
-    // 第二次 pre-step：不重复 console、不重复追加 om/warning
+    // 第二次 pre-step：不重复 console、不重复追加 om 警告事件
     const consoleSpy2 = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       await runPreStep(app, session);
@@ -324,10 +323,10 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
       consoleSpy2.mockRestore();
     }
     expect(consoleText).not.toContain(`${PLUGIN_LABEL}: ${SYSTEM_PROMPT_MISSING}`);
-    expect(session.events.filter((e) => e.type === 'om/warning')).toHaveLength(1);
+    expect(findOmEvents(session, 'om/warning')).toHaveLength(1);
   }, 30000);
 
-  it('systemPrompt 服务已挂载：组装成功计价、不产生 om/warning（回归：ctx.get 容错读取不抛错）', async () => {
+  it('systemPrompt 服务已挂载：组装成功计价、不产生 om 警告事件（回归：ctx.get 容错读取不抛错）', async () => {
     const { app, session, adapter } = await stackHarness({
       withSystemPrompt: true,
       chunksFor: () => [
@@ -341,7 +340,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
 
     expect(app.get('systemPrompt')).toBeDefined();
     expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(1);
-    expect(session.events.filter((e) => e.type === 'om/warning')).toHaveLength(0);
+    expect(findOmEvents(session, 'om/warning')).toHaveLength(0);
   }, 30000);
 
   it('观察→反思两级压缩全链路：单块观察 → 反思合并 → 新消息观察，两块并存', async () => {

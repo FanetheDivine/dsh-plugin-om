@@ -548,3 +548,24 @@ export function twoCallFlow(): SessionEvent[] {
 export function textOf(value: unknown): string {
   return (value as { text: string }).text;
 }
+
+/** 构造 om 信封事件（借用 feedback/record；seq 由 makeSession 按日志下标补齐）。 */
+export function makeOmEvent(kind: string, data: Record<string, unknown>): SessionEvent {
+  return {
+    type: 'feedback/record',
+    data: { text: `om:1:${JSON.stringify({ kind, ...data })}` },
+  } as unknown as SessionEvent;
+}
+
+/** 判定事件是否为指定类别的 om 信封事件（断言 om 事件存在性/数量用）。 */
+export function isOmKind(event: SessionEvent, kind: string): boolean {
+  if (event?.type !== 'feedback/record') return false;
+  const text = (event.data as { text?: unknown } | undefined)?.text;
+  if (typeof text !== 'string' || !text.startsWith('om:1:')) return false;
+  try {
+    const envelope = JSON.parse(text.slice('om:1:'.length)) as { kind?: unknown };
+    return envelope.kind === kind;
+  } catch {
+    return false;
+  }
+}

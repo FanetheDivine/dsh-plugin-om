@@ -2,8 +2,8 @@
  * 浏览器客户端入口（exports["./client"] → dist/client.js）：注册压缩卡片与功能降级
  * 警告行的 locale 字典、conversation 业务定义与 keyed 渲染器。宿主 conversation UI 只
  * 识别内置 'compact' 检查点，插件自产的压缩检查点（source.plugin = 'dsh-plugin-om'）
- * 由本 bundle 认领并在消息列表渲染「已压缩」卡片；om/warning 事件渲染为「功能降级」
- * 警告行。
+ * 由本 bundle 认领并在消息列表渲染「已压缩」卡片；om 警告信封事件（借用
+ * feedback/record）渲染为「功能降级」警告行。
  */
 import type { Context } from '@deepseek-ai/cordis';
 // Type-only: 拉取 locale 插件的 Context 合并（ctx.locale）。
@@ -32,7 +32,7 @@ export function apply(ctx: Context): void {
   );
   ctx.effect(
     () => ctx.conversationEvents.register(omWarningDefinition),
-    'dsh-plugin-om: om/warning definition',
+    'dsh-plugin-om: om warning definition',
   );
   ctx.slots.inject('conversation.chat.node', () =>
     ctx.slots.register(
