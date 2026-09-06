@@ -76,9 +76,9 @@ describe('recordCompactionAttempt：压缩日志子会话落盘', () => {
       provider: COMPACTION_LOG_PROVIDER,
       label: compactionLogLabel('reflect', 2),
     });
-    expect(compactionLogLabel('reflect', 2)).toBe('OM 压缩日志（反思 · 第 2 次尝试）');
-    expect(compactionLogLabel('observe', 1)).toBe('OM 压缩日志（观察 · 第 1 次尝试）');
-    expect(compactionLogLabel(undefined, 3)).toBe('OM 压缩日志（压缩 · 第 3 次尝试）');
+    expect(compactionLogLabel('reflect', 2)).toBe('OM会话-反思-重试1');
+    expect(compactionLogLabel('observe', 1)).toBe('OM会话-观察');
+    expect(compactionLogLabel(undefined, 3)).toBe('OM会话-压缩-重试2');
   });
 
   it('消息组零加工：单次尝试一对 user/assistant surface 消息，提示词与原始输出原样、无额外内容', async () => {

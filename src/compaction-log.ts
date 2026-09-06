@@ -32,12 +32,13 @@ function phaseLabel(phase: 'observe' | 'reflect' | undefined): string {
   return '压缩';
 }
 
-/** 诊断子会话 label：含压缩阶段与尝试序号。 */
+/** 诊断子会话 label：`OM会话-<阶段>`，有重试时追加 `-重试N`（N = 尝试序号 - 1，首次不写）。 */
 export function compactionLogLabel(
   phase: 'observe' | 'reflect' | undefined,
   attemptNo: number,
 ): string {
-  return `OM 压缩日志（${phaseLabel(phase)} · 第 ${attemptNo} 次尝试）`;
+  const retry = attemptNo > 1 ? `-重试${attemptNo - 1}` : '';
+  return `OM会话-${phaseLabel(phase)}${retry}`;
 }
 
 /** 追加一次尝试的「提示词 → 原始输出」消息组（surfaceOp append；id 为品牌类型，session.append 运行时校验）。 */
@@ -71,7 +72,7 @@ function appendAttemptMessages(
 /**
  * 把一次摘要尝试落盘为诊断子会话：ctx.sessions.create 创建子会话（header origin
  * 'subagent'、parentSession 指向主会话、delegationDepth = 父 + 1、cwd 继承主会话），
- * 追加 one-shot descriptor（provider om-compaction-log，label 含压缩阶段与尝试序号），
+ * 追加 one-shot descriptor（provider om-compaction-log，label 为 `OM会话-<阶段>`，重试时追加 `-重试N`），
  * 原样追加「提示词 + 原始输出」消息组，flush 持久化检查点，返回子会话 id。落盘自身
  * 绝不抛错：任何失败仅 logger.warn 并返回 undefined（不影响压缩流程）。
  */

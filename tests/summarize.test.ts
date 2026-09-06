@@ -423,7 +423,7 @@ describe('runSummarySubagent 最终失败的诊断子会话落盘', () => {
         version: 2,
         mode: 'one-shot',
         provider: 'om-compaction-log',
-        label: `OM 压缩日志（反思 · 第 ${i + 1} 次尝试）`,
+        label: i === 0 ? 'OM会话-反思' : `OM会话-反思-重试${i}`,
       });
       // 单次尝试一对消息：提示词（system 指令 + 渲染输入拼接）与原始输出原样
       expect(child?.events).toHaveLength(3);
