@@ -50,7 +50,8 @@ gh pr create --fill   # 创建 PR 并回传链接
 - 用户验收通过后，以**压缩（squash）**方式将 PR 合并到主分支，删除worktree、远程分支、本地分支，并在主工作区执行 `git pull`：
 
 ```sh
-gh pr merge <分支名> --squash --delete-branch  # 压缩合并，并删除远程分支
+gh pr merge <分支名> --squash  # 压缩合并
+git -C <项目根> push origin --delete <分支名>  # 删除远程分支
 git -C <项目根> worktree remove ../<分支名> --force  # 移除 worktree（先于删除本地分支）
 git -C <项目根> branch -D <分支名>  # 删除本地分支
 git -C <项目根> pull  # 主分支拉取最新
