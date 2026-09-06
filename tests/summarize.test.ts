@@ -423,7 +423,7 @@ describe('runSummarySubagent 最终失败的诊断子会话落盘', () => {
         version: 2,
         mode: 'one-shot',
         provider: 'om-compaction-log',
-        label: `OM 压缩日志（反思 · 第 ${i + 1} 次尝试）`,
+        label: i === 0 ? 'OM会话-反思' : `OM会话-反思-重试${i}`,
       });
       // 单次尝试一对消息：提示词（system 指令 + 渲染输入拼接）与原始输出原样
       expect(child?.events).toHaveLength(3);
@@ -437,6 +437,39 @@ describe('runSummarySubagent 最终失败的诊断子会话落盘', () => {
       )?.message?.content?.[0]?.text;
       expect(rawText).toBe('没有 history 块的输出');
     }
+  });
+
+  it('完整输出落盘：reasoning-delta 与 tool-call-delta 按序还原为 reasoning → text → tool-call 块', async () => {
+    const ctx = makeCtx({
+      llmStream: [
+        { type: 'reasoning-delta', index: 0, text: '思考前半' },
+        { type: 'reasoning-delta', index: 0, text: '思考后半' },
+        { type: 'text-delta', text: '没有 history 块的输出' },
+        {
+          type: 'tool-call-delta',
+          index: 0,
+          id: 'call-a',
+          name: 'read_file',
+          argumentsDelta: '{"p":"a',
+        },
+        { type: 'tool-call-delta', index: 0, id: 'call-a', argumentsDelta: '.ts"}' },
+        { type: 'usage', usage: { inputTokens: 1, outputTokens: 2 } },
+        { type: 'finish', reason: { kind: 'stop' } },
+      ],
+    });
+    const result = await runSummarySubagent(...callArgsWithPhase(ctx));
+    expect(result.ok).toBe(false);
+    const child = ctx._createdSessions[0]?.session;
+    const content = (
+      child?.events[2]?.data as
+        | { message?: { content?: Array<Record<string, unknown>> } }
+        | undefined
+    )?.message?.content;
+    expect(content).toEqual([
+      { type: 'reasoning', text: '思考前半思考后半' },
+      { type: 'text', text: '没有 history 块的输出' },
+      { type: 'tool-call', id: 'call-a', name: 'read_file', arguments: '{"p":"a.ts"}' },
+    ]);
   });
 
   it('流异常后中止：异常尝试的部分输出也进入诊断子会话，中止结果同样落盘', async () => {

@@ -8,12 +8,18 @@
  * 模糊提取重建 / 无 reasoning / index 连续），失败按 maxAttempts 重试；每次尝试的
  * 结果或报错始终写入日志（成功 info / 失败 warn，失败原因说明具体问题而非解析器
  * 原始报错）；全部耗尽返回失败结果（携带最后一次尝试的实际报错）。最终失败
- * （含 signal 中止）时把每次尝试的完整提示词与模型原始输出经 compaction-log.ts
- * 原样落盘为诊断子会话，sessionId 随失败结果向上传播进主会话日志。每次请求前
+ * （含 signal 中止）时把每次尝试的完整提示词与模型原始输出（含 thinking 与工具调用块）
+ * 经 compaction-log.ts 原样落盘为诊断子会话，sessionId 随失败结果向上传播进主会话日志。每次请求前
  * 过全局限流等待门；token usage 归入主会话记录。
  */
 
-import type { FinishReason, GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
+import type {
+  CallId,
+  FinishReason,
+  GenerateOptions,
+  StreamChunk,
+  ToolCallBlock,
+} from '@deepseek-ai/dsh-llm';
 import type { Document, Element } from '@xmldom/xmldom';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import { recordCompactionAttempt } from './compaction-log.ts';
@@ -225,18 +231,34 @@ export type SummaryFailure = {
 /** 摘要调用结果（成功/失败二选一）。 */
 export type SummaryOutcome = SummarySuccess | SummaryFailure;
 
-/** 流收集器：提取文本输出 + usage + finish（不依赖宿主 BlockAssembler）。 */
+/** 流收集器：提取 thinking + 文本输出 + 工具调用 + usage + finish（不依赖宿主 BlockAssembler）。 */
 class StreamCollector {
   private textBuf = '';
+  private reasoningBuf = '';
+  /** tool-call-delta 按 index 聚合（id/name 首次给定后固定，arguments 增量拼接）。 */
+  private readonly toolCallParts = new Map<number, { id: CallId; name?: string; args: string }>();
   private _usage: TokenUsage | undefined;
   private _finish: FinishReason | undefined;
 
-  /** 喂入一个流 chunk（仅消费文本/usage/finish，其余忽略）。 */
+  /** 喂入一个流 chunk（消费 reasoning/文本/工具调用/usage/finish，其余忽略）。 */
   push(chunk: StreamChunk): void {
     switch (chunk.type) {
       case 'text-delta':
         this.textBuf += chunk.text;
         break;
+      case 'reasoning-delta':
+        this.reasoningBuf += chunk.text;
+        break;
+      case 'tool-call-delta': {
+        let part = this.toolCallParts.get(chunk.index);
+        if (part === undefined) {
+          part = { id: chunk.id, args: '' };
+          this.toolCallParts.set(chunk.index, part);
+        }
+        if (chunk.name !== undefined) part.name = chunk.name;
+        part.args += chunk.argumentsDelta;
+        break;
+      }
       case 'usage':
         this._usage = chunk.usage;
         break;
@@ -251,6 +273,24 @@ class StreamCollector {
   /** 拼接后的文本输出。 */
   get text(): string {
     return this.textBuf;
+  }
+
+  /** thinking 输出（reasoning-delta 拼接；无则 undefined）。 */
+  get reasoning(): string | undefined {
+    return this.reasoningBuf === '' ? undefined : this.reasoningBuf;
+  }
+
+  /** 模型请求的工具调用（按 index 流序还原为完整 tool-call 块；无则 undefined）。 */
+  get toolCalls(): ToolCallBlock[] | undefined {
+    if (this.toolCallParts.size === 0) return undefined;
+    return [...this.toolCallParts.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, part]) => ({
+        type: 'tool-call' as const,
+        id: part.id,
+        name: part.name ?? '',
+        arguments: part.args,
+      }));
   }
 
   /** 摘要 token usage（无则 undefined）。 */
@@ -655,7 +695,12 @@ export async function runSummarySubagent(
       recordCompactionAttempt(ctx, session, {
         phase: options?.phase,
         target,
-        attempt: { prompt, rawOutput: collector.text },
+        attempt: {
+          prompt,
+          rawOutput: collector.text,
+          ...(collector.reasoning === undefined ? {} : { reasoning: collector.reasoning }),
+          ...(collector.toolCalls === undefined ? {} : { toolCalls: collector.toolCalls }),
+        },
         attemptNo: attempt,
         debug,
       });

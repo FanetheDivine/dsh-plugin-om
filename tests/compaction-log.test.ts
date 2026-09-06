@@ -1,8 +1,9 @@
 // compaction-log.ts 单元测试：压缩调用日志子会话落盘 recordCompactionAttempt——
 // header 元数据（origin/parentSession/delegationDepth/cwd 继承）、subagent/descriptor
-// 载荷（version/mode/provider/label）、「提示词 + 原始输出」消息组原样结构与顺序
-//（无额外消息）、flush 调用、落盘异常被吞（create/flush 失败仅 warn 不抛错）。
+// 载荷（version/mode/provider/label）、「提示词 + 完整输出内容块」消息组原样结构与顺序
+//（reasoning → text → tool-call，无额外消息）、flush 调用、落盘异常被吞（create/flush 失败仅 warn 不抛错）。
 
+import type { CallId } from '@deepseek-ai/dsh-llm';
 import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent';
 import { describe, expect, it } from 'vitest';
 
@@ -76,9 +77,9 @@ describe('recordCompactionAttempt：压缩日志子会话落盘', () => {
       provider: COMPACTION_LOG_PROVIDER,
       label: compactionLogLabel('reflect', 2),
     });
-    expect(compactionLogLabel('reflect', 2)).toBe('OM 压缩日志（反思 · 第 2 次尝试）');
-    expect(compactionLogLabel('observe', 1)).toBe('OM 压缩日志（观察 · 第 1 次尝试）');
-    expect(compactionLogLabel(undefined, 3)).toBe('OM 压缩日志（压缩 · 第 3 次尝试）');
+    expect(compactionLogLabel('reflect', 2)).toBe('OM会话-反思-重试1');
+    expect(compactionLogLabel('observe', 1)).toBe('OM会话-观察');
+    expect(compactionLogLabel(undefined, 3)).toBe('OM会话-压缩-重试2');
   });
 
   it('消息组零加工：单次尝试一对 user/assistant surface 消息，提示词与原始输出原样、无额外内容', async () => {
@@ -116,20 +117,64 @@ describe('recordCompactionAttempt：压缩日志子会话落盘', () => {
       turn: number;
       step: number;
       message: {
-        content?: Array<{ text?: string }>;
+        content?: Array<{ type?: string; text?: string }>;
         source?: { kind?: string; provider?: string; model?: string };
       };
     };
     expect(data.turn).toBe(0);
     // 子会话只含单次尝试：step 固定 1（不随 attemptNo 递增）
     expect(data.step).toBe(1);
-    expect(data.message.content?.[0]?.text).toBe(attempt.rawOutput);
+    // 无 reasoning/toolCalls 时仅单个 text 块
+    expect(data.message.content).toEqual([{ type: 'text', text: attempt.rawOutput }]);
     expect(data.message.source).toEqual({
       kind: 'model',
       provider: TARGET.provider,
       model: TARGET.model,
     });
     expect((assistant as { surfaceOp?: unknown }).surfaceOp).toBe('append');
+  });
+
+  it('完整输出内容块：reasoning/toolCalls 按序还原为 reasoning → text → tool-call 块', async () => {
+    const ctx = makeCtx();
+    const parent = makeSession();
+    const attempt = {
+      prompt: 'P',
+      rawOutput: '输出文本',
+      reasoning: '思考过程',
+      toolCalls: [
+        {
+          type: 'tool-call' as const,
+          id: 'call-1' as CallId,
+          name: 'read_file',
+          arguments: '{"p":"a.ts"}',
+        },
+      ],
+    };
+    await recordCompactionAttempt(ctx, parent, {
+      phase: 'reflect',
+      target: TARGET,
+      attempt,
+      attemptNo: 1,
+      debug: false,
+    });
+    const child = ctx._createdSessions[0]?.session;
+    const { assistant } = attemptEvents(child as Session);
+    const data = assistant.data as {
+      message: {
+        content?: Array<{
+          type?: string;
+          text?: string;
+          id?: string;
+          name?: string;
+          arguments?: string;
+        }>;
+      };
+    };
+    expect(data.message.content).toEqual([
+      { type: 'reasoning', text: '思考过程' },
+      { type: 'text', text: '输出文本' },
+      { type: 'tool-call', id: 'call-1', name: 'read_file', arguments: '{"p":"a.ts"}' },
+    ]);
   });
 
   it('ctx.sessions.create 抛错：返回 undefined、仅 warn、不向上抛（不影响压缩流程）', async () => {

@@ -263,7 +263,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
       version: 2,
       mode: 'one-shot',
       provider: 'om-compaction-log',
-      label: 'OM 压缩日志（观察 · 第 1 次尝试）',
+      label: 'OM会话-观察',
     });
     // 子会话内容零加工：一对 user/assistant surface 消息——完整提示词与模型原始输出原样
     expect(child?.events).toHaveLength(3);
