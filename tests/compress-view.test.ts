@@ -119,6 +119,19 @@ describe('buildObserveView', () => {
     expect(view.entries.map((e) => e.text)).toEqual(['C']);
   });
 
+  it('skipReasoning=true：观察视图不含 reasoning 参考条目，其余条目不变', () => {
+    const session = makeSession({
+      events: [
+        userEvent([textBlock('用户请求')]),
+        assistantEvent([{ type: 'reasoning', text: '先思考' }, textBlock('模型回复')]),
+      ],
+    });
+    const view = buildObserveView(session, [0, 1], { skipReasoning: true });
+    expect(view.entries.map((e) => e.kind)).toEqual(['user', 'assistant']);
+    expect(view.minIndex).toBe(0);
+    expect(view.maxIndex).toBe(1);
+  });
+
   it('toolCallNameOf 按 callId 定位工具名', () => {
     const session = makeSession({
       events: [assistantEvent([toolCallBlock('c9', 'skill', '{}')]), resultEvent('c9', 'ok')],
@@ -167,6 +180,16 @@ describe('buildReflectView', () => {
     expect(view.entries[0]?.lo).toBeUndefined();
     expect(view.minIndex).toBeUndefined();
     expect(view.maxIndex).toBeUndefined();
+  });
+
+  it('skipReasoning=true：反思视图不含 reasoning 参考条目', () => {
+    const block =
+      '<history>\n<reasoning>旧思考</reasoning>\n<assistant index="0">摘要</assistant>\n</history>';
+    const kept = buildReflectView([{ text: block, seq: 7 }]);
+    expect(kept.entries.map((e) => e.kind)).toEqual(['reasoning', 'assistant']);
+    const skipped = buildReflectView([{ text: block, seq: 7 }], { skipReasoning: true });
+    expect(skipped.entries.map((e) => e.kind)).toEqual(['assistant']);
+    expect(skipped.entries[0]).toMatchObject({ kind: 'assistant', lo: 0, hi: 0 });
   });
 });
 

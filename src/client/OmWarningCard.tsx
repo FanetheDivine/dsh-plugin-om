@@ -1,7 +1,7 @@
 /**
  * 功能降级警告行渲染器：与压缩卡片同款的折叠行。
- * 折叠行显示降级说明摘要，展开体显示完整说明；数据来自 om/warning 事件载荷，
- * 服务端按会话同问题去重后追加（每会话同一问题至多一行）。
+ * 折叠行显示降级说明摘要，展开体显示完整说明；数据来自 om/warning 信封载荷
+ * （借用 feedback/record），服务端按会话同问题去重后追加（每会话同一问题至多一行）。
  */
 
 import type { ChatNode } from '@deepseek-ai/dsh-client-ui-conversation/client';

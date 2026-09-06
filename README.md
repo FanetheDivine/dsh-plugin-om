@@ -13,7 +13,11 @@
 - **recall 工具**：按完整消息 index 区间回看原始会话，含被压缩内容，图片附件随结果保留
 - **recall-semantic 工具**：本地嵌入模型 paraphrase-multilingual-MiniLM-L12-v2 按语义检索全部完整消息，只匹配文本，纯图片消息不进候选池
 - **压缩卡片**：浏览器客户端渲染折叠式已压缩卡片、压缩中提示行与可展开的失败错误行
-- **降级警告行**：浏览器客户端把 `om/warning` 事件渲染为可展开的警告行
+- **降级警告行**：浏览器客户端把 om 警告会话事件渲染为可展开的警告行
+
+## 已知风险
+
+- **借用 `feedback/record` 事件**：插件的 log-only 会话事件（警告与观察压缩标记）写入宿主已知类型 `feedback/record` 的 `text` 字段（`om:1:` 前缀 JSON 信封，见 `src/om-event.ts`）。原因是持久化读取路径拒绝目录外未知事件类型而 `Session.append` 不提供 ignorable 写入途径，借用宿主目录内的无配对审计事件是插件写入私有事件的唯一可行通道
 
 ## 安装与启用
 
@@ -60,6 +64,7 @@ preset-agent 自带 compaction-basic 压缩，阈值为上下文窗口的 80%，
 | `compressMaxTokens` | 不设置 | 压缩循环单轮生成上限，不设置时由模型适配器默认值决定 |
 | `rateLimitWaitMs` | `60000` | 遇 429 限流后下一次压缩请求前的等待毫秒数，`0` 不限流 |
 | `tailMessageCount` | `5` | 观察触发后等待新增完整消息达到该条数才执行压缩，`0` 表示触发当轮立即执行 |
+| `compressSkipReasoning` | `true` | 工具循环 getHistory 输出是否携带 `<reasoning>` 参考条目，`true` 时不携带，压缩指令同步省略对应说明 |
 | `modelDir` | 共享目录 | recall-semantic 嵌入模型目录，默认 `$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>`，onnx 缺失且启用语义召回时运行时自动下载 |
 | `omEnabled` | `true` | 是否启用自动压缩，关闭后 recall 工具不受影响 |
 | `debug` | dev | 步骤级日志开关，缺省按 `NODE_ENV` 非 production 判定，压缩结果与失败日志始终输出 |
@@ -91,6 +96,7 @@ src/
 ├── config.ts                    # 配置默认值与宽松合并，未知键忽略、非法值回退默认
 ├── constants.ts                 # 共享常量：插件标识、history 标签、完整消息定义、格式说明注释
 ├── degrade.ts                   # 挂载失败降级上报：console 外部输出与 om/warning 会话事件
+├── om-event.ts                  # om 事件借用通道：feedback/record 信封的编解码与读写
 ├── types.ts                     # type-only：宿主类型再导出与领域类型
 ├── utils.ts                     # 零依赖工具函数：文本渲染、主会话判定、路由解析
 ├── json-schema.ts               # zod schema 到工具 wire 参数 JSON Schema 的转换
@@ -109,7 +115,7 @@ src/
 ├── compress.ts                  # 两级自动压缩：观察与反思、失败中断传播、compaction 生命周期事件
 └── client/                      # 浏览器客户端 bundle：压缩卡片
     ├── index.ts                 # 客户端入口：注册卡片定义与渲染器
-    ├── definition.ts            # 压缩卡片业务定义：认领生命周期事件、检查点替换与 om/warning
+    ├── definition.ts            # 压缩卡片业务定义：认领生命周期事件、检查点替换与 om 警告事件
     ├── OmCompactionCard.tsx     # 折叠卡片渲染器：统计标题与 summary、失败报错展开
     ├── OmWarningCard.tsx        # 功能降级警告行渲染器：折叠摘要与完整说明展开
     ├── format.ts                # 统计数字紧凑格式化：k、w、M

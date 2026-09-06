@@ -46,9 +46,9 @@ import { type RoutedTarget, uuid } from './utils.ts';
 
 /**
  * 共享压缩提示词（观察/反思同一套）：完整消息定义、工具语义、压缩要求、skill 规则
- * 与提交方式。作为压缩会话的 system。
+ * 与提交方式。作为压缩会话的 system；skipReasoning=true 时省略 <reasoning> 说明行。
  */
-export function buildCompressionPrompt(): string {
+export function buildCompressionPrompt(skipReasoning: boolean): string {
   const lines: string[] = [
     '压缩历史消息为摘要。你应当通过工具查看、压缩并完成提交。',
     '',
@@ -61,7 +61,7 @@ export function buildCompressionPrompt(): string {
     '',
     '【压缩要求】',
     '- 先用 getHistory 查看区间内容，再划分模块分批压缩；用户消息与系统消息不可压缩、保持原样，无需处理。',
-    '- <reasoning> 仅作压缩参考，不进产物。',
+    ...(skipReasoning ? [] : ['- <reasoning> 仅作压缩参考，不进产物。']),
     '- 将具有关联性的 assistant 消息按内在逻辑连贯性划分为连续模块，聚合为区间压缩（start..end）：content 描述模块的目的、行为与结果；涉及的具体文件保留在内容中，多个前缀相同的路径合并简写。',
     '- 单条重要的完整消息以 index 单独压缩，内容不受限制。',
     '- 摘要粒度越往后越细：靠近末尾（最近）的完整消息保留更多细节（关键文件、改动与结论），开头（较早）的完整消息可适当从简。',
@@ -104,6 +104,8 @@ export type CompressionLoopOptions = {
   maxTokens: number | undefined;
   /** 429 限流冷却毫秒数。 */
   rateLimitWaitMs: number;
+  /** 是否在 getHistory 输出中省略 <reasoning> 参考条目（压缩指令同步省略其说明行）。 */
+  skipReasoning: boolean;
   /** 步骤级日志开关。 */
   debug: boolean;
   /** 取消信号。 */
@@ -250,7 +252,7 @@ export async function runCompressionLoop(
       sessionId: session.id,
       purpose: 'compaction',
       ...(options.signal === undefined ? {} : { signal: options.signal }),
-      system: buildCompressionPrompt(),
+      system: buildCompressionPrompt(options.skipReasoning),
       messages: [...messages],
       tools: COMPRESSION_TOOL_SCHEMAS,
     };

@@ -16,15 +16,18 @@ import { buildCompressionPrompt } from '../src/compress-loop.ts';
 import { HISTORY_FORMAT_NOTE, PLUGIN_LABEL } from '../src/constants.ts';
 import { ensureModelReady } from '../src/embedding.ts';
 import { apply, inject, name } from '../src/index.ts';
+import { findOmEvents } from '../src/om-event.ts';
 import type { CompactionSummaryPayload, Session, SessionEvent, UserMessage } from '../src/types.ts';
 import {
   buildToolCallFlow,
   checkpointSourceOf,
   compactionLifecycle,
   historyMessage,
+  isOmKind,
   latestHistoryText,
   makeCtx,
   makeMessage,
+  makeOmEvent,
   makeSession,
   roundChunks,
   textBlock,
@@ -65,12 +68,9 @@ async function runPreStepWithDelay(
   await run(); // 第二步：新增完整消息数达到 tailMessageCount → 执行压缩
 }
 
-/** 构造 om/observe-pending 事件（seq 由 makeSession 按日志下标补齐）。 */
+/** 构造 om/observe-pending 信封事件（seq 由 makeSession 按日志下标补齐）。 */
 function pendingEvent(triggerMessageIndex: number): SessionEvent {
-  return {
-    type: 'om/observe-pending',
-    data: { key: 'observe', triggerMessageIndex },
-  } as unknown as SessionEvent;
+  return makeOmEvent('om/observe-pending', { triggerMessageIndex });
 }
 
 describe('apply 接线（OM 观察压缩）', () => {
@@ -148,7 +148,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     const options = summaryOptions(ctx);
     // 工具循环：共享提示词并入 system；首条 user 消息 = 压缩指令 + 区间（不含历史内容）
     const instruction = instructionText(options);
-    expect(instruction).toBe(buildCompressionPrompt()); // 共享提示词（观察/反思同一套）
+    expect(instruction).toBe(buildCompressionPrompt(true)); // 共享提示词（观察/反思同一套）
     expect(options.system).toBe(instruction);
     expect(options.maxTokens).toBeUndefined(); // compressMaxTokens 默认不设置
 
@@ -207,6 +207,33 @@ describe('apply 接线（OM 观察压缩）', () => {
       (e) => e.type === 'subagent/descriptor',
     );
     expect((descriptor?.data as { label?: string })?.label).toContain('会话记录');
+  });
+
+  it('compressSkipReasoning=false：压缩指令携带 <reasoning> 说明行，getHistory 输出含参考条目', async () => {
+    const flowEvents = buildToolCallFlow({
+      code: 'runMe()',
+      description: '跑一下',
+      callId: 'c-eval',
+      resultText: 'done',
+      withTurnEnd: true,
+    });
+    // assistant 消息携带 reasoning 块（参考条目数据源）
+    const withReasoning = flowEvents.map((event) => {
+      if (event.type !== 'assistant/message') return event;
+      const message = (event.data as { message?: { content?: unknown[] } }).message;
+      if (!message) return event;
+      message.content = [{ type: 'reasoning', text: '先想再答' }, ...(message.content ?? [])];
+      return event;
+    });
+    const session = makeSession({ events: withReasoning });
+    const ctx = observeCtx();
+    apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1, compressSkipReasoning: false });
+    const nextCalled = await runPreStep(ctx, session);
+    expect(nextCalled).toBe(true);
+    // 压缩指令包含 <reasoning> 说明行（skipReasoning=false）
+    expect(instructionText(summaryOptions(ctx))).toBe(buildCompressionPrompt(false));
+    // 最终 <history> 块不含 reasoning（参考条目不进产物）
+    expect(latestHistoryText(session)).not.toContain('<reasoning>');
   });
 
   it('系统消息参与压缩：视图含 <sys> 空块，最终 <history> 保留 sys 条目', async () => {
@@ -389,8 +416,8 @@ describe('apply 接线（OM 观察压缩）', () => {
     // 第 1 轮纯文本 → 提醒；第 2 轮仍纯文本 → 判失败（共 2 次请求）
     expect(ctx._llmCalls).toHaveLength(2);
     // 压缩失败保留待定标记（无失效标记）：下个 pre-step 直接重试执行
-    expect(session.events.some((e) => e.type === 'om/observe-pending')).toBe(true);
-    expect(session.events.some((e) => e.type === 'om/observe-invalidate')).toBe(false);
+    expect(session.events.some((e) => isOmKind(e, 'om/observe-pending'))).toBe(true);
+    expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
     // 压缩失败：start 在循环前已开启（UI 压缩中提示），end(error) 关闭生命周期；
     // 无 summary、无部分替换
     expect(session.events.some((e) => e.type === 'compaction/start')).toBe(true);
@@ -523,7 +550,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     failed = false;
     await run(); // 待定保留：直接重试执行 → 成功
     expect(session.events.some((e) => e.type === 'compaction/summary')).toBe(true);
-    expect(session.events.some((e) => e.type === 'om/observe-invalidate')).toBe(true);
+    expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(true);
     expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
   });
 
@@ -747,7 +774,7 @@ describe('apply 接线（OM 反思压缩）', () => {
     apply(ctx, { reflectThresholdTokens: 1 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3);
-    expect(instructionText(ctx._llmCalls[0]?.options)).toBe(buildCompressionPrompt()); // 反思与观察共用同一套提示词
+    expect(instructionText(ctx._llmCalls[0]?.options)).toBe(buildCompressionPrompt(true)); // 反思与观察共用同一套提示词
     // 压缩指令为反思表述（合并全部块），不含历史内容
     const taskText = inputText(ctx);
     expect(taskText).toContain('合并压缩');
@@ -792,7 +819,7 @@ describe('apply 接线（OM 反思压缩）', () => {
     apply(ctx, { reflectThresholdTokens: 1 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3);
-    expect(instructionText(ctx._llmCalls[0]?.options)).toBe(buildCompressionPrompt());
+    expect(instructionText(ctx._llmCalls[0]?.options)).toBe(buildCompressionPrompt(true));
     expect(session.surface.nodes.length).toBe(before - 1); // 两块合并为一条
     expect(latestHistoryText(session)).toContain('MERGED');
     expect(latestHistoryText(session)).not.toContain('X'.repeat(40)); // 全部旧块被替换
@@ -937,8 +964,8 @@ describe('apply 接线（OM 反思压缩）', () => {
     const firstText = instructionText(ctx._llmCalls[0]?.options);
     const secondText = instructionText(ctx._llmCalls[3]?.options);
     // 两者共用同一套提示词；以压缩指令（数据源）区分反思/观察
-    expect(firstText).toBe(buildCompressionPrompt());
-    expect(secondText).toBe(buildCompressionPrompt());
+    expect(firstText).toBe(buildCompressionPrompt(true));
+    expect(secondText).toBe(buildCompressionPrompt(true));
     const inputOf = (call: unknown) =>
       String(
         (call as { messages?: Array<{ content?: Array<{ type?: string; text?: string }> }> })
@@ -1244,7 +1271,7 @@ describe('压缩请求形态（新会话直连）', () => {
       messages?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
     };
     // 不复用主会话 requestHeader（system 前缀不沿用）；system = 共享压缩提示词
-    expect(options?.system).toBe(buildCompressionPrompt());
+    expect(options?.system).toBe(buildCompressionPrompt(true));
     expect(options?.system).not.toContain('主会话系统提示词');
     // 工具 = 三个压缩工具（不沿用主会话工具）
     expect(options?.tools?.map((t) => t.name)).toEqual([
@@ -1329,7 +1356,8 @@ describe('apply 接线（recallEnabled / semanticRecallEnabled）', () => {
 // apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行）：净压力首次达阈值时记录
 // om/observe-pending 待定标记（触发点 = 最后一条完整消息 index）本次不压缩；待定后
 // 新增完整消息数 ≥ tailMessageCount 时执行压缩（区间截至触发点）并写 om/observe-invalidate
-// 失效标记；摘要失败保留待定直接重试；标记持久化在会话日志中，重启后从日志恢复。
+// 失效标记；摘要失败保留待定直接重试；标记以 om 信封事件（借用 feedback/record）
+// 持久化在会话日志中，重启后从日志恢复。
 describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行）', () => {
   /** 运行一次 pre-step 监听器，返回 next 是否被调用。 */
   async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
@@ -1393,11 +1421,10 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     const nextCalled = await runPreStep(ctx, session);
     expect(nextCalled).toBe(true); // 触发不中断，正常放行
     expect(ctx._llmCalls).toHaveLength(0); // 延迟执行：本次无压缩请求
-    const pendingEvents = session.events.filter((e) => e.type === 'om/observe-pending');
+    const pendingEvents = findOmEvents(session, 'om/observe-pending');
     expect(pendingEvents).toHaveLength(1);
-    const pending = pendingEvents[0] as { data: { key: string; triggerMessageIndex: number } };
-    expect(pending.data).toEqual({ key: 'observe', triggerMessageIndex: 2 });
-    expect(session.events.some((e) => e.type === 'om/observe-invalidate')).toBe(false);
+    expect(pendingEvents[0]?.data).toEqual({ triggerMessageIndex: 2 });
+    expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
     expect(session.surface.nodes.length).toBe(3); // 表层不变
   });
 
@@ -1407,7 +1434,7 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     apply(ctx, { tailMessageCount: 3, observeThresholdTokens: 1 });
     await runPreStep(ctx, session);
     await runPreStep(ctx, session); // 未满 K，等待中
-    expect(session.events.filter((e) => e.type === 'om/observe-pending')).toHaveLength(1);
+    expect(findOmEvents(session, 'om/observe-pending')).toHaveLength(1);
     expect(ctx._llmCalls).toHaveLength(0);
   });
 
@@ -1446,12 +1473,11 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     expect(session.surface.nodes).toContain(waitingSeq);
     expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
     // 执行成功后写失效标记，指向待定标记事件 seq
-    const pendingEvent = session.events.find((e) => e.type === 'om/observe-pending');
-    const invalidateEvent = session.events.find((e) => e.type === 'om/observe-invalidate');
-    expect(pendingEvent).toBeDefined();
-    expect(invalidateEvent).toBeDefined();
-    if (invalidateEvent?.type !== 'om/observe-invalidate') throw new Error('缺 invalidate');
-    expect(invalidateEvent.data.pendingSeq).toBe(pendingEvent?.seq);
+    const pendings = findOmEvents(session, 'om/observe-pending');
+    const invalidates = findOmEvents(session, 'om/observe-invalidate');
+    expect(pendings).toHaveLength(1);
+    expect(invalidates).toHaveLength(1);
+    expect(invalidates[0]?.data.pendingSeq).toBe(pendings[0]?.seq);
   });
 
   it('K=0：触发当轮立即执行（无待定/失效标记）', async () => {
@@ -1460,8 +1486,8 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3);
-    expect(session.events.some((e) => e.type === 'om/observe-pending')).toBe(false);
-    expect(session.events.some((e) => e.type === 'om/observe-invalidate')).toBe(false);
+    expect(session.events.some((e) => isOmKind(e, 'om/observe-pending'))).toBe(false);
+    expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
     expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
   });
 
@@ -1491,12 +1517,12 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     appendWaitingMessage(session, 'wait-fail');
     await runPreStep(ctx, session); // 执行：2 轮纯文本判失败
     expect(ctx._llmCalls).toHaveLength(2);
-    expect(session.events.some((e) => e.type === 'om/observe-invalidate')).toBe(false);
+    expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
     appendWaitingMessage(session, 'wait-retry');
     failed = false;
     await runPreStep(ctx, session); // 待定仍在、到期条件仍满足 → 直接重试执行
     expect(ctx._llmCalls).toHaveLength(5); // 失败 2 轮 + 重试成功 3 轮
-    expect(session.events.some((e) => e.type === 'om/observe-invalidate')).toBe(true);
+    expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(true);
     expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
   });
 
@@ -1511,7 +1537,7 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3);
     expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
-    const invalidateEvent = session.events.findLast((e) => e.type === 'om/observe-invalidate');
+    const invalidateEvent = session.events.findLast((e) => isOmKind(e, 'om/observe-invalidate'));
     expect(invalidateEvent).toBeDefined();
   });
 
@@ -1543,11 +1569,11 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStep(ctx, session); // 过期 → 重新触发：新一轮 pending（seq 7，触发点仍为 index 2）
     expect(ctx._llmCalls).toHaveLength(0);
-    expect(session.events.filter((e) => e.type === 'om/observe-pending')).toHaveLength(2);
+    expect(findOmEvents(session, 'om/observe-pending')).toHaveLength(2);
     appendWaitingMessage(session, 'wait-expired'); // 新增 1 ≥ 1
     await runPreStep(ctx, session); // 触发点内容已被压缩 → 无可行区间 → 清除标记视为完成
     expect(ctx._llmCalls).toHaveLength(0); // 不对已压缩内容发起压缩
-    expect(session.events.some((e) => e.type === 'om/observe-invalidate')).toBe(true); // 新标记已失效
+    expect(session.events.some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(true); // 新标记已失效
     expect(latestHistoryText(session)).toContain('压缩后的块'); // 无新增替换
   });
 });

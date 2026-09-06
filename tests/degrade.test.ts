@@ -1,5 +1,5 @@
-// degrade.ts 经 apply 接线的降级测试：挂载失败时发 om/warning 事件并经 console 输出警告，
-// 且不阻塞压缩流程（观察照常触发）。
+// degrade.ts 经 apply 接线的降级测试：挂载失败时发 om 警告信封事件（借用
+// feedback/record）并经 console 输出警告，且不阻塞压缩流程（观察照常触发）。
 import { describe, expect, it, vi } from 'vitest';
 
 // 隔离 apply 的模型下载编排：ensureModelReady 打桩为"就绪"，避免单测触发真实下载/网络
@@ -12,10 +12,11 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
 });
 
 import { apply } from '../src/index.ts';
+import { findOmEvents } from '../src/om-event.ts';
 import type { Session } from '../src/types.ts';
 import { buildToolCallFlow, makeCtx, makeSession, roundChunks } from './helpers.ts';
 
-describe('挂载失败降级（om/warning 事件 + console 外部输出，不阻塞压缩）', () => {
+describe('挂载失败降级（om 警告事件 + console 外部输出，不阻塞压缩）', () => {
   /** 运行 pre-step 监听器。 */
   async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
     const listeners = ctx._onCallbacks.get('agent/pre-step');
@@ -40,11 +41,9 @@ describe('挂载失败降级（om/warning 事件 + console 外部输出，不阻
     };
   }
 
-  /** 读取 om/warning 事件（session.events 中的 log-only 警告）。 */
+  /** 读取 om/warning 警告（session.events 中的 log-only 信封事件）。 */
   function warningsOf(session: Session): Array<{ problem: string; message: string }> {
-    return session.events
-      .filter((e) => e.type === 'om/warning')
-      .map((e) => e.data as { problem: string; message: string });
+    return findOmEvents(session, 'om/warning').map((om) => om.data);
   }
 
   it('systemPrompt 服务未挂载：压缩不抛错、console.warn 外部输出、om/warning 追加一次、按 0 计继续观察', async () => {

@@ -81,6 +81,43 @@ function SliderField({ label, tooltip, value, min, max, step, unit, onChange }: 
   );
 }
 
+/** 布尔参数项属性。 */
+type CheckFieldProps = {
+  /** 字段标签。 */
+  label: string;
+  /** 字段说明（可选，悬停显示）。 */
+  tooltip?: string;
+  /** 当前值（受控）。 */
+  checked: boolean;
+  /** 值变更回调。 */
+  onChange: (checked: boolean) => void;
+};
+
+/** 勾选框参数项：标签 + 勾选框，说明悬停显示。 */
+function CheckField({ label, tooltip, checked, onChange }: CheckFieldProps) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center gap-1">
+        <Label className="text-xs text-muted-foreground">{label}</Label>
+        {tooltip !== undefined ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="cursor-help text-[10px] text-muted-foreground/70">ⓘ</span>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-48">{tooltip}</TooltipContent>
+          </Tooltip>
+        ) : null}
+      </div>
+      <input
+        type="checkbox"
+        className="h-3.5 w-3.5 cursor-pointer accent-primary"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+    </div>
+  );
+}
+
 /** 参数面板属性。 */
 type ParamsPanelProps = {
   /** 当前参数。 */
@@ -134,7 +171,7 @@ export function ParamsPanel({ params, onChange, onReset }: ParamsPanelProps) {
           />
           <SliderField
             label="每轮 thinking"
-            tooltip="模型输出的thinking tokens，只计算输出token，不占据上下文，但会用于消息摘要"
+            tooltip="模型输出的thinking tokens，只计算输出token，不占据上下文；开启「压缩 thinking」时观察压缩随被压缩消息一并输入OM"
             unit="tok"
             value={params.thinkingTokens}
             min={0}
@@ -153,6 +190,7 @@ export function ParamsPanel({ params, onChange, onReset }: ParamsPanelProps) {
           />
           <SliderField
             label="压缩比"
+            tooltip="摘要输出 / 被压缩消息，只决定压缩后 history 块在上下文中的大小，不参与计费"
             unit="%"
             value={Math.round(params.compressionRatio * 1000) / 10}
             min={0.5}
@@ -183,6 +221,22 @@ export function ParamsPanel({ params, onChange, onReset }: ParamsPanelProps) {
             max={400000}
             step={5000}
             onChange={(v) => set({ reflectThresholdTokens: v })}
+          />
+          <SliderField
+            label="OM token消耗比"
+            tooltip="OM观察/摘要时，输出token相对输入消息的token的比值，按输出计费"
+            unit="%"
+            value={Math.round(params.omTokenRatio * 100)}
+            min={0}
+            max={200}
+            step={5}
+            onChange={(v) => set({ omTokenRatio: v / 100 })}
+          />
+          <CheckField
+            label="压缩 thinking"
+            tooltip="开启后观察压缩时 thinking 随被压缩消息一并输入 OM（计入摘要输入与 OM token消耗比基数）；关闭时 thinking 只按输出计费，不进 OM"
+            checked={params.compressThinking}
+            onChange={(v) => set({ compressThinking: v })}
           />
           <SliderField
             label="表格步长"

@@ -2,8 +2,8 @@
  * 压缩视图：把被压缩区间投影为统一的条目序列（ViewEntry）。
  * 观察视图由完整消息原文构建（buildObserveView），反思视图由已有 <history> 块内条目构建
  * （buildReflectView）；getHistory 查看、compressHistory 区间校验与最终 <history> 块构建
- * 共用同一套条目。导出 ViewEntry / CompressionView / buildObserveView / buildReflectView /
- * renderEntriesXml / entryToElement / historyInner / toolCallNameOf。
+ * 共用同一套条目。导出 ViewEntry / CompressionView / BuildViewOptions / buildObserveView /
+ * buildReflectView / renderEntriesXml / entryToElement / historyInner / toolCallNameOf。
  */
 
 import type { Document, Element } from '@xmldom/xmldom';
@@ -106,13 +106,24 @@ export function toolCallNameOf(session: Session, cm: CompleteMessage): string | 
   return undefined;
 }
 
+/** 视图构建选项：skipReasoning=true 时不含 <reasoning> 参考条目。 */
+export type BuildViewOptions = {
+  /** 是否在视图中省略 reasoning 参考条目。 */
+  skipReasoning?: boolean;
+};
+
 /**
  * 观察视图：被压缩区间（表层 seq 集合）内的完整消息投影为条目——
  * user → 原文（图片等非文本块为注释）、sys → 空条目、assistant/toolcall → 原文渲染，
- * reasoning 作为参考条目置于其所属 assistant 条目之前（每条 assistant 消息输出一次）。
+ * reasoning 作为参考条目置于其所属 assistant 条目之前（每条 assistant 消息输出一次；
+ * skipReasoning 时省略）。
  * 要求区间为区间内完整消息的首尾 index。
  */
-export function buildObserveView(session: Session, seqs: readonly number[]): CompressionView {
+export function buildObserveView(
+  session: Session,
+  seqs: readonly number[],
+  options: BuildViewOptions = {},
+): CompressionView {
   const shadowed = new Set(seqs);
   const reasoningBySeq = new Map<number, string[]>();
   for (const seq of seqs) {
@@ -152,13 +163,15 @@ export function buildObserveView(session: Session, seqs: readonly number[]): Com
       });
       continue;
     }
-    // assistant / toolcall 条目：先输出所属 assistant 消息的 reasoning（每条消息一次）
-    const callSeq = cm.seqs[0];
-    const reasonings = callSeq === undefined ? undefined : reasoningBySeq.get(callSeq);
-    if (callSeq !== undefined && reasonings !== undefined && !emittedReasoning.has(callSeq)) {
-      emittedReasoning.add(callSeq);
-      for (const text of reasonings) {
-        entries.push({ kind: 'reasoning', lo: cm.index, hi: cm.index, text });
+    // assistant / toolcall 条目：先输出所属 assistant 消息的 reasoning（每条消息一次；skipReasoning 时省略）
+    if (options.skipReasoning !== true) {
+      const callSeq = cm.seqs[0];
+      const reasonings = callSeq === undefined ? undefined : reasoningBySeq.get(callSeq);
+      if (callSeq !== undefined && reasonings !== undefined && !emittedReasoning.has(callSeq)) {
+        emittedReasoning.add(callSeq);
+        for (const text of reasonings) {
+          entries.push({ kind: 'reasoning', lo: cm.index, hi: cm.index, text });
+        }
       }
     }
     const text = renderCompleteMessage(session, cm);
@@ -272,14 +285,22 @@ function parseBlockEntries(blockText: string, blockSeq: number): ViewEntry[] {
 
 /**
  * 反思视图：全部 <history> 块（historySection 收集，按表层顺序）的内条目投影为条目。
- * 要求区间为全部块内条目引用的最小 / 最大 index；块解析失败降级为不可定位遗留条目。
+ * 要求区间为全部块内条目引用的最小 / 最大 index；块解析失败降级为不可定位遗留条目；
+ * skipReasoning 时不含 <reasoning> 参考条目。
  */
-export function buildReflectView(blocks: Array<{ text: string; seq: number }>): CompressionView {
+export function buildReflectView(
+  blocks: Array<{ text: string; seq: number }>,
+  options: BuildViewOptions = {},
+): CompressionView {
   const entries: ViewEntry[] = [];
   for (const block of blocks) {
     entries.push(...parseBlockEntries(block.text, block.seq));
   }
-  return { entries, ...viewBounds(entries) };
+  const filtered =
+    options.skipReasoning === true
+      ? entries.filter((entry) => entry.kind !== 'reasoning')
+      : entries;
+  return { entries: filtered, ...viewBounds(filtered) };
 }
 
 /**

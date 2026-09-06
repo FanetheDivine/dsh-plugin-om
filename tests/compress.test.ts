@@ -30,6 +30,7 @@ import {
   historyMessage,
   makeCtx,
   makeMessage,
+  makeOmEvent,
   makeSession,
   roundChunks,
   textBlock,
@@ -433,20 +434,14 @@ describe('观察压缩区间 computeCompressRange', () => {
 });
 
 describe('观察待定标记 findObservePending', () => {
-  /** 构造 om/observe-pending 事件（seq 由 makeSession 按日志下标补齐）。 */
+  /** 构造 om/observe-pending 信封事件（seq 由 makeSession 按日志下标补齐）。 */
   function pendingEvent(triggerMessageIndex: number): SessionEvent {
-    return {
-      type: 'om/observe-pending',
-      data: { key: 'observe', triggerMessageIndex },
-    } as unknown as SessionEvent;
+    return makeOmEvent('om/observe-pending', { triggerMessageIndex });
   }
 
-  /** 构造 om/observe-invalidate 事件。 */
+  /** 构造 om/observe-invalidate 信封事件。 */
   function invalidateEvent(pendingSeq: number): SessionEvent {
-    return {
-      type: 'om/observe-invalidate',
-      data: { key: 'observe', pendingSeq },
-    } as unknown as SessionEvent;
+    return makeOmEvent('om/observe-invalidate', { pendingSeq });
   }
 
   it('无标记事件时返回 undefined', () => {
