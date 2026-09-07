@@ -64,12 +64,14 @@ preset-agent 自带 compaction-basic 压缩，阈值为上下文窗口的 80%，
 | `compressMaxTokens` | 不设置 | 压缩循环单轮生成上限，不设置时由模型适配器默认值决定 |
 | `rateLimitWaitMs` | `60000` | 遇 429 限流后下一次压缩请求前的等待毫秒数，`0` 不限流 |
 | `tailMessageCount` | `5` | 观察触发后等待新增完整消息达到该条数才执行压缩，`0` 表示触发当轮立即执行 |
-| `compressSkipReasoning` | `true` | 工具循环 getHistory 输出是否携带 `<reasoning>` 参考条目，`true` 时不携带，压缩指令同步省略对应说明；此项关闭会严重降低压缩质量，仅作为可选开关存在 |
+| `compressSkipReasoning` | `true` | 工具循环 getHistory 输出是否携带 `<reasoning>` 参考条目，`true` 时不携带，压缩指令同步省略对应说明 |
 | `modelDir` | 共享目录 | recall-semantic 嵌入模型目录，默认 `$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>`，onnx 缺失且启用语义召回时运行时自动下载 |
 | `omEnabled` | `true` | 是否启用自动压缩，关闭后 recall 工具不受影响 |
 | `debug` | dev | 步骤级日志开关，缺省按 `NODE_ENV` 非 production 判定，压缩结果与失败日志始终输出 |
 | `recallEnabled` | `true` | 是否注册 `recall` 工具 |
 | `semanticRecallEnabled` | `true` | 是否注册 `recall-semantic` 工具，关闭时不触发模型下载 |
+
+> `compressSkipReasoning` 的设置应根据模型决定：若模型 thinking 输出质量差且会把关键结论以 text 形式输出，保持默认开启即可，如 glm 和 deepseek 系列；若使用 openai/responses 或 anthropic/messages API，reasoning 内容包含大量决策信息，建议关闭此项；携带 reasoning 大约使 input_tokens 增加 40%。
 
 > 不建议把观察阈值设置得过高：越早压缩收益越高，且机制依赖模型对消息计数，过多消息会导致历史混乱。
 
