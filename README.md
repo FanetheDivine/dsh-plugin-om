@@ -8,7 +8,7 @@
 
 - **自动压缩**：仅主会话，在 agent/pre-step 阻塞串行执行。净压力达到 `observeThresholdTokens` 后再累计 `tailMessageCount` 条完整消息时，把触发点前的全部消息摘要为新 `<history>` 块并精确替换对应消息区间；全部 `<history>` 块 token 合计达到 `reflectThresholdTokens` 时把全部块内条目送入重新压缩，合并为一条更紧凑的摘要。待定标记以 log-only 会话事件持久化，重启后从日志恢复
 - **工具驱动压缩**：摘要生成走多轮工具会话，模型经 getHistory 查看区间条目、compressHistory 分批替换 assistant 条目、completeCompression 结束。首条消息仅含压缩指令与 index 区间，不含历史内容。用户消息与系统消息不可压缩且原样保留；未压缩条目原样保留；skill 加载条目以 `<skill name="…" index="…">` 元素呈现，元素内文为其工具返回内容，首次压缩时要求模型再次确认相关性，压缩后变为常规 assistant 摘要条目。最终 `<history>` 块由插件构建，天然合法无需校验
-- **压缩会话记录**：每次压缩的工具循环完整对话落盘为 one-shot 子会话，成功为会话记录、失败为失败日志，便于查看模型实际的查看与压缩行为
+- **压缩会话记录**：每次压缩的工具循环完整对话与压缩统计（起止时间、总耗时、逐轮请求耗时与 token usage 及合计）落盘为 one-shot 子会话，成功为会话记录、失败为失败日志，便于查看模型实际的查看与压缩行为及其 token 成本。主会话日志只保留汇总：`compaction/summary` 携带 usage 与起止时间、总耗时，失败路径 `compaction/end` 携带总耗时
 - **降级容错**：systemPrompt 或 tokenMeter 服务异常时按 0 计继续压缩，问题通过 console 输出与 log-only `om/warning` 会话事件上报，同会话同一问题至多一条
 - **recall 工具**：按完整消息 index 区间回看原始会话，含被压缩内容，图片附件随结果保留
 - **recall-semantic 工具**：本地嵌入模型 paraphrase-multilingual-MiniLM-L12-v2 按语义检索全部完整消息，只匹配文本，纯图片消息不进候选池
@@ -110,9 +110,9 @@ src/
 ├── model-download.ts            # 模型下载原语：URL、跳过判定、原子落盘
 ├── compress-view.ts             # 压缩视图：观察与反思区间到统一条目序列的投影与渲染
 ├── compress-tools.ts            # 压缩工具状态机：getHistory/compressHistory/completeCompression 与最终块构建
-├── compress-loop.ts             # 工具压缩循环：多轮请求、工具执行、限流与失败判定、usage 汇总
-├── compaction-log.ts            # 压缩会话记录落盘：循环对话消息组子会话（成功记录与失败日志）
-├── compress.ts                  # 两级自动压缩：观察与反思、失败中断传播、compaction 生命周期事件
+├── compress-loop.ts             # 工具压缩循环：多轮请求、工具执行、限流与失败判定、逐轮耗时与 usage 统计
+├── compaction-log.ts            # 压缩会话记录落盘：循环对话消息组与压缩统计子会话（成功记录与失败日志）
+├── compress.ts                  # 两级自动压缩：观察与反思、失败中断传播、compaction 生命周期事件（summary 携带 usage 与压缩耗时）
 └── client/                      # 浏览器客户端 bundle：压缩卡片
     ├── index.ts                 # 客户端入口：注册卡片定义与渲染器
     ├── definition.ts            # 压缩卡片业务定义：认领生命周期事件、检查点替换与 om 警告事件
