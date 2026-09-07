@@ -26,10 +26,9 @@ import {
   renderEntriesXml,
   type ViewEntry,
 } from './compress-view.ts';
-import { HISTORY_FORMAT_NOTE, HISTORY_TAG, HISTORY_TIP } from './constants.ts';
+import { HISTORY_FORMAT_NOTE, HISTORY_TAG, HISTORY_TIP, SKILL_TOOL_NAME } from './constants.ts';
 
-/** skill 工具名：toolcall 条目的工具名为该值时视为 skill 加载，压缩前二次确认。 */
-export const SKILL_TOOL_NAME = 'skill';
+export { SKILL_TOOL_NAME };
 
 /** 工具执行结果（isError=true 时模型应修正调用或改变策略）。 */
 export type ToolCallResult = {

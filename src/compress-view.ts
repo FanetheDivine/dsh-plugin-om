@@ -3,14 +3,16 @@
  * 观察视图由完整消息原文构建（buildObserveView），反思视图由已有 <history> 块内条目构建
  * （buildReflectView）；getHistory 查看、compressHistory 区间校验与最终 <history> 块构建
  * 共用同一套条目。导出 ViewEntry / CompressionView / BuildViewOptions / buildObserveView /
- * buildReflectView / renderEntriesXml / entryToElement / historyInner / toolCallNameOf。
+ * buildReflectView / renderEntriesXml / entryToElement / historyInner / toolCallNameOf /
+ * skillNameOf。
  */
 
 import type { Document, Element } from '@xmldom/xmldom';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
-import { HISTORY_TAG } from './constants.ts';
-import { indexCompleteMessages, renderCompleteMessage } from './log-index.ts';
+import { HISTORY_TAG, SKILL_TOOL_NAME } from './constants.ts';
+import { indexCompleteMessages, renderCompleteMessage, renderToolResultText } from './log-index.ts';
 import type { CompleteMessage, Session } from './types.ts';
+import { isRecord } from './utils.ts';
 
 /**
  * 视图条目：压缩区间内一条可定位的内容单位。
@@ -34,6 +36,8 @@ export type ViewEntry = {
   sysKind?: string;
   /** 观察视图 toolcall 条目的工具名（skill 判定用）。 */
   toolName?: string;
+  /** skill 条目的 skill 名（toolName 为 skill 时存在；反思视图取自 name 属性，缺失为空串）。 */
+  skillName?: string;
   /** 所属压缩块 seq（反思视图；块整体展开以此分组）。 */
   blockSeq?: number;
 };
@@ -106,6 +110,31 @@ export function toolCallNameOf(session: Session, cm: CompleteMessage): string | 
   return undefined;
 }
 
+/**
+ * 提取 skill 条目的 skill 名（tool-call 参数 JSON 的 name 字段）。非 skill 工具的
+ * toolcall 返回 undefined；toolName 为 skill 但参数缺失或非法时返回空串。
+ */
+export function skillNameOf(session: Session, cm: CompleteMessage): string | undefined {
+  if (toolCallNameOf(session, cm) !== SKILL_TOOL_NAME) return undefined;
+  const seq = cm.seqs[0];
+  const event = seq === undefined ? undefined : session.events[seq];
+  if (event?.type !== 'assistant/message') return '';
+  const message = event.data.message;
+  if (!message || !Array.isArray(message.content)) return '';
+  for (const block of message.content) {
+    if (block.type === 'tool-call' && String(block.id ?? '') === (cm.callId ?? '')) {
+      try {
+        const args: unknown = JSON.parse(String(block.arguments ?? ''));
+        if (isRecord(args) && typeof args.name === 'string') return args.name;
+      } catch {
+        // 参数非法时视为无名
+      }
+      return '';
+    }
+  }
+  return '';
+}
+
 /** 视图构建选项：skipReasoning=true 时不含 <reasoning> 参考条目。 */
 export type BuildViewOptions = {
   /** 是否在视图中省略 reasoning 参考条目。 */
@@ -174,15 +203,19 @@ export function buildObserveView(
         }
       }
     }
-    const text = renderCompleteMessage(session, cm);
-    if (text.trim() === '') continue;
     const toolName = cm.type === 'toolcall' ? toolCallNameOf(session, cm) : undefined;
+    const isSkill = toolName === SKILL_TOOL_NAME;
+    // skill 条目正文仅保留工具返回内容（调用参数由 <skill> 的 name 属性表达）
+    const text = isSkill ? renderToolResultText(session, cm) : renderCompleteMessage(session, cm);
+    if (text.trim() === '') continue;
+    const skillName = isSkill ? skillNameOf(session, cm) : undefined;
     entries.push({
       kind: 'assistant',
       lo: cm.index,
       hi: cm.index,
       text,
       ...(toolName === undefined ? {} : { toolName }),
+      ...(skillName === undefined ? {} : { skillName }),
     });
   }
   return { entries, ...viewBounds(entries) };
@@ -225,8 +258,9 @@ function intAttr(el: Element, name: string): number | undefined {
 
 /**
  * 解析一个已有 <history> 块的内条目（反思视图）：user_message / sys / assistant
- * （index 单条或 start/end 区间）/ reasoning。整块无法解析或根非 <history> 时降级为
- * 单条不可定位的历史遗留条目（text 为块内文原文，构建最终块时原样保留）。
+ * （index 单条或 start/end 区间）/ skill（name 属性 + index 定位）/ reasoning。整块
+ * 无法解析或根非 <history> 时降级为单条不可定位的历史遗留条目（text 为块内文原文，
+ * 构建最终块时原样保留）。
  */
 function parseBlockEntries(blockText: string, blockSeq: number): ViewEntry[] {
   const opaque = (): ViewEntry[] => [
@@ -275,6 +309,21 @@ function parseBlockEntries(blockText: string, blockSeq: number): ViewEntry[] {
         entries.push({ kind: 'assistant', lo: start, hi: end, text, blockSeq });
       }
       // 属性缺失的 assistant 条目跳过（防御：产物块创建时已校验属性）
+    } else if (el.nodeName === 'skill') {
+      const index = intAttr(el, 'index');
+      if (index !== undefined) {
+        const name = el.getAttribute('name');
+        entries.push({
+          kind: 'assistant',
+          lo: index,
+          hi: index,
+          text,
+          toolName: SKILL_TOOL_NAME,
+          ...(name === null ? {} : { skillName: name }),
+          blockSeq,
+        });
+      }
+      // 属性缺失的 skill 条目跳过（防御：产物块创建时已校验属性）
     } else if (el.nodeName === 'reasoning') {
       entries.push({ kind: 'reasoning', text, blockSeq });
     }
@@ -324,6 +373,16 @@ export function entryToElement(doc: Document, entry: ViewEntry): Element {
   }
   if (entry.kind === 'reasoning') {
     const el = doc.createElement('reasoning');
+    el.appendChild(doc.createTextNode(entry.text));
+    return el;
+  }
+  if (entry.kind === 'assistant' && entry.toolName === SKILL_TOOL_NAME) {
+    // skill 条目：<skill name="…" index="N">，内文为工具返回内容
+    const el = doc.createElement('skill');
+    el.setAttribute('name', entry.skillName ?? '');
+    if (entry.lo !== undefined && entry.lo === entry.hi) {
+      el.setAttribute('index', String(entry.lo));
+    }
     el.appendChild(doc.createTextNode(entry.text));
     return el;
   }

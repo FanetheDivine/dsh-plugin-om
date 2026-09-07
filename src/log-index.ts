@@ -2,8 +2,9 @@
  * 会话日志索引：完整消息索引与渲染。
  * 导出 indexCompleteMessages（完整消息四类折叠索引，recall 与摘要共用同一套编号）、
  * indexMessages / surfaceIndexOf / messageIdOfEvent（消息级定位辅助）、
- * collectImageRefs / renderCompleteMessageParts / renderCompleteMessage（完整消息渲染
- * 与图片附件收集）。事件日志仅追加（被遮蔽的事件仍可读，recall 依赖此性质）。
+ * collectImageRefs / toolResultMessageOf / renderToolResultText / renderCompleteMessageParts /
+ * renderCompleteMessage（完整消息渲染与图片附件收集）。事件日志仅追加（被遮蔽的事件仍可读，
+ * recall 依赖此性质）。
  *
  * 完整消息分四类：user（用户消息）、sys（系统消息，压缩日志中以 <sys> 空块表示）、
  * assistant（模型输出文本）、toolcall（单个工具调用及其结果，result 按 callId 匹配并入）。
@@ -169,7 +170,35 @@ export function collectImageRefs(content: unknown, out: ImageRefValue[]): void {
 }
 
 /**
- * 渲染一条完整消息为「文本 + 图片」（recall / recall-semantic 输出用）：
+ * 取 toolcall 完整消息的 tool/result 消息（超大结果经 pruner 裁剪）：
+ * 结果文本渲染与 <skill> 条目正文共用；非 toolcall 或无配对 result 时返回 undefined。
+ */
+export function toolResultMessageOf(
+  session: Session,
+  cm: CompleteMessage,
+  pruner?: PrunerLike,
+): Message | undefined {
+  if (cm.type !== 'toolcall') return undefined;
+  const resultSeq = cm.seqs[1];
+  const resultEvent = resultSeq === undefined ? undefined : session.events[resultSeq];
+  if (resultEvent?.type !== 'tool/result') return undefined;
+  const message = session.deriveEventMessage(resultEvent);
+  if (!message) return undefined;
+  const pruned = pruner?.pruneContent?.(message.content);
+  return pruned ? ({ ...message, content: pruned } as Message) : message;
+}
+
+/** 渲染 toolcall 完整消息的工具返回文本（仅 result 内容；无配对 result 时为空串）。 */
+export function renderToolResultText(
+  session: Session,
+  cm: CompleteMessage,
+  pruner?: PrunerLike,
+): string {
+  const message = toolResultMessageOf(session, cm, pruner);
+  return message ? renderMessageText(message) : '';
+}
+
+/** 渲染一条完整消息为「文本 + 图片」（recall / recall-semantic 输出用）：
  * user/sys 取消息原文，assistant 取文本块，toolcall 为调用块 + 结果文本
  * （pruner 裁剪超大结果）；同时收集该条完整消息携带的图片附件（含 tool-result 嵌套，
  * pruner 裁剪掉的图片不收集）。
@@ -220,16 +249,10 @@ export function renderCompleteMessageParts(
       }
     }
   }
-  const resultSeq = cm.seqs[1];
-  const resultEvent = resultSeq === undefined ? undefined : session.events[resultSeq];
-  if (resultEvent?.type === 'tool/result') {
-    let message = session.deriveEventMessage(resultEvent);
-    if (message && pruner?.pruneContent) {
-      const pruned = pruner.pruneContent(message.content);
-      if (pruned) message = { ...message, content: pruned } as Message;
-    }
-    if (message && Array.isArray(message.content)) collectImageRefs(message.content, images);
-    const text = message ? renderMessageText(message) : '';
+  const resultMessage = toolResultMessageOf(session, cm, pruner);
+  if (resultMessage && Array.isArray(resultMessage.content)) {
+    collectImageRefs(resultMessage.content, images);
+    const text = renderMessageText(resultMessage);
     if (text.trim() !== '') parts.push(`[result]\n${text}`);
   }
   return { text: parts.join('\n'), images };

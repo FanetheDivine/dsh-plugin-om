@@ -1,5 +1,5 @@
 // log-index.ts 单元测试：会话日志索引与呈现 —— indexMessages / messageIdOfEvent /
-// indexCompleteMessages / renderCompleteMessage。
+// indexCompleteMessages / renderCompleteMessage / renderToolResultText。
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -7,6 +7,7 @@ import {
   indexMessages,
   messageIdOfEvent,
   renderCompleteMessage,
+  renderToolResultText,
 } from '../src/log-index.ts';
 import type { SessionEvent } from '../src/types.ts';
 import {
@@ -252,6 +253,40 @@ describe('完整消息渲染 renderCompleteMessage', () => {
     const text = renderCompleteMessage(session, cm2, pruner);
     expect(text).toContain('PRUNED');
     expect(text).not.toContain('X'.repeat(20000));
+  });
+
+  it('renderToolResultText 仅含结果文本（无调用参数标记），走 pruner，无 result 为空串', () => {
+    const session = makeSession({ events: twoCallFlow() });
+    const cms = indexCompleteMessages(session);
+    const tc = cms[2];
+    if (!tc) throw new Error('缺少完整消息 2');
+    const text = renderToolResultText(session, tc);
+    expect(text).toContain('out1');
+    expect(text).not.toContain('[tool-call');
+    expect(text).not.toContain('firstCode()');
+    expect(
+      renderToolResultText(session, tc, { pruneContent: () => [{ type: 'text', text: '裁剪' }] }),
+    ).toBe('裁剪');
+    // 未配对 result 的 toolcall（防御条目）文本为空
+    const ghostCm = indexCompleteMessages(
+      makeSession({
+        events: [
+          {
+            type: 'tool/result',
+            data: {
+              turn: 1,
+              step: 1,
+              message: makeMessage({
+                role: 'user',
+                content: [toolResultBlock('ghost', [textBlock('r')])],
+                source: { kind: 'tool', callId: 'ghost' },
+              }),
+            },
+          } as unknown as SessionEvent,
+        ],
+      }),
+    )[0];
+    expect(ghostCm && renderToolResultText(session, ghostCm)).toBe('');
   });
 
   it('sys=消息原文（recall 呈现系统消息原始内容）', () => {

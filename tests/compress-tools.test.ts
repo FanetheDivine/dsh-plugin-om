@@ -2,7 +2,7 @@
 // skill 二次确认、替换区间重叠规则与最终 <history> 块构建。
 import { describe, expect, it } from 'vitest';
 import { CompressionState } from '../src/compress-tools.ts';
-import type { CompressionView, ViewEntry } from '../src/compress-view.ts';
+import { buildReflectView, type CompressionView, type ViewEntry } from '../src/compress-view.ts';
 import { HISTORY_FORMAT_NOTE, HISTORY_TAG, HISTORY_TIP } from '../src/constants.ts';
 
 /** 由条目列表推导视图区间（与生产 viewBounds 同规则）。 */
@@ -283,5 +283,53 @@ describe('buildFinalBlock', () => {
     expect(block).toContain('<assistant index="0">A</assistant>');
     expect(block).toContain('<assistant>遗留块内容</assistant>');
     expect(block).toContain('<assistant index="1">B</assistant>');
+  });
+
+  it('skill 条目未压缩以 <skill name index> 呈现，压缩后变为常规 assistant 摘要条目', () => {
+    const view = viewOf([
+      { kind: 'user', lo: 0, hi: 0, text: '用户消息A' },
+      {
+        kind: 'assistant',
+        lo: 1,
+        hi: 1,
+        text: 'skill 返回内容',
+        toolName: 'skill',
+        skillName: 'lark-im',
+      },
+      { kind: 'assistant', lo: 2, hi: 2, text: '助手B' },
+    ]);
+    const state = new CompressionState(view);
+    expect(state.buildFinalBlock()).toContain(
+      '<skill name="lark-im" index="1">skill 返回内容</skill>',
+    );
+    // 二次确认后才允许压缩：产物中 skill 条目变为常规 assistant 摘要条目
+    expect(state.compressHistory({ index: 1, content: 'skill 摘要' }).isError).toBe(true);
+    expect(state.compressHistory({ index: 1, content: 'skill 摘要' }).isError).toBe(false);
+    const block = state.buildFinalBlock();
+    expect(block).toContain('<assistant index="1">skill 摘要</assistant>');
+    expect(block).not.toContain('<skill name="lark-im"');
+    expect(block).not.toContain('skill 返回内容');
+  });
+
+  it('产物中的 skill 条目经反思视图解析后仍保留二次确认', () => {
+    const view = viewOf([
+      {
+        kind: 'assistant',
+        lo: 4,
+        hi: 4,
+        text: 'skill 返回内容',
+        toolName: 'skill',
+        skillName: 'lark-im',
+        blockSeq: 9,
+      },
+    ]);
+    const first = new CompressionState(view);
+    const block = first.buildFinalBlock();
+    expect(block).toContain('<skill name="lark-im" index="4">skill 返回内容</skill>');
+    // 反思轮解析产物块 → skill 条目仍可定位且带 toolName，首次压缩仍被挑战
+    const parsed = buildReflectView([{ text: block, seq: 9 }]);
+    const second = new CompressionState(parsed);
+    expect(second.compressHistory({ index: 4, content: '压缩skill' }).isError).toBe(true);
+    expect(second.compressHistory({ index: 4, content: '压缩skill' }).isError).toBe(false);
   });
 });
