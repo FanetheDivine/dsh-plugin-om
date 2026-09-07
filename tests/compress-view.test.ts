@@ -1,5 +1,5 @@
 // 压缩视图单测：观察视图（完整消息 → 条目）、反思视图（<history> 块 → 条目）、
-// 条目 XML 渲染（转义 / 注释 / 属性）与工具名 / skill 名提取。
+// 条目 XML 渲染（CDATA 包裹 / ]]> 拆段 / 注释 / 属性）与工具名 / skill 名提取。
 import { describe, expect, it } from 'vitest';
 import {
   buildObserveView,
@@ -184,8 +184,9 @@ describe('buildObserveView', () => {
 });
 
 describe('buildReflectView', () => {
-  it('块内条目投影：user / sys / assistant 单条与区间', () => {
-    const block = `<history tip="x">\n<user_message index="0">用户原文</user_message>\n<sys type="system" index="1"></sys>\n<assistant index="2">单条摘要</assistant>\n<assistant start="3" end="5">区间摘要</assistant>\n</history>`;
+  it('块内条目投影：user / sys / assistant 单条与区间（CDATA 正文经 textContent 还原）', () => {
+    const block =
+      '<history tip="x">\n<user_message index="0"><![CDATA[用户原文]]></user_message>\n<sys type="system" index="1"><![CDATA[]]></sys>\n<assistant index="2"><![CDATA[单条摘要]]></assistant>\n<assistant start="3" end="5"><![CDATA[区间摘要]]></assistant>\n</history>';
     const view = buildReflectView([{ text: block, seq: 7 }]);
     expect(view.minIndex).toBe(0);
     expect(view.maxIndex).toBe(5);
@@ -233,9 +234,9 @@ describe('buildReflectView', () => {
     expect(skipped.entries[0]).toMatchObject({ kind: 'assistant', lo: 0, hi: 0 });
   });
 
-  it('skill 条目解析为带 toolName 的 assistant 条目，重新渲染 round-trip 还原', () => {
+  it('skill_content 条目解析为带 toolName 的 assistant 条目，重新渲染 round-trip 还原两段 CDATA', () => {
     const block =
-      '<history>\n<skill name="lark-im" index="5">skill 返回内容</skill>\n<assistant index="6">摘要</assistant>\n</history>';
+      '<history>\n<skill_content name="lark-im" index="5"><skill_resources><![CDATA[资源内容]]></skill_resources><skill_instructions><![CDATA[指令内容]]></skill_instructions></skill_content>\n<assistant index="6"><![CDATA[摘要]]></assistant>\n</history>';
     const view = buildReflectView([{ text: block, seq: 7 }]);
     expect(view.entries).toHaveLength(2);
     const skill = view.entries[0];
@@ -243,26 +244,48 @@ describe('buildReflectView', () => {
       kind: 'assistant',
       lo: 5,
       hi: 5,
-      text: 'skill 返回内容',
       toolName: 'skill',
       skillName: 'lark-im',
       blockSeq: 7,
     });
-    // 反思轮定位与压缩挑战依赖 lo/hi；缺失 index 的 skill 条目不可定位、被跳过
+    // 条目正文还原为原生 skill_content 包裹形态（供渲染时按两段拆分）
+    expect(skill?.text).toBe(
+      '<skill_content name="lark-im"><skill_resources>资源内容</skill_resources><skill_instructions>指令内容</skill_instructions></skill_content>',
+    );
+    // 反思轮定位与压缩挑战依赖 lo/hi；缺失 index 的 skill_content 条目不可定位、被跳过
     const noIndex = buildReflectView([
-      { text: '<history>\n<skill name="x">内容</skill>\n</history>', seq: 8 },
+      { text: '<history>\n<skill_content name="x">内容</skill_content>\n</history>', seq: 8 },
     ]);
     expect(noIndex.entries).toHaveLength(1);
     expect(noIndex.entries[0]?.lo).toBeUndefined();
-    // round-trip：解析后的条目重新渲染还原 <skill> 元素
+    // round-trip：解析后的条目重新渲染还原 skill_content 两段 CDATA 结构
     const xml = renderEntriesXml(view.entries);
-    expect(xml).toContain('<skill name="lark-im" index="5">skill 返回内容</skill>');
-    expect(xml).toContain('<assistant index="6">摘要</assistant>');
+    expect(xml).toContain(
+      '<skill_content name="lark-im" index="5"><skill_resources><![CDATA[资源内容]]></skill_resources><skill_instructions><![CDATA[指令内容]]></skill_instructions></skill_content>',
+    );
+    expect(xml).toContain('<assistant index="6"><![CDATA[摘要]]></assistant>');
+  });
+
+  it('非原生结构的 skill_content 条目回退为整体 CDATA 原文，round-trip 逐字还原', () => {
+    const block =
+      '<history>\n<skill_content name="x" index="1"><![CDATA[纯返回内容]]></skill_content>\n</history>';
+    const view = buildReflectView([{ text: block, seq: 7 }]);
+    expect(view.entries[0]).toMatchObject({
+      kind: 'assistant',
+      lo: 1,
+      hi: 1,
+      toolName: 'skill',
+      skillName: 'x',
+      text: '纯返回内容',
+    });
+    expect(renderEntriesXml(view.entries)).toBe(
+      '<skill_content name="x" index="1"><![CDATA[纯返回内容]]></skill_content>',
+    );
   });
 });
 
 describe('renderEntriesXml', () => {
-  it('条目文本自动转义，user 注释输出为 XML 注释，无 history 包裹', () => {
+  it('条目正文以 CDATA 包裹，user 注释输出为 XML 注释，无 history 包裹', () => {
     const xml = renderEntriesXml([
       { kind: 'user', lo: 0, hi: 0, text: 'a<b>&"c', notes: [' 图片附件 '] },
       { kind: 'sys', lo: 1, hi: 1, text: '', sysKind: 'system' },
@@ -271,35 +294,44 @@ describe('renderEntriesXml', () => {
     ]);
     expect(xml).not.toContain('<history');
     expect(xml).toContain(
-      '<user_message index="0">a&lt;b&gt;&amp;"c<!-- 图片附件 --></user_message>',
+      '<user_message index="0"><![CDATA[a<b>&"c]]><!-- 图片附件 --></user_message>',
     );
-    expect(xml).toContain('<sys type="system" index="1"></sys>');
-    expect(xml).toContain('<assistant index="2">摘要</assistant>');
-    expect(xml).toContain('<assistant start="3" end="5">区间摘要</assistant>');
+    expect(xml).toContain('<sys type="system" index="1"><![CDATA[]]></sys>');
+    expect(xml).toContain('<assistant index="2"><![CDATA[摘要]]></assistant>');
+    expect(xml).toContain('<assistant start="3" end="5"><![CDATA[区间摘要]]></assistant>');
   });
 
-  it('skill 条目输出 <skill name index> 元素，文本转义，name 缺省为空串', () => {
+  it('skill_content 条目输出两段 CDATA 结构，非原生结构回退整体 CDATA，name 缺省为空串', () => {
     const xml = renderEntriesXml([
       {
         kind: 'assistant',
         lo: 7,
         hi: 7,
-        text: 'a<b 内容',
+        text: '<skill_content name="lark-doc"><skill_resources>资源</skill_resources><skill_instructions>指令</skill_instructions></skill_content>',
         toolName: 'skill',
         skillName: 'lark-doc',
       },
-      { kind: 'assistant', lo: 8, hi: 8, text: '无名 skill', toolName: 'skill' },
+      { kind: 'assistant', lo: 8, hi: 8, text: 'a<b 内容', toolName: 'skill', skillName: '' },
     ]);
-    expect(xml).toContain('<skill name="lark-doc" index="7">a&lt;b 内容</skill>');
-    expect(xml).toContain('<skill name="" index="8">无名 skill</skill>');
+    expect(xml).toContain(
+      '<skill_content name="lark-doc" index="7"><skill_resources><![CDATA[资源]]></skill_resources><skill_instructions><![CDATA[指令]]></skill_instructions></skill_content>',
+    );
+    expect(xml).toContain('<skill_content name="" index="8"><![CDATA[a<b 内容]]></skill_content>');
+  });
+
+  it('正文含 ]]> 时拆为相邻 CDATA 段，解析还原逐字原文', () => {
+    const xml = renderEntriesXml([{ kind: 'assistant', lo: 0, hi: 0, text: 'a]]>b' }]);
+    expect(xml).toBe('<assistant index="0"><![CDATA[a]]><![CDATA[]]]]><![CDATA[>b]]></assistant>');
+    const view = buildReflectView([{ text: `<history>\n${xml}\n</history>`, seq: 1 }]);
+    expect(view.entries[0]).toMatchObject({ kind: 'assistant', lo: 0, hi: 0, text: 'a]]>b' });
   });
 
   it('空条目序列返回空串', () => {
     expect(renderEntriesXml([])).toBe('');
   });
 
-  it('不可定位条目输出无属性 assistant 元素', () => {
+  it('不可定位条目输出无属性 assistant 元素（CDATA 正文）', () => {
     const xml = renderEntriesXml([{ kind: 'assistant', text: '遗留' } as ViewEntry]);
-    expect(xml).toBe('<assistant>遗留</assistant>');
+    expect(xml).toBe('<assistant><![CDATA[遗留]]></assistant>');
   });
 });

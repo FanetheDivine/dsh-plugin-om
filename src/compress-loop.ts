@@ -56,7 +56,7 @@ export function buildCompressionPrompt(skipReasoning: boolean): string {
     '',
     '【工具】',
     '- getHistory(option?: {start?, end?})：查看压缩区间内的历史条目。start/end 缺省为要求区间的第一个/最后一个完整消息 index，必须在要求区间内。返回压缩视图：已压缩内容以摘要条目呈现，区间切入已压缩块时返回整块，不带 <history> 包裹。',
-    '- compressHistory(option?: {index?, start?, end?, content})：把 index 单条或 start..end 连续区间的 assistant 类条目替换为 content 摘要（纯文本）。index 与 start/end 二选一，start==end 等同 index。区间不得覆盖用户消息或系统消息；与已有替换区间部分重叠会被拒绝，完全包含则覆盖。',
+    '- compressHistory(option?: {index?, start?, end?, content})：把 index 单条或 start..end 连续区间的 assistant 类条目替换为 content 摘要（纯文本，不要包含 CDATA 包裹，插件自动包裹）。index 与 start/end 二选一，start==end 等同 index。区间不得覆盖用户消息或系统消息；与已有替换区间部分重叠会被拒绝，完全包含则覆盖。',
     '- completeCompression()：全部压缩完成后调用，立即结束。',
     '',
     '【压缩要求】',
@@ -66,7 +66,8 @@ export function buildCompressionPrompt(skipReasoning: boolean): string {
     '- 单条重要的完整消息以 index 单独压缩',
     '- 压缩后的 assistant 消息内，应当描述**行为逻辑**，强调关键的**结论、产出和任务**；涉及到的具体文件保留完整路径',
     '- 摘要粒度越往后越细：靠近末尾（最近）的消息保留更多细节，开头（较早）的消息简写。',
-    '- 加载的 skill 以 <skill name="…" index="N"> 条目呈现，内文为其工具返回内容，属于关键信息。仅在你明确判断该 skill 与后续任务无关时，压缩它；如果该 skill 与后续任务相关，或者你无法判断，不要压缩，**保持原文**。',
+    '- <history> 条目正文一律以 CDATA 包裹，CDATA 内为逐字原样内容。',
+    '- 加载的 skill 以 <skill_content name="…" index="N"> 条目呈现，内含 <skill_resources> 与 <skill_instructions> 两段，内文为其工具返回内容，属于关键信息。仅在你明确判断该 skill 与后续任务无关时，压缩它；如果该 skill 与后续任务相关，或者你无法判断，不要压缩，**保持原文**。',
     '- 未压缩的条目将原样保留；宁可保留也不要强行压缩不确定的内容。',
     '- 全部完成后调用 completeCompression 结束；不要输出与工具调用无关的文本。',
   ];

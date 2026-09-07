@@ -6,7 +6,7 @@
  * - getHistory：查看要求区间内的条目（压缩视图，无 <history> 包裹；区间切入已有
  *   压缩块时返回整块全部条目；start/end 缺省为要求区间首尾）
  * - compressHistory：把 index 单条或 start..end 连续区间的 assistant 条目替换为
- *   content 摘要（纯文本，构建最终块时转义嵌入）。参数非法 / 越界 / 覆盖用户或
+ *   content 摘要（纯文本，构建最终块时以 CDATA 包裹嵌入；含 CDATA 包裹时拒绝）。参数非法 / 越界 / 覆盖用户或
  *   系统消息 / 与条目或已有替换区间部分重叠 → 返回错误结果（模型可修正重试）；
  *   重复覆盖同一区间：新区间完全包含旧区间时覆盖，部分重叠时报错
  * - skill 规则：区间覆盖工具名为 skill 的 toolcall 条目时，该 skill 块首次被覆盖
@@ -21,6 +21,7 @@
 import type { ToolSchema } from '@deepseek-ai/dsh-llm';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import {
+  appendCdataText,
   type CompressionView,
   entryToElement,
   renderEntriesXml,
@@ -174,6 +175,12 @@ export class CompressionState {
     if (typeof content !== 'string' || content.trim() === '') {
       return { text: 'content 必须是非空摘要文本', isError: true };
     }
+    if (content.includes('<![CDATA[')) {
+      return {
+        text: 'content 必须是纯文本摘要，不要包含 CDATA 包裹（<![CDATA[…]]>）；CDATA 由插件在构建块时自动添加，请去除后重新提交',
+        isError: true,
+      };
+    }
     const hasIndex = args.index !== undefined && args.index !== null;
     const hasStart = args.start !== undefined && args.start !== null;
     const hasEnd = args.end !== undefined && args.end !== null;
@@ -294,7 +301,7 @@ export class CompressionState {
 
   /**
    * 构建最终 <history> 块：按 index 顺序合并视图条目与替换记录——user / sys 条目
-   * 原样、被替换区间生成 <assistant index|start end> 摘要条目（content 转义嵌入）、
+   * 原样、被替换区间生成 <assistant index|start end> 摘要条目（content 以 CDATA 包裹嵌入）、
    * 未替换 assistant 条目原样保留、reasoning 不进产物；块首为格式说明注释，开标签
    * 携带 tip 属性。产物为合法 XML，无需校验。
    */
@@ -324,7 +331,7 @@ export class CompressionState {
         el.setAttribute('start', String(rep.lo));
         el.setAttribute('end', String(rep.hi));
       }
-      el.appendChild(doc.createTextNode(rep.content));
+      appendCdataText(doc, el, rep.content);
       root.appendChild(el);
     };
     const flushReplacementsBefore = (lo: number | undefined): void => {
@@ -375,7 +382,10 @@ export const COMPRESSION_TOOL_SCHEMAS: ToolSchema[] = [
         index: { type: 'number', description: '单条完整消息 index' },
         start: { type: 'number', description: '区间起始完整消息 index（与 end 成对提供）' },
         end: { type: 'number', description: '区间结束完整消息 index（与 start 成对提供）' },
-        content: { type: 'string', description: '替换后的摘要文本（纯文本）' },
+        content: {
+          type: 'string',
+          description: '替换后的摘要文本（纯文本，不要包含 CDATA 包裹，插件自动包裹）',
+        },
       },
       required: ['content'],
     },

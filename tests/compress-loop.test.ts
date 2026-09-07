@@ -74,9 +74,9 @@ describe('runCompressionLoop', () => {
     if (!result.ok) return;
     expect(result.rounds).toBe(3);
     expect(result.text).toContain(`<${HISTORY_TAG} tip=`);
-    expect(result.text).toContain('<user_message index="0">用户消息</user_message>');
-    expect(result.text).toContain('<assistant index="1">B的摘要</assistant>');
-    expect(result.text).toContain('<assistant index="2">C的摘要</assistant>');
+    expect(result.text).toContain('<user_message index="0"><![CDATA[用户消息]]></user_message>');
+    expect(result.text).toContain('<assistant index="1"><![CDATA[B的摘要]]></assistant>');
+    expect(result.text).toContain('<assistant index="2"><![CDATA[C的摘要]]></assistant>');
     // 会话记录子会话：label 含阶段与轮数，消息组原样落盘并 flush
     expect(ctx._createdSessions).toHaveLength(1);
     const record = ctx._createdSessions[0];
@@ -147,7 +147,7 @@ describe('runCompressionLoop', () => {
     const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.text).toContain('<assistant index="1">助手B</assistant>');
+    expect(result.text).toContain('<assistant index="1"><![CDATA[助手B]]></assistant>');
     // 空提交记 warn 日志
     expect(
       ctx._loggerCalls.some((c) => c.level === 'warn' && c.args.join('').includes('空提交')),
