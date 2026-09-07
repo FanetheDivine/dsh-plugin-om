@@ -207,7 +207,6 @@ describe('omCompactionDefinition.buildViewNode', () => {
         shadowedSeqs: [2, 3, 4],
         shadowedTokenCount: 1234,
         shadowedCharCount: 5000,
-        attemptCount: 0, // 首次尝试即成功（载荷 attemptCount 即重试次数）
       }),
     );
     const state = { summary, checkpoint };
@@ -228,7 +227,6 @@ describe('omCompactionDefinition.buildViewNode', () => {
         summaryTokenCount: 4,
         running: false,
         phase: null,
-        rounds: 0,
       },
     });
   });
@@ -337,7 +335,6 @@ describe('omCompactionDefinition.buildViewNode', () => {
         shadowedCharCount: null,
         summaryCharCount: null,
         summaryTokenCount: null,
-        rounds: null,
       },
     });
   });
@@ -399,7 +396,6 @@ describe('omCompactionDefinition.buildViewNode', () => {
         shadowedCharCount: null,
         summaryCharCount: null,
         summaryTokenCount: null,
-        rounds: null,
       },
     });
   });
@@ -421,7 +417,7 @@ describe('omCompactionDefinition.buildViewNode', () => {
     });
   });
 
-  it('summary 载荷 attemptCount 3 → rounds 3（压缩循环轮数）', () => {
+  it('summary 载荷含压缩计时字段（startedAt/completedAt/durationMs）时节点正常构建（字段不进 UI 数据）', () => {
     const summary = matchOf(
       lifecycle('compaction/summary', 6, {
         compactionId: 'om-1',
@@ -429,31 +425,20 @@ describe('omCompactionDefinition.buildViewNode', () => {
         shadowedSeqs: [1],
         shadowedTokenCount: 9,
         shadowedCharCount: 88,
-        attemptCount: 3,
+        startedAt: 1000,
+        completedAt: 9000,
+        durationMs: 8000,
       }),
     );
     const state = { summary, checkpoint };
     const node = omCompactionDefinition.buildViewNode?.(contextOf([summary, checkpoint], state));
     expect(node).not.toBeNull();
     expect(node?.data).toMatchObject({
-      rounds: 3,
+      summary: '重试后成功',
+      shadowedTokenCount: 9,
       running: false,
       phase: null,
     });
-  });
-
-  it('旧载荷无 attemptCount（首版插件）时 rounds 为 null', () => {
-    const summary = matchOf(
-      lifecycle('compaction/summary', 6, {
-        compactionId: 'om-1',
-        summary: [{ type: 'text', text: '旧版摘要' }],
-        shadowedSeqs: [1, 2],
-        shadowedTokenCount: 42,
-      }),
-    );
-    const state = { summary, checkpoint };
-    const node = omCompactionDefinition.buildViewNode?.(contextOf([summary, checkpoint], state));
-    expect(node?.data).toMatchObject({ rounds: null });
   });
 });
 
