@@ -34,11 +34,11 @@ export type PluginConfig = {
 
 /** 默认配置（冻结对象，resolveConfig 合并的基底；debug 缺省值在解析时按 NODE_ENV 判定）。 */
 export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
-  observeThresholdTokens: 45000,
-  reflectThresholdTokens: 120000,
+  observeThresholdTokens: 35000,
+  reflectThresholdTokens: 40000,
   compressMaxTokens: undefined,
   rateLimitWaitMs: 60000,
-  tailMessageCount: 5,
+  tailMessageCount: 20,
   compressSkipReasoning: true,
   omEnabled: true,
   debug: false,

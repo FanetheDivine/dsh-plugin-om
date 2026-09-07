@@ -38,7 +38,7 @@ dsh plugin --profile <profile> add dsh-plugin-om
 ```yaml
 - id: dsh-plugin-om
   config:
-    observeThresholdTokens: 45000
+    observeThresholdTokens: 35000
 ```
 
 ### 开发插件
@@ -59,11 +59,11 @@ preset-agent 自带 compaction-basic 压缩，阈值为上下文窗口的 80%，
 
 | 键 | 默认 | 含义 |
 | --- | --- | --- |
-| `observeThresholdTokens` | `45000` | 净压力达到该值时触发观察压缩 |
-| `reflectThresholdTokens` | `120000` | 全部 `<history>` 块 token 合计达到该值时触发反思合并 |
+| `observeThresholdTokens` | `35000` | 净压力达到该值时触发观察压缩 |
+| `reflectThresholdTokens` | `40000` | 全部 `<history>` 块 token 合计达到该值时触发反思合并 |
 | `compressMaxTokens` | 不设置 | 压缩循环单轮生成上限，不设置时由模型适配器默认值决定 |
 | `rateLimitWaitMs` | `60000` | 遇 429 限流后下一次压缩请求前的等待毫秒数，`0` 不限流 |
-| `tailMessageCount` | `5` | 观察触发后等待新增完整消息达到该条数才执行压缩，`0` 表示触发当轮立即执行 |
+| `tailMessageCount` | `20` | 观察触发后等待新增完整消息达到该条数才执行压缩，`0` 表示触发当轮立即执行 |
 | `compressSkipReasoning` | `true` | 工具循环 getHistory 输出是否携带 `<reasoning>` 参考条目，`true` 时不携带，压缩指令同步省略对应说明 |
 | `modelDir` | 共享目录 | recall-semantic 嵌入模型目录，默认 `$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>`，onnx 缺失且启用语义召回时运行时自动下载 |
 | `omEnabled` | `true` | 是否启用自动压缩，关闭后 recall 工具不受影响 |

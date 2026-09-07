@@ -118,8 +118,8 @@ export const TABLE_MAX_TOKENS = 250_000;
 export const DEFAULT_PARAMS: Readonly<ModelParams> = Object.freeze({
   systemPromptTokens: 10_000,
   injectedTokens: 5000,
-  observeThresholdTokens: 45_000,
-  reflectThresholdTokens: 120_000,
+  observeThresholdTokens: 35_000,
+  reflectThresholdTokens: 40_000,
   compressionRatio: 0.03,
   tableStepTokens: 10_000,
   prices: OPUS_PRICES,
