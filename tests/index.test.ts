@@ -284,7 +284,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     // 压缩成功；<history> 块含 sys 空块（不可压缩条目原样保留）
     expect(ctx._llmCalls).toHaveLength(3);
     const historyText = latestHistoryText(session);
-    expect(historyText).toContain('<sys type="agent-instructions" index="0"><![CDATA[]]></sys>');
+    expect(historyText).toContain('<sys type="agent-instructions" index="0"/>');
   });
 
   it('系统消息不可压缩：compressHistory 覆盖 sys 条目时工具报错，循环继续', async () => {
@@ -331,7 +331,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     const third = ctx._llmCalls[2];
     expect(JSON.stringify(third?.options)).toContain('系统消息不可压缩');
     const historyText = latestHistoryText(session);
-    expect(historyText).toContain('<sys type="agent-instructions" index="0"><![CDATA[]]></sys>');
+    expect(historyText).toContain('<sys type="agent-instructions" index="0"/>');
     expect(historyText).toContain('合法压缩');
   });
 
