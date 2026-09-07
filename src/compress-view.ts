@@ -278,9 +278,13 @@ function skillContentSections(
       body,
     );
   if (!match) return undefined;
-  const [, before, resources, between, instructions, after] = match;
+  const before = match[1] ?? '';
+  const resources = match[2] ?? '';
+  const between = match[3] ?? '';
+  const instructions = match[4] ?? '';
+  const after = match[5] ?? '';
   if (before.trim() !== '' || between.trim() !== '' || after.trim() !== '') return undefined;
-  return { resources: resources ?? '', instructions: instructions ?? '' };
+  return { resources, instructions };
 }
 
 /**
