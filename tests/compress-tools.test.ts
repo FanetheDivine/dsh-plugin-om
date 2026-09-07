@@ -243,7 +243,7 @@ describe('buildFinalBlock', () => {
       block.startsWith(`<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${HISTORY_FORMAT_NOTE}\n`),
     ).toBe(true);
     expect(block).toContain('<user_message index="0"><![CDATA[用户消息A]]></user_message>');
-    expect(block).toContain('<sys type="system" index="1"><![CDATA[]]></sys>');
+    expect(block).toContain('<sys type="system" index="1"/>');
     expect(block).toContain('<assistant index="2"><![CDATA[B的摘要]]></assistant>');
     expect(block).toContain('<assistant start="3" end="4"><![CDATA[C和D的摘要]]></assistant>');
     expect(block).toContain('<user_message index="5"><![CDATA[用户消息E]]></user_message>');

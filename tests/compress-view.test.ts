@@ -186,7 +186,7 @@ describe('buildObserveView', () => {
 describe('buildReflectView', () => {
   it('块内条目投影：user / sys / assistant 单条与区间（CDATA 正文经 textContent 还原）', () => {
     const block =
-      '<history tip="x">\n<user_message index="0"><![CDATA[用户原文]]></user_message>\n<sys type="system" index="1"><![CDATA[]]></sys>\n<assistant index="2"><![CDATA[单条摘要]]></assistant>\n<assistant start="3" end="5"><![CDATA[区间摘要]]></assistant>\n</history>';
+      '<history tip="x">\n<user_message index="0"><![CDATA[用户原文]]></user_message>\n<sys type="system" index="1"/>\n<assistant index="2"><![CDATA[单条摘要]]></assistant>\n<assistant start="3" end="5"><![CDATA[区间摘要]]></assistant>\n</history>';
     const view = buildReflectView([{ text: block, seq: 7 }]);
     expect(view.minIndex).toBe(0);
     expect(view.maxIndex).toBe(5);
@@ -296,7 +296,7 @@ describe('renderEntriesXml', () => {
     expect(xml).toContain(
       '<user_message index="0"><![CDATA[a<b>&"c]]><!-- 图片附件 --></user_message>',
     );
-    expect(xml).toContain('<sys type="system" index="1"><![CDATA[]]></sys>');
+    expect(xml).toContain('<sys type="system" index="1"/>');
     expect(xml).toContain('<assistant index="2"><![CDATA[摘要]]></assistant>');
     expect(xml).toContain('<assistant start="3" end="5"><![CDATA[区间摘要]]></assistant>');
   });

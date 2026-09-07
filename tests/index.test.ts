@@ -160,7 +160,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(historyText).toContain(
       'toolcall index:2 purpose:跑一下 summary:产物符合预期；下一步提交',
     );
-    expect(historyText).toContain('完整消息：'); // HISTORY_FORMAT_NOTE 注释（完整消息定义串）
+    expect(historyText).toContain(HISTORY_FORMAT_NOTE); // 块首格式说明注释
     // 遮蔽后表层 = 仅 <history> 块（tailCount=0 全部压缩）
     expect(session.surface.nodes.length).toBe(1);
     // compaction 生命周期：start → summary → 替换消息 → end（同 compactionId）
@@ -284,7 +284,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     // 压缩成功；<history> 块含 sys 空块（不可压缩条目原样保留）
     expect(ctx._llmCalls).toHaveLength(3);
     const historyText = latestHistoryText(session);
-    expect(historyText).toContain('<sys type="agent-instructions" index="0"><![CDATA[]]></sys>');
+    expect(historyText).toContain('<sys type="agent-instructions" index="0"/>');
   });
 
   it('系统消息不可压缩：compressHistory 覆盖 sys 条目时工具报错，循环继续', async () => {
@@ -331,7 +331,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     const third = ctx._llmCalls[2];
     expect(JSON.stringify(third?.options)).toContain('系统消息不可压缩');
     const historyText = latestHistoryText(session);
-    expect(historyText).toContain('<sys type="agent-instructions" index="0"><![CDATA[]]></sys>');
+    expect(historyText).toContain('<sys type="agent-instructions" index="0"/>');
     expect(historyText).toContain('合法压缩');
   });
 

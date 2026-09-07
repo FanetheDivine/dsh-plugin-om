@@ -410,7 +410,8 @@ export function buildReflectView(
 
 /**
  * 把一个视图条目构建为 XML 元素（正文统一以 CDATA 包裹，逐字原样；user 条目的注释
- * 输出为 XML 注释节点）。getHistory 输出与最终 <history> 块共用。
+ * 输出为 XML 注释节点；sys 条目为无正文的空元素，自闭合输出）。getHistory 输出与
+ * 最终 <history> 块共用。
  */
 export function entryToElement(doc: Document, entry: ViewEntry): Element {
   if (entry.kind === 'user') {
@@ -424,7 +425,6 @@ export function entryToElement(doc: Document, entry: ViewEntry): Element {
     const el = doc.createElement('sys');
     el.setAttribute('type', entry.sysKind ?? '');
     if (entry.lo !== undefined) el.setAttribute('index', String(entry.lo));
-    appendCdataText(doc, el, '');
     return el;
   }
   if (entry.kind === 'reasoning') {
