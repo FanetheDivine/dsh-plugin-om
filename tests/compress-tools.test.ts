@@ -43,7 +43,7 @@ describe('getHistory', () => {
     const result = state.getHistory({});
     expect(result.isError).toBe(false);
     expect(result.text).toContain('<!-- 完整消息区间 [0..7]，共 8 条 -->');
-    expect(result.text).toContain('<user_message index="0">用户消息A</user_message>');
+    expect(result.text).toContain('<user_message index="0"><![CDATA[用户消息A]]></user_message>');
     expect(result.text).not.toContain(`<${HISTORY_TAG}`);
   });
 
@@ -242,13 +242,13 @@ describe('buildFinalBlock', () => {
     expect(
       block.startsWith(`<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${HISTORY_FORMAT_NOTE}\n`),
     ).toBe(true);
-    expect(block).toContain('<user_message index="0">用户消息A</user_message>');
-    expect(block).toContain('<sys type="system" index="1"></sys>');
-    expect(block).toContain('<assistant index="2">B的摘要</assistant>');
-    expect(block).toContain('<assistant start="3" end="4">C和D的摘要</assistant>');
-    expect(block).toContain('<user_message index="5">用户消息E</user_message>');
+    expect(block).toContain('<user_message index="0"><![CDATA[用户消息A]]></user_message>');
+    expect(block).toContain('<sys type="system" index="1"><![CDATA[]]></sys>');
+    expect(block).toContain('<assistant index="2"><![CDATA[B的摘要]]></assistant>');
+    expect(block).toContain('<assistant start="3" end="4"><![CDATA[C和D的摘要]]></assistant>');
+    expect(block).toContain('<user_message index="5"><![CDATA[用户消息E]]></user_message>');
     // 未替换条目原样保留（含区间条目原属性）
-    expect(block).toContain('<assistant start="6" end="7">区间条目F-G</assistant>');
+    expect(block).toContain('<assistant start="6" end="7"><![CDATA[区间条目F-G]]></assistant>');
     // reasoning 不进产物，被替换条目原文不出现
     expect(block).not.toContain('<reasoning>');
     expect(block).not.toContain('助手B');
@@ -256,19 +256,31 @@ describe('buildFinalBlock', () => {
     expect(block.endsWith(`\n</${HISTORY_TAG}>`)).toBe(true);
   });
 
-  it('替换 content 中的 XML 特殊字符被转义', () => {
+  it('替换摘要以 CDATA 包裹嵌入，XML 特殊字符逐字保留，]]> 拆为相邻段', () => {
     const state = new CompressionState(observeView());
     expect(state.compressHistory({ index: 2, content: '<x>&"摘要"' }).isError).toBe(false);
-    expect(state.buildFinalBlock()).toContain(
-      '<assistant index="2">&lt;x&gt;&amp;"摘要"</assistant>',
+    expect(state.compressHistory({ index: 3, content: 'a]]>b' }).isError).toBe(false);
+    const block = state.buildFinalBlock();
+    expect(block).toContain('<assistant index="2"><![CDATA[<x>&"摘要"]]></assistant>');
+    expect(block).toContain(
+      '<assistant index="3"><![CDATA[a]]><![CDATA[]]]]><![CDATA[>b]]></assistant>',
     );
+  });
+
+  it('content 含 CDATA 包裹报错，去除后重新提交成功', () => {
+    const state = new CompressionState(observeView());
+    const rejected = state.compressHistory({ index: 2, content: '<![CDATA[摘要]]>' });
+    expect(rejected.isError).toBe(true);
+    expect(rejected.text).toContain('CDATA');
+    expect(state.replacementCount).toBe(0);
+    expect(state.compressHistory({ index: 2, content: '摘要' }).isError).toBe(false);
   });
 
   it('空提交时全部条目原样保留', () => {
     const state = new CompressionState(observeView());
     const block = state.buildFinalBlock();
-    expect(block).toContain('<assistant index="2">助手B</assistant>');
-    expect(block).toContain('<assistant index="7">助手G</assistant>');
+    expect(block).toContain('<assistant index="2"><![CDATA[助手B]]></assistant>');
+    expect(block).toContain('<assistant index="7"><![CDATA[助手G]]></assistant>');
     expect(state.replacementCount).toBe(0);
   });
 
@@ -280,19 +292,19 @@ describe('buildFinalBlock', () => {
     ]);
     const state = new CompressionState(view);
     const block = state.buildFinalBlock();
-    expect(block).toContain('<assistant index="0">A</assistant>');
-    expect(block).toContain('<assistant>遗留块内容</assistant>');
-    expect(block).toContain('<assistant index="1">B</assistant>');
+    expect(block).toContain('<assistant index="0"><![CDATA[A]]></assistant>');
+    expect(block).toContain('<assistant><![CDATA[遗留块内容]]></assistant>');
+    expect(block).toContain('<assistant index="1"><![CDATA[B]]></assistant>');
   });
 
-  it('skill 条目未压缩以 <skill name index> 呈现，压缩后变为常规 assistant 摘要条目', () => {
+  it('skill 条目未压缩以 <skill_content name index> 呈现，压缩后变为常规 assistant 摘要条目', () => {
     const view = viewOf([
       { kind: 'user', lo: 0, hi: 0, text: '用户消息A' },
       {
         kind: 'assistant',
         lo: 1,
         hi: 1,
-        text: 'skill 返回内容',
+        text: '<skill_content name="lark-im"><skill_resources>资源内容</skill_resources><skill_instructions>指令内容</skill_instructions></skill_content>',
         toolName: 'skill',
         skillName: 'lark-im',
       },
@@ -300,15 +312,15 @@ describe('buildFinalBlock', () => {
     ]);
     const state = new CompressionState(view);
     expect(state.buildFinalBlock()).toContain(
-      '<skill name="lark-im" index="1">skill 返回内容</skill>',
+      '<skill_content name="lark-im" index="1"><skill_resources><![CDATA[资源内容]]></skill_resources><skill_instructions><![CDATA[指令内容]]></skill_instructions></skill_content>',
     );
     // 二次确认后才允许压缩：产物中 skill 条目变为常规 assistant 摘要条目
     expect(state.compressHistory({ index: 1, content: 'skill 摘要' }).isError).toBe(true);
     expect(state.compressHistory({ index: 1, content: 'skill 摘要' }).isError).toBe(false);
     const block = state.buildFinalBlock();
-    expect(block).toContain('<assistant index="1">skill 摘要</assistant>');
-    expect(block).not.toContain('<skill name="lark-im"');
-    expect(block).not.toContain('skill 返回内容');
+    expect(block).toContain('<assistant index="1"><![CDATA[skill 摘要]]></assistant>');
+    expect(block).not.toContain('<skill_content name="lark-im"');
+    expect(block).not.toContain('资源内容');
   });
 
   it('产物中的 skill 条目经反思视图解析后仍保留二次确认', () => {
@@ -325,7 +337,9 @@ describe('buildFinalBlock', () => {
     ]);
     const first = new CompressionState(view);
     const block = first.buildFinalBlock();
-    expect(block).toContain('<skill name="lark-im" index="4">skill 返回内容</skill>');
+    expect(block).toContain(
+      '<skill_content name="lark-im" index="4"><![CDATA[skill 返回内容]]></skill_content>',
+    );
     // 反思轮解析产物块 → skill 条目仍可定位且带 toolName，首次压缩仍被挑战
     const parsed = buildReflectView([{ text: block, seq: 9 }]);
     const second = new CompressionState(parsed);

@@ -284,7 +284,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     // 压缩成功；<history> 块含 sys 空块（不可压缩条目原样保留）
     expect(ctx._llmCalls).toHaveLength(3);
     const historyText = latestHistoryText(session);
-    expect(historyText).toContain('<sys type="agent-instructions" index="0"></sys>');
+    expect(historyText).toContain('<sys type="agent-instructions" index="0"><![CDATA[]]></sys>');
   });
 
   it('系统消息不可压缩：compressHistory 覆盖 sys 条目时工具报错，循环继续', async () => {
@@ -331,7 +331,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     const third = ctx._llmCalls[2];
     expect(JSON.stringify(third?.options)).toContain('系统消息不可压缩');
     const historyText = latestHistoryText(session);
-    expect(historyText).toContain('<sys type="agent-instructions" index="0"></sys>');
+    expect(historyText).toContain('<sys type="agent-instructions" index="0"><![CDATA[]]></sys>');
     expect(historyText).toContain('合法压缩');
   });
 
@@ -895,12 +895,12 @@ describe('apply 接线（OM 反思压缩）', () => {
   });
 
   it('先反思后观察串行：反思合并旧块，观察在其后追加独立新块', async () => {
-    // 反思阈值 100：旧块（X*400 加块首格式注释，约 120 tokens）首次触发反思；
-    // 合并后的块（格式注释加 REFLECTED-REPORT，约 92 tokens）不再触发；
+    // 反思阈值 150：旧块（X*800，约 220 tokens）首次触发反思；
+    // 合并后的块（块首格式注释加 REFLECTED-REPORT，约 120 tokens）不再触发；
     // 观察阈值 1（上下文压力 ✓）延迟一步后执行
     const session = makeSession({
       events: [
-        historyMessage(`<assistant index="0">${'X'.repeat(400)}</assistant>`),
+        historyMessage(`<assistant index="0">${'X'.repeat(800)}</assistant>`),
         ...buildToolCallFlow({
           code: 'a()',
           description: '任务A',
@@ -939,7 +939,7 @@ describe('apply 接线（OM 反思压缩）', () => {
         return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
       },
     });
-    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1, reflectThresholdTokens: 100 });
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1, reflectThresholdTokens: 150 });
     await runPreStepWithDelay(ctx, session);
     expect(ctx._llmCalls).toHaveLength(6);
     const firstText = instructionText(ctx._llmCalls[0]?.options);

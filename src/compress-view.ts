@@ -3,8 +3,8 @@
  * 观察视图由完整消息原文构建（buildObserveView），反思视图由已有 <history> 块内条目构建
  * （buildReflectView）；getHistory 查看、compressHistory 区间校验与最终 <history> 块构建
  * 共用同一套条目。导出 ViewEntry / CompressionView / BuildViewOptions / buildObserveView /
- * buildReflectView / renderEntriesXml / entryToElement / historyInner / toolCallNameOf /
- * skillNameOf。
+ * buildReflectView / renderEntriesXml / entryToElement / appendCdataText / historyInner /
+ * toolCallNameOf / skillNameOf。
  */
 
 import type { Document, Element } from '@xmldom/xmldom';
@@ -205,7 +205,7 @@ export function buildObserveView(
     }
     const toolName = cm.type === 'toolcall' ? toolCallNameOf(session, cm) : undefined;
     const isSkill = toolName === SKILL_TOOL_NAME;
-    // skill 条目正文仅保留工具返回内容（调用参数由 <skill> 的 name 属性表达）
+    // skill 条目正文仅保留工具返回内容（调用参数由 <skill_content> 的 name 属性表达）
     const text = isSkill ? renderToolResultText(session, cm) : renderCompleteMessage(session, cm);
     if (text.trim() === '') continue;
     const skillName = isSkill ? skillNameOf(session, cm) : undefined;
@@ -256,10 +256,58 @@ function intAttr(el: Element, name: string): number | undefined {
   return Number(raw);
 }
 
+/** 读取元素第一个指定名子元素的正文（缺失返回 undefined）。 */
+function childText(el: Element, tag: string): string | undefined {
+  const child = el.getElementsByTagName(tag)[0];
+  return child === undefined ? undefined : (child.textContent ?? '');
+}
+
+/**
+ * 提取 skill 工具返回内容（原生 <skill_content> 包裹）中 <skill_resources> 与
+ * <skill_instructions> 两段正文。非该包裹形态、两段缺失或两段之间存在其他内容时
+ * 返回 undefined（调用方回退为整体 CDATA 原文）。
+ */
+function skillContentSections(
+  text: string,
+): { resources: string; instructions: string } | undefined {
+  const wrapper = /^[\s]*<skill_content\b[^>]*>([\s\S]*)<\/skill_content>[\s]*$/.exec(text);
+  if (!wrapper) return undefined;
+  const body = wrapper[1] ?? '';
+  const match =
+    /^([\s\S]*?)<skill_resources>([\s\S]*?)<\/skill_resources>([\s\S]*?)<skill_instructions>([\s\S]*?)<\/skill_instructions>([\s\S]*)$/.exec(
+      body,
+    );
+  if (!match) return undefined;
+  const before = match[1] ?? '';
+  const resources = match[2] ?? '';
+  const between = match[3] ?? '';
+  const instructions = match[4] ?? '';
+  const after = match[5] ?? '';
+  if (before.trim() !== '' || between.trim() !== '' || after.trim() !== '') return undefined;
+  return { resources, instructions };
+}
+
+/**
+ * 向元素追加 CDATA 正文：正文统一以 CDATA 包裹（逐字原样，不做实体转义）。
+ * 正文含 ]]> 时拆为相邻多个 CDATA 段，拼接后逐字还原原文，对读取方透明。
+ */
+export function appendCdataText(doc: Document, el: Element, text: string): void {
+  const parts = text.split(']]>');
+  for (let i = 0; i < parts.length; i += 1) {
+    if (i === 0) {
+      el.appendChild(doc.createCDATASection(parts[0] ?? ''));
+    } else {
+      // ]]> 编码为相邻两段 CDATA：<![CDATA[]]]]><![CDATA[>…]]>，拼接还原为 ]]>
+      el.appendChild(doc.createCDATASection(']]'));
+      el.appendChild(doc.createCDATASection(`>${parts[i] ?? ''}`));
+    }
+  }
+}
+
 /**
  * 解析一个已有 <history> 块的内条目（反思视图）：user_message / sys / assistant
- * （index 单条或 start/end 区间）/ skill（name 属性 + index 定位）/ reasoning。整块
- * 无法解析或根非 <history> 时降级为单条不可定位的历史遗留条目（text 为块内文原文，
+ * （index 单条或 start/end 区间）/ skill_content（name 属性 + index 定位）/ reasoning。
+ * 整块无法解析或根非 <history> 时降级为单条不可定位的历史遗留条目（text 为块内文原文，
  * 构建最终块时原样保留）。
  */
 function parseBlockEntries(blockText: string, blockSeq: number): ViewEntry[] {
@@ -309,10 +357,18 @@ function parseBlockEntries(blockText: string, blockSeq: number): ViewEntry[] {
         entries.push({ kind: 'assistant', lo: start, hi: end, text, blockSeq });
       }
       // 属性缺失的 assistant 条目跳过（防御：产物块创建时已校验属性）
-    } else if (el.nodeName === 'skill') {
+    } else if (el.nodeName === 'skill_content') {
       const index = intAttr(el, 'index');
       if (index !== undefined) {
         const name = el.getAttribute('name');
+        const resources = childText(el, 'skill_resources');
+        const instructions = childText(el, 'skill_instructions');
+        const text =
+          resources !== undefined && instructions !== undefined
+            ? `<skill_content${name === null ? '' : ` name="${name}"`}>` +
+              `<skill_resources>${resources}</skill_resources>` +
+              `<skill_instructions>${instructions}</skill_instructions></skill_content>`
+            : (el.textContent ?? '');
         entries.push({
           kind: 'assistant',
           lo: index,
@@ -323,7 +379,7 @@ function parseBlockEntries(blockText: string, blockSeq: number): ViewEntry[] {
           blockSeq,
         });
       }
-      // 属性缺失的 skill 条目跳过（防御：产物块创建时已校验属性）
+      // 属性缺失的 skill_content 条目跳过（防御：产物块创建时已校验属性）
     } else if (el.nodeName === 'reasoning') {
       entries.push({ kind: 'reasoning', text, blockSeq });
     }
@@ -353,14 +409,14 @@ export function buildReflectView(
 }
 
 /**
- * 把一个视图条目构建为 XML 元素（文本经 DOM 文本节点自动转义；user 条目的注释
+ * 把一个视图条目构建为 XML 元素（正文统一以 CDATA 包裹，逐字原样；user 条目的注释
  * 输出为 XML 注释节点）。getHistory 输出与最终 <history> 块共用。
  */
 export function entryToElement(doc: Document, entry: ViewEntry): Element {
   if (entry.kind === 'user') {
     const el = doc.createElement('user_message');
     if (entry.lo !== undefined) el.setAttribute('index', String(entry.lo));
-    el.appendChild(doc.createTextNode(entry.text));
+    appendCdataText(doc, el, entry.text);
     for (const note of entry.notes ?? []) el.appendChild(doc.createComment(note));
     return el;
   }
@@ -368,22 +424,34 @@ export function entryToElement(doc: Document, entry: ViewEntry): Element {
     const el = doc.createElement('sys');
     el.setAttribute('type', entry.sysKind ?? '');
     if (entry.lo !== undefined) el.setAttribute('index', String(entry.lo));
-    el.appendChild(doc.createTextNode(''));
+    appendCdataText(doc, el, '');
     return el;
   }
   if (entry.kind === 'reasoning') {
     const el = doc.createElement('reasoning');
-    el.appendChild(doc.createTextNode(entry.text));
+    appendCdataText(doc, el, entry.text);
     return el;
   }
   if (entry.kind === 'assistant' && entry.toolName === SKILL_TOOL_NAME) {
-    // skill 条目：<skill name="…" index="N">，内文为工具返回内容
-    const el = doc.createElement('skill');
+    // skill 条目：<skill_content name="…" index="N">，内文为工具返回内容；
+    // 原生 skill_content 包裹形态拆为 <skill_resources> / <skill_instructions> 两段，
+    // 各自以 CDATA 包裹，避免层层嵌套包裹。
+    const el = doc.createElement('skill_content');
     el.setAttribute('name', entry.skillName ?? '');
     if (entry.lo !== undefined && entry.lo === entry.hi) {
       el.setAttribute('index', String(entry.lo));
     }
-    el.appendChild(doc.createTextNode(entry.text));
+    const sections = skillContentSections(entry.text);
+    if (sections) {
+      const resources = doc.createElement('skill_resources');
+      appendCdataText(doc, resources, sections.resources);
+      el.appendChild(resources);
+      const instructions = doc.createElement('skill_instructions');
+      appendCdataText(doc, instructions, sections.instructions);
+      el.appendChild(instructions);
+    } else {
+      appendCdataText(doc, el, entry.text);
+    }
     return el;
   }
   const el = doc.createElement('assistant');
@@ -393,7 +461,7 @@ export function entryToElement(doc: Document, entry: ViewEntry): Element {
     el.setAttribute('start', String(entry.lo));
     el.setAttribute('end', String(entry.hi));
   }
-  el.appendChild(doc.createTextNode(entry.text));
+  appendCdataText(doc, el, entry.text);
   return el;
 }
 
