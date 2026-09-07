@@ -7,7 +7,7 @@
 ## 功能
 
 - **自动压缩**：仅主会话，在 agent/pre-step 阻塞串行执行。净压力达到 `observeThresholdTokens` 后再累计 `tailMessageCount` 条完整消息时，把触发点前的全部消息摘要为新 `<history>` 块并精确替换对应消息区间；全部 `<history>` 块 token 合计达到 `reflectThresholdTokens` 时把全部块内条目送入重新压缩，合并为一条更紧凑的摘要。待定标记以 log-only 会话事件持久化，重启后从日志恢复
-- **工具驱动压缩**：摘要生成走多轮工具会话，模型经 getHistory 查看区间条目、compressHistory 分批替换 assistant 条目、completeCompression 结束。首条消息仅含压缩指令与 index 区间，不含历史内容。用户消息与系统消息不可压缩且原样保留；未压缩条目原样保留；skill 块首次压缩时要求模型再次确认相关性。最终 `<history>` 块由插件构建，天然合法无需校验
+- **工具驱动压缩**：摘要生成走多轮工具会话，模型经 getHistory 查看区间条目、compressHistory 分批替换 assistant 条目、completeCompression 结束。首条消息仅含压缩指令与 index 区间，不含历史内容。用户消息与系统消息不可压缩且原样保留；未压缩条目原样保留；skill 加载条目以 `<skill name="…" index="…">` 元素呈现，元素内文为其工具返回内容，首次压缩时要求模型再次确认相关性，压缩后变为常规 assistant 摘要条目。最终 `<history>` 块由插件构建，天然合法无需校验
 - **压缩会话记录**：每次压缩的工具循环完整对话落盘为 one-shot 子会话，成功为会话记录、失败为失败日志，便于查看模型实际的查看与压缩行为
 - **降级容错**：systemPrompt 或 tokenMeter 服务异常时按 0 计继续压缩，问题通过 console 输出与 log-only `om/warning` 会话事件上报，同会话同一问题至多一条
 - **recall 工具**：按完整消息 index 区间回看原始会话，含被压缩内容，图片附件随结果保留

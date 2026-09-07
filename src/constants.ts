@@ -1,7 +1,8 @@
 /**
  * 共享常量：插件级魔法字符串，集中定义避免散落各模块。
  * 导出 PLUGIN_LABEL / HISTORY_TAG / HISTORY_TIP / COMPLETE_MESSAGE_DEFINITION /
- * COMPACT_CHECKPOINT_PLUGIN / COMPACTION_ABORTED_ERROR / isPluginOwnedSource。
+ * HISTORY_FORMAT_NOTE / SKILL_TOOL_NAME / COMPACT_CHECKPOINT_PLUGIN /
+ * COMPACTION_ABORTED_ERROR / isPluginOwnedSource。
  */
 
 /** 插件标识：压缩消息 source.plugin 取值与日志前缀。 */
@@ -21,7 +22,10 @@ export const COMPLETE_MESSAGE_DEFINITION =
   '`完整消息`指一条`用户消息`、`系统消息`、`模型输出文本`或`具有result的toolcall`；首条 index 为 0，按会话顺序递增。';
 
 /** 最终 <history> 块内文块首的格式说明注释（XML 注释，完整消息定义 + 条目标签语义）。 */
-export const HISTORY_FORMAT_NOTE = `<!-- 完整消息：${COMPLETE_MESSAGE_DEFINITION} <TAG index="N">表示单条完整消息，<TAG start="A" end="B"> 表示连续模块，start/end 是首尾完整消息的 index；<sys type="KIND" index="N"> 表示被压缩的系统消息，块中为空 -->`;
+export const HISTORY_FORMAT_NOTE = `<!-- 完整消息：${COMPLETE_MESSAGE_DEFINITION} <TAG index="N">表示单条完整消息，<TAG start="A" end="B"> 表示连续模块，start/end 是首尾完整消息的 index；<sys type="KIND" index="N"> 表示被压缩的系统消息，块中为空；<skill name="S" index="N"> 表示未压缩的 skill 加载条目，元素内文为其工具返回内容 -->`;
+
+/** skill 工具名：toolcall 条目的工具名为该值时视为 skill 加载，<history> 块中以 <skill> 元素呈现。 */
+export const SKILL_TOOL_NAME = 'skill';
 
 /** 旧日志压缩消息的宿主 checkpoint 标记 plugin 名（历史兼容识别用）。 */
 export const COMPACT_CHECKPOINT_PLUGIN = 'compact';

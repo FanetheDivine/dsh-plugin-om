@@ -1,10 +1,11 @@
 // 压缩视图单测：观察视图（完整消息 → 条目）、反思视图（<history> 块 → 条目）、
-// 条目 XML 渲染（转义 / 注释 / 属性）与工具名提取。
+// 条目 XML 渲染（转义 / 注释 / 属性）与工具名 / skill 名提取。
 import { describe, expect, it } from 'vitest';
 import {
   buildObserveView,
   buildReflectView,
   renderEntriesXml,
+  skillNameOf,
   toolCallNameOf,
   type ViewEntry,
 } from '../src/compress-view.ts';
@@ -140,6 +141,46 @@ describe('buildObserveView', () => {
     const first = cms[0];
     expect(first && toolCallNameOf(session, first)).toBe('skill');
   });
+
+  it('skill 加载条目：正文仅含工具返回内容，带 toolName 与 skillName', () => {
+    const session = makeSession({
+      events: [
+        assistantEvent([toolCallBlock('c1', 'skill', '{"name":"lark-im"}')]),
+        resultEvent('c1', 'skill 加载内容'),
+      ],
+    });
+    const view = buildObserveView(session, [0, 1]);
+    expect(view.entries).toHaveLength(1);
+    const skill = view.entries[0];
+    expect(skill).toMatchObject({
+      kind: 'assistant',
+      lo: 0,
+      hi: 0,
+      toolName: 'skill',
+      skillName: 'lark-im',
+    });
+    expect(skill?.text).toBe('skill 加载内容');
+    expect(skill?.text).not.toContain('[tool-call');
+  });
+
+  it('skillNameOf：非 skill 工具为 undefined，skill 参数缺失或非法为空串', () => {
+    const session = makeSession({
+      events: [
+        assistantEvent([toolCallBlock('c1', 'run_code', '{"code":"x"}')]),
+        resultEvent('c1', 'ok'),
+        assistantEvent([toolCallBlock('c2', 'skill', '{}')]),
+        resultEvent('c2', 'ok'),
+        assistantEvent([toolCallBlock('c3', 'skill', 'not-json')]),
+        resultEvent('c3', 'ok'),
+      ],
+    });
+    const cms = indexCompleteMessages(session);
+    const [plain, missingName, invalidJson] = cms;
+    if (!plain || !missingName || !invalidJson) throw new Error('完整消息数量不足');
+    expect(skillNameOf(session, plain)).toBeUndefined();
+    expect(skillNameOf(session, missingName)).toBe('');
+    expect(skillNameOf(session, invalidJson)).toBe('');
+  });
 });
 
 describe('buildReflectView', () => {
@@ -191,6 +232,33 @@ describe('buildReflectView', () => {
     expect(skipped.entries.map((e) => e.kind)).toEqual(['assistant']);
     expect(skipped.entries[0]).toMatchObject({ kind: 'assistant', lo: 0, hi: 0 });
   });
+
+  it('skill 条目解析为带 toolName 的 assistant 条目，重新渲染 round-trip 还原', () => {
+    const block =
+      '<history>\n<skill name="lark-im" index="5">skill 返回内容</skill>\n<assistant index="6">摘要</assistant>\n</history>';
+    const view = buildReflectView([{ text: block, seq: 7 }]);
+    expect(view.entries).toHaveLength(2);
+    const skill = view.entries[0];
+    expect(skill).toMatchObject({
+      kind: 'assistant',
+      lo: 5,
+      hi: 5,
+      text: 'skill 返回内容',
+      toolName: 'skill',
+      skillName: 'lark-im',
+      blockSeq: 7,
+    });
+    // 反思轮定位与压缩挑战依赖 lo/hi；缺失 index 的 skill 条目不可定位、被跳过
+    const noIndex = buildReflectView([
+      { text: '<history>\n<skill name="x">内容</skill>\n</history>', seq: 8 },
+    ]);
+    expect(noIndex.entries).toHaveLength(1);
+    expect(noIndex.entries[0]?.lo).toBeUndefined();
+    // round-trip：解析后的条目重新渲染还原 <skill> 元素
+    const xml = renderEntriesXml(view.entries);
+    expect(xml).toContain('<skill name="lark-im" index="5">skill 返回内容</skill>');
+    expect(xml).toContain('<assistant index="6">摘要</assistant>');
+  });
 });
 
 describe('renderEntriesXml', () => {
@@ -208,6 +276,22 @@ describe('renderEntriesXml', () => {
     expect(xml).toContain('<sys type="system" index="1"></sys>');
     expect(xml).toContain('<assistant index="2">摘要</assistant>');
     expect(xml).toContain('<assistant start="3" end="5">区间摘要</assistant>');
+  });
+
+  it('skill 条目输出 <skill name index> 元素，文本转义，name 缺省为空串', () => {
+    const xml = renderEntriesXml([
+      {
+        kind: 'assistant',
+        lo: 7,
+        hi: 7,
+        text: 'a<b 内容',
+        toolName: 'skill',
+        skillName: 'lark-doc',
+      },
+      { kind: 'assistant', lo: 8, hi: 8, text: '无名 skill', toolName: 'skill' },
+    ]);
+    expect(xml).toContain('<skill name="lark-doc" index="7">a&lt;b 内容</skill>');
+    expect(xml).toContain('<skill name="" index="8">无名 skill</skill>');
   });
 
   it('空条目序列返回空串', () => {

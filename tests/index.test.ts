@@ -884,7 +884,8 @@ describe('apply 接线（OM 反思压缩）', () => {
   });
 
   it('先反思后观察串行：反思合并旧块，观察在其后追加独立新块', async () => {
-    // 反思阈值 90：旧块（X*400，约 112 tokens）首次触发反思；合并后的块不再触发；
+    // 反思阈值 100：旧块（X*400 加块首格式注释，约 120 tokens）首次触发反思；
+    // 合并后的块（格式注释加 REFLECTED-REPORT，约 92 tokens）不再触发；
     // 观察阈值 1（上下文压力 ✓）延迟一步后执行
     const session = makeSession({
       events: [
@@ -927,7 +928,7 @@ describe('apply 接线（OM 反思压缩）', () => {
         return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
       },
     });
-    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1, reflectThresholdTokens: 90 });
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1, reflectThresholdTokens: 100 });
     await runPreStepWithDelay(ctx, session);
     expect(ctx._llmCalls).toHaveLength(6);
     const firstText = instructionText(ctx._llmCalls[0]?.options);
