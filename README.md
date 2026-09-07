@@ -71,9 +71,11 @@ preset-agent 自带 compaction-basic 压缩，阈值为上下文窗口的 80%，
 | `recallEnabled` | `true` | 是否注册 `recall` 工具 |
 | `semanticRecallEnabled` | `true` | 是否注册 `recall-semantic` 工具，关闭时不触发模型下载 |
 
-> `compressSkipReasoning` 的设置应根据模型决定：若模型 thinking 输出质量差且会把关键结论以 text 形式输出，保持默认开启即可，如 glm 和 deepseek 系列；若使用 openai/responses 或 anthropic/messages API，reasoning 内容包含大量决策信息，建议关闭此项；携带 reasoning 大约使 input_tokens 增加 40%。
-
-> 不建议把观察阈值设置得过高：越早压缩收益越高，且机制依赖模型对消息计数，过多消息会导致历史混乱。
+合理设置 `observeThresholdTokens` 和 `compressSkipReasoning`：
+- 若模型 reasoning 输出质量差且会把关键结论以 text 形式输出（例如glm和deepseek），无需携带reasoning
+- 若使用 openai/responses 或 anthropic/messages API，reasoning 内容包含大量决策信息，建议携带reasoning
+- 若观察阈值太小，涵盖信息不足以形成逻辑链路，应当让观察阈值覆盖多个 text/reasoning
+- 若观察阈值太大摘要质量也会降低，大幅增加单次观察的耗时，且越早 OM 收益越高
 
 > 想直观理解机制并估算不同参数下的 token 成本，可打开交互式[机制说明与成本计算器](https://fanethedivine.github.io/dsh-plugin-om/)。
 
