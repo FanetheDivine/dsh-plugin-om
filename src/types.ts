@@ -103,25 +103,31 @@ export type CompleteMessage = {
 };
 
 /**
- * 插件扩展的 compaction/summary 载荷：宿主类型 + shadowedCharCount/attemptCount。
+ * 插件扩展的 compaction/summary 载荷：宿主类型 + shadowedCharCount 与压缩循环计时。
  * 宿主 append 不做 schema 剥离，扩展字段原样持久化；旧会话载荷可能缺失，
  * 客户端读取时按可选处理。宿主类型是 union，无法声明合并，故用交叉类型 + 读取处收窄。
  */
 export type CompactionSummaryPayload = SessionEventMap['compaction/summary'] & {
   /** 被压缩内容的字符数（压缩前文本长度合计；UI 标题统计用）。 */
   shadowedCharCount?: number;
-  /** 压缩循环的模型请求轮数（旧会话载荷为重试次数，读取时按可选处理）。 */
-  attemptCount?: number;
+  /** 压缩循环开始时间（epoch 毫秒）。 */
+  startedAt?: number;
+  /** 压缩循环结束时间（epoch 毫秒）。 */
+  completedAt?: number;
+  /** 压缩循环总耗时（毫秒）。 */
+  durationMs?: number;
 };
 
 /**
  * 插件扩展的 compaction/end 载荷：宿主类型 + diagnosticSessionId（最后一次摘要尝试
- * 无论成功或失败时落盘的诊断子会话 id）。宿主 append 不做 schema 剥离，扩展字段原样持久化；
- * 客户端读取时按可选处理（UI 渲染行为不变）。
+ * 无论成功或失败时落盘的诊断子会话 id）与失败路径的压缩循环耗时。宿主 append 不做
+ * schema 剥离，扩展字段原样持久化；客户端读取时按可选处理（UI 渲染行为不变）。
  */
 export type CompactionEndPayload = SessionEventMap['compaction/end'] & {
   /** 最后一次摘要尝试（成功或失败）落盘的诊断子会话 id（未发出请求或落盘失败时缺失）。 */
   diagnosticSessionId?: string;
+  /** 压缩循环总耗时（毫秒；失败路径记录）。 */
+  durationMs?: number;
 };
 
 /**

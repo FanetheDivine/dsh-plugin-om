@@ -181,9 +181,19 @@ describe('apply 接线（OM 观察压缩）', () => {
     const compactionId = startEvent.data.compactionId;
     expect(summaryEvent.data.compactionId).toBe(compactionId);
     expect(endEvent.data.compactionId).toBe(compactionId);
-    // start 携带压缩阶段（UI 压缩中提示按阶段区分文案）；3 轮请求 → attemptCount=3
+    // start 携带压缩阶段（UI 压缩中提示按阶段区分文案）；summary 记录压缩循环
+    // 计时（startedAt/completedAt/durationMs），不再记录轮数（轮数归诊断子会话）
     expect((startEvent.data as { phase?: string }).phase).toBe('observe');
-    expect((summaryEvent.data as CompactionSummaryPayload).attemptCount).toBe(3);
+    const summaryData = summaryEvent.data as CompactionSummaryPayload;
+    expect((summaryData as Record<string, unknown>).attemptCount).toBeUndefined();
+    const { startedAt, completedAt, durationMs } = summaryData;
+    if (startedAt === undefined || completedAt === undefined || durationMs === undefined) {
+      throw new Error('缺压缩计时字段');
+    }
+    expect(startedAt).toBeGreaterThan(0);
+    expect(completedAt).toBeGreaterThanOrEqual(startedAt);
+    expect(durationMs).toBeGreaterThanOrEqual(0);
+    expect(completedAt - startedAt).toBe(durationMs);
     // summary 内容 = 完整合并后的 <history> 内文（聊天卡片所见即所得）
     const summaryText = summaryEvent.data.summary
       .map((block) => (block.type === 'text' ? block.text : ''))
@@ -496,10 +506,11 @@ describe('apply 接线（OM 观察压缩）', () => {
     const failEnd = session.events.findLast((e) => e.type === 'compaction/end');
     if (failEnd?.type !== 'compaction/end') throw new Error('缺 end');
     expect((failEnd.data as { error?: string }).error).toContain('额度不足'); // 实际报错写入 end
-    // 诊断子会话（失败日志）id 随 end 载荷传播
+    // 诊断子会话（失败日志）id 随 end 载荷传播；失败路径同样记录压缩循环总耗时
     expect((failEnd.data as { diagnosticSessionId?: string }).diagnosticSessionId).toBe(
       ctx._createdSessions[0]?.id,
     );
+    expect((failEnd.data as { durationMs?: number }).durationMs).toBeGreaterThanOrEqual(0);
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
     expect(
       warns.some((w) => w.includes('上下文压缩失败，拒绝本 step 中断当前 turn：额度不足')),
@@ -1027,9 +1038,13 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
     if (endEvent?.type !== 'compaction/end') throw new Error('缺 end');
     expect(summaryEvent.data.compactionId).toBe(startEvent.data.compactionId);
     expect(endEvent.data.compactionId).toBe(startEvent.data.compactionId);
-    // 反思压缩：start 携带 phase='reflect'（UI 压缩中提示按阶段区分）；3 轮请求 → attemptCount=3
+    // 反思压缩：start 携带 phase='reflect'（UI 压缩中提示按阶段区分）；summary 记录
+    // 压缩循环计时，不再记录轮数（轮数归诊断子会话）
     expect((startEvent.data as { phase?: string }).phase).toBe('reflect');
-    expect((summaryEvent.data as CompactionSummaryPayload).attemptCount).toBe(3);
+    const summaryData = summaryEvent.data as CompactionSummaryPayload;
+    expect((summaryData as Record<string, unknown>).attemptCount).toBeUndefined();
+    expect(summaryData.startedAt).toBeGreaterThan(0);
+    expect(summaryData.durationMs).toBeGreaterThanOrEqual(0);
     // 单节点替换：遮蔽区间为旧 <history> 节点
     expect(summaryEvent.data.shadowedRange).toEqual({ start: 0, end: 0 });
     expect(summaryEvent.data.shadowedSeqs).toEqual([0]);
