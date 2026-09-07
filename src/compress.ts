@@ -39,6 +39,7 @@ import {
   buildCompressionTaskText,
   type CompressionLoopOptions,
   type CompressionOutcome,
+  type CompressionStats,
   runCompressionLoop,
 } from './compress-loop.ts';
 import { buildObserveView, buildReflectView } from './compress-view.ts';
@@ -95,7 +96,13 @@ async function runPassLoop(
       `${phase === 'reflect' ? '反思' : '观察'}：压缩循环失败（${outcome.error}），诊断子会话 ${outcome.recordSessionId ?? '未落盘'}，追加 compaction/end(error)`,
     );
     try {
-      appendCompactionEnd(session, lifecycle, outcome.error, outcome.recordSessionId);
+      appendCompactionEnd(
+        session,
+        lifecycle,
+        outcome.error,
+        outcome.recordSessionId,
+        outcome.stats.durationMs,
+      );
     } catch {
       /* end 追加失败忽略（start 已记录，日志仍可诊断） */
     }
@@ -293,7 +300,8 @@ function appendCompactionStart(
 
 /**
  * 追加 compaction/summary（log-only，承担影子价格认领：紧随其后的替换消息消费 claim）。
- * summary 为完整合并后的 <history> 内文；usage 由摘要调用提取（无则省略）。
+ * summary 为完整合并后的 <history> 内文；usage 由摘要调用提取（无则省略）；stats 提供
+ * 压缩循环计时（startedAt/completedAt/durationMs）。
  */
 function appendCompactionSummary(
   session: Session,
@@ -309,8 +317,8 @@ function appendCompactionSummary(
     model: string;
     /** 摘要请求的生成上限（undefined 表示未设置，载荷省略该字段）。 */
     maxTokens: number | undefined;
-    /** 摘要重试次数（0 起）。 */
-    attemptCount: number;
+    /** 压缩循环统计（载荷记录其计时字段）。 */
+    stats: CompressionStats;
     usage?: TokenUsage;
   },
 ): number {
@@ -324,7 +332,9 @@ function appendCompactionSummary(
     provider: data.provider,
     model: data.model,
     ...(data.maxTokens === undefined ? {} : { maxTokens: data.maxTokens }),
-    attemptCount: data.attemptCount,
+    startedAt: data.stats.startedAt,
+    completedAt: data.stats.completedAt,
+    durationMs: data.stats.durationMs,
     ...(data.usage === undefined ? {} : { usage: data.usage }),
   };
   return session.append('compaction/summary', payload).seq;
@@ -332,19 +342,22 @@ function appendCompactionSummary(
 
 /**
  * 追加 compaction/end（log-only，结束生命周期；error 记录失败原因，
- * diagnosticSessionId 记录最后一次摘要尝试（无论成功或失败）的诊断子会话 id）。
+ * diagnosticSessionId 记录最后一次摘要尝试（无论成功或失败）的诊断子会话 id，
+ * durationMs 记录失败路径的压缩循环耗时）。
  */
 function appendCompactionEnd(
   session: Session,
   lifecycle: CompactionLifecycle,
   error?: string,
   diagnosticSessionId?: string,
+  durationMs?: number,
 ): number {
   const payload: CompactionEndPayload = {
     compactionId: lifecycle.compactionId,
     turn: lifecycle.turn,
     ...(error === undefined ? {} : { error }),
     ...(diagnosticSessionId === undefined ? {} : { diagnosticSessionId }),
+    ...(durationMs === undefined ? {} : { durationMs }),
   };
   return session.append('compaction/end', payload).seq;
 }
@@ -465,7 +478,7 @@ export async function reflectPass(
       provider: target.provider,
       model: target.model,
       maxTokens: config.compressMaxTokens,
-      attemptCount: summaryResult.rounds,
+      stats: summaryResult.stats,
       ...(summaryResult.usage === undefined ? {} : { usage: summaryResult.usage }),
     });
     logger.step('反思提交：替换整个 <history> 块区段为合并摘要');
@@ -490,7 +503,7 @@ export async function reflectPass(
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(`反思提交失败: ${message}`);
     try {
-      appendCompactionEnd(session, lifecycle, message);
+      appendCompactionEnd(session, lifecycle, message, undefined, summaryResult.stats.durationMs);
     } catch {
       /* end 追加失败忽略（start 已记录，日志仍可诊断） */
     }
@@ -775,7 +788,7 @@ export async function observePass(
       provider: target.provider,
       model: target.model,
       maxTokens: config.compressMaxTokens,
-      attemptCount: summaryResult.rounds,
+      stats: summaryResult.stats,
       ...(usage === undefined ? {} : { usage }),
     });
     logger.step('观察提交：替换被压缩新消息区间为 <history>（旧块保留）');
@@ -802,7 +815,7 @@ export async function observePass(
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(`观察压缩提交失败: ${message}`);
     try {
-      appendCompactionEnd(session, lifecycle, message);
+      appendCompactionEnd(session, lifecycle, message, undefined, summaryResult.stats.durationMs);
     } catch {
       /* end 追加失败忽略（start 已记录，日志仍可诊断） */
     }

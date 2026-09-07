@@ -87,8 +87,8 @@ describe('runCompressionLoop', () => {
     const descriptor = events.find((e) => e.type === 'subagent/descriptor');
     expect((descriptor?.data as { label?: string })?.label).toContain('会话记录');
     expect((descriptor?.data as { label?: string })?.label).toContain('3 轮');
-    // 消息组：user 指令 + assistant(tool-call) + tool-result 逐条原样
-    expect(events.filter((e) => e.type === 'user/message')).toHaveLength(5);
+    // 消息组：user 指令 + assistant(tool-call) + tool-result 逐条原样，末尾统计消息
+    expect(events.filter((e) => e.type === 'user/message')).toHaveLength(6);
     expect(events.filter((e) => e.type === 'assistant/message')).toHaveLength(3);
     expect(ctx._flushedSessions).toHaveLength(1);
     expect(result.recordSessionId).toBe(record?.id);
@@ -135,7 +135,7 @@ describe('runCompressionLoop', () => {
     // 只发起一轮请求；getHistory（t2）未执行，无对应 tool-result（assistant 消息原样保留其调用块）
     expect(ctx._llmCalls).toHaveLength(1);
     const events = ctx._createdSessions[0]?.session.events ?? [];
-    expect(events.filter((e) => e.type === 'user/message')).toHaveLength(2); // 指令 + completeCompression 结果
+    expect(events.filter((e) => e.type === 'user/message')).toHaveLength(3); // 指令 + completeCompression 结果 + 统计消息
     expect(events.filter((e) => e.type === 'assistant/message')).toHaveLength(1);
     expect(JSON.stringify(events)).not.toContain('"toolCallId":"t2"');
   });

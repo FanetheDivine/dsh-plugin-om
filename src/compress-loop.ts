@@ -2,7 +2,7 @@
  * 工具驱动的压缩循环：以新会话方式直连 ctx.llm.stream()，模型通过 getHistory /
  * compressHistory / completeCompression 三个工具完成压缩，替代直出 <history> 块。
  * 导出 runCompressionLoop / buildCompressionPrompt / buildCompressionTaskText /
- * CompressionLoopOptions / CompressionOutcome / COMPRESSION_NUDGE_TEXT。
+ * CompressionLoopOptions / CompressionOutcome / CompressionStats / COMPRESSION_NUDGE_TEXT。
  *
  * - 首条 user 消息仅含压缩指令与 start/end 区间（buildCompressionTaskText），不含
  *   历史消息内容；共享压缩提示词作为 system
@@ -13,7 +13,8 @@
  * - 模型输出纯文本（无工具调用）时追加提醒消息继续，连续 2 轮仍无工具调用判失败
  * - 429 限流走全局限流等待门（gateRateLimit / noteRateLimit）；其余请求级错误依赖
  *   dsh 运行时重试，插件不做整体重试，错误直接判失败
- * - signal 中止标记 aborted；token usage 汇总全部轮次
+ * - signal 中止标记 aborted；token usage 汇总全部轮次；统计循环起止时间戳、总耗时
+ *   与逐轮请求统计（CompressionStats），随结果返回并随会话记录落盘
  * - 成功与失败均把循环消息组原样落盘为子会话（recordCompressionSession），成功记
  *   录 sessionId 于日志，失败记录作为诊断子会话 id 向上传播
  */
@@ -92,6 +93,30 @@ export function buildCompressionTaskText(
 export const COMPRESSION_NUDGE_TEXT =
   '请通过工具执行压缩：用 getHistory 查看区间条目，用 compressHistory 压缩 assistant 条目，完成后调用 completeCompression。不要输出与工具调用无关的文本。';
 
+/** 逐轮请求统计：轮次（1 起）、该轮起止时间戳与耗时、该轮 token usage。 */
+export type CompressionRoundStat = {
+  /** 轮次（1 起）。 */
+  round: number;
+  /** 该轮请求开始时间（epoch 毫秒）。 */
+  startedAt: number;
+  /** 该轮请求耗时（毫秒）。 */
+  durationMs: number;
+  /** 该轮 token usage（提供方未报告时缺失）。 */
+  usage?: TokenUsage;
+};
+
+/** 一次压缩循环的统计：循环起止时间戳、总耗时与逐轮请求统计。 */
+export type CompressionStats = {
+  /** 循环开始时间（epoch 毫秒）。 */
+  startedAt: number;
+  /** 循环结束时间（epoch 毫秒）。 */
+  completedAt: number;
+  /** 循环总耗时（毫秒）。 */
+  durationMs: number;
+  /** 逐轮请求统计（完成响应的轮次；流异常轮次不计入）。 */
+  rounds: readonly CompressionRoundStat[];
+};
+
 /** 工具循环选项。 */
 export type CompressionLoopOptions = {
   /** 压缩视图（工具数据源，观察或反思）。 */
@@ -114,7 +139,7 @@ export type CompressionLoopOptions = {
   signal?: AbortSignal;
 };
 
-/** 循环成功结果：最终 <history> 块 + 模型请求轮数 + 汇总 usage + 会话记录子会话 id。 */
+/** 循环成功结果：最终 <history> 块 + 模型请求轮数 + 汇总 usage + 循环统计 + 会话记录子会话 id。 */
 export type CompressionSuccess = {
   ok: true;
   /** 最终 <history> 块文本。 */
@@ -123,17 +148,21 @@ export type CompressionSuccess = {
   rounds: number;
   /** 全部轮次 token usage 合计（无 usage 数据时缺失）。 */
   usage?: TokenUsage;
+  /** 循环统计（起止时间戳、总耗时与逐轮请求统计）。 */
+  stats: CompressionStats;
   /** 压缩会话记录子会话 id（落盘失败时缺失）。 */
   recordSessionId?: string;
 };
 
-/** 循环失败结果：最后一次错误 + 是否因 signal 中止 + 会话记录子会话 id。 */
+/** 循环失败结果：最后一次错误 + 是否因 signal 中止 + 循环统计 + 会话记录子会话 id。 */
 export type CompressionFailure = {
   ok: false;
   /** 最后一次错误（signal 中止时为 COMPACTION_ABORTED_ERROR）。 */
   error: string;
   /** 因 signal 中止而放弃。 */
   aborted: boolean;
+  /** 循环统计（起止时间戳、总耗时与已完成轮次的请求统计）。 */
+  stats: CompressionStats;
   /** 压缩会话记录（诊断）子会话 id（落盘失败时缺失）。 */
   recordSessionId?: string;
 };
@@ -219,18 +248,35 @@ export async function runCompressionLoop(
   let rounds = 0;
   let nudges = 0;
   let usage: TokenUsage | undefined;
-  const recordSessionId = async (success: boolean): Promise<string | undefined> =>
+  const startedAt = Date.now();
+  const roundStats: CompressionRoundStat[] = [];
+  /** 汇总当前循环统计（completedAt 取调用时刻；rounds 数组为引用共享）。 */
+  const buildStats = (): CompressionStats => {
+    const completedAt = Date.now();
+    return { startedAt, completedAt, durationMs: completedAt - startedAt, rounds: roundStats };
+  };
+  const recordSessionId = async (
+    success: boolean,
+    stats: CompressionStats,
+  ): Promise<string | undefined> =>
     recordCompressionSession(ctx, session, {
       phase: options.phase,
       target: options.target,
       messages,
-      rounds,
+      stats,
       success,
       debug: options.debug,
     });
   const failWith = async (error: string, aborted: boolean): Promise<CompressionFailure> => {
-    const id = await recordSessionId(false);
-    return { ok: false, error, aborted, ...(id === undefined ? {} : { recordSessionId: id }) };
+    const stats = buildStats();
+    const id = await recordSessionId(false, stats);
+    return {
+      ok: false,
+      error,
+      aborted,
+      stats,
+      ...(id === undefined ? {} : { recordSessionId: id }),
+    };
   };
   logger.step(
     `压缩循环开始（${options.phase === 'reflect' ? '反思' : '观察'}，provider ${options.target.provider}，model ${options.target.model}，maxTokens ${
@@ -247,6 +293,8 @@ export async function runCompressionLoop(
       logger.warn('压缩循环中止（限流等待被 signal 中止），放弃本次压缩');
       return await failWith(COMPACTION_ABORTED_ERROR, true);
     }
+    // 逐轮计时从限流等待门放行后开始：round durationMs 仅覆盖该轮模型请求
+    const roundStartedAt = Date.now();
     const requestOptions: GenerateOptions = {
       provider: options.target.provider,
       model: options.target.model,
@@ -296,6 +344,12 @@ export async function runCompressionLoop(
     }
     rounds += 1;
     if (assembler.usage !== undefined) usage = addUsage(usage, assembler.usage);
+    roundStats.push({
+      round: rounds,
+      startedAt: roundStartedAt,
+      durationMs: Date.now() - roundStartedAt,
+      ...(assembler.usage === undefined ? {} : { usage: assembler.usage }),
+    });
     const assistantMessage = assembler.message({
       kind: 'model',
       provider: options.target.provider,
@@ -335,11 +389,13 @@ export async function runCompressionLoop(
       logger.info(
         `压缩循环完成（${rounds} 轮，${state.replacementCount} 次压缩替换，输出 ${text.length} 字符）`,
       );
-      const id = await recordSessionId(true);
+      const stats = buildStats();
+      const id = await recordSessionId(true, stats);
       return {
         ok: true,
         text,
         rounds,
+        stats,
         ...(usage === undefined ? {} : { usage }),
         ...(id === undefined ? {} : { recordSessionId: id }),
       };

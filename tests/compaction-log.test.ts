@@ -1,7 +1,8 @@
 // compaction-log.ts 单元测试：压缩会话记录落盘 recordCompressionSession——header
 // 元数据（origin/parentSession/delegationDepth/cwd 继承）、subagent/descriptor 载荷
-// （version/mode/provider/label 成功与失败形态）、循环消息组原样结构与顺序（无额外
-// 消息）、flush 调用、落盘异常被吞（create/flush 失败仅 warn 不抛错）。
+// （version/mode/provider/label 成功与失败形态）、循环消息组原样结构与顺序、末尾
+// 统计消息（逐轮耗时与 usage、usage 合计）、flush 调用、落盘异常被吞（create/flush
+// 失败仅 warn 不抛错）。
 
 import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent';
 import { describe, expect, it } from 'vitest';
@@ -9,13 +10,38 @@ import { describe, expect, it } from 'vitest';
 import {
   COMPACTION_LOG_PROVIDER,
   compressionRecordLabel,
+  formatCompressionStats,
   recordCompressionSession,
 } from '../src/compaction-log.ts';
+import type { CompressionStats } from '../src/compress-loop.ts';
 import { PLUGIN_LABEL } from '../src/constants.ts';
 import type { Message, Session } from '../src/types.ts';
 import { makeCtx, makeSession, textBlock, twoCallFlow } from './helpers.ts';
 
 const TARGET = { provider: 'test', model: 'test-model' };
+
+/** 构造循环统计：startedAt 固定，逐轮耗时与 usage 可指定。 */
+function makeStats(
+  rounds: Array<{ durationMs: number; usage?: { inputTokens: number; outputTokens: number } }>,
+): CompressionStats {
+  const startedAt = 1_000;
+  let cursor = startedAt;
+  return {
+    startedAt,
+    completedAt: startedAt + 5_000,
+    durationMs: 5_000,
+    rounds: rounds.map((round, index) => {
+      const roundStat = {
+        round: index + 1,
+        startedAt: cursor,
+        durationMs: round.durationMs,
+        ...(round.usage === undefined ? {} : { usage: round.usage }),
+      };
+      cursor += round.durationMs;
+      return roundStat;
+    }),
+  };
+}
 
 /** 构造循环消息组：user 指令 + assistant（tool-call）+ tool-result。 */
 function loopMessages(): Message[] {
@@ -69,7 +95,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       phase: 'observe',
       target: TARGET,
       messages: loopMessages(),
-      rounds: 1,
+      stats: makeStats([{ durationMs: 100, usage: { inputTokens: 10, outputTokens: 5 } }]),
       success: true,
       debug: false,
     });
@@ -97,7 +123,10 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       phase: 'reflect',
       target: TARGET,
       messages: loopMessages(),
-      rounds: 2,
+      stats: makeStats([
+        { durationMs: 100, usage: { inputTokens: 10, outputTokens: 5 } },
+        { durationMs: 200, usage: { inputTokens: 20, outputTokens: 8 } },
+      ]),
       success: true,
       debug: false,
     });
@@ -109,16 +138,58 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       version: SUBAGENT_DESCRIPTOR_VERSION,
       mode: 'one-shot',
       provider: COMPACTION_LOG_PROVIDER,
+      // label 轮数取自统计的逐轮数组长度
       label: compressionRecordLabel('reflect', 2, true),
     });
     expect(compressionRecordLabel('reflect', 2, true)).toContain('会话记录');
     expect(compressionRecordLabel('observe', 1, false)).toContain('失败日志');
-    // 消息组原样：user 指令 + assistant（含 tool-call 块）+ tool-result，共 3 条
+    // 消息组原样：user 指令 + assistant（含 tool-call 块）+ tool-result，末尾再追加
+    // 一条统计消息，共 4 条（user 3 + assistant 1）
     const { user, assistant } = child ? messageEvents(child) : { user: [], assistant: [] };
-    expect(user).toHaveLength(2);
+    expect(user).toHaveLength(3);
     expect(assistant).toHaveLength(1);
     expect(JSON.stringify(assistant)).toContain('getHistory');
     expect(JSON.stringify(user[1])).toContain('tool-result');
+  });
+
+  it('末尾统计消息：插件来源，含起止时间、总耗时、逐轮明细与 usage 合计', async () => {
+    const ctx = makeCtx();
+    const parent = makeSession();
+    await recordCompressionSession(ctx, parent, {
+      phase: 'observe',
+      target: TARGET,
+      messages: loopMessages(),
+      stats: makeStats([
+        { durationMs: 100, usage: { inputTokens: 10, outputTokens: 5 } },
+        { durationMs: 200 },
+      ]),
+      success: true,
+      debug: false,
+    });
+    const child = ctx._createdSessions[0]?.session;
+    const userEvents = child?.events.filter((e) => e.type === 'user/message') ?? [];
+    const statsEvent = userEvents[userEvents.length - 1];
+    if (statsEvent === undefined) throw new Error('缺统计消息');
+    const statsData = statsEvent.data as {
+      content?: Array<{ text?: string }>;
+      source?: { kind?: string; plugin?: string };
+    };
+    const text = (statsData.content ?? []).map((block) => block.text ?? '').join('');
+    expect(text).toContain('总耗时：5000 ms');
+    expect(text).toContain('请求轮数：2');
+    expect(text).toContain('第 1 轮：耗时 100 ms');
+    expect(text).toContain('input 10 / output 5');
+    expect(text).toContain('第 2 轮：耗时 200 ms');
+    expect(text).toContain('usage 合计：input 10 / output 5');
+    // 统计消息为插件来源，与压缩指令消息区分
+    expect(statsData.source).toEqual({ kind: 'plugin', plugin: PLUGIN_LABEL });
+  });
+
+  it('formatCompressionStats：全部轮次无 usage 时不输出 usage 合计行', () => {
+    const text = formatCompressionStats('observe', false, makeStats([{ durationMs: 100 }]));
+    expect(text).toContain('结果：失败');
+    expect(text).toContain('请求轮数：1');
+    expect(text).not.toContain('usage 合计');
   });
 
   it('失败：label 为失败日志，消息组同样原样落盘', async () => {
@@ -128,7 +199,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       phase: 'observe',
       target: TARGET,
       messages: loopMessages(),
-      rounds: 1,
+      stats: makeStats([{ durationMs: 100 }]),
       success: false,
       debug: false,
     });
@@ -146,7 +217,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       phase: 'observe',
       target: TARGET,
       messages: loopMessages(),
-      rounds: 1,
+      stats: makeStats([{ durationMs: 100 }]),
       success: false,
       debug: false,
     });
@@ -165,7 +236,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       phase: 'observe',
       target: TARGET,
       messages: loopMessages(),
-      rounds: 1,
+      stats: makeStats([{ durationMs: 100 }]),
       success: true,
       debug: false,
     });
