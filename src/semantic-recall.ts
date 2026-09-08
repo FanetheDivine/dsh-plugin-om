@@ -5,7 +5,8 @@
  * resolveSemanticRange / tokenize / matchExplanation / buildSemanticRecallTool。
  * 向量为本地 ONNX 嵌入（cosine 相似度）；只匹配文本，纯图片消息不进候选池；
  * 区间缺省检索全部、区间不合法回退全量并在输出中告知；输出契约同 recall
- * （{ text, images }，超大结果由 tool-result-pruner 裁剪）；仅主会话可用。
+ * （{ text, images }，超大结果由 tool-result-pruner 裁剪）；候选池排除本次调用
+ * 自身的 toolcall 完整消息（其渲染文本含 query 原文，必居榜首）；仅主会话可用。
  */
 
 import { z } from 'zod';
@@ -154,10 +155,13 @@ export function buildSemanticRecallTool(options?: {
       const cms = indexCompleteMessages(session);
       if (cms.length === 0) return textOnly('会话中没有可检索的消息');
       const range = resolveSemanticRange(cms.length, { start, end, offset });
+      const selfCallId = String(exec.callId ?? '');
       const candidates: Array<{ cm: CompleteMessage; text: string }> = [];
       for (let i = range.lo; i <= range.hi; i += 1) {
         const cm = cms[i];
         if (!cm) continue;
+        // 排除本次调用自身：其渲染文本含 query 原文，相似度必居榜首，只会挤占 top_k 名额
+        if (selfCallId !== '' && cm.type === 'toolcall' && cm.callId === selfCallId) continue;
         let text = '';
         try {
           text = renderCompleteMessage(session, cm);

@@ -11,7 +11,14 @@ import {
   SEMANTIC_MODEL_NOT_READY_MESSAGE,
 } from '../src/semantic-recall.ts';
 import type { SessionEvent } from '../src/types.ts';
-import { imageBlock, makeMessage, makeSession, textBlock, textOf } from './helpers.ts';
+import {
+  imageBlock,
+  makeMessage,
+  makeSession,
+  textBlock,
+  textOf,
+  toolCallBlock,
+} from './helpers.ts';
 
 describe('recall-semantic 参数解析（zod schema）', () => {
   it('query 必填且非空，top_k 与区间参数可选', () => {
@@ -398,6 +405,47 @@ describe('recall-semantic 工具', () => {
     expect(value.images).toEqual([
       { attachmentId: 'att-3', mediaType: 'image/png', bytes: 1024, width: 800, height: 600 },
     ]);
+  });
+
+  it('候选池排除本次调用自身的 toolcall（其渲染文本含 query 原文，必居榜首）', async () => {
+    const events = [
+      {
+        type: 'user/message',
+        data: makeMessage({ content: [textBlock('缓存失效问题排查')], id: 'm-cache' }),
+      },
+      {
+        type: 'assistant/message',
+        data: {
+          message: makeMessage({
+            role: 'assistant',
+            content: [toolCallBlock('tc-self', 'recall-semantic', { query: '缓存' })],
+            id: 'a-self',
+          }),
+        },
+      },
+      {
+        type: 'user/message',
+        data: makeMessage({ content: [textBlock('数据库连接池配置')], id: 'm-db' }),
+      },
+    ] as unknown as SessionEvent[];
+    const session = makeSession({ events });
+    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    // exec.callId 与日志中的调用一致：该 toolcall 不进候选池、不占 top_k 名额
+    const value = (await tool.execute({ query: '缓存' }, {
+      agent: { session },
+      callId: 'tc-self',
+    } as never)) as RecallOutputValue;
+    expect(value.text).toContain('2 条可嵌入'); // 仅 m-cache 与 m-db，自身不占候选
+    expect(value.text).toContain('缓存失效问题排查');
+    expect(value.text).not.toContain('[tool-call recall-semantic');
+    expect(value.text).not.toContain('"query"');
+    // exec.callId 指向其他调用时，该历史 toolcall 照常参与检索（只排除本次调用自身）
+    const other = (await tool.execute({ query: '缓存' }, {
+      agent: { session },
+      callId: 'tc-other',
+    } as never)) as RecallOutputValue;
+    expect(other.text).toContain('3 条可嵌入');
+    expect(other.text).toContain('[tool-call recall-semantic');
   });
 
   it('纯图片消息（无可渲染文本）不进候选池，无法被语义命中', async () => {
