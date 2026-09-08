@@ -405,14 +405,14 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(result.isError).toBe(false);
     const value = (result as { value?: { text?: string; images?: unknown[] } }).value;
     // 被压缩的原始内容仍可按 index 区间回看
-    expect(value?.text).toContain('-- [index 0] user --');
+    expect(value?.text).toContain('<user_message index="0">');
     expect(value?.text).toContain('任务0');
     expect(value?.text).toContain('任务5');
     expect(value?.images).toEqual([]);
     // output.render 投影：text 块在前、内容与 value.text 一致
     const content = (result as { content?: Array<{ type?: string; text?: string }> }).content;
     expect(content?.[0]?.type).toBe('text');
-    expect(content?.[0]?.text).toContain('[index 0]');
+    expect(content?.[0]?.text).toContain('<user_message index="0">');
 
     // 参数校验失败（缺 end/offset）：经真实管线物化为 isError 结果
     const bad = await app.tools.execute({

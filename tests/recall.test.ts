@@ -26,9 +26,33 @@ describe('recall 工具', () => {
     expect(span).toContain('secondCode()');
     expect(span).toContain('out1');
     expect(span).toContain('out2');
-    expect(String(span)).toContain('-- [index 0] user --');
-    expect(String(span)).toContain('-- [index 2] toolcall callId=c1 --');
-    expect(String(span)).toContain('-- [index 5] toolcall callId=c2 --');
+    expect(String(span)).toContain('<user_message index="0">');
+    expect(String(span)).toContain(
+      '<assistant index="2" type="toolcall" tool-name="run_code" callId="c1">',
+    );
+    expect(String(span)).toContain(
+      '<assistant index="5" type="toolcall" tool-name="run_code" callId="c2">',
+    );
+  });
+
+  it('toolcall 条目输出 tool-args/tool-result CDATA（args 为合法 JSON 且仅一层转义）', async () => {
+    const flow = buildToolCallFlow({
+      code: 'a()\nb()',
+      description: '多行',
+      callId: 'cn',
+      resultText: 'r\n多行结果',
+    });
+    const session = makeSession({ events: flow });
+    const exec = { agent: { session } };
+    const span = textOf(await buildRecallTool().execute({ start: 2, offset: 0 }, exec as never));
+    const args = span.match(/<tool-args><!\[CDATA\[([\s\S]*?)\]\]><\/tool-args>/)?.[1];
+    expect(args).toBeDefined();
+    expect(JSON.parse(args as string)).toEqual({ code: 'a()\nb()', description: '多行' });
+    // 仅一层 JSON 转义：真实换行序列化为 \n，而不是 safeJson 二次转义的 \\n
+    expect(span).toContain('a()\\nb()');
+    expect(span).not.toContain('\\\\n');
+    const result = span.match(/<tool-result><!\[CDATA\[([\s\S]*?)\]\]><\/tool-result>/)?.[1];
+    expect(result).toBe('r\n多行结果');
   });
 
   it('end 在 start 之前时仍输出两者间全部完整消息（顺序无关）', async () => {
@@ -60,10 +84,12 @@ describe('recall 工具', () => {
     const exec = { agent: { session } };
     // sys 占 index 0，后续两条流程从 index 1 起
     const span = textOf(await tool.execute({ start: 0, end: 6 }, exec as never));
-    expect(String(span)).toContain('-- [index 0] sys --');
+    expect(String(span)).toContain('<sys index="0" type="agent-instructions">');
     expect(String(span)).toContain('宿主注入的工作区指令'); // sys 显示原文
-    expect(String(span)).toContain('-- [index 1] user --');
-    expect(String(span)).toContain('-- [index 6] toolcall callId=c2 --');
+    expect(String(span)).toContain('<user_message index="1">');
+    expect(String(span)).toContain(
+      '<assistant index="6" type="toolcall" tool-name="run_code" callId="c2">',
+    );
   });
 
   it('offset 正数从 start 向后延伸', async () => {
@@ -209,7 +235,7 @@ describe('recall 工具', () => {
     );
     expect(String(result)).toContain('仅主会话可用');
   });
-  it('带图用户消息：文本标注行 + images 元数据随结果保留', async () => {
+  it('带图用户消息：图片注释标注 + images 元数据随结果保留', async () => {
     const events = [
       {
         type: 'user/message',
@@ -224,7 +250,7 @@ describe('recall 工具', () => {
     const value = (await tool.execute({ start: 0, offset: 0 }, {
       agent: { session },
     } as never)) as RecallOutputValue;
-    expect(value.text).toContain('-- [index 0] user --');
+    expect(value.text).toContain('<user_message index="0">');
     expect(value.text).toContain('看图说话');
     expect(value.text).toContain('[图片附件：图.png（image/png 800×600，1024 bytes）]');
     expect(value.images).toEqual([
@@ -239,7 +265,7 @@ describe('recall 工具', () => {
     ]);
   });
 
-  it('纯图无字消息：条目仍输出，正文仅图片标注行', async () => {
+  it('纯图无字消息：条目仍输出，正文仅图片注释标注', async () => {
     const events = [
       {
         type: 'user/message',
@@ -250,7 +276,7 @@ describe('recall 工具', () => {
     const value = (await buildRecallTool().execute({ start: 0, offset: 0 }, {
       agent: { session },
     } as never)) as RecallOutputValue;
-    expect(value.text).toContain('-- [index 0] user --');
+    expect(value.text).toContain('<user_message index="0">');
     expect(value.text).toContain('[图片附件（image/png 800×600，1024 bytes）]');
     expect(value.images).toHaveLength(1);
   });
@@ -285,7 +311,9 @@ describe('recall 工具', () => {
     const value = (await buildRecallTool().execute({ start: 0, offset: 0 }, {
       agent: { session },
     } as never)) as RecallOutputValue;
-    expect(value.text).toContain('-- [index 0] toolcall callId=c9 --');
+    expect(value.text).toContain(
+      '<assistant index="0" type="toolcall" tool-name="run_code" callId="c9">',
+    );
     expect(value.text).toContain('r1');
     expect(value.text).toContain('[图片附件（image/png 800×600，1024 bytes）]');
     expect(value.images).toEqual([
