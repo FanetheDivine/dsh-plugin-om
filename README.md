@@ -71,6 +71,8 @@ preset-agent 自带 compaction-basic 压缩，阈值为上下文窗口的 80%，
 | `recallEnabled` | `true` | 是否注册 `recall` 工具 |
 | `semanticRecallEnabled` | `true` | 是否注册 `recall-semantic` 工具，关闭时不触发模型下载 |
 
+> 检测到未压缩消息到达观察阈值后，插件会等待至少 tailMessageCount 后再压缩之前的消息，因此这个配置可以影响首次压缩的时机，也可以保留更多的会话信息。
+
 合理设置 `observeThresholdTokens` 和 `compressSkipReasoning`：
 - 若模型 reasoning 输出质量差且会把关键结论以 text 形式输出（例如glm和deepseek），无需携带reasoning
 - 若使用 openai/responses 或 anthropic/messages API，reasoning 内容包含大量决策信息，建议携带reasoning
