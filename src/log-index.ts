@@ -2,7 +2,8 @@
  * 会话日志索引：完整消息索引与渲染。
  * 导出 indexCompleteMessages（完整消息四类折叠索引，recall 与摘要共用同一套编号）、
  * indexMessages / surfaceIndexOf / messageIdOfEvent（消息级定位辅助）、
- * collectImageRefs / toolResultMessageOf / renderToolResultText / renderCompleteMessageParts /
+ * collectImageRefs / toolCallBlockOf / toolResultMessageOf / renderToolResultText /
+ * renderCompleteMessageParts /
  * renderCompleteMessage（完整消息渲染与图片附件收集）。事件日志仅追加（被遮蔽的事件仍可读，
  * recall 依赖此性质）。
  *
@@ -20,7 +21,7 @@ import type {
   Session,
   SessionEvent,
 } from './types.ts';
-import { isRecord, renderMessageText, safeJson } from './utils.ts';
+import { isRecord, renderMessageText, toolArgsJson } from './utils.ts';
 
 /** 工具结果裁剪器结构（tool-result-pruner；超大结果渲染前裁剪）。 */
 export type PrunerLike = { pruneContent?: (blocks: readonly unknown[]) => unknown[] | null };
@@ -170,6 +171,26 @@ export function collectImageRefs(content: unknown, out: ImageRefValue[]): void {
 }
 
 /**
+ * 取 toolcall 完整消息对应的 tool-call 块（调用参数渲染与 XML 条目渲染共用）：
+ * 非 toolcall、调用事件缺失或块内 id 不匹配时返回 undefined。
+ */
+export function toolCallBlockOf(
+  session: Session,
+  cm: CompleteMessage,
+): { name?: unknown; id?: unknown; arguments?: unknown } | undefined {
+  if (cm.type !== 'toolcall') return undefined;
+  const callSeq = cm.seqs[0];
+  const callEvent = callSeq === undefined ? undefined : session.events[callSeq];
+  if (callEvent?.type !== 'assistant/message') return undefined;
+  const message = session.deriveEventMessage(callEvent);
+  if (!message || !Array.isArray(message.content)) return undefined;
+  for (const block of message.content) {
+    if (block.type === 'tool-call' && String(block.id ?? '') === (cm.callId ?? '')) return block;
+  }
+  return undefined;
+}
+
+/**
  * 取 toolcall 完整消息的 tool/result 消息（超大结果经 pruner 裁剪）：
  * 结果文本渲染与 <skill> 条目正文共用；非 toolcall 或无配对 result 时返回 undefined。
  */
@@ -230,24 +251,11 @@ export function renderCompleteMessageParts(
   }
   // toolcall：调用参数 + 结果文本
   const parts: string[] = [];
-  const callSeq = cm.seqs[0];
-  const callEvent = callSeq === undefined ? undefined : session.events[callSeq];
-  if (callEvent?.type === 'assistant/message') {
-    const message = session.deriveEventMessage(callEvent);
-    if (message && Array.isArray(message.content)) {
-      let call: { name?: unknown; id?: unknown; arguments?: unknown } | undefined;
-      for (const block of message.content) {
-        if (block.type === 'tool-call' && String(block.id ?? '') === (cm.callId ?? '')) {
-          call = block;
-          break;
-        }
-      }
-      if (call) {
-        parts.push(
-          `[tool-call ${String(call.name ?? '')} id=${String(call.id ?? '')}]\n${safeJson(call.arguments)}`,
-        );
-      }
-    }
+  const call = toolCallBlockOf(session, cm);
+  if (call) {
+    parts.push(
+      `[tool-call ${String(call.name ?? '')} id=${String(call.id ?? '')}]\n${toolArgsJson(call.arguments)}`,
+    );
   }
   const resultMessage = toolResultMessageOf(session, cm, pruner);
   if (resultMessage && Array.isArray(resultMessage.content)) {
