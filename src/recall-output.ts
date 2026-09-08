@@ -1,8 +1,9 @@
 /**
  * recall / recall-semantic 共享输出契约：输出值为固定形态 { text, images }。
- * text 为完整消息的文本内容（带图消息附图片标注行），images 为图片附件元数据
- * （按 attachmentId 引用，不含字节）。导出 ImageRefValue / RecallOutputValue /
- * RECALL_OUTPUT_SCHEMA / textOnly / imageNote / renderRecallOutput。
+ * text 为完整消息的 XML 条目序列（形态见 recall-xml.ts，图片位置以 XML 注释标注），
+ * images 为图片附件元数据（按 attachmentId 引用，不含字节）。
+ * 导出 ImageRefValue / RecallOutputValue / RECALL_OUTPUT_SCHEMA / textOnly / imageNote /
+ * renderRecallOutput。
  */
 
 import type { ContentBlock, ImageBlock } from '@deepseek-ai/dsh-llm';
@@ -48,7 +49,8 @@ export const RECALL_OUTPUT_SCHEMA: JsonSchemaNode = {
   properties: {
     text: {
       type: 'string',
-      description: '完整消息内容的文本部分（带图位置以 [图片附件：…] 标注行提示）。',
+      description:
+        '完整消息的 XML 条目序列（CDATA 包裹正文；图片位置以 XML 注释 [图片附件：…] 标注）。',
     },
     images: {
       type: 'array',

@@ -12,7 +12,7 @@ import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import { HISTORY_TAG, SKILL_TOOL_NAME } from './constants.ts';
 import { indexCompleteMessages, renderCompleteMessage, renderToolResultText } from './log-index.ts';
 import type { CompleteMessage, Session } from './types.ts';
-import { isRecord } from './utils.ts';
+import { appendCdataText, isRecord } from './utils.ts';
 
 /**
  * 视图条目：压缩区间内一条可定位的内容单位。
@@ -288,21 +288,9 @@ function skillContentSections(
 }
 
 /**
- * 向元素追加 CDATA 正文：正文统一以 CDATA 包裹（逐字原样，不做实体转义）。
- * 正文含 ]]> 时拆为相邻多个 CDATA 段，拼接后逐字还原原文，对读取方透明。
+ * 向元素追加 CDATA 正文（实现在 utils.ts，此处再导出保持既有导入路径）。
  */
-export function appendCdataText(doc: Document, el: Element, text: string): void {
-  const parts = text.split(']]>');
-  for (let i = 0; i < parts.length; i += 1) {
-    if (i === 0) {
-      el.appendChild(doc.createCDATASection(parts[0] ?? ''));
-    } else {
-      // ]]> 编码为相邻两段 CDATA：<![CDATA[]]]]><![CDATA[>…]]>，拼接还原为 ]]>
-      el.appendChild(doc.createCDATASection(']]'));
-      el.appendChild(doc.createCDATASection(`>${parts[i] ?? ''}`));
-    }
-  }
-}
+export { appendCdataText } from './utils.ts';
 
 /**
  * 解析一个已有 <history> 块的内条目（反思视图）：user_message / sys / assistant

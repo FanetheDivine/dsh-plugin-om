@@ -200,7 +200,7 @@ describe('recall-semantic 工具', () => {
     expect(out).toContain('缓存失效问题排查');
     expect(out).not.toContain('权限校验逻辑');
     expect(out).not.toContain('日志输出格式');
-    expect(out).toContain('index 2 user'); // m-db-cache 为完整消息 index 2
+    expect(out).toContain('<user_message index="2">'); // m-db-cache 为完整消息 index 2
     expect(out).toContain('相似度');
   });
 
@@ -245,7 +245,7 @@ describe('recall-semantic 工具', () => {
     const span = textOf(await tool.execute({ query: '数据库', top_k: 3 }, exec as never));
     const out = String(span);
     expect(out).toContain('早期讨论过数据库索引优化');
-    expect(out).toContain('index 0 user'); // old-db 为完整消息 index 0
+    expect(out).toContain('<user_message index="0">'); // old-db 为完整消息 index 0
   });
 
   it('start+offset 限定检索区间（完整消息 index）', async () => {
@@ -382,7 +382,7 @@ describe('recall-semantic 工具', () => {
     });
     const out = textOf(await tool.execute({ query: '数据库' }, { agent: { session } } as never));
     expect(out).toContain('数据库配置');
-    expect(out).toContain('index 0 user'); // m-db 为完整消息 index 0
+    expect(out).toContain('<user_message index="0">'); // m-db 为完整消息 index 0
   });
   it('命中消息携带图片时随结果输出；描述注明只匹配文本', async () => {
     const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
@@ -437,7 +437,7 @@ describe('recall-semantic 工具', () => {
     } as never)) as RecallOutputValue;
     expect(value.text).toContain('2 条可嵌入'); // 仅 m-cache 与 m-db，自身不占候选
     expect(value.text).toContain('缓存失效问题排查');
-    expect(value.text).not.toContain('[tool-call recall-semantic');
+    expect(value.text).not.toContain('tool-name="recall-semantic"');
     expect(value.text).not.toContain('"query"');
     // exec.callId 指向其他调用时，该历史 toolcall 照常参与检索（只排除本次调用自身）
     const other = (await tool.execute({ query: '缓存' }, {
@@ -445,7 +445,9 @@ describe('recall-semantic 工具', () => {
       callId: 'tc-other',
     } as never)) as RecallOutputValue;
     expect(other.text).toContain('3 条可嵌入');
-    expect(other.text).toContain('[tool-call recall-semantic');
+    expect(other.text).toContain(
+      '<assistant index="1" type="toolcall" tool-name="recall-semantic" callId="tc-self">',
+    );
   });
 
   it('纯图片消息（无可渲染文本）不进候选池，无法被语义命中', async () => {

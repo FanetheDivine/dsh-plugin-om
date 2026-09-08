@@ -5,28 +5,24 @@
  * resolveSemanticRange / tokenize / matchExplanation / buildSemanticRecallTool。
  * 向量为本地 ONNX 嵌入（cosine 相似度）；只匹配文本，纯图片消息不进候选池；
  * 区间缺省检索全部、区间不合法回退全量并在输出中告知；输出契约同 recall
- * （{ text, images }，超大结果由 tool-result-pruner 裁剪）；候选池排除本次调用
- * 自身的 toolcall 完整消息（其渲染文本含 query 原文，必居榜首）；仅主会话可用。
+ * （{ text, images }，条目为 XML 形态见 recall-xml.ts，超大结果由 tool-result-pruner
+ * 裁剪）；候选池排除本次调用自身的 toolcall 完整消息（其渲染文本含 query 原文，
+ * 必居榜首）；仅主会话可用。
  */
 
 import { z } from 'zod';
 import { COMPLETE_MESSAGE_DEFINITION } from './constants.ts';
 import { cosineSimilarity, type EmbedFn, getEmbedder, type ModelStatus } from './embedding.ts';
 import { parametersFromZod } from './json-schema.ts';
-import {
-  indexCompleteMessages,
-  type PrunerLike,
-  renderCompleteMessage,
-  renderCompleteMessageParts,
-} from './log-index.ts';
+import { indexCompleteMessages, type PrunerLike, renderCompleteMessage } from './log-index.ts';
 import {
   type ImageRefValue,
-  imageNote,
   RECALL_OUTPUT_SCHEMA,
   type RecallOutputValue,
   renderRecallOutput,
   textOnly,
 } from './recall-output.ts';
+import { renderCompleteMessageXml, xmlCommentText } from './recall-xml.ts';
 import type { CompleteMessage, ToolDefinition, ToolRunContext } from './types.ts';
 import { isMainSession } from './utils.ts';
 
@@ -189,31 +185,35 @@ export function buildSemanticRecallTool(options?: {
         : start === undefined
           ? `检索全部消息（${candidates.length} 条可嵌入）`
           : `检索区间 [${range.lo}..${range.hi}]（${candidates.length} 条可嵌入）`;
-      parts.push(`查询: ${query}`);
-      parts.push(rangeNote);
-      parts.push(`匹配 TOP-${hits.length}（共 ${scored.length} 条候选）:`);
+      // 查询与检索说明以 XML 注释置于条目之前
+      parts.push(`<!-- ${xmlCommentText(`查询: ${query}`)} -->`);
+      parts.push(`<!-- ${xmlCommentText(rangeNote)} -->`);
+      parts.push(
+        `<!-- ${xmlCommentText(`匹配 TOP-${hits.length}（共 ${scored.length} 条候选）`)} -->`,
+      );
       for (let i = 0; i < hits.length; i += 1) {
         const hit = hits[i];
         if (!hit) continue;
-        const callAttr =
-          hit.cm.type === 'toolcall' && hit.cm.callId ? ` callId=${hit.cm.callId}` : '';
-        let text = hit.text;
+        const note = `<!-- ${xmlCommentText(`${i + 1}. ${matchExplanation(query, hit.text, hit.score)}`)} -->`;
+        let xml: string;
         let hitImages: ImageRefValue[] = [];
         try {
           const pruner = getPruner() as PrunerLike | undefined;
-          const rendered = renderCompleteMessageParts(session, hit.cm, pruner);
-          text = rendered.text;
+          const rendered = renderCompleteMessageXml(session, hit.cm, {
+            pruner,
+            fallbackText: hit.text,
+          });
+          xml = rendered.xml;
           hitImages = rendered.images;
         } catch {
-          /* 保留嵌入用文本 */
+          // 回退元素也构建失败时降级为纯文本正文（嵌入用文本）
+          xml = hit.text;
         }
-        parts.push(
-          `-- [${i + 1}] index ${hit.cm.index} ${hit.cm.type}${callAttr} — ${matchExplanation(query, hit.text, hit.score)} --`,
-        );
-        parts.push(hitImages.length > 0 ? [text, ...hitImages.map(imageNote)].join('\n') : text);
+        parts.push(note);
+        parts.push(xml);
         images.push(...hitImages);
       }
-      return { text: parts.join('\n\n'), images };
+      return { text: parts.join('\n'), images };
     },
   };
 }
