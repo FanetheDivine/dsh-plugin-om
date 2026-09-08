@@ -1,22 +1,22 @@
 /**
  * recall 工具：按完整消息 index 区间回看原始会话（含被压缩内容）。
  * 导出 recallArgsSchema / RecallArgs / parseRecallArgs / buildRecallTool。
- * 输出值为 { text, images }（契约见 recall-output.ts）；recall 自身不设输出上限，
- * 超大工具结果由 tool-result-pruner 裁剪。
+ * 输出值为 { text, images }（契约见 recall-output.ts），text 为 XML 条目序列
+ * （形态见 recall-xml.ts）；recall 自身不设输出上限，超大工具结果由 tool-result-pruner 裁剪。
  */
 
 import { z } from 'zod';
 import { COMPLETE_MESSAGE_DEFINITION } from './constants.ts';
 import { parametersFromZod } from './json-schema.ts';
-import { indexCompleteMessages, type PrunerLike, renderCompleteMessageParts } from './log-index.ts';
+import { indexCompleteMessages, type PrunerLike } from './log-index.ts';
 import {
   type ImageRefValue,
-  imageNote,
   RECALL_OUTPUT_SCHEMA,
   type RecallOutputValue,
   renderRecallOutput,
   textOnly,
 } from './recall-output.ts';
+import { renderCompleteMessageXml } from './recall-xml.ts';
 import type { ToolDefinition, ToolRunContext } from './types.ts';
 import { isMainSession } from './utils.ts';
 
@@ -105,25 +105,16 @@ export function buildRecallTool(getPruner?: () => unknown): ToolDefinition {
       for (let i = lo; i <= hi; i += 1) {
         const cm = cms[i];
         if (!cm) continue;
-        let text = '';
-        let cmImages: ImageRefValue[] = [];
         try {
-          const rendered = renderCompleteMessageParts(session, cm, pruner);
-          text = rendered.text;
-          cmImages = rendered.images;
+          const rendered = renderCompleteMessageXml(session, cm, { pruner });
+          parts.push(rendered.xml);
+          images.push(...rendered.images);
         } catch {
           /* 单条完整消息渲染失败不影响整体 */
         }
-        const callAttr = cm.type === 'toolcall' && cm.callId ? ` callId=${cm.callId}` : '';
-        let body = text;
-        if (cmImages.length > 0) {
-          body += (body === '' ? '' : '\n') + cmImages.map(imageNote).join('\n');
-          images.push(...cmImages);
-        }
-        parts.push(`-- [index ${cm.index}] ${cm.type}${callAttr} --\n${body}`);
       }
       if (parts.length === 0) return textOnly('指定区间没有完整消息');
-      return { text: parts.join('\n\n'), images };
+      return { text: parts.join('\n'), images };
     },
   };
 }
