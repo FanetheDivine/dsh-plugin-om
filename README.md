@@ -10,8 +10,8 @@
 - **工具驱动压缩**：摘要生成走多轮工具会话，模型经 getHistory 查看区间条目、compressHistory 分批替换 assistant 条目、completeCompression 结束。首条消息仅含压缩指令与 index 区间，不含历史内容。用户消息与系统消息不可压缩且原样保留；未压缩条目原样保留，条目正文一律以 CDATA 包裹；skill 加载条目以 `<skill_content name="…" index="…">` 元素呈现，内含 `<skill_resources>` 与 `<skill_instructions>` 两段，首次压缩时要求模型再次确认相关性，压缩后变为常规 assistant 摘要条目。最终 `<history>` 块由插件构建，天然合法无需校验
 - **压缩会话记录**：每次压缩的工具循环完整对话与压缩统计（起止时间、总耗时、逐轮请求耗时与 token usage 及合计）落盘为 one-shot 子会话，成功为会话记录、失败为失败日志，便于查看模型实际的查看与压缩行为及其 token 成本。主会话日志只保留汇总：`compaction/summary` 携带 usage 与起止时间、总耗时，失败路径 `compaction/end` 携带总耗时
 - **降级容错**：systemPrompt 或 tokenMeter 服务异常时按 0 计继续压缩，问题通过 console 输出与 log-only `om/warning` 会话事件上报，同会话同一问题至多一条
-- **recall 工具**：按完整消息 index 区间回看原始会话，含被压缩内容，图片附件随结果保留
-- **recall-semantic 工具**：本地嵌入模型 paraphrase-multilingual-MiniLM-L12-v2 按语义检索全部完整消息，只匹配文本，纯图片消息不进候选池，本次调用自身的 toolcall 不参与检索
+- **recall 工具**：按完整消息 index 区间回看原始会话，含被压缩内容；输出为 XML 条目序列（`<user_message>`、`<sys>`、`<assistant type="text"|"toolcall">`），正文一律以 CDATA 包裹逐字原样，toolcall 条目内嵌 `<tool-args>`（合法 JSON，仅一层转义）与 `<tool-result>` CDATA 子元素，图片附件随结果保留
+- **recall-semantic 工具**：本地嵌入模型 paraphrase-multilingual-MiniLM-L12-v2 按语义检索全部完整消息，输出与 recall 相同的 XML 条目序列并以 XML 注释标注相似度与命中词；只匹配文本，纯图片消息不进候选池，本次调用自身的 toolcall 不参与检索
 - **压缩卡片**：浏览器客户端渲染折叠式已压缩卡片、压缩中提示行与可展开的失败错误行
 - **降级警告行**：浏览器客户端把 om 警告会话事件渲染为可展开的警告行
 
@@ -110,6 +110,7 @@ src/
 ├── rate-limit.ts                # 全局 429 限流冷却门，进程级共享状态
 ├── log-index.ts                 # 完整消息索引与渲染，recall 与压缩共用同一套编号
 ├── recall.ts                    # recall 工具：按完整消息 index 区间回看
+├── recall-xml.ts                # 完整消息到 CDATA 包裹 XML 条目的渲染（recall 系工具共用）
 ├── recall-output.ts             # recall 输出契约：{ text, images } 与 render 投影
 ├── semantic-recall.ts           # recall-semantic 工具：本地嵌入语义检索
 ├── embedding.ts                 # 本地 ONNX 嵌入：懒加载、批量、运行时按需下载编排
