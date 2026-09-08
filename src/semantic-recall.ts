@@ -138,7 +138,7 @@ export function buildSemanticRecallTool(options?: {
   const embed: EmbedFn = options?.embedder ?? ((texts) => getEmbedder().then((fn) => fn(texts)));
   return {
     name: 'recall-semantic',
-    description: `${COMPLETE_MESSAGE_DEFINITION}按自然语言含义检索最符合的完整消息，默认全量搜索，可指定区间。注意：只匹配文本。`,
+    description: `在你需要按语义检索历史消息时调用。${COMPLETE_MESSAGE_DEFINITION}此工具按自然语言含义检索最符合的完整消息，默认全量搜索，可指定区间。注意：只匹配文本。`,
     parameters: parametersFromZod(semanticRecallArgsSchema),
     output: {
       schema: RECALL_OUTPUT_SCHEMA,
