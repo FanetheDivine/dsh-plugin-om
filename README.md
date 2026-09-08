@@ -11,7 +11,7 @@
 - **压缩会话记录**：每次压缩的工具循环完整对话与压缩统计（起止时间、总耗时、逐轮请求耗时与 token usage 及合计）落盘为 one-shot 子会话，成功为会话记录、失败为失败日志，便于查看模型实际的查看与压缩行为及其 token 成本。主会话日志只保留汇总：`compaction/summary` 携带 usage 与起止时间、总耗时，失败路径 `compaction/end` 携带总耗时
 - **降级容错**：systemPrompt 或 tokenMeter 服务异常时按 0 计继续压缩，问题通过 console 输出与 log-only `om/warning` 会话事件上报，同会话同一问题至多一条
 - **recall 工具**：按完整消息 index 区间回看原始会话，含被压缩内容，图片附件随结果保留
-- **recall-semantic 工具**：本地嵌入模型 paraphrase-multilingual-MiniLM-L12-v2 按语义检索全部完整消息，只匹配文本，纯图片消息不进候选池
+- **recall-semantic 工具**：本地嵌入模型 paraphrase-multilingual-MiniLM-L12-v2 按语义检索全部完整消息，只匹配文本，纯图片消息不进候选池，本次调用自身的 toolcall 不参与检索
 - **压缩卡片**：浏览器客户端渲染折叠式已压缩卡片、压缩中提示行与可展开的失败错误行
 - **降级警告行**：浏览器客户端把 om 警告会话事件渲染为可展开的警告行
 
