@@ -45,7 +45,7 @@ export function messageIdOfEvent(event: SessionEvent | undefined): string | unde
 export function indexMessages(session: Session): MessageIndex {
   const messages: MessageNode[] = [];
   const byId = new Map<string, number>();
-  const events = session.events;
+  const events = session.snapshotEvents();
   for (let seq = 0; seq < events.length; seq += 1) {
     const event = events[seq];
     if (!event) continue;
@@ -72,7 +72,7 @@ export function indexMessages(session: Session): MessageIndex {
 export function indexCompleteMessages(session: Session): CompleteMessage[] {
   const cms: CompleteMessage[] = [];
   const pending = new Map<string, CompleteMessage>();
-  const events = session.events;
+  const events = session.snapshotEvents();
   for (let seq = 0; seq < events.length; seq += 1) {
     const event = events[seq];
     if (!event) continue;
@@ -180,7 +180,7 @@ export function toolCallBlockOf(
 ): { name?: unknown; id?: unknown; arguments?: unknown } | undefined {
   if (cm.type !== 'toolcall') return undefined;
   const callSeq = cm.seqs[0];
-  const callEvent = callSeq === undefined ? undefined : session.events[callSeq];
+  const callEvent = callSeq === undefined ? undefined : session.snapshotEvents()[callSeq];
   if (callEvent?.type !== 'assistant/message') return undefined;
   const message = session.deriveEventMessage(callEvent);
   if (!message || !Array.isArray(message.content)) return undefined;
@@ -201,7 +201,7 @@ export function toolResultMessageOf(
 ): Message | undefined {
   if (cm.type !== 'toolcall') return undefined;
   const resultSeq = cm.seqs[1];
-  const resultEvent = resultSeq === undefined ? undefined : session.events[resultSeq];
+  const resultEvent = resultSeq === undefined ? undefined : session.snapshotEvents()[resultSeq];
   if (resultEvent?.type !== 'tool/result') return undefined;
   const message = session.deriveEventMessage(resultEvent);
   if (!message) return undefined;
@@ -232,14 +232,14 @@ export function renderCompleteMessageParts(
   const images: ImageRefValue[] = [];
   if (cm.type === 'user' || cm.type === 'sys') {
     const seq = cm.seqs[0];
-    const event = seq === undefined ? undefined : session.events[seq];
+    const event = seq === undefined ? undefined : session.snapshotEvents()[seq];
     const message = event ? session.deriveEventMessage(event) : null;
     if (message && Array.isArray(message.content)) collectImageRefs(message.content, images);
     return { text: message ? renderMessageText(message) : '', images };
   }
   if (cm.type === 'assistant') {
     const seq = cm.seqs[0];
-    const event = seq === undefined ? undefined : session.events[seq];
+    const event = seq === undefined ? undefined : session.snapshotEvents()[seq];
     const message = event ? session.deriveEventMessage(event) : null;
     if (!message || !Array.isArray(message.content)) return { text: '', images };
     collectImageRefs(message.content, images);

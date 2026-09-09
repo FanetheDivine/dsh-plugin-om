@@ -50,7 +50,7 @@ describe('消息索引 indexMessages / messageIdOfEvent', () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]?.id).toBe('history-msg');
     expect(byId.get('history-msg')).toBe(0);
-    const id = messageIdOfEvent(session.events[0]);
+    const id = messageIdOfEvent(session.snapshotEvents()[0]);
     expect(id).toBe('history-msg');
     expect(messageIdOfEvent(undefined)).toBeUndefined();
     expect(

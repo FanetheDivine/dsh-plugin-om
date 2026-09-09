@@ -6,7 +6,7 @@
  * 压缩失败节点渲染为可展开的错误行：折叠行显示错误摘要，展开体显示完整报错。
  */
 
-import type { ChatNode } from '@deepseek-ai/dsh-client-ui-conversation/client';
+import type { ChatNode } from '@deepseek-ai/dsh-client-ui-chat/client';
 import { DisclosureRow, IconBrowseOutline16 } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots';
 import type { CSSProperties } from 'react';

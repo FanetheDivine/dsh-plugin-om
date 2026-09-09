@@ -672,7 +672,7 @@ describe('反思压缩循环失败：诊断子会话 id 传播', () => {
     expect(created).toBeDefined();
     expect(result.diagnosticSessionId).toBe(created?.id);
     // compaction/end(error) 载荷带诊断子会话 sessionId
-    const end = session.events.find((e) => e.type === 'compaction/end');
+    const end = session.snapshotEvents().find((e) => e.type === 'compaction/end');
     const endData =
       (end?.data as { error?: string; diagnosticSessionId?: string } | undefined) ?? {};
     expect(endData.error).toContain('未调用压缩工具');

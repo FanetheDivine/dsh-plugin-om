@@ -79,8 +79,8 @@ function loopMessages(): Message[] {
 /** 断言辅助：取子会话事件中的 user/assistant 消息（descriptor 占 seq 0）。 */
 function messageEvents(child: Session): { user: unknown[]; assistant: unknown[] } {
   return {
-    user: child.events.filter((e) => e.type === 'user/message'),
-    assistant: child.events.filter((e) => e.type === 'assistant/message'),
+    user: child.snapshotEvents().filter((e) => e.type === 'user/message'),
+    assistant: child.snapshotEvents().filter((e) => e.type === 'assistant/message'),
   };
 }
 
@@ -110,7 +110,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       delegationDepth: 3,
     });
     // 主会话未被改动（落盘只创建子会话，不追加任何事件）
-    expect(parent.events).toHaveLength(twoCallFlow().length);
+    expect(parent.snapshotEvents()).toHaveLength(twoCallFlow().length);
     // flush 已对子会话执行
     expect(ctx._flushedSessions).toHaveLength(1);
     expect(ctx._flushedSessions[0]?.id).toBe(created?.session.id);
@@ -133,7 +133,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     expect(id).toBe(ctx._createdSessions[0]?.id);
     const child = ctx._createdSessions[0]?.session;
     expect(child).toBeDefined();
-    const descriptor = child?.events.find((e) => e.type === 'subagent/descriptor');
+    const descriptor = child?.snapshotEvents().find((e) => e.type === 'subagent/descriptor');
     expect(descriptor?.data).toEqual({
       version: SUBAGENT_DESCRIPTOR_VERSION,
       mode: 'one-shot',
@@ -167,7 +167,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       debug: false,
     });
     const child = ctx._createdSessions[0]?.session;
-    const userEvents = child?.events.filter((e) => e.type === 'user/message') ?? [];
+    const userEvents = child?.snapshotEvents().filter((e) => e.type === 'user/message') ?? [];
     const statsEvent = userEvents[userEvents.length - 1];
     if (statsEvent === undefined) throw new Error('缺统计消息');
     const statsData = statsEvent.data as {
@@ -204,7 +204,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       debug: false,
     });
     const child = ctx._createdSessions[0]?.session;
-    const descriptor = child?.events.find((e) => e.type === 'subagent/descriptor');
+    const descriptor = child?.snapshotEvents().find((e) => e.type === 'subagent/descriptor');
     expect((descriptor?.data as { label?: string })?.label).toContain('失败日志');
   });
 

@@ -41,7 +41,7 @@ describe('挂载失败降级（om 警告事件 + console 外部输出，不阻�
     };
   }
 
-  /** 读取 om/warning 警告（session.events 中的 log-only 信封事件）。 */
+  /** 读取 om/warning 警告（session.snapshotEvents() 中的 log-only 信封事件）。 */
   function warningsOf(session: Session): Array<{ problem: string; message: string }> {
     return findOmEvents(session, 'om/warning').map((om) => om.data);
   }
@@ -248,13 +248,13 @@ describe('挂载失败降级（om 警告事件 + console 外部输出，不阻�
     }
     // 压缩循环与替换照常完成（estimateMessage 失败按 0 计）
     expect(ctx._llmCalls).toHaveLength(3);
-    const types = session.events.map((e) => e.type);
+    const types = session.snapshotEvents().map((e) => e.type);
     expect(types).toContain('compaction/summary');
     expect(types).toContain('compaction/end');
     expect(warningsOf(session)).toHaveLength(1);
     expect(warningsOf(session)[0]?.problem).toBe('tokenMeter-unavailable');
     // shadowedTokenCount 按 0 计写入 compaction/summary 载荷
-    const summary = session.events.find((e) => e.type === 'compaction/summary');
+    const summary = session.snapshotEvents().find((e) => e.type === 'compaction/summary');
     const summaryData = summary?.data as { shadowedTokenCount?: number } | undefined;
     expect(summaryData?.shadowedTokenCount).toBe(0);
   });

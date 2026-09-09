@@ -7,10 +7,11 @@
 
 import { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
-import type { CallId, GenerateOptions, MessageId, StreamChunk } from '@deepseek-ai/dsh-llm';
+import type { GenerateOptions, MessageId, StreamChunk, ToolCallId } from '@deepseek-ai/dsh-llm';
 import { LlmAdapter, LlmRuntime } from '@deepseek-ai/dsh-llm';
 import type { Session, SessionId } from '@deepseek-ai/dsh-session';
 import { SessionStore } from '@deepseek-ai/dsh-session';
+import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection';
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter';
 import { ToolRuntime } from '@deepseek-ai/dsh-tools';
@@ -25,6 +26,7 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
   };
 });
 
+import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent';
 import { PLUGIN_LABEL } from '../src/constants.ts';
 // 命中 vi.mock 打桩后的模块（ensureModelReady 为 vi.fn，可断言预热调用）
 import * as embedding from '../src/embedding.ts';
@@ -74,6 +76,8 @@ async function stackHarness(options: {
 }) {
   const app = new Context();
   await app.plugin(SessionStore);
+  // TokenMeter 依赖 sessionProjections 注册表（0.1.2 起），须先挂载
+  await app.plugin(SessionProjectionRegistry);
   await app.plugin(LlmRuntime);
   await app.plugin(TokenMeter);
   if (options.withSystemPrompt) {
@@ -144,7 +148,7 @@ function toolRoundChunks() {
         index: 0,
         block: {
           type: 'tool-call',
-          id: nextTool === 'getHistory' ? ('g1' as CallId) : ('c9' as CallId),
+          id: nextTool === 'getHistory' ? ('g1' as ToolCallId) : ('c9' as ToolCallId),
           name: nextTool,
           arguments: '{}',
         },
@@ -197,18 +201,18 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(typeof summaryCalls[0]?.system).toBe('string');
 
     // compaction 生命周期完整：start(observe) → summary → 替换 user/message → end（无 error）
-    const types = session.events.map((e) => e.type);
+    const types = session.snapshotEvents().map((e) => e.type);
     expect(types).toContain('compaction/start');
     expect(types).toContain('compaction/summary');
     expect(types).toContain('compaction/end');
-    const start = session.events.find((e) => e.type === 'compaction/start');
+    const start = session.snapshotEvents().find((e) => e.type === 'compaction/start');
     expect((start?.data as { phase?: string } | undefined)?.phase).toBe('observe');
-    const end = session.events.find((e) => e.type === 'compaction/end');
+    const end = session.snapshotEvents().find((e) => e.type === 'compaction/end');
     expect((end?.data as { error?: string } | undefined)?.error).toBeUndefined();
 
     // 替换检查点：source 标记插件自产，sourceEventSeqs 覆盖全部被遮蔽表层节点
     const checkpointSeq = session.surface.nodes[0];
-    const checkpoint = session.events[checkpointSeq as number];
+    const checkpoint = session.snapshotEvents()[checkpointSeq as number];
     expect(checkpoint).toBeDefined();
     const source = (checkpoint?.data as { source?: { kind?: string; plugin?: string } } | undefined)
       ?.source;
@@ -246,10 +250,10 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     const decision = await runPreStep(app, session);
     expect(decision).toEqual({ kind: 'reject' });
     expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(1);
-    const types = session.events.map((e) => e.type);
+    const types = session.snapshotEvents().map((e) => e.type);
     expect(types).toContain('compaction/start');
     expect(types).toContain('compaction/end');
-    const end = session.events.find((e) => e.type === 'compaction/end');
+    const end = session.snapshotEvents().find((e) => e.type === 'compaction/end');
     const error = (end?.data as { error?: string } | undefined)?.error;
     expect(typeof error === 'string' && error !== '').toBe(true);
     // 失败不产生部分替换：表层仍为 6 条原始消息
@@ -266,25 +270,29 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
       child?.id,
     );
     // 首事件 descriptor：one-shot + provider om-compaction-log + label 含阶段与轮数
-    const descriptor = child?.events[0];
+    const descriptor = child?.snapshotEvents()[0];
     expect(descriptor?.type).toBe('subagent/descriptor');
     expect(descriptor?.data).toMatchObject({
-      version: 2,
+      version: SUBAGENT_DESCRIPTOR_VERSION,
       mode: 'one-shot',
       provider: 'om-compaction-log',
       label: 'OM 压缩失败日志（观察 · 0 轮）', // 首轮请求即 error：无完成的模型轮
     });
     // 子会话内容零加工：指令 + assistant（含模型原始输出）
     const promptText = (
-      (child?.events[1]?.data as { content?: Array<{ text?: string }> } | undefined)?.content ?? []
+      (child?.snapshotEvents()[1]?.data as { content?: Array<{ text?: string }> } | undefined)
+        ?.content ?? []
     )
       .map((b) => b.text ?? '')
       .join('');
     expect(promptText).toContain('压缩完整消息区间'); // user 指令（压缩指令 + 区间）
     expect(promptText).not.toContain('任务0'); // 历史内容不进指令
     const rawText = (
-      (child?.events[2]?.data as { message?: { content?: Array<{ text?: string }> } } | undefined)
-        ?.message?.content ?? []
+      (
+        child?.snapshotEvents()[2]?.data as
+          | { message?: { content?: Array<{ text?: string }> } }
+          | undefined
+      )?.message?.content ?? []
     )
       .map((b) => b.text ?? '')
       .join('');
@@ -311,7 +319,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     // 挂载失败不阻塞：压缩照常完成
     const callsAfter = adapter.calls.filter((c) => c.purpose === 'compaction').length;
     expect(callsAfter).toBeGreaterThanOrEqual(1);
-    expect(session.events.map((e) => e.type)).toContain('compaction/end');
+    expect(session.snapshotEvents().map((e) => e.type)).toContain('compaction/end');
     // console 外部输出 + om 警告信封事件（同会话去重）
     expect(consoleText).toContain(`${PLUGIN_LABEL}: ${SYSTEM_PROMPT_MISSING}`);
     const warnings = findOmEvents(session, 'om/warning');
@@ -360,19 +368,22 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
 
     // 三个压缩循环（每个 2 轮：getHistory → completeCompression）：观察 → 反思 → 观察
     expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(6); // compaction/start 的 phase 序列：observe → reflect → observe
-    const phases = session.events
+    const phases = session
+      .snapshotEvents()
       .filter((e) => e.type === 'compaction/start')
       .map((e) => (e.data as { phase?: string }).phase);
     expect(phases).toEqual(['observe', 'reflect', 'observe']);
     // 全部生命周期正常收尾（无 error）
-    const ends = session.events.filter((e) => e.type === 'compaction/end');
+    const ends = session.snapshotEvents().filter((e) => e.type === 'compaction/end');
     expect(ends).toHaveLength(3);
     for (const end of ends) {
       expect((end.data as { error?: string }).error).toBeUndefined();
     }
     // 表层两块并存：重建块（0..5）+ 新观察块（6..11），未压缩条目原样保留
     expect(session.surface.nodes).toHaveLength(2);
-    const texts = session.surface.nodes.map((seq) => textOf(session.events[seq as number]));
+    const texts = session.surface.nodes.map((seq) =>
+      textOf(session.snapshotEvents()[seq as number]),
+    );
     expect(texts[0]).toContain('<history tip=');
     expect(texts[0]).toContain('<user_message index="0">');
     expect(texts[0]).not.toContain('index="6"');
@@ -396,7 +407,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
 
     // 经真实 execute 管线（pre-execute → body → 输出校验 → render）调用 recall
     const result = await app.tools.execute({
-      callId: 'it-recall-1' as CallId,
+      callId: 'it-recall-1' as ToolCallId,
       name: 'recall',
       arguments: { start: 0, end: 5 },
       agent: { session } as unknown as Agent,
@@ -416,7 +427,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
 
     // 参数校验失败（缺 end/offset）：经真实管线物化为 isError 结果
     const bad = await app.tools.execute({
-      callId: 'it-recall-2' as CallId,
+      callId: 'it-recall-2' as ToolCallId,
       name: 'recall',
       arguments: { start: 0 },
       agent: { session } as unknown as Agent,

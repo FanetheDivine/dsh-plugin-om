@@ -66,7 +66,7 @@ function userEntryParts(
   cm: CompleteMessage,
 ): { text: string; notes: string[] } | null {
   const seq = cm.seqs[0];
-  const event = seq === undefined ? undefined : session.events[seq];
+  const event = seq === undefined ? undefined : session.snapshotEvents()[seq];
   const message = event ? session.deriveEventMessage(event) : null;
   if (!message || !Array.isArray(message.content)) return null;
   const texts: string[] = [];
@@ -98,7 +98,7 @@ function userEntryParts(
 export function toolCallNameOf(session: Session, cm: CompleteMessage): string | undefined {
   if (cm.type !== 'toolcall') return undefined;
   const seq = cm.seqs[0];
-  const event = seq === undefined ? undefined : session.events[seq];
+  const event = seq === undefined ? undefined : session.snapshotEvents()[seq];
   if (event?.type !== 'assistant/message') return undefined;
   const message = event.data.message;
   if (!message || !Array.isArray(message.content)) return undefined;
@@ -117,7 +117,7 @@ export function toolCallNameOf(session: Session, cm: CompleteMessage): string | 
 export function skillNameOf(session: Session, cm: CompleteMessage): string | undefined {
   if (toolCallNameOf(session, cm) !== SKILL_TOOL_NAME) return undefined;
   const seq = cm.seqs[0];
-  const event = seq === undefined ? undefined : session.events[seq];
+  const event = seq === undefined ? undefined : session.snapshotEvents()[seq];
   if (event?.type !== 'assistant/message') return '';
   const message = event.data.message;
   if (!message || !Array.isArray(message.content)) return '';
@@ -156,7 +156,7 @@ export function buildObserveView(
   const shadowed = new Set(seqs);
   const reasoningBySeq = new Map<number, string[]>();
   for (const seq of seqs) {
-    const event = session.events[seq];
+    const event = session.snapshotEvents()[seq];
     if (event?.type !== 'assistant/message') continue;
     const message = event.data.message;
     if (!message || !Array.isArray(message.content)) continue;
