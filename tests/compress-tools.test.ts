@@ -323,6 +323,33 @@ describe('buildFinalBlock', () => {
     expect(block).not.toContain('资源内容');
   });
 
+  it('toolcall 条目以结构化形态呈现，压缩后变为常规摘要条目', () => {
+    const view = viewOf([
+      { kind: 'user', lo: 0, hi: 0, text: '用户消息A' },
+      {
+        kind: 'assistant',
+        lo: 1,
+        hi: 1,
+        text: '[tool-call run_code id=c1]\n{"code":"x"}\n\n[result]\n执行结果',
+        toolName: 'run_code',
+        callId: 'c1',
+        toolArgs: '{"code":"x"}',
+        toolResult: '执行结果',
+      },
+    ]);
+    const state = new CompressionState(view);
+    // getHistory 与最终块中 toolcall 条目均为结构化形态（与 recall 一致）
+    const structured =
+      '<assistant index="1" type="toolcall" tool-name="run_code" callId="c1"><tool-args><![CDATA[{"code":"x"}]]></tool-args><tool-result><![CDATA[执行结果]]></tool-result></assistant>';
+    expect(state.getHistory({}).text).toContain(structured);
+    expect(state.buildFinalBlock()).toContain(structured);
+    // 压缩该条目后变为常规摘要条目，结构化形态消失
+    expect(state.compressHistory({ index: 1, content: '调用摘要' }).isError).toBe(false);
+    const block = state.buildFinalBlock();
+    expect(block).toContain('<assistant index="1"><![CDATA[调用摘要]]></assistant>');
+    expect(block).not.toContain('<assistant index="1" type="toolcall"');
+  });
+
   it('产物中的 skill 条目经反思视图解析后仍保留二次确认', () => {
     const view = viewOf([
       {

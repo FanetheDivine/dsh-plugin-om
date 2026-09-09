@@ -10,9 +10,15 @@
 import type { Document, Element } from '@xmldom/xmldom';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import { HISTORY_TAG, SKILL_TOOL_NAME } from './constants.ts';
-import { indexCompleteMessages, renderCompleteMessage, renderToolResultText } from './log-index.ts';
+import {
+  indexCompleteMessages,
+  renderCompleteMessage,
+  renderToolResultText,
+  toolCallBlockOf,
+  toolResultMessageOf,
+} from './log-index.ts';
 import type { CompleteMessage, Session } from './types.ts';
-import { appendCdataText, isRecord } from './utils.ts';
+import { appendCdataText, isRecord, renderMessageText, toolArgsJson } from './utils.ts';
 
 /**
  * 视图条目：压缩区间内一条可定位的内容单位。
@@ -34,10 +40,16 @@ export type ViewEntry = {
   notes?: string[];
   /** sys 条目的 source.kind。 */
   sysKind?: string;
-  /** 观察视图 toolcall 条目的工具名（skill 判定用）。 */
+  /** 观察视图 toolcall 条目的工具名（skill 判定用；结构化渲染为 tool-name 属性）。 */
   toolName?: string;
   /** skill 条目的 skill 名（toolName 为 skill 时存在；反思视图取自 name 属性，缺失为空串）。 */
   skillName?: string;
+  /** toolcall 条目的调用 id（结构化渲染为 callId 属性）。 */
+  callId?: string;
+  /** toolcall 条目的调用参数 JSON 文本（存在时条目渲染为 <assistant type="toolcall"> 结构）。 */
+  toolArgs?: string;
+  /** toolcall 条目的工具返回文本（缺失或为空时不输出 <tool-result> 子元素）。 */
+  toolResult?: string;
   /** 所属压缩块 seq（反思视图；块整体展开以此分组）。 */
   blockSeq?: number;
 };
@@ -209,6 +221,17 @@ export function buildObserveView(
     const text = isSkill ? renderToolResultText(session, cm) : renderCompleteMessage(session, cm);
     if (text.trim() === '') continue;
     const skillName = isSkill ? skillNameOf(session, cm) : undefined;
+    // 非 skill 的 toolcall 条目提取调用参数与返回文本（渲染为 <assistant type="toolcall"> 结构）
+    let toolArgs: string | undefined;
+    let toolResult: string | undefined;
+    if (cm.type === 'toolcall' && !isSkill) {
+      const call = toolCallBlockOf(session, cm);
+      if (call !== undefined) toolArgs = toolArgsJson(call.arguments);
+      const resultMessage = toolResultMessageOf(session, cm);
+      if (resultMessage && Array.isArray(resultMessage.content)) {
+        toolResult = renderMessageText(resultMessage);
+      }
+    }
     entries.push({
       kind: 'assistant',
       lo: cm.index,
@@ -216,6 +239,9 @@ export function buildObserveView(
       text,
       ...(toolName === undefined ? {} : { toolName }),
       ...(skillName === undefined ? {} : { skillName }),
+      ...(cm.callId === undefined || toolArgs === undefined ? {} : { callId: cm.callId }),
+      ...(toolArgs === undefined ? {} : { toolArgs }),
+      ...(toolResult === undefined ? {} : { toolResult }),
     });
   }
   return { entries, ...viewBounds(entries) };
@@ -336,6 +362,25 @@ function parseBlockEntries(blockText: string, blockSeq: number): ViewEntry[] {
     } else if (el.nodeName === 'assistant') {
       const index = intAttr(el, 'index');
       if (index !== undefined) {
+        const toolArgs = childText(el, 'tool-args');
+        if (toolArgs !== undefined) {
+          // 结构化 toolcall 条目：调用参数与返回内容各自成子元素，重新渲染时保持结构
+          const toolResult = childText(el, 'tool-result');
+          const toolName = el.getAttribute('tool-name');
+          const callId = el.getAttribute('callId');
+          entries.push({
+            kind: 'assistant',
+            lo: index,
+            hi: index,
+            text,
+            ...(toolName === null || toolName === '' ? {} : { toolName }),
+            ...(callId === null || callId === '' ? {} : { callId }),
+            toolArgs,
+            ...(toolResult === undefined ? {} : { toolResult }),
+            blockSeq,
+          });
+          continue;
+        }
         entries.push({ kind: 'assistant', lo: index, hi: index, text, blockSeq });
         continue;
       }
@@ -418,6 +463,35 @@ export function entryToElement(doc: Document, entry: ViewEntry): Element {
   if (entry.kind === 'reasoning') {
     const el = doc.createElement('reasoning');
     appendCdataText(doc, el, entry.text);
+    return el;
+  }
+  if (
+    entry.kind === 'assistant' &&
+    entry.toolArgs !== undefined &&
+    entry.lo !== undefined &&
+    entry.hi !== undefined &&
+    entry.lo === entry.hi
+  ) {
+    // toolcall 条目：<assistant type="toolcall" tool-name callId index>，内文为
+    // <tool-args>（调用参数 JSON）与 <tool-result>（工具返回内容）两个 CDATA 子元素，
+    // 与 recall 系工具的条目形态一致。
+    const el = doc.createElement('assistant');
+    el.setAttribute('index', String(entry.lo));
+    el.setAttribute('type', 'toolcall');
+    if (entry.toolName !== undefined && entry.toolName !== '') {
+      el.setAttribute('tool-name', entry.toolName);
+    }
+    if (entry.callId !== undefined && entry.callId !== '') {
+      el.setAttribute('callId', entry.callId);
+    }
+    const args = doc.createElement('tool-args');
+    appendCdataText(doc, args, entry.toolArgs);
+    el.appendChild(args);
+    if (entry.toolResult !== undefined && entry.toolResult.trim() !== '') {
+      const result = doc.createElement('tool-result');
+      appendCdataText(doc, result, entry.toolResult);
+      el.appendChild(result);
+    }
     return el;
   }
   if (entry.kind === 'assistant' && entry.toolName === SKILL_TOOL_NAME) {

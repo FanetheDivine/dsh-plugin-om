@@ -24,7 +24,7 @@ export const COMPLETE_MESSAGE_DEFINITION =
 /**
  * 最终 <history> 块内文块首的格式说明注释（XML 注释，完整消息定义 + 条目标签语义 + CDATA 约定）。
  */
-export const HISTORY_FORMAT_NOTE = `<!-- ${COMPLETE_MESSAGE_DEFINITION} <TAG index="N">表示单条完整消息，<TAG start="A" end="B"> 表示多条连续消息，start/end 是首尾完整消息的 index；消息块的内容是用CDATA包裹的纯文本；<sys type="KIND" index="N"> 表示被压缩的系统消息，块中为空；<skill_content name="S" index="N"> 表示未压缩的原始 skill -->`;
+export const HISTORY_FORMAT_NOTE = `<!-- ${COMPLETE_MESSAGE_DEFINITION} <TAG index="N">表示单条完整消息，<TAG start="A" end="B"> 表示多条连续消息，start/end 是首尾完整消息的 index；消息块的内容是用CDATA包裹的纯文本；<assistant type="toolcall" tool-name="T" callId="C" index="N"> 表示工具调用，内含 <tool-args> 与 <tool-result> 两个CDATA子元素（调用参数与工具返回内容）；<sys type="KIND" index="N"> 表示被压缩的系统消息，块中为空；<skill_content name="S" index="N"> 表示未压缩的原始 skill -->`;
 
 /** skill 工具名：toolcall 条目的工具名为该值时视为 skill 加载，<history> 块中以 <skill_content> 元素呈现。 */
 export const SKILL_TOOL_NAME = 'skill';
