@@ -117,7 +117,8 @@ export function makeSession({
     id: 'test-session',
     seq: 0,
     header: header ?? {},
-    events: log,
+    // 与真实 Session 一致：snapshotEvents 返回当前日志快照（seq = 数组下标）
+    snapshotEvents: () => log,
     surface,
     requestHeader: () =>
       requestHeaderValue ?? { config: { provider: 'test', model: 'test-model' } },
@@ -210,7 +211,7 @@ export function makeMeter(opts: { totalTokens?: number | undefined } = {}) {
       let surfaceTokens = 0;
       const nodes = [];
       for (const seq of session.surface.nodes) {
-        const event = session.events[seq];
+        const event = session.snapshotEvents()[seq];
         const message = event ? session.deriveEventMessage(event) : null;
         const tokens = message ? this.estimateMessage(message) : 0;
         surfaceTokens += tokens;
@@ -470,7 +471,7 @@ export function buildToolCallFlow({
 
 /** 从会话日志提取最后一次 <history> 消息的完整文本（去标签）。 */
 export function latestHistoryText(session: Session): string {
-  const historyMsg = session.events.findLast(
+  const historyMsg = session.snapshotEvents().findLast(
     (e) =>
       e.type === 'user/message' &&
       String(
@@ -490,7 +491,7 @@ export function latestHistoryText(session: Session): string {
 
 /** 定位一次压缩的 compaction 生命周期事件下标（start/summary/替换消息/end；缺省 -1）。 */
 export function compactionLifecycle(session: Session) {
-  const events = session.events;
+  const events = session.snapshotEvents();
   return {
     start: events.findIndex((e) => e.type === 'compaction/start'),
     summary: events.findIndex((e) => e.type === 'compaction/summary'),

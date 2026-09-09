@@ -85,7 +85,8 @@ export function readOmEvent(event: SessionEvent | undefined | null): OmEvent | u
   if (!kinds.includes(kind as OmEventKind)) return undefined;
   const omKind = kind as OmEventKind;
   if (!isValidPayload(omKind, rest)) return undefined;
-  return { kind: omKind, data: rest, seq: event.seq } as OmEvent;
+  // 载荷已由 isValidPayload 运行时校验；seq 为宿主品牌类型，经 unknown 中转收窄为 OmEvent
+  return { kind: omKind, data: rest, seq: event.seq } as unknown as OmEvent;
 }
 
 /** 编码一条 om 私有事件为 feedback/record 的 text 信封。 */
@@ -111,7 +112,7 @@ export function findOmEvents<K extends OmEventKind>(
 ): Array<{ kind: K; data: OmEventPayloadMap[K]; seq: number }>;
 export function findOmEvents(session: Session, kind?: OmEventKind): OmEvent[] {
   const result: OmEvent[] = [];
-  for (const event of session.events) {
+  for (const event of session.snapshotEvents()) {
     const om = readOmEvent(event);
     if (om !== undefined && (kind === undefined || om.kind === kind)) result.push(om);
   }

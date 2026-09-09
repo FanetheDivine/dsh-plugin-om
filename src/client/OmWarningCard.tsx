@@ -4,7 +4,7 @@
  * （借用 feedback/record），服务端按会话同问题去重后追加（每会话同一问题至多一行）。
  */
 
-import type { ChatNode } from '@deepseek-ai/dsh-client-ui-conversation/client';
+import type { ChatNode } from '@deepseek-ai/dsh-client-ui-chat/client';
 import { DisclosureRow, IconBrowseOutline16 } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots';
 import type { CSSProperties } from 'react';

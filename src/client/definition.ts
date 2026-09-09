@@ -9,12 +9,12 @@
  * （双方共存无视觉冲突：宿主无检查点证据时不产出节点）。
  */
 
+import type { ChatNode, ChatNodeDataMap } from '@deepseek-ai/dsh-client-ui-chat/client';
 import type {
   ConversationMatch,
   ConversationNodeContext,
   ConversationNodeDefinition,
-} from '@deepseek-ai/dsh-client-runtime/client';
-import type { ChatNode, ChatNodeDataMap } from '@deepseek-ai/dsh-client-ui-conversation/client';
+} from '@deepseek-ai/dsh-client-ui-conversation/client';
 import type {} from '@deepseek-ai/dsh-compaction/types';
 import type { SessionEvent } from '@deepseek-ai/dsh-session/types';
 import { COMPACTION_ABORTED_ERROR, PLUGIN_LABEL } from '../constants.ts';
@@ -27,7 +27,7 @@ export const COMPACTION_CARD_KIND = 'om-compaction';
 /** 功能降级警告行渲染器分发键（合并进 ChatNodeDataMap）。 */
 export const OM_WARNING_CARD_KIND = 'om-warning';
 
-declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
+declare module '@deepseek-ai/dsh-client-ui-chat/client' {
   interface ChatNodeDataMap {
     /** dsh-plugin-om 压缩替换检查点渲染的摘要卡片数据。 */
     'om-compaction': OmCompactionChatData;
@@ -211,7 +211,7 @@ function chatNode<Kind extends keyof ChatNodeDataMap & string>(
   context: ConversationNodeContext,
   kind: Kind,
   anchorSeq: number,
-  data: ChatNodeDataMap[Kind],
+  data: ChatNode<Kind>['data'],
   visibility: 'visible' | 'hidden' = 'visible',
 ): ChatNode<Kind> {
   return {

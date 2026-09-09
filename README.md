@@ -21,7 +21,7 @@
 
 ## 安装与启用
 
-`$DSH_HOME` 缺省为 `~/.dsh`，profile 描述 dsh 进程的启动模式。
+本插件适配 dsh 0.1.2-rc.1 及以上版本（客户端压缩卡片依赖宿主 `uiConversation` 服务）。`$DSH_HOME` 缺省为 `~/.dsh`，profile 描述 dsh 进程的启动模式。
 
 ```sh
 dsh plugin --profile <profile> add dsh-plugin-om

@@ -5,7 +5,7 @@
 import type {
   ConversationMatch,
   ConversationNodeContext,
-} from '@deepseek-ai/dsh-client-runtime/client';
+} from '@deepseek-ai/dsh-client-ui-conversation/client';
 import type { SessionEvent } from '@deepseek-ai/dsh-session/types';
 import { describe, expect, it } from 'vitest';
 import {
@@ -52,7 +52,7 @@ function lifecycle(
 }
 
 function matchOf(event: SessionEvent, role: 'start' | 'update' = 'update'): ConversationMatch {
-  return { event, role, view: undefined, location: { kind: 'unresolved' } };
+  return { event, role, location: { kind: 'unresolved' } };
 }
 
 function contextOf(

@@ -33,6 +33,7 @@
  *   缺失时本轮跳过观察）
  */
 import { scopeOf } from '@deepseek-ai/dsh-scope';
+import { SessionSeq } from '@deepseek-ai/dsh-session';
 import type { AssembleContext } from '@deepseek-ai/dsh-system-prompt';
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt';
 import {
@@ -150,7 +151,7 @@ function historyInnerText(text: string): string {
 export function isPairBalancedAfter(session: Session, seq: number): boolean {
   let inProgress = 0;
   for (const node of session.surface.nodes) {
-    const event = session.events[node];
+    const event = session.snapshotEvents()[node];
     if (event?.type === 'assistant/message') {
       inProgress += event.data.message.content.filter((block) => block.type === 'tool-call').length;
     } else if (event?.type === 'tool/result') {
@@ -176,7 +177,8 @@ export function computeCompressRange(
   const { boundarySeq } = historySection(session);
   // 区间起点 = 压缩边界在表层顺序中的后继第一条消息（替换块追加在日志末尾，
   // seq 大于被遮蔽消息，须按表层顺序而非 seq 比较取「边界之后」）
-  const startIdx = boundarySeq === undefined ? 0 : surface.indexOf(boundarySeq) + 1;
+  const startIdx =
+    boundarySeq === undefined ? 0 : surface.findIndex((node) => node === boundarySeq) + 1;
   if (startIdx >= surface.length) return undefined;
   const target = indexCompleteMessages(session).find((cm) => cm.index === endMessageIndex);
   if (target === undefined) return undefined;
@@ -215,7 +217,7 @@ export function historySection(session: Session): {
   const blocks: Array<{ text: string; seq: number }> = [];
   let boundarySeq: number | undefined;
   for (const seq of session.surface.nodes) {
-    const text = historyTextOf(session.events[seq]);
+    const text = historyTextOf(session.snapshotEvents()[seq]);
     if (text === undefined) continue;
     blocks.push({ text, seq });
     boundarySeq = seq;
@@ -233,8 +235,8 @@ export function findObservePending(
   session: Session,
 ): { seq: number; triggerMessageIndex: number } | undefined {
   let pending: { seq: number; triggerMessageIndex: number } | undefined;
-  for (let seq = 0; seq < session.events.length; seq += 1) {
-    const event = session.events[seq];
+  for (let seq = 0; seq < session.snapshotEvents().length; seq += 1) {
+    const event = session.snapshotEvents()[seq];
     if (!event) continue;
     const om = readOmEvent(event);
     if (om?.kind === 'om/observe-pending') {
@@ -266,7 +268,7 @@ function appendObserveInvalidate(session: Session, pendingSeq: number): number {
 /** 当前打开中的 turn 号（最近 turn/start 且未被 turn/end 关闭）；无则 null。 */
 function openTurnOf(session: Session): number | null {
   let turn: number | null = null;
-  for (const event of session.events) {
+  for (const event of session.snapshotEvents()) {
     if (event.type === 'turn/start') turn = event.data.turn;
     else if (event.type === 'turn/end') turn = null;
   }
@@ -325,8 +327,11 @@ function appendCompactionSummary(
   const payload: CompactionSummaryPayload = {
     compactionId: data.lifecycle.compactionId,
     summary: [{ type: 'text', text: data.summary }],
-    shadowedRange: data.shadowedRange,
-    shadowedSeqs: data.shadowedSeqs,
+    shadowedRange: {
+      start: SessionSeq(data.shadowedRange.start),
+      end: SessionSeq(data.shadowedRange.end),
+    },
+    shadowedSeqs: data.shadowedSeqs.map(SessionSeq),
     shadowedTokenCount: data.shadowedTokenCount,
     shadowedCharCount: data.shadowedCharCount,
     provider: data.provider,
@@ -376,7 +381,14 @@ function appendHistoryMessage(
     content: [{ type: 'text', text: content }],
     source: { kind: 'plugin', plugin: PLUGIN_LABEL, compactionId },
   } as unknown as UserMessage; // id 为品牌类型 MessageId，插件自产消息由 session.append 运行时校验
-  session.append('user/message', message, { surfaceOp, sourceEventSeqs });
+  session.append('user/message', message, {
+    surfaceOp: {
+      op: 'replace',
+      start: SessionSeq(surfaceOp.start),
+      end: SessionSeq(surfaceOp.end),
+    },
+    sourceEventSeqs: sourceEventSeqs.map(SessionSeq),
+  });
 }
 
 /**
@@ -759,7 +771,7 @@ export async function observePass(
   const usage = summaryResult.usage;
   // 单条消息计价失败按 0 计（tokenMeter 异常属挂载类降级：console 外部 + om 警告事件每会话一次）
   const shadowedTokenCount = replaceSeqs.reduce((total, seq) => {
-    const event = session.events[seq];
+    const event = session.snapshotEvents()[seq];
     const message = event ? session.deriveEventMessage(event) : null;
     let tokens = 0;
     if (message) {
@@ -772,7 +784,7 @@ export async function observePass(
     return total + tokens;
   }, 0);
   const shadowedCharCount = replaceSeqs.reduce((total, seq) => {
-    const event = session.events[seq];
+    const event = session.snapshotEvents()[seq];
     const message = event ? session.deriveEventMessage(event) : null;
     return total + (message ? textCharCount(message) : 0);
   }, 0);

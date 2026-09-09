@@ -83,7 +83,7 @@ describe('runCompressionLoop', () => {
     expect(
       String((record?.options as { meta?: { parentSession?: string } })?.meta?.parentSession),
     ).toBe(session.id);
-    const events = record?.session.events ?? [];
+    const events = record?.session.snapshotEvents() ?? [];
     const descriptor = events.find((e) => e.type === 'subagent/descriptor');
     expect((descriptor?.data as { label?: string })?.label).toContain('会话记录');
     expect((descriptor?.data as { label?: string })?.label).toContain('3 轮');
@@ -134,7 +134,7 @@ describe('runCompressionLoop', () => {
     expect(result.rounds).toBe(1);
     // 只发起一轮请求；getHistory（t2）未执行，无对应 tool-result（assistant 消息原样保留其调用块）
     expect(ctx._llmCalls).toHaveLength(1);
-    const events = ctx._createdSessions[0]?.session.events ?? [];
+    const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
     expect(events.filter((e) => e.type === 'user/message')).toHaveLength(3); // 指令 + completeCompression 结果 + 统计消息
     expect(events.filter((e) => e.type === 'assistant/message')).toHaveLength(1);
     expect(JSON.stringify(events)).not.toContain('"toolCallId":"t2"');
@@ -184,9 +184,9 @@ describe('runCompressionLoop', () => {
     const messages = second ? (second.options as { messages?: unknown[] }).messages : undefined;
     expect(JSON.stringify(messages)).toContain(COMPRESSION_NUDGE_TEXT);
     // 失败也落盘会话记录，label 为失败日志
-    const descriptor = ctx._createdSessions[0]?.session.events.find(
-      (e) => e.type === 'subagent/descriptor',
-    );
+    const descriptor = ctx._createdSessions[0]?.session
+      .snapshotEvents()
+      .find((e) => e.type === 'subagent/descriptor');
     expect((descriptor?.data as { label?: string })?.label).toContain('失败日志');
     expect(result.recordSessionId).toBe(ctx._createdSessions[0]?.id);
   });
@@ -227,7 +227,7 @@ describe('runCompressionLoop', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     // 会话记录：指令 + assistant（部分输出原样）
-    const events = ctx._createdSessions[0]?.session.events ?? [];
+    const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
     const assistantEvents = events.filter((e) => e.type === 'assistant/message');
     expect(assistantEvents).toHaveLength(1);
     expect(JSON.stringify(assistantEvents)).toContain('部分输出');
