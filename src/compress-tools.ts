@@ -14,8 +14,9 @@
  * - completeCompression：标记完成（调用后压缩会话立即停止）；空提交（0 次成功
  *   压缩）允许
  * - 最终 <history> 块由插件从视图与替换记录构建：user / sys 条目原样、被替换区间
- *   生成新摘要条目、未替换 assistant 条目原样保留、reasoning 不进产物；产物天然
- *   合法 XML，无需校验
+ *   生成新摘要条目、未替换 assistant 条目原样保留（toolcall 条目以
+ *   <assistant type="toolcall"> 结构呈现，内含 <tool-args> / <tool-result> 两个
+ *   CDATA 子元素）、reasoning 不进产物；产物天然合法 XML，无需校验
  */
 
 import type { ToolSchema } from '@deepseek-ai/dsh-llm';

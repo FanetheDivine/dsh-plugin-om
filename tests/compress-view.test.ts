@@ -85,9 +85,32 @@ describe('buildObserveView', () => {
     expect(sys).toMatchObject({ lo: 1, hi: 1, text: '', sysKind: 'system' });
     expect(reasoning).toMatchObject({ lo: 2, hi: 2, text: '先思考' });
     expect(text).toMatchObject({ lo: 2, hi: 2, text: '模型回复' });
-    expect(toolcall).toMatchObject({ lo: 3, hi: 3, toolName: 'run_code' });
-    expect(toolcall?.text).toContain('[tool-call run_code id=c1]');
-    expect(toolcall?.text).toContain('执行结果');
+    expect(toolcall).toMatchObject({
+      lo: 3,
+      hi: 3,
+      toolName: 'run_code',
+      callId: 'c1',
+      toolArgs: '{"code":"x"}',
+      toolResult: '执行结果',
+    });
+    // toolcall 条目渲染为结构化形态（与 recall 一致），不再输出 [tool-call] 纯文本
+    const xml = renderEntriesXml(view.entries);
+    expect(xml).toContain(
+      '<assistant index="3" type="toolcall" tool-name="run_code" callId="c1"><tool-args><![CDATA[{"code":"x"}]]></tool-args><tool-result><![CDATA[执行结果]]></tool-result></assistant>',
+    );
+    expect(xml).not.toContain('[tool-call');
+  });
+
+  it('toolcall 调用参数仅一层转义：参数 JSON 内的换行与引号逐字保留', () => {
+    const session = makeSession({
+      events: [
+        assistantEvent([toolCallBlock('c1', 'run_code', '{"code":"a()\nb(\')"}')]),
+        resultEvent('c1', 'ok'),
+      ],
+    });
+    const view = buildObserveView(session, [0, 1]);
+    const xml = renderEntriesXml(view.entries);
+    expect(xml).toContain('<tool-args><![CDATA[{"code":"a()\nb(\')"}]]></tool-args>');
   });
 
   it('图片等非文本块降级为注释，无内容用户消息不占条目', () => {
@@ -264,6 +287,36 @@ describe('buildReflectView', () => {
       '<skill_content name="lark-im" index="5"><skill_resources><![CDATA[资源内容]]></skill_resources><skill_instructions><![CDATA[指令内容]]></skill_instructions></skill_content>',
     );
     expect(xml).toContain('<assistant index="6"><![CDATA[摘要]]></assistant>');
+  });
+
+  it('结构化 toolcall 条目解析出参数与返回，round-trip 逐字还原结构', () => {
+    const block =
+      '<history>\n<assistant index="3" type="toolcall" tool-name="run_code" callId="c1"><tool-args><![CDATA[{"code":"x"}]]></tool-args><tool-result><![CDATA[执行结果]]></tool-result></assistant>\n</history>';
+    const view = buildReflectView([{ text: block, seq: 7 }]);
+    expect(view.entries[0]).toMatchObject({
+      kind: 'assistant',
+      lo: 3,
+      hi: 3,
+      toolName: 'run_code',
+      callId: 'c1',
+      toolArgs: '{"code":"x"}',
+      toolResult: '执行结果',
+      blockSeq: 7,
+    });
+    expect(renderEntriesXml(view.entries)).toBe(
+      '<assistant index="3" type="toolcall" tool-name="run_code" callId="c1"><tool-args><![CDATA[{"code":"x"}]]></tool-args><tool-result><![CDATA[执行结果]]></tool-result></assistant>',
+    );
+  });
+
+  it('旧格式块的 toolcall 纯文本条目仍按纯文本解析与渲染（向后兼容）', () => {
+    const block =
+      '<history>\n<assistant index="2"><![CDATA[[tool-call run_code id=c1]\n{"code":"x"}]]></assistant>\n</history>';
+    const view = buildReflectView([{ text: block, seq: 1 }]);
+    expect(view.entries[0]).toMatchObject({ kind: 'assistant', lo: 2, hi: 2 });
+    expect(view.entries[0]?.toolArgs).toBeUndefined();
+    expect(renderEntriesXml(view.entries)).toBe(
+      '<assistant index="2"><![CDATA[[tool-call run_code id=c1]\n{"code":"x"}]]></assistant>',
+    );
   });
 
   it('非原生结构的 skill_content 条目回退为整体 CDATA 原文，round-trip 逐字还原', () => {
