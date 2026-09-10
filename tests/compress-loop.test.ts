@@ -48,9 +48,10 @@ describe('buildCompressionPrompt / buildCompressionTaskText', () => {
     const prompt = buildCompressionPrompt(true);
     // 提示词点名工具名与条目元素，并给出与 skill 同形的条件保护（无关才压缩、否则保持原文）
     expect(prompt).toContain('ask_user_question');
-    expect(prompt).toContain('<askuserquestion index="N">');
-    expect(prompt).toContain('<questions>');
-    expect(prompt).toContain('<answers>');
+    expect(prompt).toContain('<ask-user-question index="N">');
+    expect(prompt).toContain('q:');
+    expect(prompt).toContain('a:');
+    expect(prompt).not.toContain('<askuserquestion');
   });
 
   it('任务文本含区间：观察与反思各自表述', () => {
