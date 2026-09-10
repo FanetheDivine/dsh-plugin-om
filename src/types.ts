@@ -116,6 +116,8 @@ export type CompactionSummaryPayload = SessionEventMap['compaction/summary'] & {
   completedAt?: number;
   /** 压缩循环总耗时（毫秒）。 */
   durationMs?: number;
+  /** 摘要请求实际使用的思考等级（未配置或降级为模型默认时缺失）。 */
+  reasoningEffort?: string;
 };
 
 /**

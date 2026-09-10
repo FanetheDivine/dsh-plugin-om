@@ -19,6 +19,10 @@
  *   om/observe-invalidate，见 om-event.ts）持久化在会话日志中（重启后从日志恢复）；
  *   压缩失败保留待定，下个 pre-step 直接重试执行
  * - 两级在 pre-step 阻塞串行执行（先反思后观察）；仅主会话生效；omEnabled=false 关闭
+ * - 压缩目标默认跟随会话路由；compressProvider + compressModel 成对配置时覆盖路由
+ *   （成对配置下未路由会话也执行压缩）；compressReasoningEffort 配置时压缩前经
+ *   ctx.llm.resolveModelInfo 校验目标模型 reasoning.efforts（按 provider+model 缓存），
+ *   未命中 / 无元数据 / 查询失败降级为模型默认并报告 reasoning-effort-unavailable 降级
  * - 压缩边界：最后一个合法 <history> 块之后的消息视为未压缩，其前不重复压缩
  * - 压缩循环最终失败（连续无工具调用 / 请求级错误）时 pass 返回失败结果（携带最后一次
  *   错误），压缩流程向上传播，pre-step 据此拒绝本 step 中断当前 turn；signal 中止标记
@@ -32,6 +36,7 @@
  *   辅助估算的普通运行时报错仅记日志。降级与报错都不阻塞压缩（tokenMeter 压力数据
  *   缺失时本轮跳过观察）
  */
+import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm';
 import { scopeOf } from '@deepseek-ai/dsh-scope';
 import { SessionSeq } from '@deepseek-ai/dsh-session';
 import type { AssembleContext } from '@deepseek-ai/dsh-system-prompt';
@@ -77,6 +82,69 @@ export type CompressPassResult =
 /** 历史文本 token 估算：4 字符 ≈ 1 token（与宿主 dsh-token-meter 启发式一致）。 */
 export function estimateTextTokens(text: string): number {
   return Math.ceil(text.length / 4);
+}
+
+/**
+ * 压缩目标解析：compressProvider + compressModel 成对配置时覆盖会话路由；仅配置单键或
+ * 未配置时回落 routedTarget（会话未路由返回 undefined，压缩跳过——成对覆盖配置下
+ * 未路由会话仍可压缩）。
+ */
+export function compressionTarget(
+  config: Readonly<PluginConfig>,
+  session: Session,
+): RoutedTarget | undefined {
+  if (config.compressProvider !== undefined && config.compressModel !== undefined) {
+    return { provider: config.compressProvider, model: config.compressModel };
+  }
+  return routedTarget(session);
+}
+
+/** 压缩思考等级校验缓存：provider+model → 命中的等级 id（undefined 表示降级为模型默认）。 */
+const compressionEffortCache = new Map<string, ReasoningEffortId | undefined>();
+
+/** 清空压缩思考等级校验缓存（按目标缓存 resolveModelInfo 查询结果；测试隔离用）。 */
+export function clearCompressionModelInfoCache(): void {
+  compressionEffortCache.clear();
+}
+
+/**
+ * 校验配置的 compressReasoningEffort 并解析为压缩请求的思考等级：未配置返回 undefined
+ * （用模型默认，不查询模型信息）；命中目标模型 reasoning.efforts 返回等级 id；
+ * 不在可选等级 / 模型无 reasoning 元数据 / 查询抛错时返回 undefined 并报告
+ * reasoning-effort-unavailable 降级。结果按 provider+model 缓存（含降级结果），避免
+ * 每个 pre-step 重复查询。
+ */
+export async function resolveCompressionEffort(
+  ctx: Context,
+  session: Session,
+  config: Readonly<PluginConfig>,
+  target: RoutedTarget,
+  logger: PluginLogger,
+): Promise<ReasoningEffortId | undefined> {
+  const configured = config.compressReasoningEffort;
+  if (configured === undefined) return undefined;
+  const cacheKey = `${target.provider}\n${target.model}`;
+  if (compressionEffortCache.has(cacheKey)) return compressionEffortCache.get(cacheKey);
+  let resolved: ReasoningEffortId | undefined;
+  try {
+    const info = await ctx.llm.resolveModelInfo(target.provider, target.model);
+    const efforts = info?.reasoning?.efforts;
+    if (Array.isArray(efforts) && efforts.some((effort) => effort?.id === configured)) {
+      resolved = configured as ReasoningEffortId; // 品牌类型由本处校验担保
+      logger.step(`压缩思考等级校验通过：${configured}`);
+    } else {
+      reportDegrade(session, logger, 'reasoning-effort-unavailable');
+      logger.warn(
+        `compressReasoningEffort=${configured} 不在模型 ${target.provider}/${target.model} 的可选思考等级中，使用模型默认`,
+      );
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    reportDegrade(session, logger, 'reasoning-effort-unavailable');
+    logger.warn(`压缩思考等级校验失败（${message}），使用模型默认`);
+  }
+  compressionEffortCache.set(cacheKey, resolved);
+  return resolved;
 }
 
 /**
@@ -322,6 +390,8 @@ function appendCompactionSummary(
     /** 压缩循环统计（载荷记录其计时字段）。 */
     stats: CompressionStats;
     usage?: TokenUsage;
+    /** 摘要请求实际使用的思考等级（未配置或降级为模型默认时省略）。 */
+    reasoningEffort?: ReasoningEffortId;
   },
 ): number {
   const payload: CompactionSummaryPayload = {
@@ -341,6 +411,7 @@ function appendCompactionSummary(
     completedAt: data.stats.completedAt,
     durationMs: data.stats.durationMs,
     ...(data.usage === undefined ? {} : { usage: data.usage }),
+    ...(data.reasoningEffort === undefined ? {} : { reasoningEffort: data.reasoningEffort }),
   };
   return session.append('compaction/summary', payload).seq;
 }
@@ -403,6 +474,7 @@ export async function reflectPass(
   config: Readonly<PluginConfig>,
   target: RoutedTarget,
   signal?: AbortSignal,
+  reasoningEffort?: ReasoningEffortId,
 ): Promise<CompressPassResult> {
   const session = agent.session;
   const logger = makeLogger(ctx, config.debug);
@@ -462,6 +534,7 @@ export async function reflectPass(
       rateLimitWaitMs: config.rateLimitWaitMs,
       skipReasoning: config.compressSkipReasoning,
       debug: config.debug,
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
       ...(signal === undefined ? {} : { signal }),
     } satisfies CompressionLoopOptions,
     logger,
@@ -492,6 +565,7 @@ export async function reflectPass(
       maxTokens: config.compressMaxTokens,
       stats: summaryResult.stats,
       ...(summaryResult.usage === undefined ? {} : { usage: summaryResult.usage }),
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
     });
     logger.step('反思提交：替换整个 <history> 块区段为合并摘要');
     appendHistoryMessage(
@@ -611,6 +685,7 @@ export async function observePass(
   waitCount: number,
   target: RoutedTarget,
   signal?: AbortSignal,
+  reasoningEffort?: ReasoningEffortId,
 ): Promise<CompressPassResult> {
   const session = agent.session;
   const logger = makeLogger(ctx, config.debug);
@@ -751,6 +826,7 @@ export async function observePass(
       rateLimitWaitMs: config.rateLimitWaitMs,
       skipReasoning: config.compressSkipReasoning,
       debug: config.debug,
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
       ...(signal === undefined ? {} : { signal }),
     } satisfies CompressionLoopOptions,
     logger,
@@ -802,6 +878,7 @@ export async function observePass(
       maxTokens: config.compressMaxTokens,
       stats: summaryResult.stats,
       ...(usage === undefined ? {} : { usage }),
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
     });
     logger.step('观察提交：替换被压缩新消息区间为 <history>（旧块保留）');
     appendHistoryMessage(
@@ -854,21 +931,22 @@ export async function maybeCompress(
     logger.step('omEnabled=false，跳过压缩');
     return { failed: false };
   }
-  const target = routedTarget(session);
+  const target = compressionTarget(config, session);
   if (target === undefined) {
-    logger.step('会话未路由（无 provider/model），跳过压缩');
+    logger.step('会话未路由（无 provider/model）且未配置压缩目标覆盖，跳过压缩');
     return { failed: false };
   }
-  logger.step(`会话路由：provider ${target.provider}，model ${target.model}`);
+  logger.step(`压缩路由：provider ${target.provider}，model ${target.model}`);
+  const reasoningEffort = await resolveCompressionEffort(ctx, session, config, target, logger);
   const waitCount = config.tailMessageCount;
   logger.step('反思 pass 开始');
-  const reflect = await reflectPass(ctx, agent, config, target, signal);
+  const reflect = await reflectPass(ctx, agent, config, target, signal, reasoningEffort);
   if (reflect.failed) {
     logger.step('反思 pass 失败（本轮将被拒绝），跳过观察 pass');
     return reflect;
   }
   logger.step('反思 pass 结束，观察 pass 开始');
-  const observe = await observePass(ctx, agent, config, waitCount, target, signal);
+  const observe = await observePass(ctx, agent, config, waitCount, target, signal, reasoningEffort);
   logger.step('观察 pass 结束，压缩流程完成');
   return observe;
 }

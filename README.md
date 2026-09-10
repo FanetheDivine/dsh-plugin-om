@@ -62,6 +62,9 @@ preset-agent 自带 compaction-basic 压缩，阈值为上下文窗口的 80%，
 | `observeThresholdTokens` | `35000` | 净压力达到该值时触发观察压缩 |
 | `reflectThresholdTokens` | `40000` | 全部 `<history>` 块 token 合计达到该值时触发反思合并 |
 | `compressMaxTokens` | 不设置 | 压缩循环单轮生成上限，不设置时由模型适配器默认值决定 |
+| `compressProvider` | 不设置 | 压缩请求的 provider，与 `compressModel` 成对配置才生效，只配置其一回落会话路由，成对配置后未路由会话也会执行压缩 |
+| `compressModel` | 不设置 | 压缩请求的模型，与 `compressProvider` 成对配置才生效 |
+| `compressReasoningEffort` | 不设置 | 压缩请求的思考等级，需为目标模型支持的等级，不设置时用模型默认；配置值不被目标模型支持时降级为模型默认并输出 `reasoning-effort-unavailable` 警告（每会话一次） |
 | `rateLimitWaitMs` | `60000` | 遇 429 限流后下一次压缩请求前的等待毫秒数，`0` 不限流 |
 | `tailMessageCount` | `20` | 观察触发后等待新增完整消息达到该条数才执行压缩，`0` 表示触发当轮立即执行 |
 | `compressSkipReasoning` | `true` | 工具循环 getHistory 输出是否携带 `<reasoning>` 参考条目，`true` 时不携带，压缩指令同步省略对应说明 |

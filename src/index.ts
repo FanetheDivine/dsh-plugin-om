@@ -30,7 +30,11 @@ export function apply(ctx: Context, config?: unknown): void {
   logger.step(
     `apply 启动：observeThresholdTokens=${String(resolved.observeThresholdTokens)} reflectThresholdTokens=${String(resolved.reflectThresholdTokens)} compressMaxTokens=${
       resolved.compressMaxTokens === undefined ? '未设置' : String(resolved.compressMaxTokens)
-    } tailMessageCount=${String(resolved.tailMessageCount)} omEnabled=${String(resolved.omEnabled)} debug=${String(resolved.debug)}`,
+    } tailMessageCount=${String(resolved.tailMessageCount)} omEnabled=${String(resolved.omEnabled)} debug=${String(resolved.debug)} compressProvider=${
+      resolved.compressProvider ?? '跟随会话路由'
+    } compressModel=${resolved.compressModel ?? '跟随会话路由'} compressReasoningEffort=${
+      resolved.compressReasoningEffort ?? '模型默认'
+    }`,
   );
 
   // recall 工具：超大输出由 tool-result-pruner 裁剪；recallEnabled=false 时不注册。

@@ -30,6 +30,12 @@ export type PluginConfig = {
   semanticRecallEnabled: boolean;
   /** 语义召回嵌入模型目录。 */
   modelDir: string;
+  /** 压缩请求覆盖的 provider（与 compressModel 成对生效，任一缺失回落会话路由）。 */
+  compressProvider: string | undefined;
+  /** 压缩请求覆盖的 model（与 compressProvider 成对生效，任一缺失回落会话路由）。 */
+  compressModel: string | undefined;
+  /** 压缩请求的思考等级（配置值不被目标模型支持时降级为模型默认并告警）。 */
+  compressReasoningEffort: string | undefined;
 };
 
 /** 默认配置（冻结对象，resolveConfig 合并的基底；debug 缺省值在解析时按 NODE_ENV 判定）。 */
@@ -45,6 +51,9 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   recallEnabled: true,
   semanticRecallEnabled: true,
   modelDir: sharedModelDir(),
+  compressProvider: undefined,
+  compressModel: undefined,
+  compressReasoningEffort: undefined,
 });
 
 /** 数值配置键（仅接受有限数；整数键另校验整数性，不限制取值区间）。 */
@@ -80,6 +89,12 @@ function resolveBoolean(raw: unknown, defaultValue: boolean): boolean {
   return defaultValue;
 }
 
+/** 解析字符串配置值：非空字符串才生效，缺省 / null / 空白串 / 非字符串回退 undefined。 */
+function resolveOptionalString(raw: unknown): string | undefined {
+  if (typeof raw === 'string' && raw.trim() !== '') return raw;
+  return undefined;
+}
+
 /** 解析合并配置：未知键忽略、不合法值回退默认值，返回冻结的完整配置。 */
 export function resolveConfig(raw?: unknown): Readonly<PluginConfig> {
   const input = normalizeConfigInput(raw);
@@ -101,5 +116,8 @@ export function resolveConfig(raw?: unknown): Readonly<PluginConfig> {
   if (typeof modelDir === 'string' && modelDir.trim() !== '') {
     config.modelDir = modelDir;
   }
+  config.compressProvider = resolveOptionalString(input.compressProvider);
+  config.compressModel = resolveOptionalString(input.compressModel);
+  config.compressReasoningEffort = resolveOptionalString(input.compressReasoningEffort);
   return Object.freeze(config);
 }
