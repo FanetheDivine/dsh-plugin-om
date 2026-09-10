@@ -29,14 +29,14 @@ export type HistoryNoteSections = {
   sys?: boolean;
   /** 块内存在未压缩 skill 条目时追加 <skill_content> 说明。 */
   skill?: boolean;
-  /** 块内存在 ask_user_question 条目时追加 <askuserquestion> 说明。 */
+  /** 块内存在 ask_user_question 条目时追加 <ask-user-question> 说明。 */
   askUserQuestion?: boolean;
 };
 
 /**
  * 最终 <history> 块内文块首的格式说明注释（XML 注释）。通用部分（完整消息定义 +
  * 条目标签语义 + CDATA 约定 + toolcall 结构）始终保留；<user_message> / <sys> /
- * <skill_content> / <askuserquestion> 的条目说明仅在块内存在对应条目时追加。
+ * <skill_content> / <ask-user-question> 的条目说明仅在块内存在对应条目时追加。
  */
 export function historyFormatNote(sections: HistoryNoteSections = {}): string {
   const parts = [
@@ -49,7 +49,7 @@ export function historyFormatNote(sections: HistoryNoteSections = {}): string {
   if (sections.skill) parts.push('<skill_content name="S" index="N"> 表示未压缩的原始 skill');
   if (sections.askUserQuestion)
     parts.push(
-      '<askuserquestion index="N"> 表示向用户提问，内含 <questions>（提问）与 <answers>（用户回答）两个CDATA子元素',
+      '<ask-user-question index="N"> 表示向用户提问，CDATA 内为 q:（提问）与 a:（用户回答）行',
     );
   return `<!-- ${parts.join('；')} -->`;
 }
@@ -59,7 +59,7 @@ export const SKILL_TOOL_NAME = 'skill';
 
 /**
  * ask_user_question 工具名：toolcall 条目的工具名为该值时视为向用户的提问，
- * <history> 块中以 <askuserquestion> 元素呈现，压缩时与 skill 一样要求二次确认。
+ * <history> 块中以 <ask-user-question> 元素呈现，压缩时与 skill 一样要求二次确认。
  */
 export const ASK_USER_QUESTION_TOOL_NAME = 'ask_user_question';
 
