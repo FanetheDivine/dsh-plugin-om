@@ -9,7 +9,7 @@
 
 import type { Document, Element } from '@xmldom/xmldom';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
-import { HISTORY_TAG, SKILL_TOOL_NAME } from './constants.ts';
+import { ASK_USER_QUESTION_TOOL_NAME, HISTORY_TAG, SKILL_TOOL_NAME } from './constants.ts';
 import {
   indexCompleteMessages,
   renderCompleteMessage,
@@ -40,7 +40,7 @@ export type ViewEntry = {
   notes?: string[];
   /** sys 条目的 source.kind。 */
   sysKind?: string;
-  /** 观察视图 toolcall 条目的工具名（skill 判定用；结构化渲染为 tool-name 属性）。 */
+  /** 观察视图 toolcall 条目的工具名（skill / ask_user_question 判定用；结构化渲染为 tool-name 属性）。 */
   toolName?: string;
   /** skill 条目的 skill 名（toolName 为 skill 时存在；反思视图取自 name 属性，缺失为空串）。 */
   skillName?: string;
@@ -147,6 +147,26 @@ export function skillNameOf(session: Session, cm: CompleteMessage): string | und
   return '';
 }
 
+/**
+ * ask_user_question 条目正文：构造为原生 <askuserquestion> 包裹形态
+ * （<questions> 为调用参数 JSON，<answers> 为用户回答文本，缺失或空段省略）。
+ * 两段均缺失时返回 null（调用方回退为通用完整消息呈现）。
+ */
+function askUserQuestionText(session: Session, cm: CompleteMessage): string | null {
+  const call = toolCallBlockOf(session, cm);
+  const args = call === undefined ? undefined : toolArgsJson(call.arguments);
+  const resultMessage = toolResultMessageOf(session, cm);
+  const result =
+    resultMessage && Array.isArray(resultMessage.content) ? renderMessageText(resultMessage) : '';
+  if ((args === undefined || args.trim() === '') && result.trim() === '') return null;
+  return (
+    '<askuserquestion>' +
+    (args === undefined || args.trim() === '' ? '' : `<questions>${args}</questions>`) +
+    (result.trim() === '' ? '' : `<answers>${result}</answers>`) +
+    '</askuserquestion>'
+  );
+}
+
 /** 视图构建选项：skipReasoning=true 时不含 <reasoning> 参考条目。 */
 export type BuildViewOptions = {
   /** 是否在视图中省略 reasoning 参考条目。 */
@@ -217,14 +237,22 @@ export function buildObserveView(
     }
     const toolName = cm.type === 'toolcall' ? toolCallNameOf(session, cm) : undefined;
     const isSkill = toolName === SKILL_TOOL_NAME;
-    // skill 条目正文仅保留工具返回内容（调用参数由 <skill_content> 的 name 属性表达）
-    const text = isSkill ? renderToolResultText(session, cm) : renderCompleteMessage(session, cm);
+    const isAsk = toolName === ASK_USER_QUESTION_TOOL_NAME;
+    // skill 条目正文仅保留工具返回内容（调用参数由 <skill_content> 的 name 属性表达）；
+    // ask_user_question 条目正文构造为原生 askuserquestion 包裹（两段均缺失时回退为
+    // 通用完整消息呈现）
+    const askText = isAsk ? askUserQuestionText(session, cm) : undefined;
+    const text = isSkill
+      ? renderToolResultText(session, cm)
+      : isAsk
+        ? (askText ?? renderCompleteMessage(session, cm))
+        : renderCompleteMessage(session, cm);
     if (text.trim() === '') continue;
     const skillName = isSkill ? skillNameOf(session, cm) : undefined;
-    // 非 skill 的 toolcall 条目提取调用参数与返回文本（渲染为 <assistant type="toolcall"> 结构）
+    // 非 skill / ask_user_question 的 toolcall 条目提取调用参数与返回文本（渲染为 <assistant type="toolcall"> 结构）
     let toolArgs: string | undefined;
     let toolResult: string | undefined;
-    if (cm.type === 'toolcall' && !isSkill) {
+    if (cm.type === 'toolcall' && !isSkill && !isAsk) {
       const call = toolCallBlockOf(session, cm);
       if (call !== undefined) toolArgs = toolArgsJson(call.arguments);
       const resultMessage = toolResultMessageOf(session, cm);
@@ -314,13 +342,39 @@ function skillContentSections(
 }
 
 /**
+ * 提取 ask_user_question 条目正文（原生 <askuserquestion> 包裹）中 <questions> 与
+ * <answers> 两段正文。非该包裹形态、<questions> 缺失或两段之间存在其他内容时返回
+ * undefined（调用方回退为整体 CDATA 原文）；<answers> 缺省为 undefined（渲染时省略该段）。
+ */
+function askUserQuestionSections(
+  text: string,
+): { questions: string; answers?: string } | undefined {
+  const wrapper = /^[\s]*<askuserquestion\b[^>]*>([\s\S]*)<\/askuserquestion>[\s]*$/.exec(text);
+  if (!wrapper) return undefined;
+  const body = wrapper[1] ?? '';
+  const qMatch = /<questions>([\s\S]*?)<\/questions>/.exec(body);
+  const aMatch = /<answers>([\s\S]*?)<\/answers>/.exec(body);
+  if (!qMatch && !aMatch) return undefined;
+  if (qMatch && aMatch && aMatch.index < qMatch.index) return undefined;
+  let rest = body;
+  if (qMatch) rest = rest.replace(qMatch[0], '');
+  if (aMatch) rest = rest.replace(aMatch[0], '');
+  if (rest.trim() !== '') return undefined;
+  return {
+    questions: qMatch?.[1] ?? '',
+    ...(aMatch === null ? {} : { answers: aMatch[1] ?? '' }),
+  };
+}
+
+/**
  * 向元素追加 CDATA 正文（实现在 utils.ts，此处再导出保持既有导入路径）。
  */
 export { appendCdataText } from './utils.ts';
 
 /**
  * 解析一个已有 <history> 块的内条目（反思视图）：user_message / sys / assistant
- * （index 单条或 start/end 区间）/ skill_content（name 属性 + index 定位）/ reasoning。
+ * （index 单条或 start/end 区间）/ skill_content（name 属性 + index 定位）/
+ * askuserquestion（index 定位）/ reasoning。
  * 整块无法解析或根非 <history> 时降级为单条不可定位的历史遗留条目（text 为块内文原文，
  * 构建最终块时原样保留）。
  */
@@ -413,6 +467,30 @@ function parseBlockEntries(blockText: string, blockSeq: number): ViewEntry[] {
         });
       }
       // 属性缺失的 skill_content 条目跳过（防御：产物块创建时已校验属性）
+    } else if (el.nodeName === 'askuserquestion') {
+      const index = intAttr(el, 'index');
+      if (index !== undefined) {
+        const questions = childText(el, 'questions');
+        const answers = childText(el, 'answers');
+        // 两段子元素齐备时还原为原生 askuserquestion 包裹形态（供渲染时按两段拆分）；
+        // 非原生结构回退整体正文原文
+        const text =
+          questions !== undefined || answers !== undefined
+            ? '<askuserquestion>' +
+              (questions === undefined ? '' : `<questions>${questions}</questions>`) +
+              (answers === undefined ? '' : `<answers>${answers}</answers>`) +
+              '</askuserquestion>'
+            : (el.textContent ?? '');
+        entries.push({
+          kind: 'assistant',
+          lo: index,
+          hi: index,
+          text,
+          toolName: ASK_USER_QUESTION_TOOL_NAME,
+          blockSeq,
+        });
+      }
+      // 属性缺失的 askuserquestion 条目跳过（防御：产物块创建时已校验属性）
     } else if (el.nodeName === 'reasoning') {
       entries.push({ kind: 'reasoning', text, blockSeq });
     }
@@ -491,6 +569,28 @@ export function entryToElement(doc: Document, entry: ViewEntry): Element {
       const result = doc.createElement('tool-result');
       appendCdataText(doc, result, entry.toolResult);
       el.appendChild(result);
+    }
+    return el;
+  }
+  if (entry.kind === 'assistant' && entry.toolName === ASK_USER_QUESTION_TOOL_NAME) {
+    // ask_user_question 条目：<askuserquestion index="N">，内文为 <questions>（调用参数）
+    // 与 <answers>（用户回答）两段 CDATA 子元素；非原生包裹形态回退整体 CDATA 原文。
+    const el = doc.createElement('askuserquestion');
+    if (entry.lo !== undefined && entry.lo === entry.hi) {
+      el.setAttribute('index', String(entry.lo));
+    }
+    const sections = askUserQuestionSections(entry.text);
+    if (sections) {
+      const questions = doc.createElement('questions');
+      appendCdataText(doc, questions, sections.questions);
+      el.appendChild(questions);
+      if (sections.answers !== undefined) {
+        const answers = doc.createElement('answers');
+        appendCdataText(doc, answers, sections.answers);
+        el.appendChild(answers);
+      }
+    } else {
+      appendCdataText(doc, el, entry.text);
     }
     return el;
   }

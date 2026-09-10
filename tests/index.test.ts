@@ -13,7 +13,7 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
 });
 
 import { buildCompressionPrompt } from '../src/compress-loop.ts';
-import { HISTORY_FORMAT_NOTE, PLUGIN_LABEL } from '../src/constants.ts';
+import { historyFormatNote, PLUGIN_LABEL } from '../src/constants.ts';
 import { ensureModelReady } from '../src/embedding.ts';
 import { apply } from '../src/index.ts';
 import { findOmEvents } from '../src/om-event.ts';
@@ -160,7 +160,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(historyText).toContain(
       'toolcall index:2 purpose:跑一下 summary:产物符合预期；下一步提交',
     );
-    expect(historyText).toContain(HISTORY_FORMAT_NOTE); // 块首格式说明注释
+    expect(historyText).toContain(historyFormatNote({ user: true })); // 块首格式说明注释（仅含 user 说明）
     // 遮蔽后表层 = 仅 <history> 块（tailCount=0 全部压缩）
     expect(session.surface.nodes.length).toBe(1);
     // compaction 生命周期：start → summary → 替换消息 → end（同 compactionId）
@@ -819,7 +819,7 @@ describe('apply 接线（OM 反思压缩）', () => {
     const session = makeSession({
       events: [
         historyMessage(
-          `${HISTORY_FORMAT_NOTE}\n<user_message index="0">\nOLD-SUMMARY-1\n</user_message>\n<assistant index="1">\nA-摘要\n</assistant>`,
+          `${historyFormatNote({ user: true })}\n<user_message index="0">\nOLD-SUMMARY-1\n</user_message>\n<assistant index="1">\nA-摘要\n</assistant>`,
         ),
         historyMessage(
           `<user_message index="4">\ntip="正文内的 tip 文本"\n</user_message>\n<assistant index="5">\nB-摘要\n</assistant>`,
@@ -878,7 +878,7 @@ describe('apply 接线（OM 反思压缩）', () => {
     // 块首格式说明注释不进入视图
     expect(seenHistory).toContain('OLD-SUMMARY-1');
     expect(seenHistory).toContain('A-摘要');
-    expect(seenHistory).not.toContain(HISTORY_FORMAT_NOTE); // 块首格式注释剥离
+    expect(seenHistory).not.toContain(historyFormatNote({ user: true })); // 块首格式注释剥离
     expect(seenHistory).toContain('tip='); // 正文内的 tip 同形文本原样保留
     expect(seenHistory).toContain('正文内的 tip 文本');
     // 最终块：user 条目原样保留 + 各 assistant 条目的重新压缩

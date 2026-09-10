@@ -46,8 +46,9 @@ import type { Context, Session } from './types.ts';
 import { type RoutedTarget, uuid } from './utils.ts';
 
 /**
- * 共享压缩提示词（观察/反思同一套）：完整消息定义、工具语义、压缩要求、skill 规则
- * 与提交方式。作为压缩会话的 system；skipReasoning=true 时省略 <reasoning> 说明行。
+ * 共享压缩提示词（观察/反思同一套）：完整消息定义、工具语义、压缩要求、skill 与
+ * ask_user_question 规则、提交方式。作为压缩会话的 system；skipReasoning=true 时
+ * 省略 <reasoning> 说明行。
  */
 export function buildCompressionPrompt(skipReasoning: boolean): string {
   const lines: string[] = [
@@ -70,6 +71,7 @@ export function buildCompressionPrompt(skipReasoning: boolean): string {
     '- <history> 条目正文以 CDATA 包裹（空的 <sys> 条目为自闭合空元素，无正文），CDATA 内为逐字原样内容。',
     '- 工具调用条目为 <assistant index="N" type="toolcall" tool-name="…" callId="…">，内含 <tool-args>（调用参数 JSON）与 <tool-result>（工具返回内容）两个 CDATA 子元素。',
     '- 加载的 skill 以 <skill_content name="…" index="N"> 条目呈现，内含 <skill_resources> 与 <skill_instructions> 两段，内文为其工具返回内容，属于关键信息。仅在你明确判断该 skill 与后续任务无关时，压缩它；如果该 skill 与后续任务相关，或者你无法判断，不要压缩，**保持原文**。',
+    '- ask_user_question 工具调用（向用户的提问）以 <askuserquestion index="N"> 条目呈现，内含 <questions>（提问内容）与 <answers>（用户回答）两段，属于关键信息。仅在你明确判断该提问与后续任务无关时，压缩它；如果该提问与后续任务相关，或者你无法判断，不要压缩，**保持原文**。',
     '- 未压缩的条目将原样保留；宁可保留也不要强行压缩不确定的内容。',
     '- 全部完成后调用 completeCompression 结束；不要输出与工具调用无关的文本。',
   ];

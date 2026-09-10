@@ -337,6 +337,102 @@ describe('buildReflectView', () => {
   });
 });
 
+describe('ask_user_question 条目', () => {
+  it('观察视图：ask_user_question 工具调用渲染为 <askuserquestion> 专用元素，内含 questions/answers 两段 CDATA', () => {
+    const session = makeSession({
+      events: [
+        assistantEvent([
+          toolCallBlock(
+            'c1',
+            'ask_user_question',
+            '{"questions":[{"id":"q1","question":"继续吗"}]}',
+          ),
+        ]),
+        resultEvent('c1', '继续'),
+      ],
+    });
+    const view = buildObserveView(session, [0, 1]);
+    expect(view.entries).toHaveLength(1);
+    const ask = view.entries[0];
+    expect(ask).toMatchObject({
+      kind: 'assistant',
+      lo: 0,
+      hi: 0,
+      toolName: 'ask_user_question',
+    });
+    // 条目正文还原为原生 askuserquestion 包裹形态（供渲染时按两段拆分）
+    expect(ask?.text).toBe(
+      '<askuserquestion><questions>{"questions":[{"id":"q1","question":"继续吗"}]}</questions><answers>继续</answers></askuserquestion>',
+    );
+    const xml = renderEntriesXml(view.entries);
+    expect(xml).toBe(
+      '<askuserquestion index="0"><questions><![CDATA[{"questions":[{"id":"q1","question":"继续吗"}]}]]></questions><answers><![CDATA[继续]]></answers></askuserquestion>',
+    );
+  });
+
+  it('观察视图：ask_user_question 无返回内容时仅输出 questions 段', () => {
+    const session = makeSession({
+      events: [
+        assistantEvent([toolCallBlock('c1', 'ask_user_question', '{"questions":["q"]}')]),
+        resultEvent('c1', ''),
+      ],
+    });
+    const view = buildObserveView(session, [0, 1]);
+    const xml = renderEntriesXml(view.entries);
+    expect(xml).toBe(
+      '<askuserquestion index="0"><questions><![CDATA[{"questions":["q"]}]]></questions></askuserquestion>',
+    );
+  });
+
+  it('反思视图：askuserquestion 条目解析为带 toolName 的 assistant 条目，round-trip 还原两段 CDATA', () => {
+    const block =
+      '<history>\n<askuserquestion index="5"><questions><![CDATA[{"questions":["继续吗"]}]]></questions><answers><![CDATA[继续]]></answers></askuserquestion>\n<assistant index="6"><![CDATA[摘要]]></assistant>\n</history>';
+    const view = buildReflectView([{ text: block, seq: 7 }]);
+    expect(view.entries).toHaveLength(2);
+    const ask = view.entries[0];
+    expect(ask).toMatchObject({
+      kind: 'assistant',
+      lo: 5,
+      hi: 5,
+      toolName: 'ask_user_question',
+      blockSeq: 7,
+    });
+    expect(ask?.text).toBe(
+      '<askuserquestion><questions>{"questions":["继续吗"]}</questions><answers>继续</answers></askuserquestion>',
+    );
+    // 缺失 index 的 askuserquestion 条目不可定位、被跳过
+    const noIndex = buildReflectView([
+      {
+        text: '<history>\n<askuserquestion><answers>x</answers></askuserquestion>\n</history>',
+        seq: 8,
+      },
+    ]);
+    expect(noIndex.entries).toHaveLength(1);
+    expect(noIndex.entries[0]?.lo).toBeUndefined();
+    // round-trip：解析后的条目重新渲染还原两段 CDATA 结构
+    const xml = renderEntriesXml(view.entries);
+    expect(xml).toContain(
+      '<askuserquestion index="5"><questions><![CDATA[{"questions":["继续吗"]}]]></questions><answers><![CDATA[继续]]></answers></askuserquestion>',
+    );
+  });
+
+  it('反思视图：非原生结构的 askuserquestion 条目回退为整体 CDATA 原文，round-trip 逐字还原', () => {
+    const block =
+      '<history>\n<askuserquestion index="1"><![CDATA[纯文本内容]]></askuserquestion>\n</history>';
+    const view = buildReflectView([{ text: block, seq: 7 }]);
+    expect(view.entries[0]).toMatchObject({
+      kind: 'assistant',
+      lo: 1,
+      hi: 1,
+      toolName: 'ask_user_question',
+      text: '纯文本内容',
+    });
+    expect(renderEntriesXml(view.entries)).toBe(
+      '<askuserquestion index="1"><![CDATA[纯文本内容]]></askuserquestion>',
+    );
+  });
+});
+
 describe('renderEntriesXml', () => {
   it('条目正文以 CDATA 包裹，user 注释输出为 XML 注释，无 history 包裹', () => {
     const xml = renderEntriesXml([

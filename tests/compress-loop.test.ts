@@ -44,6 +44,15 @@ describe('buildCompressionPrompt / buildCompressionTaskText', () => {
     expect(buildCompressionPrompt(false)).toContain('<reasoning> 仅作压缩参考，不进产物。');
   });
 
+  it('ask_user_question 条目规则：提示词包含条目形态与保护性要求', () => {
+    const prompt = buildCompressionPrompt(true);
+    // 提示词点名工具名与条目元素，并给出与 skill 同形的条件保护（无关才压缩、否则保持原文）
+    expect(prompt).toContain('ask_user_question');
+    expect(prompt).toContain('<askuserquestion index="N">');
+    expect(prompt).toContain('<questions>');
+    expect(prompt).toContain('<answers>');
+  });
+
   it('任务文本含区间：观察与反思各自表述', () => {
     expect(buildCompressionTaskText('observe', 3, 8)).toContain('[3..8]');
     expect(buildCompressionTaskText('observe', 3, 8)).not.toContain('<history>');

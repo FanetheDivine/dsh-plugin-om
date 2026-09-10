@@ -1,8 +1,8 @@
 /**
  * 共享常量：插件级魔法字符串，集中定义避免散落各模块。
  * 导出 PLUGIN_LABEL / HISTORY_TAG / HISTORY_TIP / COMPLETE_MESSAGE_DEFINITION /
- * HISTORY_FORMAT_NOTE / SKILL_TOOL_NAME / COMPACT_CHECKPOINT_PLUGIN /
- * COMPACTION_ABORTED_ERROR / isPluginOwnedSource。
+ * historyFormatNote / SKILL_TOOL_NAME / ASK_USER_QUESTION_TOOL_NAME /
+ * COMPACT_CHECKPOINT_PLUGIN / COMPACTION_ABORTED_ERROR / isPluginOwnedSource。
  */
 
 /** 插件标识：压缩消息 source.plugin 取值与日志前缀。 */
@@ -21,13 +21,47 @@ export const HISTORY_TIP = '当前块是历史消息的压缩产物，不要复�
 export const COMPLETE_MESSAGE_DEFINITION =
   '`完整消息`指一条`用户消息`、`系统消息`、`模型输出文本`或`具有result的toolcall`；首条 index 为 0，按会话顺序递增。';
 
+/** 块顶格式说明注释中按块内条目动态追加的分段开关。 */
+export type HistoryNoteSections = {
+  /** 块内存在 user 条目时追加 <user_message> 说明。 */
+  user?: boolean;
+  /** 块内存在 sys 条目时追加 <sys> 说明。 */
+  sys?: boolean;
+  /** 块内存在未压缩 skill 条目时追加 <skill_content> 说明。 */
+  skill?: boolean;
+  /** 块内存在 ask_user_question 条目时追加 <askuserquestion> 说明。 */
+  askUserQuestion?: boolean;
+};
+
 /**
- * 最终 <history> 块内文块首的格式说明注释（XML 注释，完整消息定义 + 条目标签语义 + CDATA 约定）。
+ * 最终 <history> 块内文块首的格式说明注释（XML 注释）。通用部分（完整消息定义 +
+ * 条目标签语义 + CDATA 约定 + toolcall 结构）始终保留；<user_message> / <sys> /
+ * <skill_content> / <askuserquestion> 的条目说明仅在块内存在对应条目时追加。
  */
-export const HISTORY_FORMAT_NOTE = `<!-- ${COMPLETE_MESSAGE_DEFINITION} <TAG index="N">表示单条完整消息，<TAG start="A" end="B"> 表示多条连续消息，start/end 是首尾完整消息的 index；消息块的内容是用CDATA包裹的纯文本；<assistant type="toolcall" tool-name="T" callId="C" index="N"> 表示工具调用，内含 <tool-args> 与 <tool-result> 两个CDATA子元素（调用参数与工具返回内容）；<sys type="KIND" index="N"> 表示被压缩的系统消息，块中为空；<skill_content name="S" index="N"> 表示未压缩的原始 skill -->`;
+export function historyFormatNote(sections: HistoryNoteSections = {}): string {
+  const parts = [
+    COMPLETE_MESSAGE_DEFINITION,
+    '<TAG index="N">表示单条完整消息，<TAG start="A" end="B"> 表示多条连续消息，start/end 是首尾完整消息的 index；消息块的内容是用CDATA包裹的纯文本',
+    '<assistant type="toolcall" tool-name="T" callId="C" index="N"> 表示工具调用，内含 <tool-args> 与 <tool-result> 两个CDATA子元素（调用参数与工具返回内容）',
+  ];
+  if (sections.user) parts.push('<user_message index="N"> 表示用户消息原文');
+  if (sections.sys) parts.push('<sys type="KIND" index="N"> 表示被压缩的系统消息，块中为空');
+  if (sections.skill) parts.push('<skill_content name="S" index="N"> 表示未压缩的原始 skill');
+  if (sections.askUserQuestion)
+    parts.push(
+      '<askuserquestion index="N"> 表示向用户提问，内含 <questions>（提问）与 <answers>（用户回答）两个CDATA子元素',
+    );
+  return `<!-- ${parts.join('；')} -->`;
+}
 
 /** skill 工具名：toolcall 条目的工具名为该值时视为 skill 加载，<history> 块中以 <skill_content> 元素呈现。 */
 export const SKILL_TOOL_NAME = 'skill';
+
+/**
+ * ask_user_question 工具名：toolcall 条目的工具名为该值时视为向用户的提问，
+ * <history> 块中以 <askuserquestion> 元素呈现，压缩时与 skill 一样要求二次确认。
+ */
+export const ASK_USER_QUESTION_TOOL_NAME = 'ask_user_question';
 
 /** 旧日志压缩消息的宿主 checkpoint 标记 plugin 名（历史兼容识别用）。 */
 export const COMPACT_CHECKPOINT_PLUGIN = 'compact';
