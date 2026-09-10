@@ -1,5 +1,6 @@
 // 工具压缩循环单测：多轮工具调用执行、completeCompression 立即停止、纯文本提醒与
 // 失败、429 限流重试、流终态错误、signal 中止、usage 汇总与会话记录落盘。
+import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm';
 import { describe, expect, it } from 'vitest';
 import {
   buildCompressionPrompt,
@@ -126,6 +127,26 @@ describe('runCompressionLoop', () => {
     expect(options.purpose).toBe('compaction');
     expect(options.maxTokens).toBe(123);
     expect(options.messages?.[0]?.content?.[0]?.text).toBe('压缩完整消息区间 [0..2]');
+  });
+
+  it('requestOptions 条件携带 reasoningEffort：配置时透传，未配置时不带该键', async () => {
+    const withEffort = makeCtx({
+      llmStreamFactory: () => roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] }),
+    });
+    await runCompressionLoop(
+      withEffort,
+      makeSession(),
+      loopOptions({ reasoningEffort: 'mid' as ReasoningEffortId }),
+    );
+    const withEffortOptions = withEffort._llmCalls[0]?.options as {
+      reasoningEffort?: string;
+    };
+    expect(withEffortOptions.reasoningEffort).toBe('mid');
+    const withoutEffort = makeCtx({
+      llmStreamFactory: () => roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] }),
+    });
+    await runCompressionLoop(withoutEffort, makeSession(), loopOptions());
+    expect(withoutEffort._llmCalls[0]?.options).not.toHaveProperty('reasoningEffort');
   });
 
   it('completeCompression 调用后立即停止：同轮后续工具调用不再执行', async () => {

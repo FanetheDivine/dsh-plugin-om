@@ -879,6 +879,10 @@ describe('压缩目标与思考等级配置（compressProvider / compressModel /
       expect(ctx._llmCalls.length).toBeGreaterThan(0);
       expect(warningsOf(session, 'reasoning-effort-unavailable')).toHaveLength(0);
       expect(resolveCalls).toBe(1); // 两个 pass 与两次 pre-step 共享同一目标的校验缓存
+      // summary 载荷记录实际生效的思考等级
+      const summary = session.snapshotEvents().find((e) => e.type === 'compaction/summary');
+      const summaryData = summary?.data as { reasoningEffort?: string };
+      expect(summaryData?.reasoningEffort).toBe('mid');
     });
 
     it('配置值不在模型可选等级：降级为模型默认（警告每会话一次），压缩照常', async () => {
@@ -901,6 +905,10 @@ describe('压缩目标与思考等级配置（compressProvider / compressModel /
       const warns = warningsOf(session, 'reasoning-effort-unavailable');
       expect(warns).toHaveLength(1);
       expect(warns[0]?.message).toContain('思考等级');
+      // 降级后按模型默认执行：summary 载荷省略 reasoningEffort
+      const summary = session.snapshotEvents().find((e) => e.type === 'compaction/summary');
+      const summaryData = summary?.data as { reasoningEffort?: string };
+      expect(summaryData?.reasoningEffort).toBeUndefined();
     });
 
     it('模型无 reasoning 元数据：降级为模型默认，压缩照常', async () => {

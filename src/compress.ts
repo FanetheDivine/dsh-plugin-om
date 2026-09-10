@@ -390,6 +390,8 @@ function appendCompactionSummary(
     /** 压缩循环统计（载荷记录其计时字段）。 */
     stats: CompressionStats;
     usage?: TokenUsage;
+    /** 摘要请求实际使用的思考等级（未配置或降级为模型默认时省略）。 */
+    reasoningEffort?: ReasoningEffortId;
   },
 ): number {
   const payload: CompactionSummaryPayload = {
@@ -409,6 +411,7 @@ function appendCompactionSummary(
     completedAt: data.stats.completedAt,
     durationMs: data.stats.durationMs,
     ...(data.usage === undefined ? {} : { usage: data.usage }),
+    ...(data.reasoningEffort === undefined ? {} : { reasoningEffort: data.reasoningEffort }),
   };
   return session.append('compaction/summary', payload).seq;
 }
@@ -562,6 +565,7 @@ export async function reflectPass(
       maxTokens: config.compressMaxTokens,
       stats: summaryResult.stats,
       ...(summaryResult.usage === undefined ? {} : { usage: summaryResult.usage }),
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
     });
     logger.step('反思提交：替换整个 <history> 块区段为合并摘要');
     appendHistoryMessage(
@@ -874,6 +878,7 @@ export async function observePass(
       maxTokens: config.compressMaxTokens,
       stats: summaryResult.stats,
       ...(usage === undefined ? {} : { usage }),
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
     });
     logger.step('观察提交：替换被压缩新消息区间为 <history>（旧块保留）');
     appendHistoryMessage(
