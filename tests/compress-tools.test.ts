@@ -1,9 +1,9 @@
 // 压缩工具状态机单测：getHistory / compressHistory / completeCompression 的校验与执行、
-// skill 二次确认、替换区间重叠规则与最终 <history> 块构建。
+// skill 与 ask_user_question 二次确认、替换区间重叠规则、动态块顶注释与最终 <history> 块构建。
 import { describe, expect, it } from 'vitest';
 import { CompressionState } from '../src/compress-tools.ts';
 import { buildReflectView, type CompressionView, type ViewEntry } from '../src/compress-view.ts';
-import { HISTORY_FORMAT_NOTE, HISTORY_TAG, HISTORY_TIP } from '../src/constants.ts';
+import { HISTORY_TAG, HISTORY_TIP, historyFormatNote } from '../src/constants.ts';
 
 /** 由条目列表推导视图区间（与生产 viewBounds 同规则）。 */
 function viewOf(entries: ViewEntry[]): CompressionView {
@@ -240,7 +240,9 @@ describe('buildFinalBlock', () => {
     expect(state.compressHistory({ start: 3, end: 4, content: 'C和D的摘要' }).isError).toBe(false);
     const block = state.buildFinalBlock();
     expect(
-      block.startsWith(`<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${HISTORY_FORMAT_NOTE}\n`),
+      block.startsWith(
+        `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${historyFormatNote({ user: true, sys: true })}\n`,
+      ),
     ).toBe(true);
     expect(block).toContain('<user_message index="0"><![CDATA[用户消息A]]></user_message>');
     expect(block).toContain('<sys type="system" index="1"/>');
@@ -311,9 +313,16 @@ describe('buildFinalBlock', () => {
       { kind: 'assistant', lo: 2, hi: 2, text: '助手B' },
     ]);
     const state = new CompressionState(view);
-    expect(state.buildFinalBlock()).toContain(
+    const before = state.buildFinalBlock();
+    expect(before).toContain(
       '<skill_content name="lark-im" index="1"><skill_resources><![CDATA[资源内容]]></skill_resources><skill_instructions><![CDATA[指令内容]]></skill_instructions></skill_content>',
     );
+    // 未压缩的 skill 条目存在时，块顶注释含 skill 说明；user 条目存在时含 user 说明
+    expect(
+      before.startsWith(
+        `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${historyFormatNote({ user: true, skill: true })}\n`,
+      ),
+    ).toBe(true);
     // 二次确认后才允许压缩：产物中 skill 条目变为常规 assistant 摘要条目
     expect(state.compressHistory({ index: 1, content: 'skill 摘要' }).isError).toBe(true);
     expect(state.compressHistory({ index: 1, content: 'skill 摘要' }).isError).toBe(false);
@@ -321,6 +330,12 @@ describe('buildFinalBlock', () => {
     expect(block).toContain('<assistant index="1"><![CDATA[skill 摘要]]></assistant>');
     expect(block).not.toContain('<skill_content name="lark-im"');
     expect(block).not.toContain('资源内容');
+    // skill 条目被压缩后不再有未压缩 skill 条目，块顶注释随之不含 skill 说明
+    expect(
+      block.startsWith(
+        `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${historyFormatNote({ user: true })}\n`,
+      ),
+    ).toBe(true);
   });
 
   it('toolcall 条目以结构化形态呈现，压缩后变为常规摘要条目', () => {
@@ -372,5 +387,97 @@ describe('buildFinalBlock', () => {
     const second = new CompressionState(parsed);
     expect(second.compressHistory({ index: 4, content: '压缩skill' }).isError).toBe(true);
     expect(second.compressHistory({ index: 4, content: '压缩skill' }).isError).toBe(false);
+  });
+
+  it('ask_user_question 条目未压缩以 <askuserquestion index> 呈现，二次确认后压缩为常规摘要条目', () => {
+    const view = viewOf([
+      { kind: 'user', lo: 0, hi: 0, text: '用户消息A' },
+      {
+        kind: 'assistant',
+        lo: 1,
+        hi: 1,
+        text: '<askuserquestion><questions>{"questions":["q"]}</questions><answers>用户回答</answers></askuserquestion>',
+        toolName: 'ask_user_question',
+      },
+    ]);
+    const state = new CompressionState(view);
+    // getHistory 与最终块中 ask_user_question 条目均为 <askuserquestion> 结构化形态
+    const structured =
+      '<askuserquestion index="1"><questions><![CDATA[{"questions":["q"]}]]></questions><answers><![CDATA[用户回答]]></answers></askuserquestion>';
+    expect(state.getHistory({}).text).toContain(structured);
+    expect(state.buildFinalBlock()).toContain(structured);
+    // 二次确认后才允许压缩：首次覆盖报错且不执行，错误信息点名工具并要求重新思考
+    const first = state.compressHistory({ index: 1, content: '提问摘要' });
+    expect(first.isError).toBe(true);
+    expect(first.text).toContain('ask_user_question');
+    expect(first.text).toContain('重新思考');
+    expect(state.replacementCount).toBe(0);
+    expect(state.compressHistory({ index: 1, content: '提问摘要' }).isError).toBe(false);
+    expect(state.replacementCount).toBe(1);
+    const block = state.buildFinalBlock();
+    expect(block).toContain('<assistant index="1"><![CDATA[提问摘要]]></assistant>');
+    expect(block).not.toContain('<askuserquestion');
+  });
+
+  it('产物中的 ask_user_question 条目经反思视图解析后仍保留二次确认', () => {
+    const view = viewOf([
+      {
+        kind: 'assistant',
+        lo: 4,
+        hi: 4,
+        text: '<askuserquestion><questions>{"q":1}</questions><answers>回答</answers></askuserquestion>',
+        toolName: 'ask_user_question',
+        blockSeq: 9,
+      },
+    ]);
+    const first = new CompressionState(view);
+    const block = first.buildFinalBlock();
+    expect(block).toContain(
+      '<askuserquestion index="4"><questions><![CDATA[{"q":1}]]></questions><answers><![CDATA[回答]]></answers></askuserquestion>',
+    );
+    // 反思轮解析产物块 → ask_user_question 条目仍可定位且带 toolName，首次压缩仍被挑战
+    const parsed = buildReflectView([{ text: block, seq: 9 }]);
+    const second = new CompressionState(parsed);
+    expect(second.compressHistory({ index: 4, content: '压缩提问' }).isError).toBe(true);
+    expect(second.compressHistory({ index: 4, content: '压缩提问' }).isError).toBe(false);
+  });
+
+  it('块顶注释按最终条目动态生成：四类特殊条目齐备时说明完整，仅 assistant 条目时不含条目说明', () => {
+    const full = viewOf([
+      { kind: 'user', lo: 0, hi: 0, text: '用户消息A' },
+      { kind: 'sys', lo: 1, hi: 1, text: '', sysKind: 'system' },
+      {
+        kind: 'assistant',
+        lo: 2,
+        hi: 2,
+        text: '<skill_content name="x"><skill_resources>资源</skill_resources><skill_instructions>指令</skill_instructions></skill_content>',
+        toolName: 'skill',
+        skillName: 'x',
+      },
+      {
+        kind: 'assistant',
+        lo: 3,
+        hi: 3,
+        text: '<askuserquestion><questions>{"q":1}</questions><answers>回答</answers></askuserquestion>',
+        toolName: 'ask_user_question',
+      },
+    ]);
+    const fullBlock = new CompressionState(full).buildFinalBlock();
+    expect(
+      fullBlock.startsWith(
+        `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${historyFormatNote({ user: true, sys: true, skill: true, askUserQuestion: true })}\n`,
+      ),
+    ).toBe(true);
+
+    const plain = viewOf([{ kind: 'assistant', lo: 0, hi: 0, text: '助手A' }]);
+    const plainBlock = new CompressionState(plain).buildFinalBlock();
+    // 无 user / sys / skill / ask_user_question 条目时，块顶注释仅含通用说明
+    expect(
+      plainBlock.startsWith(`<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${historyFormatNote({})}\n`),
+    ).toBe(true);
+    expect(plainBlock).not.toContain('表示用户消息原文');
+    expect(plainBlock).not.toContain('表示被压缩的系统消息');
+    expect(plainBlock).not.toContain('表示未压缩的原始 skill');
+    expect(plainBlock).not.toContain('表示向用户提问');
   });
 });

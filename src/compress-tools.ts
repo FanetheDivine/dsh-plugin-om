@@ -9,14 +9,17 @@
  *   content 摘要（纯文本，构建最终块时以 CDATA 包裹嵌入；含 CDATA 包裹时拒绝）。参数非法 / 越界 / 覆盖用户或
  *   系统消息 / 与条目或已有替换区间部分重叠 → 返回错误结果（模型可修正重试）；
  *   重复覆盖同一区间：新区间完全包含旧区间时覆盖，部分重叠时报错
- * - skill 规则：区间覆盖工具名为 skill 的 toolcall 条目时，该 skill 块首次被覆盖
- *   不执行、返回要求重新思考的提示；之后再次覆盖它的调用直接执行
+ * - skill / ask_user_question 规则：区间覆盖工具名为 skill（skill 加载）或
+ *   ask_user_question（向用户的提问）的条目时，该条目首次被覆盖不执行、返回要求
+ *   重新思考的提示；之后再次覆盖它的调用直接执行
  * - completeCompression：标记完成（调用后压缩会话立即停止）；空提交（0 次成功
  *   压缩）允许
  * - 最终 <history> 块由插件从视图与替换记录构建：user / sys 条目原样、被替换区间
  *   生成新摘要条目、未替换 assistant 条目原样保留（toolcall 条目以
  *   <assistant type="toolcall"> 结构呈现，内含 <tool-args> / <tool-result> 两个
- *   CDATA 子元素）、reasoning 不进产物；产物天然合法 XML，无需校验
+ *   CDATA 子元素；skill 与 ask_user_question 条目分别以 <skill_content> /
+ *   <askuserquestion> 元素呈现）、reasoning 不进产物；块首为按产物内实际条目动态
+ *   生成的格式说明注释。产物天然合法 XML，无需校验
  */
 
 import type { ToolSchema } from '@deepseek-ai/dsh-llm';
@@ -28,7 +31,13 @@ import {
   renderEntriesXml,
   type ViewEntry,
 } from './compress-view.ts';
-import { HISTORY_FORMAT_NOTE, HISTORY_TAG, HISTORY_TIP, SKILL_TOOL_NAME } from './constants.ts';
+import {
+  ASK_USER_QUESTION_TOOL_NAME,
+  HISTORY_TAG,
+  HISTORY_TIP,
+  historyFormatNote,
+  SKILL_TOOL_NAME,
+} from './constants.ts';
 
 export { SKILL_TOOL_NAME };
 
@@ -50,7 +59,7 @@ type Replacement = {
   content: string;
 };
 
-/** 压缩会话的工具状态：视图 + 替换记录 + skill 二次确认标记 + 完成标记。 */
+/** 压缩会话的工具状态：视图 + 替换记录 + 二次确认标记（skill / ask_user_question）+ 完成标记。 */
 export class CompressionState {
   private readonly replacements: Replacement[] = [];
   private readonly challengedSkills = new Set<number>();
@@ -163,9 +172,9 @@ export class CompressionState {
 
   /**
    * compressHistory：把 index 单条或 start..end 连续区间的 assistant 条目替换为
-   * content 摘要。校验失败返回错误结果（不应用）；skill 块首次被覆盖返回要求
-   * 重新思考的错误结果（不应用，标记已挑战）；通过后记录替换并覆盖被完全包含
-   * 的旧替换。
+   * content 摘要。校验失败返回错误结果（不应用）；skill / ask_user_question 条目
+   * 首次被覆盖返回要求重新思考的错误结果（不应用，标记已挑战）；通过后记录替换并
+   * 覆盖被完全包含的旧替换。
    */
   compressHistory(args: Record<string, unknown>): ToolCallResult {
     const { minIndex, maxIndex } = this.view;
@@ -267,15 +276,27 @@ export class CompressionState {
         };
       }
     }
-    // skill 二次确认：区间覆盖工具名为 skill 的条目时，首次被覆盖不执行
+    // 二次确认：区间覆盖 skill 加载或 ask_user_question 条目时，首次被覆盖不执行
     const unchallenged: number[] = [];
+    let challengedTool: string | undefined;
     for (const entry of this.view.entries) {
-      if (entry.kind !== 'assistant' || entry.toolName !== SKILL_TOOL_NAME) continue;
+      if (entry.kind !== 'assistant') continue;
+      if (entry.toolName !== SKILL_TOOL_NAME && entry.toolName !== ASK_USER_QUESTION_TOOL_NAME)
+        continue;
       if (entry.lo === undefined || entry.lo < lo || entry.lo > hi) continue;
-      if (!this.challengedSkills.has(entry.lo)) unchallenged.push(entry.lo);
+      if (!this.challengedSkills.has(entry.lo)) {
+        unchallenged.push(entry.lo);
+        challengedTool = entry.toolName;
+      }
     }
     if (unchallenged.length > 0) {
       for (const index of unchallenged) this.challengedSkills.add(index);
+      if (challengedTool === ASK_USER_QUESTION_TOOL_NAME) {
+        return {
+          text: `${CompressionState.spanLabel(lo, hi)} 包含 ask_user_question 向用户的提问（完整消息 index ${unchallenged.join('、')}）。请重新思考该提问是否确定与后续任务无关：确定不相关时再次调用 compressHistory 压缩该区间；不确定或相关时不要压缩该区间，保持原样即可`,
+          isError: true,
+        };
+      }
       return {
         text: `${CompressionState.spanLabel(lo, hi)} 包含 skill 加载（完整消息 index ${unchallenged.join('、')}）。请重新思考该 skill 是否确定与后续任务无关：确定不相关时再次调用 compressHistory 压缩该区间；不确定或相关时不要压缩该区间，保持原样即可`,
         isError: true,
@@ -303,8 +324,9 @@ export class CompressionState {
   /**
    * 构建最终 <history> 块：按 index 顺序合并视图条目与替换记录——user / sys 条目
    * 原样、被替换区间生成 <assistant index|start end> 摘要条目（content 以 CDATA 包裹嵌入）、
-   * 未替换 assistant 条目原样保留、reasoning 不进产物；块首为格式说明注释，开标签
-   * 携带 tip 属性。产物为合法 XML，无需校验。
+   * 未替换 assistant 条目原样保留、reasoning 不进产物；块首为按产物内实际条目动态
+   * 生成的格式说明注释（user_message / sys / skill_content / askuserquestion 条目说明
+   * 仅在对应条目存在时包含），开标签携带 tip 属性。产物为合法 XML，无需校验。
    */
   buildFinalBlock(): string {
     const doc = new DOMParser({ onError: () => {} }).parseFromString(
@@ -351,11 +373,24 @@ export class CompressionState {
       root.appendChild(entryToElement(doc, entry));
     }
     flushReplacementsBefore(undefined);
+    // 块顶注释按产物内实际存在的条目动态生成：被替换覆盖的 skill / ask_user_question
+    // 条目已变为摘要条目，不再触发对应说明
+    const note = historyFormatNote({
+      user: this.view.entries.some((e) => e.kind === 'user'),
+      sys: this.view.entries.some((e) => e.kind === 'sys'),
+      skill: this.view.entries.some(
+        (e) => e.kind === 'assistant' && e.toolName === SKILL_TOOL_NAME && !coveredBy(e),
+      ),
+      askUserQuestion: this.view.entries.some(
+        (e) =>
+          e.kind === 'assistant' && e.toolName === ASK_USER_QUESTION_TOOL_NAME && !coveredBy(e),
+      ),
+    });
     const serializer = new XMLSerializer();
     const inner = Array.from(root.childNodes)
       .map((node) => serializer.serializeToString(node))
       .join('\n');
-    return `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${HISTORY_FORMAT_NOTE}\n${inner}\n</${HISTORY_TAG}>`;
+    return `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${note}\n${inner}\n</${HISTORY_TAG}>`;
   }
 }
 
