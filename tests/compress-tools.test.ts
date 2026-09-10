@@ -389,21 +389,21 @@ describe('buildFinalBlock', () => {
     expect(second.compressHistory({ index: 4, content: '压缩skill' }).isError).toBe(false);
   });
 
-  it('ask_user_question 条目未压缩以 <askuserquestion index> 呈现，二次确认后压缩为常规摘要条目', () => {
+  it('ask_user_question 条目未压缩以 <ask-user-question index> 呈现，二次确认后压缩为常规摘要条目', () => {
     const view = viewOf([
       { kind: 'user', lo: 0, hi: 0, text: '用户消息A' },
       {
         kind: 'assistant',
         lo: 1,
         hi: 1,
-        text: '<askuserquestion><questions>{"questions":["q"]}</questions><answers>用户回答</answers></askuserquestion>',
+        text: '<ask-user-question>q:继续吗\na:用户回答</ask-user-question>',
         toolName: 'ask_user_question',
       },
     ]);
     const state = new CompressionState(view);
-    // getHistory 与最终块中 ask_user_question 条目均为 <askuserquestion> 结构化形态
+    // getHistory 与最终块中 ask_user_question 条目均为 <ask-user-question> 结构化形态（CDATA 内 q:/a: 行）
     const structured =
-      '<askuserquestion index="1"><questions><![CDATA[{"questions":["q"]}]]></questions><answers><![CDATA[用户回答]]></answers></askuserquestion>';
+      '<ask-user-question index="1"><![CDATA[q:继续吗\na:用户回答]]></ask-user-question>';
     expect(state.getHistory({}).text).toContain(structured);
     expect(state.buildFinalBlock()).toContain(structured);
     // 二次确认后才允许压缩：首次覆盖报错且不执行，错误信息点名工具并要求重新思考
@@ -416,10 +416,11 @@ describe('buildFinalBlock', () => {
     expect(state.replacementCount).toBe(1);
     const block = state.buildFinalBlock();
     expect(block).toContain('<assistant index="1"><![CDATA[提问摘要]]></assistant>');
+    expect(block).not.toContain('<ask-user-question');
     expect(block).not.toContain('<askuserquestion');
   });
 
-  it('产物中的 ask_user_question 条目经反思视图解析后仍保留二次确认', () => {
+  it('旧格式 askuserquestion 条目在产物中原样保留，经反思视图解析后仍保留二次确认', () => {
     const view = viewOf([
       {
         kind: 'assistant',
@@ -435,7 +436,7 @@ describe('buildFinalBlock', () => {
     expect(block).toContain(
       '<askuserquestion index="4"><questions><![CDATA[{"q":1}]]></questions><answers><![CDATA[回答]]></answers></askuserquestion>',
     );
-    // 反思轮解析产物块 → ask_user_question 条目仍可定位且带 toolName，首次压缩仍被挑战
+    // 反思轮解析产物块 → 旧格式条目仍可定位且带 toolName，首次压缩仍被挑战
     const parsed = buildReflectView([{ text: block, seq: 9 }]);
     const second = new CompressionState(parsed);
     expect(second.compressHistory({ index: 4, content: '压缩提问' }).isError).toBe(true);
@@ -458,7 +459,7 @@ describe('buildFinalBlock', () => {
         kind: 'assistant',
         lo: 3,
         hi: 3,
-        text: '<askuserquestion><questions>{"q":1}</questions><answers>回答</answers></askuserquestion>',
+        text: '<ask-user-question>q:问题\na:回答</ask-user-question>',
         toolName: 'ask_user_question',
       },
     ]);

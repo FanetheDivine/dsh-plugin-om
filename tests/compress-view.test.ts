@@ -338,14 +338,14 @@ describe('buildReflectView', () => {
 });
 
 describe('ask_user_question 条目', () => {
-  it('观察视图：ask_user_question 工具调用渲染为 <askuserquestion> 专用元素，内含 questions/answers 两段 CDATA', () => {
+  it('观察视图：ask_user_question 工具调用渲染为 <ask-user-question> 专用元素，CDATA 内为 q:/a: 行', () => {
     const session = makeSession({
       events: [
         assistantEvent([
           toolCallBlock(
             'c1',
             'ask_user_question',
-            '{"questions":[{"id":"q1","question":"继续吗"}]}',
+            '{"questions":[{"id":"q1","question":"继续吗"},{"id":"q2","question":"如何处理"}]}',
           ),
         ]),
         resultEvent('c1', '继续'),
@@ -360,31 +360,49 @@ describe('ask_user_question 条目', () => {
       hi: 0,
       toolName: 'ask_user_question',
     });
-    // 条目正文还原为原生 askuserquestion 包裹形态（供渲染时按两段拆分）
-    expect(ask?.text).toBe(
-      '<askuserquestion><questions>{"questions":[{"id":"q1","question":"继续吗"}]}</questions><answers>继续</answers></askuserquestion>',
-    );
+    // 条目正文还原为原生 ask-user-question 包裹形态（CDATA 内为 q:/a: 行）
+    expect(ask?.text).toBe('<ask-user-question>q:继续吗\nq:如何处理\na:继续</ask-user-question>');
     const xml = renderEntriesXml(view.entries);
     expect(xml).toBe(
-      '<askuserquestion index="0"><questions><![CDATA[{"questions":[{"id":"q1","question":"继续吗"}]}]]></questions><answers><![CDATA[继续]]></answers></askuserquestion>',
+      '<ask-user-question index="0"><![CDATA[q:继续吗\nq:如何处理\na:继续]]></ask-user-question>',
     );
   });
 
-  it('观察视图：ask_user_question 无返回内容时仅输出 questions 段', () => {
+  it('观察视图：ask_user_question 无返回内容时仅输出 q: 行', () => {
     const session = makeSession({
       events: [
-        assistantEvent([toolCallBlock('c1', 'ask_user_question', '{"questions":["q"]}')]),
+        assistantEvent([toolCallBlock('c1', 'ask_user_question', '{"questions":["继续吗"]}')]),
         resultEvent('c1', ''),
       ],
     });
     const view = buildObserveView(session, [0, 1]);
     const xml = renderEntriesXml(view.entries);
-    expect(xml).toBe(
-      '<askuserquestion index="0"><questions><![CDATA[{"questions":["q"]}]]></questions></askuserquestion>',
-    );
+    expect(xml).toBe('<ask-user-question index="0"><![CDATA[q:继续吗]]></ask-user-question>');
   });
 
-  it('反思视图：askuserquestion 条目解析为带 toolName 的 assistant 条目，round-trip 还原两段 CDATA', () => {
+  it('观察视图：ask_user_question 参数无问题文本时仅输出 a: 行，无回答且无问题时回退通用呈现', () => {
+    // 参数 JSON 解析不出问题文本：仅保留回答
+    const noQuestions = makeSession({
+      events: [
+        assistantEvent([toolCallBlock('c1', 'ask_user_question', '{"other":1}')]),
+        resultEvent('c1', '回答'),
+      ],
+    });
+    const xml = renderEntriesXml(buildObserveView(noQuestions, [0, 1]).entries);
+    expect(xml).toBe('<ask-user-question index="0"><![CDATA[a:回答]]></ask-user-question>');
+    // 回答与问题文本均缺失：条目正文回退为通用完整消息呈现（不含专用元素结构）
+    const empty = makeSession({
+      events: [
+        assistantEvent([toolCallBlock('c1', 'ask_user_question', '{"questions":[]}')]),
+        resultEvent('c1', ''),
+      ],
+    });
+    const view = buildObserveView(empty, [0, 1]);
+    expect(view.entries[0]?.toolName).toBe('ask_user_question');
+    expect(view.entries[0]?.text).not.toContain('<ask-user-question>');
+  });
+
+  it('反思视图：旧格式 askuserquestion 条目解析为带 toolName 的 assistant 条目，round-trip 保持旧格式原样', () => {
     const block =
       '<history>\n<askuserquestion index="5"><questions><![CDATA[{"questions":["继续吗"]}]]></questions><answers><![CDATA[继续]]></answers></askuserquestion>\n<assistant index="6"><![CDATA[摘要]]></assistant>\n</history>';
     const view = buildReflectView([{ text: block, seq: 7 }]);
@@ -400,7 +418,7 @@ describe('ask_user_question 条目', () => {
     expect(ask?.text).toBe(
       '<askuserquestion><questions>{"questions":["继续吗"]}</questions><answers>继续</answers></askuserquestion>',
     );
-    // 缺失 index 的 askuserquestion 条目不可定位、被跳过
+    // 缺失 index 的旧格式条目不可定位、被跳过
     const noIndex = buildReflectView([
       {
         text: '<history>\n<askuserquestion><answers>x</answers></askuserquestion>\n</history>',
@@ -409,14 +427,44 @@ describe('ask_user_question 条目', () => {
     ]);
     expect(noIndex.entries).toHaveLength(1);
     expect(noIndex.entries[0]?.lo).toBeUndefined();
-    // round-trip：解析后的条目重新渲染还原两段 CDATA 结构
+    // round-trip：解析后的旧格式条目重新渲染保持旧格式结构
     const xml = renderEntriesXml(view.entries);
     expect(xml).toContain(
       '<askuserquestion index="5"><questions><![CDATA[{"questions":["继续吗"]}]]></questions><answers><![CDATA[继续]]></answers></askuserquestion>',
     );
   });
 
-  it('反思视图：非原生结构的 askuserquestion 条目回退为整体 CDATA 原文，round-trip 逐字还原', () => {
+  it('反思视图：ask-user-question 条目解析为带 toolName 的 assistant 条目，round-trip 还原 q:/a: CDATA', () => {
+    const block =
+      '<history>\n<ask-user-question index="5"><![CDATA[q:继续吗\na:继续]]></ask-user-question>\n<assistant index="6"><![CDATA[摘要]]></assistant>\n</history>';
+    const view = buildReflectView([{ text: block, seq: 7 }]);
+    expect(view.entries).toHaveLength(2);
+    const ask = view.entries[0];
+    expect(ask).toMatchObject({
+      kind: 'assistant',
+      lo: 5,
+      hi: 5,
+      toolName: 'ask_user_question',
+      blockSeq: 7,
+    });
+    expect(ask?.text).toBe('<ask-user-question>q:继续吗\na:继续</ask-user-question>');
+    // 缺失 index 的 ask-user-question 条目不可定位、被跳过
+    const noIndex = buildReflectView([
+      {
+        text: '<history>\n<ask-user-question><![CDATA[q:问题]]></ask-user-question>\n</history>',
+        seq: 8,
+      },
+    ]);
+    expect(noIndex.entries).toHaveLength(1);
+    expect(noIndex.entries[0]?.lo).toBeUndefined();
+    // round-trip：解析后的条目重新渲染还原 q:/a: CDATA 结构
+    const xml = renderEntriesXml(view.entries);
+    expect(xml).toContain(
+      '<ask-user-question index="5"><![CDATA[q:继续吗\na:继续]]></ask-user-question>',
+    );
+  });
+
+  it('反思视图：非原生结构的 askuserquestion 条目回退为整体 CDATA 原文，round-trip 保持旧格式', () => {
     const block =
       '<history>\n<askuserquestion index="1"><![CDATA[纯文本内容]]></askuserquestion>\n</history>';
     const view = buildReflectView([{ text: block, seq: 7 }]);
@@ -425,7 +473,7 @@ describe('ask_user_question 条目', () => {
       lo: 1,
       hi: 1,
       toolName: 'ask_user_question',
-      text: '纯文本内容',
+      text: '<askuserquestion>纯文本内容</askuserquestion>',
     });
     expect(renderEntriesXml(view.entries)).toBe(
       '<askuserquestion index="1"><![CDATA[纯文本内容]]></askuserquestion>',

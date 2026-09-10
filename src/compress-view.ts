@@ -148,9 +148,34 @@ export function skillNameOf(session: Session, cm: CompleteMessage): string | und
 }
 
 /**
- * ask_user_question 条目正文：构造为原生 <askuserquestion> 包裹形态
- * （<questions> 为调用参数 JSON，<answers> 为用户回答文本，缺失或空段省略）。
- * 两段均缺失时返回 null（调用方回退为通用完整消息呈现）。
+ * 从 ask_user_question 调用参数 JSON 提取问题文本行：questions 数组逐项取
+ * question 字段（字符串元素原样），一个问题一行。参数缺失、非法或解析不出
+ * 问题文本时返回空数组。
+ */
+function askQuestionLines(args: string | undefined): string[] {
+  if (args === undefined || args.trim() === '') return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(args);
+  } catch {
+    return [];
+  }
+  if (!isRecord(parsed) || !Array.isArray(parsed.questions)) return [];
+  const lines: string[] = [];
+  for (const q of parsed.questions) {
+    if (typeof q === 'string' && q.trim() !== '') {
+      lines.push(q);
+    } else if (isRecord(q) && typeof q.question === 'string' && q.question.trim() !== '') {
+      lines.push(q.question);
+    }
+  }
+  return lines;
+}
+
+/**
+ * ask_user_question 条目正文：构造为原生 <ask-user-question> 包裹形态，
+ * 内文为 q:（问题文本，一个问题一行）与 a:（用户回答原文）行，缺失段省略。
+ * 问题与回答均缺失时返回 null（调用方回退为通用完整消息呈现）。
  */
 function askUserQuestionText(session: Session, cm: CompleteMessage): string | null {
   const call = toolCallBlockOf(session, cm);
@@ -158,13 +183,13 @@ function askUserQuestionText(session: Session, cm: CompleteMessage): string | nu
   const resultMessage = toolResultMessageOf(session, cm);
   const result =
     resultMessage && Array.isArray(resultMessage.content) ? renderMessageText(resultMessage) : '';
-  if ((args === undefined || args.trim() === '') && result.trim() === '') return null;
-  return (
-    '<askuserquestion>' +
-    (args === undefined || args.trim() === '' ? '' : `<questions>${args}</questions>`) +
-    (result.trim() === '' ? '' : `<answers>${result}</answers>`) +
-    '</askuserquestion>'
+  const qLines = askQuestionLines(args);
+  const answers = result.trim() === '' ? '' : result;
+  if (qLines.length === 0 && answers === '') return null;
+  const body = [...qLines.map((q) => `q:${q}`), ...(answers === '' ? [] : [`a:${answers}`])].join(
+    '\n',
   );
+  return `<ask-user-question>${body}</ask-user-question>`;
 }
 
 /** 视图构建选项：skipReasoning=true 时不含 <reasoning> 参考条目。 */
@@ -239,8 +264,8 @@ export function buildObserveView(
     const isSkill = toolName === SKILL_TOOL_NAME;
     const isAsk = toolName === ASK_USER_QUESTION_TOOL_NAME;
     // skill 条目正文仅保留工具返回内容（调用参数由 <skill_content> 的 name 属性表达）；
-    // ask_user_question 条目正文构造为原生 askuserquestion 包裹（两段均缺失时回退为
-    // 通用完整消息呈现）
+    // ask_user_question 条目正文构造为原生 ask-user-question 包裹（问题与回答均缺失时
+    // 回退为通用完整消息呈现）
     const askText = isAsk ? askUserQuestionText(session, cm) : undefined;
     const text = isSkill
       ? renderToolResultText(session, cm)
@@ -342,16 +367,34 @@ function skillContentSections(
 }
 
 /**
- * 提取 ask_user_question 条目正文（原生 <askuserquestion> 包裹）中 <questions> 与
- * <answers> 两段正文。非该包裹形态、<questions> 缺失或两段之间存在其他内容时返回
- * undefined（调用方回退为整体 CDATA 原文）；<answers> 缺省为 undefined（渲染时省略该段）。
+ * 提取新格式 ask_user_question 条目正文（原生 <ask-user-question> 包裹）的内文
+ * （CDATA 内 q:/a: 行）。非该包裹形态时返回 undefined。
+ */
+function askUserQuestionInner(text: string): string | undefined {
+  const wrapper = /^[\s]*<ask-user-question\b[^>]*>([\s\S]*)<\/ask-user-question>[\s]*$/.exec(text);
+  return wrapper?.[1];
+}
+
+/**
+ * 提取旧格式 ask_user_question 条目正文（原生 <askuserquestion> 包裹）的内文。
+ * 非该包裹形态时返回 undefined。
+ */
+function askUserQuestionLegacyInner(text: string): string | undefined {
+  const wrapper = /^[\s]*<askuserquestion\b[^>]*>([\s\S]*)<\/askuserquestion>[\s]*$/.exec(text);
+  return wrapper?.[1];
+}
+
+/**
+ * 提取旧格式 ask_user_question 条目正文（原生 <askuserquestion> 包裹）中
+ * <questions> 与 <answers> 两段正文。<questions> 与 <answers> 均缺失、两段之间存在
+ * 其他内容时返回 undefined（调用方按旧格式整体正文处理）；<answers> 缺省为
+ * undefined（渲染时省略该段）。
  */
 function askUserQuestionSections(
   text: string,
 ): { questions: string; answers?: string } | undefined {
-  const wrapper = /^[\s]*<askuserquestion\b[^>]*>([\s\S]*)<\/askuserquestion>[\s]*$/.exec(text);
-  if (!wrapper) return undefined;
-  const body = wrapper[1] ?? '';
+  const body = askUserQuestionLegacyInner(text);
+  if (body === undefined) return undefined;
   const qMatch = /<questions>([\s\S]*?)<\/questions>/.exec(body);
   const aMatch = /<answers>([\s\S]*?)<\/answers>/.exec(body);
   if (!qMatch && !aMatch) return undefined;
@@ -374,7 +417,7 @@ export { appendCdataText } from './utils.ts';
 /**
  * 解析一个已有 <history> 块的内条目（反思视图）：user_message / sys / assistant
  * （index 单条或 start/end 区间）/ skill_content（name 属性 + index 定位）/
- * askuserquestion（index 定位）/ reasoning。
+ * ask-user-question（index 定位）/ reasoning。
  * 整块无法解析或根非 <history> 时降级为单条不可定位的历史遗留条目（text 为块内文原文，
  * 构建最终块时原样保留）。
  */
@@ -467,20 +510,34 @@ function parseBlockEntries(blockText: string, blockSeq: number): ViewEntry[] {
         });
       }
       // 属性缺失的 skill_content 条目跳过（防御：产物块创建时已校验属性）
+    } else if (el.nodeName === 'ask-user-question') {
+      const index = intAttr(el, 'index');
+      if (index !== undefined) {
+        // 还原为原生 ask-user-question 包裹形态（CDATA 内为 q:/a: 行）
+        entries.push({
+          kind: 'assistant',
+          lo: index,
+          hi: index,
+          text: `<ask-user-question>${el.textContent ?? ''}</ask-user-question>`,
+          toolName: ASK_USER_QUESTION_TOOL_NAME,
+          blockSeq,
+        });
+      }
+      // 属性缺失的 ask-user-question 条目跳过（防御：产物块创建时已校验属性）
     } else if (el.nodeName === 'askuserquestion') {
       const index = intAttr(el, 'index');
       if (index !== undefined) {
         const questions = childText(el, 'questions');
         const answers = childText(el, 'answers');
         // 两段子元素齐备时还原为原生 askuserquestion 包裹形态（供渲染时按两段拆分）；
-        // 非原生结构回退整体正文原文
+        // 其余内文同样以旧格式包裹形态保留（渲染时保持旧格式原样）
         const text =
           questions !== undefined || answers !== undefined
             ? '<askuserquestion>' +
               (questions === undefined ? '' : `<questions>${questions}</questions>`) +
               (answers === undefined ? '' : `<answers>${answers}</answers>`) +
               '</askuserquestion>'
-            : (el.textContent ?? '');
+            : `<askuserquestion>${el.textContent ?? ''}</askuserquestion>`;
         entries.push({
           kind: 'assistant',
           lo: index,
@@ -573,25 +630,44 @@ export function entryToElement(doc: Document, entry: ViewEntry): Element {
     return el;
   }
   if (entry.kind === 'assistant' && entry.toolName === ASK_USER_QUESTION_TOOL_NAME) {
-    // ask_user_question 条目：<askuserquestion index="N">，内文为 <questions>（调用参数）
-    // 与 <answers>（用户回答）两段 CDATA 子元素；非原生包裹形态回退整体 CDATA 原文。
-    const el = doc.createElement('askuserquestion');
+    // ask_user_question 条目：<ask-user-question index="N">，CDATA 内为 q:（问题文本）
+    // 与 a:（用户回答）行；旧格式 <askuserquestion> 包裹形态原样保留；两种包裹形态
+    // 均不匹配时回退整体 CDATA 原文。
+    const inner = askUserQuestionInner(entry.text);
+    if (inner !== undefined) {
+      const el = doc.createElement('ask-user-question');
+      if (entry.lo !== undefined && entry.lo === entry.hi) {
+        el.setAttribute('index', String(entry.lo));
+      }
+      appendCdataText(doc, el, inner);
+      return el;
+    }
+    const legacyInner = askUserQuestionLegacyInner(entry.text);
+    if (legacyInner !== undefined) {
+      const el = doc.createElement('askuserquestion');
+      if (entry.lo !== undefined && entry.lo === entry.hi) {
+        el.setAttribute('index', String(entry.lo));
+      }
+      const sections = askUserQuestionSections(entry.text);
+      if (sections) {
+        const questions = doc.createElement('questions');
+        appendCdataText(doc, questions, sections.questions);
+        el.appendChild(questions);
+        if (sections.answers !== undefined) {
+          const answers = doc.createElement('answers');
+          appendCdataText(doc, answers, sections.answers);
+          el.appendChild(answers);
+        }
+      } else {
+        appendCdataText(doc, el, legacyInner);
+      }
+      return el;
+    }
+    const el = doc.createElement('ask-user-question');
     if (entry.lo !== undefined && entry.lo === entry.hi) {
       el.setAttribute('index', String(entry.lo));
     }
-    const sections = askUserQuestionSections(entry.text);
-    if (sections) {
-      const questions = doc.createElement('questions');
-      appendCdataText(doc, questions, sections.questions);
-      el.appendChild(questions);
-      if (sections.answers !== undefined) {
-        const answers = doc.createElement('answers');
-        appendCdataText(doc, answers, sections.answers);
-        el.appendChild(answers);
-      }
-    } else {
-      appendCdataText(doc, el, entry.text);
-    }
+    appendCdataText(doc, el, entry.text);
     return el;
   }
   if (entry.kind === 'assistant' && entry.toolName === SKILL_TOOL_NAME) {

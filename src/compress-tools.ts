@@ -17,9 +17,9 @@
  * - 最终 <history> 块由插件从视图与替换记录构建：user / sys 条目原样、被替换区间
  *   生成新摘要条目、未替换 assistant 条目原样保留（toolcall 条目以
  *   <assistant type="toolcall"> 结构呈现，内含 <tool-args> / <tool-result> 两个
- *   CDATA 子元素；skill 与 ask_user_question 条目分别以 <skill_content> /
- *   <askuserquestion> 元素呈现）、reasoning 不进产物；块首为按产物内实际条目动态
- *   生成的格式说明注释。产物天然合法 XML，无需校验
+ *   CDATA 子元素；skill 条目以 <skill_content> 元素呈现，ask_user_question 条目以
+ *   <ask-user-question> 元素呈现，旧格式 <askuserquestion> 条目原样保留）、reasoning
+ *   不进产物；块首为按产物内实际条目动态生成的格式说明注释。产物天然合法 XML，无需校验
  */
 
 import type { ToolSchema } from '@deepseek-ai/dsh-llm';
@@ -325,7 +325,7 @@ export class CompressionState {
    * 构建最终 <history> 块：按 index 顺序合并视图条目与替换记录——user / sys 条目
    * 原样、被替换区间生成 <assistant index|start end> 摘要条目（content 以 CDATA 包裹嵌入）、
    * 未替换 assistant 条目原样保留、reasoning 不进产物；块首为按产物内实际条目动态
-   * 生成的格式说明注释（user_message / sys / skill_content / askuserquestion 条目说明
+   * 生成的格式说明注释（user_message / sys / skill_content / ask-user-question 条目说明
    * 仅在对应条目存在时包含），开标签携带 tip 属性。产物为合法 XML，无需校验。
    */
   buildFinalBlock(): string {
