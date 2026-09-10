@@ -133,5 +133,6 @@ tests/                           # vitest 测试：服务端各模块、客户�
 web/                             # 机制说明与成本计算器站点：独立 Vite + React + Tailwind CSS + shadcn/ui 工程，发布到 GitHub Pages，不随插件包分发
     ├── src/model.ts             # 成本模型纯函数：om 开关全会话模拟与三类 token 计价
     └── src/components/          # 机制简述、侧边栏参数面板、合并单元格成本表、shadcn/ui 原语
+.agents/skills/agent-workflow/SKILL.md # agent-workflow skill：仓库内任何变更触发的完整开发工作流
 .github/workflows/web-deploy.yml # web/ 变更合入 main 时构建并部署 GitHub Pages
 ```
