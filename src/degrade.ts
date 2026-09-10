@@ -19,13 +19,17 @@ export type DegradedProblem =
   /** systemPrompt 服务未挂载（ctx.get 返回 undefined）：上下文压力不扣系统提示词，观察偏早触发 */
   | 'systemPrompt-missing'
   /** tokenMeter 服务调用异常（measure/estimateMessage 抛错）：压力估算降级，可能跳过观察压缩 */
-  | 'tokenMeter-unavailable';
+  | 'tokenMeter-unavailable'
+  /** 配置的 compressReasoningEffort 不被压缩目标模型支持（含模型信息查询失败）：本次压缩用模型默认思考等级 */
+  | 'reasoning-effort-unavailable';
 
 /** 各降级问题面向用户的简短说明（om/warning 信封载荷 message；客户端警告行直接展示）。 */
 export const DEGRADE_PROBLEMS: Record<DegradedProblem, string> = {
   'systemPrompt-missing':
     '系统提示词服务未挂载，上下文压力估算不扣除系统提示词 tokens（压缩触发会偏早）',
   'tokenMeter-unavailable': 'token 计量服务异常，上下文压力估算降级（可能跳过压缩或按 0 计）',
+  'reasoning-effort-unavailable':
+    '配置的压缩思考等级不被压缩目标模型支持，压缩降级为模型默认思考等级',
 };
 
 /**

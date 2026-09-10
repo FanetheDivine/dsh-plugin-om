@@ -24,6 +24,7 @@ import {
   createToolResultMessage,
   type GenerateOptions,
   type Message,
+  type ReasoningEffortId,
   type TokenUsage,
   type ToolCallBlock,
   type UserMessage,
@@ -138,6 +139,8 @@ export type CompressionLoopOptions = {
   skipReasoning: boolean;
   /** 步骤级日志开关。 */
   debug: boolean;
+  /** 压缩请求的思考等级（已按目标模型校验）；undefined 用模型默认。 */
+  reasoningEffort?: ReasoningEffortId;
   /** 取消信号。 */
   signal?: AbortSignal;
 };
@@ -302,6 +305,9 @@ export async function runCompressionLoop(
       provider: options.target.provider,
       model: options.target.model,
       ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
+      ...(options.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: options.reasoningEffort }),
       sessionId: session.id,
       purpose: 'compaction',
       ...(options.signal === undefined ? {} : { signal: options.signal }),

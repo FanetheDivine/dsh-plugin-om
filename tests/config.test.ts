@@ -181,3 +181,34 @@ describe('recallEnabled / semanticRecallEnabled 配置键', () => {
     expect(resolveConfig({ semanticRecallEnabled: 0 }).semanticRecallEnabled).toBe(true);
   });
 });
+
+describe('compressProvider / compressModel / compressReasoningEffort 配置键', () => {
+  it('字符串值生效（压缩目标覆盖与思考等级配置）', () => {
+    const config = resolveConfig({
+      compressProvider: 'ov-p',
+      compressModel: 'ov-m',
+      compressReasoningEffort: 'high',
+    });
+    expect(config.compressProvider).toBe('ov-p');
+    expect(config.compressModel).toBe('ov-m');
+    expect(config.compressReasoningEffort).toBe('high');
+  });
+
+  it('未配置时为 undefined（压缩跟随会话路由、思考等级用模型默认）', () => {
+    const config = resolveConfig({});
+    expect(config.compressProvider).toBeUndefined();
+    expect(config.compressModel).toBeUndefined();
+    expect(config.compressReasoningEffort).toBeUndefined();
+  });
+
+  it('留空（null/空串/空白串）或非字符串回退 undefined（宽松校验）', () => {
+    const config = resolveConfig({
+      compressProvider: '   ',
+      compressModel: null,
+      compressReasoningEffort: 42,
+    });
+    expect(config.compressProvider).toBeUndefined();
+    expect(config.compressModel).toBeUndefined();
+    expect(config.compressReasoningEffort).toBeUndefined();
+  });
+});

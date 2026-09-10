@@ -2,7 +2,7 @@
 // （上下文压力 − 已压缩块 − 系统提示词 − 工具定义，经 apply 接线验证）、
 // 压缩区间 computeCompressRange（区间截至触发点完整消息）、观察待定标记
 // findObservePending、配对平衡 isPairBalancedAfter、压缩边界 historySection。
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // 隔离 apply 的模型下载编排：ensureModelReady 打桩为"就绪"，避免单测触发真实下载/网络
 vi.mock('../src/embedding.ts', async (importOriginal) => {
@@ -14,6 +14,8 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
 });
 
 import {
+  clearCompressionModelInfoCache,
+  compressionTarget,
   computeCompressRange,
   estimateTextTokens,
   findObservePending,
@@ -24,6 +26,7 @@ import {
 import { resolveConfig } from '../src/config.ts';
 import { HISTORY_TAG, HISTORY_TIP, PLUGIN_LABEL } from '../src/constants.ts';
 import { apply } from '../src/index.ts';
+import { findOmEvents } from '../src/om-event.ts';
 import type { Session, SessionEvent } from '../src/types.ts';
 import {
   buildToolCallFlow,
@@ -679,5 +682,277 @@ describe('反思压缩循环失败：诊断子会话 id 传播', () => {
     expect(endData.diagnosticSessionId).toBe(created?.id);
     // 失败不产生部分替换：表层仍为 history 块自身
     expect(session.surface.nodes).toHaveLength(1);
+  });
+});
+
+describe('压缩目标与思考等级配置（compressProvider / compressModel / compressReasoningEffort）', () => {
+  /** 运行 pre-step 监听器。 */
+  async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
+    const listeners = ctx._onCallbacks.get('agent/pre-step');
+    await listeners?.[0]?.({ agent: { session }, signal: new AbortController().signal }, () => {});
+  }
+
+  /** 成功完成压缩的工具轮工厂（目标/降级行为的判定 mock：循环能走通即视为触发）。 */
+  function successFactory() {
+    return (index: number) => {
+      if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+      if (index === 1)
+        return roundChunks({
+          calls: [
+            {
+              id: 't2',
+              name: 'compressHistory',
+              args: { start: 1, end: 2, content: 'toolcall index:2 purpose:任务A summary:完成' },
+            },
+          ],
+        });
+      return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
+    };
+  }
+
+  /** 读取 om/warning 警告（session.snapshotEvents() 中的 log-only 信封事件），按 problem 过滤。 */
+  function warningsOf(
+    session: Session,
+    problem: string,
+  ): Array<{ problem: string; message: string }> {
+    return findOmEvents(session, 'om/warning')
+      .map((om) => om.data)
+      .filter((warning) => warning.problem === problem);
+  }
+
+  beforeEach(() => {
+    clearCompressionModelInfoCache();
+  });
+
+  describe('compressionTarget（目标解析：成对覆盖、单键回落）', () => {
+    it('compressProvider+compressModel 成对配置覆盖会话路由', () => {
+      const session = makeSession();
+      const config = resolveConfig({ compressProvider: 'ov-p', compressModel: 'ov-m' });
+      expect(compressionTarget(config, session)).toEqual({ provider: 'ov-p', model: 'ov-m' });
+    });
+
+    it('仅配置单键回落会话路由（成对才生效）', () => {
+      const session = makeSession();
+      expect(compressionTarget(resolveConfig({ compressProvider: 'ov-p' }), session)).toMatchObject(
+        {
+          provider: 'test',
+          model: 'test-model',
+        },
+      );
+      expect(compressionTarget(resolveConfig({ compressModel: 'ov-m' }), session)).toMatchObject({
+        provider: 'test',
+        model: 'test-model',
+      });
+    });
+
+    it('未配置回落会话路由；未路由会话返回 undefined', () => {
+      const routed = makeSession();
+      expect(compressionTarget(resolveConfig({}), routed)).toMatchObject({
+        provider: 'test',
+        model: 'test-model',
+      });
+      const unrouted = makeSession({
+        requestHeaderValue: { config: {} as { provider: string; model: string } },
+      });
+      expect(compressionTarget(resolveConfig({}), unrouted)).toBeUndefined();
+    });
+  });
+
+  describe('maybeCompress 接线（经 apply 的 pre-step）', () => {
+    it('成对配置覆盖会话路由：压缩请求使用覆盖目标，summary 记录覆盖目标', async () => {
+      const session = makeSession({
+        events: buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+          withTurnEnd: true,
+        }),
+      });
+      const ctx = makeCtx({ meterTotalTokens: 500000, llmStreamFactory: successFactory() });
+      apply(ctx, {
+        observeThresholdTokens: 100000,
+        tailMessageCount: 0,
+        compressProvider: 'ov-p',
+        compressModel: 'ov-m',
+      });
+      await runPreStep(ctx, session);
+      expect(ctx._llmCalls.length).toBeGreaterThan(0);
+      expect(ctx._llmCalls[0]?.options).toMatchObject({ provider: 'ov-p', model: 'ov-m' });
+      const summary = session.snapshotEvents().find((e) => e.type === 'compaction/summary');
+      expect(summary?.data).toMatchObject({ provider: 'ov-p', model: 'ov-m' });
+    });
+
+    it('仅配置单键回落会话路由：压缩请求使用会话路由目标', async () => {
+      const session = makeSession({
+        events: buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+          withTurnEnd: true,
+        }),
+      });
+      const ctx = makeCtx({ meterTotalTokens: 500000, llmStreamFactory: successFactory() });
+      apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0, compressProvider: 'ov-p' });
+      await runPreStep(ctx, session);
+      expect(ctx._llmCalls.length).toBeGreaterThan(0);
+      expect(ctx._llmCalls[0]?.options).toMatchObject({ provider: 'test', model: 'test-model' });
+    });
+
+    it('未路由会话 + 成对配置仍压缩（使用覆盖目标）', async () => {
+      const session = makeSession({
+        events: buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+          withTurnEnd: true,
+        }),
+        requestHeaderValue: { config: {} as { provider: string; model: string } },
+      });
+      const ctx = makeCtx({ meterTotalTokens: 500000, llmStreamFactory: successFactory() });
+      apply(ctx, {
+        observeThresholdTokens: 100000,
+        tailMessageCount: 0,
+        compressProvider: 'ov-p',
+        compressModel: 'ov-m',
+      });
+      await runPreStep(ctx, session);
+      expect(ctx._llmCalls.length).toBeGreaterThan(0);
+      expect(ctx._llmCalls[0]?.options).toMatchObject({ provider: 'ov-p', model: 'ov-m' });
+    });
+
+    it('未路由会话且无覆盖：跳过压缩', async () => {
+      const session = makeSession({
+        events: buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+          withTurnEnd: true,
+        }),
+        requestHeaderValue: { config: {} as { provider: string; model: string } },
+      });
+      const ctx = makeCtx({ meterTotalTokens: 500000, llmStreamFactory: successFactory() });
+      apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
+      await runPreStep(ctx, session);
+      expect(ctx._llmCalls).toHaveLength(0);
+    });
+  });
+
+  describe('compressReasoningEffort 校验与降级', () => {
+    /** 构造事件与 ctx：注入 meter 压力 + 成功压缩循环 + 可编程 resolveModelInfo。 */
+    function makeEffortFixture(
+      resolveModelInfo: (provider: string, model: string) => Promise<unknown>,
+    ) {
+      const session = makeSession({
+        events: buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+          withTurnEnd: true,
+        }),
+      });
+      const ctx = makeCtx({
+        meterTotalTokens: 500000,
+        llmStreamFactory: successFactory(),
+        resolveModelInfo,
+      });
+      return { session, ctx };
+    }
+
+    it('配置值命中模型可选等级：正常压缩、无降级警告，同目标只查询一次（缓存）', async () => {
+      let resolveCalls = 0;
+      const { session, ctx } = makeEffortFixture(async () => {
+        resolveCalls += 1;
+        return { reasoning: { efforts: [{ id: 'mid', name: 'Mid' }] } };
+      });
+      apply(ctx, {
+        observeThresholdTokens: 100000,
+        tailMessageCount: 0,
+        compressReasoningEffort: 'mid',
+      });
+      await runPreStep(ctx, session);
+      await runPreStep(ctx, session);
+      expect(ctx._llmCalls.length).toBeGreaterThan(0);
+      expect(warningsOf(session, 'reasoning-effort-unavailable')).toHaveLength(0);
+      expect(resolveCalls).toBe(1); // 两个 pass 与两次 pre-step 共享同一目标的校验缓存
+    });
+
+    it('配置值不在模型可选等级：降级为模型默认（警告每会话一次），压缩照常', async () => {
+      const { session, ctx } = makeEffortFixture(async () => ({
+        reasoning: { efforts: [{ id: 'low', name: 'Low' }] },
+      }));
+      apply(ctx, {
+        observeThresholdTokens: 100000,
+        tailMessageCount: 0,
+        compressReasoningEffort: 'ultra',
+      });
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await runPreStep(ctx, session);
+        await runPreStep(ctx, session);
+      } finally {
+        consoleSpy.mockRestore();
+      }
+      expect(ctx._llmCalls.length).toBeGreaterThan(0); // 压缩不被阻塞
+      const warns = warningsOf(session, 'reasoning-effort-unavailable');
+      expect(warns).toHaveLength(1);
+      expect(warns[0]?.message).toContain('思考等级');
+    });
+
+    it('模型无 reasoning 元数据：降级为模型默认，压缩照常', async () => {
+      const { session, ctx } = makeEffortFixture(async () => ({}));
+      apply(ctx, {
+        observeThresholdTokens: 100000,
+        tailMessageCount: 0,
+        compressReasoningEffort: 'mid',
+      });
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await runPreStep(ctx, session);
+      } finally {
+        consoleSpy.mockRestore();
+      }
+      expect(ctx._llmCalls.length).toBeGreaterThan(0);
+      expect(warningsOf(session, 'reasoning-effort-unavailable')).toHaveLength(1);
+    });
+
+    it('resolveModelInfo 抛错：降级为模型默认，压缩照常', async () => {
+      const { session, ctx } = makeEffortFixture(async () => {
+        throw new Error('route gone');
+      });
+      apply(ctx, {
+        observeThresholdTokens: 100000,
+        tailMessageCount: 0,
+        compressReasoningEffort: 'mid',
+      });
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await runPreStep(ctx, session);
+      } finally {
+        consoleSpy.mockRestore();
+      }
+      expect(ctx._llmCalls.length).toBeGreaterThan(0);
+      expect(warningsOf(session, 'reasoning-effort-unavailable')).toHaveLength(1);
+      const warns = ctx._loggerCalls
+        .filter((c) => c.level === 'warn')
+        .map((c) => String(c.args[0]));
+      expect(warns.some((s) => s.includes('route gone'))).toBe(true);
+    });
+
+    it('未配置 compressReasoningEffort：不查询模型信息', async () => {
+      let resolveCalls = 0;
+      const { session, ctx } = makeEffortFixture(async () => {
+        resolveCalls += 1;
+        return { reasoning: { efforts: [{ id: 'mid', name: 'Mid' }] } };
+      });
+      apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
+      await runPreStep(ctx, session);
+      expect(ctx._llmCalls.length).toBeGreaterThan(0); // 压缩照常触发
+      expect(resolveCalls).toBe(0); // 但未配置 effort 时不查询模型信息
+    });
   });
 });
