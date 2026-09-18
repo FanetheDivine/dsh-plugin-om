@@ -4,6 +4,8 @@
 // 统计消息（逐轮耗时与 usage、usage 合计）、flush 调用、落盘异常被吞（create/flush
 // 失败仅 warn 不抛错）。
 
+import { Context } from '@deepseek-ai/cordis';
+import { SessionStore } from '@deepseek-ai/dsh-session';
 import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent';
 import { describe, expect, it } from 'vitest';
 
@@ -244,5 +246,38 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     expect(
       ctx._loggerCalls.some((c) => c.level === 'warn' && c.args.join('').includes('flush 失败')),
     ).toBe(true);
+  });
+
+  it('新宿主契约：assistant/message 事件携带 stream 字段，真实 Session.append 接受载荷', async () => {
+    // 真实宿主 0.1.5 起 assistant/message 载荷必填 stream（模型流的紧凑记录）；
+    // 诊断子会话不保留逐 chunk 流，落盘为空数组。create 桥接到真实 SessionStore
+    // 会话，验证载荷满足真实宿主的追加校验（mock 会话不做载荷校验，测不出违约）。
+    const host = new Context();
+    await host.plugin(SessionStore);
+    const ctx = makeCtx();
+    let realChild: Session | undefined;
+    (ctx.sessions as { create: unknown }).create = (id: unknown, options: unknown) => {
+      realChild = host.sessions.create(
+        id as Parameters<typeof host.sessions.create>[0],
+        options as never,
+      ) as Session;
+      return realChild;
+    };
+    const id = await recordCompressionSession(ctx, makeSession(), {
+      phase: 'observe',
+      target: TARGET,
+      messages: loopMessages(),
+      stats: makeStats([{ durationMs: 100, usage: { inputTokens: 10, outputTokens: 5 } }]),
+      success: true,
+      debug: false,
+    });
+    expect(id).toBe(realChild?.id);
+    const assistant =
+      realChild?.snapshotEvents().filter((e) => e.type === 'assistant/message') ?? [];
+    expect(assistant).toHaveLength(1);
+    // 诊断记录不保留逐 chunk 流：stream 恒为空数组
+    expect((assistant[0]?.data as { stream?: unknown } | undefined)?.stream).toEqual([]);
+    // 落盘未被宿主拒绝：user 指令、tool-result 与统计消息同样在真实会话中
+    expect(realChild?.snapshotEvents().filter((e) => e.type === 'user/message')).toHaveLength(3);
   });
 });

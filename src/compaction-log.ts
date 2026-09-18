@@ -165,8 +165,9 @@ export async function recordCompressionSession(
       if (message.role === 'assistant') {
         child.append(
           'assistant/message',
-          // 记录会话不运行 agent loop：turn 固定 0，step 标注消息序号（1 起）
-          { turn: 0, step, message: message as AssistantMessage },
+          // 记录会话不运行 agent loop：turn 固定 0，step 标注消息序号（1 起）；
+          // stream 为 0.1.5+ 宿主必填的模型流紧凑记录，诊断记录不保留逐 chunk 流，恒为空数组
+          { turn: 0, step, message: message as AssistantMessage, stream: [] },
           { surfaceOp: 'append' },
         );
       } else {
