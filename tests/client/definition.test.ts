@@ -25,7 +25,7 @@ function checkpointEvent(seq: number, source: unknown): SessionEvent {
     type: 'user/message',
     seq,
     time: 1000 + seq,
-    surfaceOp: { op: 'replace', start: seq - 2, end: seq - 1 },
+    surfaceOp: { op: 'replace', startSeq: seq - 2, endSeq: seq - 1 },
     data: { source },
   } as unknown as SessionEvent;
 }

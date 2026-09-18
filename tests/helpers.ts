@@ -154,15 +154,15 @@ export function makeSession({
       };
       const surfaceOp = opts.surfaceOp as
         | string
-        | { op?: string; start?: number; end?: number }
+        | { op?: string; startSeq?: number; endSeq?: number }
         | undefined;
       if (surfaceOp === 'append') {
         event.surfaceOp = 'append';
         if (type === 'user/message' || type === 'assistant/message' || type === 'tool/result')
           nodes.push(seq);
       } else if (surfaceOp && typeof surfaceOp === 'object' && surfaceOp.op === 'replace') {
-        const start = surfaceOp.start ?? -1;
-        const end = surfaceOp.end ?? -1;
+        const start = surfaceOp.startSeq ?? -1;
+        const end = surfaceOp.endSeq ?? -1;
         const startIdx = nodes.indexOf(start);
         const endIdx = nodes.indexOf(end);
         if (startIdx === -1 || endIdx === -1 || startIdx > endIdx) {
@@ -176,7 +176,7 @@ export function makeSession({
         if (missing.length > 0) {
           throw new Error(`mock surface replace: sourceEventSeqs missing ${missing.join(',')}`);
         }
-        event.surfaceOp = { op: 'replace', start, end };
+        event.surfaceOp = { op: 'replace', startSeq: start, endSeq: end };
         if (Array.isArray(opts.sourceEventSeqs))
           event.sourceEventSeqs = [...(opts.sourceEventSeqs as number[])];
         nodes.splice(startIdx, endIdx - startIdx + 1, seq);

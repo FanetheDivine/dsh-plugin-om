@@ -381,10 +381,10 @@ describe('apply 接线（OM 观察压缩）', () => {
     // 新块替换压缩边界至触发点区间（seq 1..4；旧块 seq 0 在边界之前、不被遮蔽；
     // 等待期新消息在触发点之后、不在压缩区间内）
     const newBlock = historyMsgs[1] as unknown as {
-      surfaceOp: { op: string; start: number; end: number };
+      surfaceOp: { op: string; startSeq: number; endSeq: number };
       shadowedSeqs?: number[];
     };
-    expect(newBlock.surfaceOp).toEqual({ op: 'replace', start: 1, end: 4 });
+    expect(newBlock.surfaceOp).toEqual({ op: 'replace', startSeq: 1, endSeq: 4 });
     expect(newBlock.shadowedSeqs).toEqual([1, 2, 4]);
     // 表层 = 旧块 + 等待期新消息 + 新块
     expect(session.surface.nodes.length).toBe(3);
