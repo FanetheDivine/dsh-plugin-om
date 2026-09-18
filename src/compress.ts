@@ -245,8 +245,7 @@ export function computeCompressRange(
   const { boundarySeq } = historySection(session);
   // 区间起点 = 压缩边界在表层顺序中的后继第一条消息（替换块追加在日志末尾，
   // seq 大于被遮蔽消息，须按表层顺序而非 seq 比较取「边界之后」）
-  const startIdx =
-    boundarySeq === undefined ? 0 : surface.findIndex((node) => node === boundarySeq) + 1;
+  const startIdx = boundarySeq === undefined ? 0 : surface.indexOf(SessionSeq(boundarySeq)) + 1;
   if (startIdx >= surface.length) return undefined;
   const target = indexCompleteMessages(session).find((cm) => cm.index === endMessageIndex);
   if (target === undefined) return undefined;
@@ -443,7 +442,7 @@ function appendHistoryMessage(
   session: Session,
   content: string,
   sourceEventSeqs: number[],
-  surfaceOp: { op: 'replace'; start: number; end: number },
+  surfaceOp: { op: 'replace'; startSeq: number; endSeq: number },
   compactionId: CompactionId,
 ): void {
   const message = {
@@ -455,8 +454,8 @@ function appendHistoryMessage(
   session.append('user/message', message, {
     surfaceOp: {
       op: 'replace',
-      start: SessionSeq(surfaceOp.start),
-      end: SessionSeq(surfaceOp.end),
+      startSeq: SessionSeq(surfaceOp.startSeq),
+      endSeq: SessionSeq(surfaceOp.endSeq),
     },
     sourceEventSeqs: sourceEventSeqs.map(SessionSeq),
   });
@@ -574,8 +573,8 @@ export async function reflectPass(
       [summarySeq, ...blockSeqs],
       {
         op: 'replace',
-        start: first.seq,
-        end: last.seq,
+        startSeq: first.seq,
+        endSeq: last.seq,
       },
       lifecycle.compactionId,
     );
@@ -887,8 +886,8 @@ export async function observePass(
       [summarySeq, ...replaceSeqs],
       {
         op: 'replace',
-        start: replaceStart,
-        end: range.end,
+        startSeq: replaceStart,
+        endSeq: range.end,
       },
       lifecycle.compactionId,
     );
