@@ -248,7 +248,8 @@ export function computeCompressRange(
   // seq 大于被遮蔽消息，须按表层顺序而非 seq 比较取「边界之后」）。
   // 表层节点 0 为 system/message（系统提示词）时起点至少为 1：宿主禁止非
   // system/message 的替换操作覆盖该节点（与 compaction-basic 选区语义一致）。
-  const headEvent = session.snapshotEvents()[surface[0]];
+  const headSeq = surface[0];
+  const headEvent = headSeq === undefined ? undefined : session.snapshotEvents()[headSeq];
   const headOffset = headEvent?.type === 'system/message' ? 1 : 0;
   const startIdx =
     boundarySeq === undefined ? headOffset : surface.indexOf(SessionSeq(boundarySeq)) + 1;

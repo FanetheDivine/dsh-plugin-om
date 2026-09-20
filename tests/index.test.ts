@@ -30,7 +30,7 @@ import {
   makeOmEvent,
   makeSession,
   roundChunks,
-  systemMessageData,
+  systemMessageEvent,
   textBlock,
 } from './helpers.ts';
 
@@ -402,10 +402,7 @@ describe('apply 接线（OM 观察压缩）', () => {
       withTurnEnd: true,
     });
     const session = makeSession({
-      events: [
-        { type: 'system/message', data: systemMessageData('You are a helpful assistant') },
-        ...flowEvents,
-      ],
+      events: [systemMessageEvent('You are a helpful assistant'), ...flowEvents],
     });
     const ctx = observeCtx([
       {

@@ -27,7 +27,7 @@ export function makeMessage({
 }
 
 export function textBlock(text: string) {
-  return { type: 'text', text };
+  return { type: 'text', text } as const;
 }
 
 /** 构造 image 内容块（attachment 为持久图片元数据，与宿主 ImageAttachmentRef 同构）。 */
@@ -71,13 +71,32 @@ export function toolResultBlock(callId: string, content: unknown[], isError = fa
   return { type: 'tool-result', toolCallId: callId, content, isError };
 }
 
-/** 构造 system/message 事件数据（与宿主 SystemPromptProjection 提交的载荷同构）。 */
+/**
+ * 构造 system/message 事件数据（与宿主 SystemPromptProjection 提交的载荷同构：
+ * source.plugin 为宿主系统提示词归属；message id 的品牌类型在事件层收窄）。
+ */
 export function systemMessageData(text: string) {
   return {
     turn: 1,
     step: 1,
-    message: { id: `sys-${Math.random().toString(36).slice(2)}`, role: 'system', content: [textBlock(text)] },
+    message: {
+      id: `sys-${Math.random().toString(36).slice(2)}`,
+      role: 'system',
+      content: [textBlock(text)],
+      source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' },
+    },
   };
+}
+
+/** 构造完整的 system/message 表层事件（seq/time 由 makeSession 按日志下标重写）。 */
+export function systemMessageEvent(text: string): SessionEvent {
+  return {
+    type: 'system/message',
+    seq: 0,
+    time: 0,
+    surfaceOp: 'append',
+    data: systemMessageData(text),
+  } as unknown as SessionEvent;
 }
 
 interface MockSessionOptions {
