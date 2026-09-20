@@ -30,6 +30,7 @@ import {
   makeOmEvent,
   makeSession,
   roundChunks,
+  systemMessageData,
   textBlock,
 } from './helpers.ts';
 
@@ -388,6 +389,52 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(newBlock.shadowedSeqs).toEqual([1, 2, 4]);
     // 表层 = 旧块 + 等待期新消息 + 新块
     expect(session.surface.nodes.length).toBe(3);
+  });
+
+  it('system/message 头节点保留：首次压缩替换区间从头节点之后开始', async () => {
+    // dsh 0.1.5-rc.2 表层节点 0 为系统提示词；替换覆盖它会被宿主头部保护拒绝，
+    // 压缩提交失败（摘要正确产出但 <history> 落不进表层）
+    const flowEvents = buildToolCallFlow({
+      code: 'a()',
+      description: '任务A',
+      callId: 'c1',
+      resultText: 'r1',
+      withTurnEnd: true,
+    });
+    const session = makeSession({
+      events: [
+        { type: 'system/message', data: systemMessageData('You are a helpful assistant') },
+        ...flowEvents,
+      ],
+    });
+    const ctx = observeCtx([
+      {
+        id: 't2',
+        name: 'compressHistory',
+        args: { start: 1, end: 2, content: 'toolcall index:2 purpose:任务A summary:完成' },
+      },
+    ]);
+    apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1, reflectThresholdTokens: 1000 });
+    await runPreStep(ctx, session);
+    // 头节点仍在表层（未被遮蔽）：表层 = 头节点 + 新 <history> 块
+    expect(session.surface.nodes).toContain(0);
+    expect(session.surface.nodes.length).toBe(2);
+    // 替换区间从节点 1（头节点后继）开始，不含头节点
+    const block = session.surface.nodes
+      .map((seq) => session.snapshotEvents()[seq])
+      .find(
+        (e): e is SessionEvent =>
+          e?.type === 'user/message' &&
+          String(
+            ((e.data as { source?: unknown }).source as { kind?: string } | undefined)?.kind,
+          ) === 'plugin',
+      ) as unknown as
+      | { surfaceOp: { op: string; startSeq: number; endSeq: number }; shadowedSeqs?: number[] }
+      | undefined;
+    expect(block).toBeDefined();
+    expect(block?.surfaceOp).toEqual({ op: 'replace', startSeq: 1, endSeq: 4 });
+    expect(block?.shadowedSeqs).toEqual([1, 2, 4]);
+    expect(latestHistoryText(session)).toContain('完成');
   });
 
   it('未达观察阈值不压缩（无摘要调用、无 <history>）', async () => {
