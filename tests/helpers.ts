@@ -1,7 +1,7 @@
-// 单元测试公共设施：极简 Session/Surface 模拟（复刻 surface 的 append/replace 语义），
-// 以及一个可编程的 ctx 模拟；另含跨测试文件共享的断言辅助
-// （latestHistoryText / compactionLifecycle / checkpointSourceOf / historyMessage /
-// twoCallFlow / textOf）。测试目标是 src 的纯函数与 apply 接线。
+// 单元测试公共设施：极简 Session/Surface 模拟（复刻 surface 的 append/replace 语义，
+// 含节点 0 的 system/message 头部保护校验），以及一个可编程的 ctx 模拟；另含跨测试文件
+// 共享的断言辅助（latestHistoryText / compactionLifecycle / checkpointSourceOf /
+// historyMessage / twoCallFlow / textOf）。测试目标是 src 的纯函数与 apply 接线。
 import { HISTORY_TAG, HISTORY_TIP, PLUGIN_LABEL } from '../src/constants.ts';
 import type { Context, Session, SessionEvent } from '../src/types.ts';
 
@@ -27,7 +27,7 @@ export function makeMessage({
 }
 
 export function textBlock(text: string) {
-  return { type: 'text', text };
+  return { type: 'text', text } as const;
 }
 
 /** 构造 image 内容块（attachment 为持久图片元数据，与宿主 ImageAttachmentRef 同构）。 */
@@ -66,8 +66,37 @@ export function toolCallBlock(id: string, name: string, args: unknown) {
   return { type: 'tool-call', id, name, arguments: args };
 }
 
+/** 构造 tool-result 内容块（与宿主 tool/result 载荷同构）。 */
 export function toolResultBlock(callId: string, content: unknown[], isError = false) {
   return { type: 'tool-result', toolCallId: callId, content, isError };
+}
+
+/**
+ * 构造 system/message 事件数据（与宿主 SystemPromptProjection 提交的载荷同构：
+ * source.plugin 为宿主系统提示词归属；message id 的品牌类型在事件层收窄）。
+ */
+export function systemMessageData(text: string) {
+  return {
+    turn: 1,
+    step: 1,
+    message: {
+      id: `sys-${Math.random().toString(36).slice(2)}`,
+      role: 'system',
+      content: [textBlock(text)],
+      source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' },
+    },
+  };
+}
+
+/** 构造完整的 system/message 表层事件（seq/time 由 makeSession 按日志下标重写）。 */
+export function systemMessageEvent(text: string): SessionEvent {
+  return {
+    type: 'system/message',
+    seq: 0,
+    time: 0,
+    surfaceOp: 'append',
+    data: systemMessageData(text),
+  } as unknown as SessionEvent;
 }
 
 interface MockSessionOptions {
@@ -102,7 +131,8 @@ export function makeSession({
             const e = log[i];
             return (
               e &&
-              (e.type === 'user/message' ||
+              (e.type === 'system/message' ||
+                e.type === 'user/message' ||
                 e.type === 'assistant/message' ||
                 e.type === 'tool/result')
             );
@@ -125,7 +155,7 @@ export function makeSession({
     deriveEventMessage(event: SessionEvent | null | undefined) {
       if (!event) return null;
       if (event.type === 'user/message') return event.data;
-      if (event.type === 'assistant/message') {
+      if (event.type === 'system/message' || event.type === 'assistant/message') {
         if (!event.data?.message || event.data.message.content.length === 0) return null;
         return event.data.message;
       }
@@ -138,7 +168,8 @@ export function makeSession({
           const event = log[seq];
           if (!event) return null;
           if (event.type === 'user/message') return event.data;
-          if (event.type === 'assistant/message') return event.data.message;
+          if (event.type === 'system/message' || event.type === 'assistant/message')
+            return event.data.message;
           if (event.type === 'tool/result') return event.data.message;
           return null;
         })
@@ -158,7 +189,12 @@ export function makeSession({
         | undefined;
       if (surfaceOp === 'append') {
         event.surfaceOp = 'append';
-        if (type === 'user/message' || type === 'assistant/message' || type === 'tool/result')
+        if (
+          type === 'system/message' ||
+          type === 'user/message' ||
+          type === 'assistant/message' ||
+          type === 'tool/result'
+        )
           nodes.push(seq);
       } else if (surfaceOp && typeof surfaceOp === 'object' && surfaceOp.op === 'replace') {
         const start = surfaceOp.startSeq ?? -1;
@@ -175,6 +211,19 @@ export function makeSession({
         const missing = shadowed.filter((s) => !sources.includes(s));
         if (missing.length > 0) {
           throw new Error(`mock surface replace: sourceEventSeqs missing ${missing.join(',')}`);
+        }
+        // 复刻宿主头部保护：节点 0 为 system/message 时，仅允许恰好覆盖该单节点的
+        // system/message 替换它
+        const headSeq = nodes[0];
+        const headEvent = headSeq === undefined ? undefined : log[headSeq];
+        if (
+          startIdx === 0 &&
+          headEvent?.type === 'system/message' &&
+          !(type === 'system/message' && shadowed.length === 1)
+        ) {
+          throw new Error(
+            'surface replace: node 0 holds the system prompt and may be rewritten only by a system/message over exactly that node',
+          );
         }
         event.surfaceOp = { op: 'replace', startSeq: start, endSeq: end };
         if (Array.isArray(opts.sourceEventSeqs))

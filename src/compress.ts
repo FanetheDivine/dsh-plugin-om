@@ -231,10 +231,11 @@ export function isPairBalancedAfter(session: Session, seq: number): boolean {
 }
 
 /**
- * 观察压缩区间：压缩边界后的首个表层节点 → 触发点完整消息（endMessageIndex）对应的
- * 表层终点（取该完整消息最后一个事件 seq 在表层中的位置）；区间终点回退到
- * tool-call/result 配对平衡点（不切段）。触发点完整消息不存在或其事件已不在表层
- * （被后续压缩遮蔽）时返回 undefined。返回区间起止表层 seq 与被遮蔽 seq 列表。
+ * 观察压缩区间：压缩边界后的首个表层节点（无边界时从首个非 system/message 头节点的
+ * 表层节点起）→ 触发点完整消息（endMessageIndex）对应的表层终点（取该完整消息最后
+ * 一个事件 seq 在表层中的位置）；区间终点回退到 tool-call/result 配对平衡点（不切段）。
+ * 触发点完整消息不存在或其事件已不在表层（被后续压缩遮蔽）时返回 undefined。
+ * 返回区间起止表层 seq 与被遮蔽 seq 列表。
  */
 export function computeCompressRange(
   session: Session,
@@ -244,8 +245,14 @@ export function computeCompressRange(
   if (surface.length === 0) return undefined;
   const { boundarySeq } = historySection(session);
   // 区间起点 = 压缩边界在表层顺序中的后继第一条消息（替换块追加在日志末尾，
-  // seq 大于被遮蔽消息，须按表层顺序而非 seq 比较取「边界之后」）
-  const startIdx = boundarySeq === undefined ? 0 : surface.indexOf(SessionSeq(boundarySeq)) + 1;
+  // seq 大于被遮蔽消息，须按表层顺序而非 seq 比较取「边界之后」）。
+  // 表层节点 0 为 system/message（系统提示词）时起点至少为 1：宿主禁止非
+  // system/message 的替换操作覆盖该节点（与 compaction-basic 选区语义一致）。
+  const headSeq = surface[0];
+  const headEvent = headSeq === undefined ? undefined : session.snapshotEvents()[headSeq];
+  const headOffset = headEvent?.type === 'system/message' ? 1 : 0;
+  const startIdx =
+    boundarySeq === undefined ? headOffset : surface.indexOf(SessionSeq(boundarySeq)) + 1;
   if (startIdx >= surface.length) return undefined;
   const target = indexCompleteMessages(session).find((cm) => cm.index === endMessageIndex);
   if (target === undefined) return undefined;
