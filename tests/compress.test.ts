@@ -36,6 +36,7 @@ import {
   makeOmEvent,
   makeSession,
   roundChunks,
+  systemMessageData,
   textBlock,
 } from './helpers.ts';
 
@@ -409,6 +410,22 @@ describe('观察压缩区间 computeCompressRange', () => {
       start: 0,
       end: 8,
       shadowedSeqs: [0, 1, 3, 5, 6, 8],
+    });
+  });
+
+  it('system/message 头节点不进区间（与宿主头部保护语义一致）', () => {
+    // dsh 0.1.5-rc.2 表层节点 0 为系统提示词（system/message）；替换它会被宿主拒绝
+    const events = [
+      { type: 'system/message', data: systemMessageData('You are a helpful assistant') },
+      ...singleFlow(),
+    ] as SessionEvent[];
+    const session = makeSession({ events });
+    // 表层 [0,1,2,4]；完整消息：0 user、1 assistant、2 toolcall（seqs [2,4]）
+    // 触发点=2：终点取 toolcall 最后事件 seq 4（结果之后平衡），起点跳过头节点 0
+    expect(computeCompressRange(session, 2)).toEqual({
+      start: 1,
+      end: 4,
+      shadowedSeqs: [1, 2, 4],
     });
   });
 
