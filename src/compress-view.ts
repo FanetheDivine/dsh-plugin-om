@@ -147,12 +147,31 @@ export function skillNameOf(session: Session, cm: CompleteMessage): string | und
   return '';
 }
 
+/** 提问项：id 用于与回答配对（字符串形式的问题没有 id），text 为问题文本。 */
+type AskQuestionItem = {
+  /** 问题 id（字符串形式的问题缺省）。 */
+  id?: string;
+  /** 问题文本。 */
+  text: string;
+};
+
+/** 回答项：id 与提问配对，text 为用户所选内容的呈现文本。 */
+type AskAnswerItem = {
+  /** 回答对应的提问 id（缺失时无法配对）。 */
+  id?: string;
+  /** 所选内容的呈现文本。 */
+  text: string;
+};
+
+/** 未作答的题在条目正文中的回答段。 */
+const ASK_UNANSWERED_TEXT = '(未回答)';
+
 /**
- * 从 ask_user_question 调用参数 JSON 提取问题文本行：questions 数组逐项取
- * question 字段（字符串元素原样），一个问题一行。参数缺失、非法或解析不出
+ * 从 ask_user_question 调用参数 JSON 提取提问项：questions 数组逐项取 id 与
+ * question 字段（字符串元素原样、无 id），保持参数序。参数缺失、非法或解析不出
  * 问题文本时返回空数组。
  */
-function askQuestionLines(args: string | undefined): string[] {
+function askQuestionItems(args: string | undefined): AskQuestionItem[] {
   if (args === undefined || args.trim() === '') return [];
   let parsed: unknown;
   try {
@@ -161,21 +180,78 @@ function askQuestionLines(args: string | undefined): string[] {
     return [];
   }
   if (!isRecord(parsed) || !Array.isArray(parsed.questions)) return [];
-  const lines: string[] = [];
+  const items: AskQuestionItem[] = [];
   for (const q of parsed.questions) {
     if (typeof q === 'string' && q.trim() !== '') {
-      lines.push(q);
+      items.push({ text: q });
     } else if (isRecord(q) && typeof q.question === 'string' && q.question.trim() !== '') {
-      lines.push(q.question);
+      const id = typeof q.id === 'string' && q.id !== '' ? q.id : undefined;
+      items.push(id === undefined ? { text: q.question } : { id, text: q.question });
     }
   }
+  return items;
+}
+
+/**
+ * 从 ask_user_question 工具返回文本提取回答项：返回为 JSON 且含 answers 数组时，
+ * 逐项取 id 与所选内容（selected 逐项拼接、custom 追加在后）。
+ * 返回不是可解析的 answers JSON 时返回 null（调用方回退为返回原文呈现）。
+ */
+function askAnswerItems(result: string): AskAnswerItem[] | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed) || !Array.isArray(parsed.answers)) return null;
+  const items: AskAnswerItem[] = [];
+  for (const a of parsed.answers) {
+    if (!isRecord(a)) continue;
+    const selected = Array.isArray(a.selected)
+      ? a.selected.filter((s): s is string => typeof s === 'string')
+      : [];
+    const custom = typeof a.custom === 'string' && a.custom !== '' ? [a.custom] : [];
+    const id = typeof a.id === 'string' && a.id !== '' ? a.id : undefined;
+    const text = [...selected, ...custom].join(', ');
+    items.push(id === undefined ? { text } : { id, text });
+  }
+  return items;
+}
+
+/**
+ * ask_user_question 条目正文行：回答可解析时按题输出 q:（问题文本）与 a:（用户回答）
+ * 成对的行——按 id 配对，未作答的题记为 a:(未回答)，匹配不到问题的回答单独成行；
+ * 回答不可解析时逐行输出问题、末尾单行输出返回原文。
+ */
+function askUserQuestionLines(
+  questions: AskQuestionItem[],
+  answers: AskAnswerItem[] | null,
+  result: string,
+): string[] {
+  if (answers === null) {
+    const lines = questions.map((q) => `q:${q.text}`);
+    if (result.trim() !== '') lines.push(`a:${result}`);
+    return lines;
+  }
+  const lines: string[] = [];
+  const paired = new Set<number>();
+  for (const q of questions) {
+    const index =
+      q.id === undefined ? -1 : answers.findIndex((a, i) => !paired.has(i) && a.id === q.id);
+    if (index >= 0) paired.add(index);
+    const answer = index >= 0 ? (answers[index]?.text ?? '') : '';
+    lines.push(`q:${q.text} a:${answer === '' ? ASK_UNANSWERED_TEXT : answer}`);
+  }
+  answers.forEach((a, i) => {
+    if (!paired.has(i) && a.text !== '') lines.push(`a:${a.text}`);
+  });
   return lines;
 }
 
 /**
- * ask_user_question 条目正文：构造为原生 <ask-user-question> 包裹形态，
- * 内文为 q:（问题文本，一个问题一行）与 a:（用户回答原文）行，缺失段省略。
- * 问题与回答均缺失时返回 null（调用方回退为通用完整消息呈现）。
+ * ask_user_question 条目正文：构造为原生 <ask-user-question> 包裹形态，内文见
+ * askUserQuestionLines。问题与回答均取不到内容时返回 null（调用方回退为通用完整消息呈现）。
  */
 function askUserQuestionText(session: Session, cm: CompleteMessage): string | null {
   const call = toolCallBlockOf(session, cm);
@@ -183,13 +259,11 @@ function askUserQuestionText(session: Session, cm: CompleteMessage): string | nu
   const resultMessage = toolResultMessageOf(session, cm);
   const result =
     resultMessage && Array.isArray(resultMessage.content) ? renderMessageText(resultMessage) : '';
-  const qLines = askQuestionLines(args);
-  const answers = result.trim() === '' ? '' : result;
-  if (qLines.length === 0 && answers === '') return null;
-  const body = [...qLines.map((q) => `q:${q}`), ...(answers === '' ? [] : [`a:${answers}`])].join(
-    '\n',
-  );
-  return `<ask-user-question>${body}</ask-user-question>`;
+  const questions = askQuestionItems(args);
+  const answers = result.trim() === '' ? [] : askAnswerItems(result);
+  const lines = askUserQuestionLines(questions, answers, result);
+  if (lines.length === 0) return null;
+  return `<ask-user-question>${lines.join('\n')}</ask-user-question>`;
 }
 
 /** 视图构建选项：skipReasoning=true 时不含 <reasoning> 参考条目。 */
@@ -368,7 +442,7 @@ function skillContentSections(
 
 /**
  * 提取新格式 ask_user_question 条目正文（原生 <ask-user-question> 包裹）的内文
- * （CDATA 内 q:/a: 行）。非该包裹形态时返回 undefined。
+ * （CDATA 内 q:/a: 成对行）。非该包裹形态时返回 undefined。
  */
 function askUserQuestionInner(text: string): string | undefined {
   const wrapper = /^[\s]*<ask-user-question\b[^>]*>([\s\S]*)<\/ask-user-question>[\s]*$/.exec(text);
@@ -631,7 +705,7 @@ export function entryToElement(doc: Document, entry: ViewEntry): Element {
   }
   if (entry.kind === 'assistant' && entry.toolName === ASK_USER_QUESTION_TOOL_NAME) {
     // ask_user_question 条目：<ask-user-question index="N">，CDATA 内为 q:（问题文本）
-    // 与 a:（用户回答）行；旧格式 <askuserquestion> 包裹形态原样保留；两种包裹形态
+    // 与 a:（用户回答）成对的行；旧格式 <askuserquestion> 包裹形态原样保留；两种包裹形态
     // 均不匹配时回退整体 CDATA 原文。
     const inner = askUserQuestionInner(entry.text);
     if (inner !== undefined) {
