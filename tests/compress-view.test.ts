@@ -338,7 +338,7 @@ describe('buildReflectView', () => {
 });
 
 describe('ask_user_question 条目', () => {
-  it('观察视图：ask_user_question 工具调用渲染为 <ask-user-question> 专用元素，CDATA 内为 q:/a: 行', () => {
+  it('观察视图：按问题 id 与回答配对，逐题输出 q:/a: 成对行', () => {
     const session = makeSession({
       events: [
         assistantEvent([
@@ -348,7 +348,11 @@ describe('ask_user_question 条目', () => {
             '{"questions":[{"id":"q1","question":"继续吗"},{"id":"q2","question":"如何处理"}]}',
           ),
         ]),
-        resultEvent('c1', '继续'),
+        // 回答顺序与问题顺序相反，配对以 id 为准而非数组下标
+        resultEvent(
+          'c1',
+          '{"answers":[{"id":"q2","selected":["重试"]},{"id":"q1","selected":["继续"]}]}',
+        ),
       ],
     });
     const view = buildObserveView(session, [0, 1]);
@@ -360,15 +364,61 @@ describe('ask_user_question 条目', () => {
       hi: 0,
       toolName: 'ask_user_question',
     });
-    // 条目正文还原为原生 ask-user-question 包裹形态（CDATA 内为 q:/a: 行）
-    expect(ask?.text).toBe('<ask-user-question>q:继续吗\nq:如何处理\na:继续</ask-user-question>');
+    // 条目正文为原生 ask-user-question 包裹形态，内文为成对的 q:/a: 行
+    expect(ask?.text).toBe(
+      '<ask-user-question>q:继续吗 a:继续\nq:如何处理 a:重试</ask-user-question>',
+    );
     const xml = renderEntriesXml(view.entries);
     expect(xml).toBe(
-      '<ask-user-question index="0"><![CDATA[q:继续吗\nq:如何处理\na:继续]]></ask-user-question>',
+      '<ask-user-question index="0"><![CDATA[q:继续吗 a:继续\nq:如何处理 a:重试]]></ask-user-question>',
     );
   });
 
-  it('观察视图：ask_user_question 无返回内容时仅输出 q: 行', () => {
+  it('观察视图：多选题的多个所选拼接为一段回答，自定义回答追加在所选之后', () => {
+    const session = makeSession({
+      events: [
+        assistantEvent([
+          toolCallBlock(
+            'c1',
+            'ask_user_question',
+            '{"questions":[{"id":"scope","question":"适用范围？","multiSelect":true}]}',
+          ),
+        ]),
+        resultEvent(
+          'c1',
+          '{"answers":[{"id":"scope","selected":["列表","详情"],"custom":"其他页面"}]}',
+        ),
+      ],
+    });
+    const xml = renderEntriesXml(buildObserveView(session, [0, 1]).entries);
+    expect(xml).toBe(
+      '<ask-user-question index="0"><![CDATA[q:适用范围？ a:列表, 详情, 其他页面]]></ask-user-question>',
+    );
+  });
+
+  it('观察视图：未作答的题记为 a:(未回答)，匹配不到问题的回答单独成行', () => {
+    const session = makeSession({
+      events: [
+        assistantEvent([
+          toolCallBlock(
+            'c1',
+            'ask_user_question',
+            '{"questions":[{"id":"q1","question":"继续吗"},{"id":"q2","question":"如何处理"}]}',
+          ),
+        ]),
+        resultEvent(
+          'c1',
+          '{"answers":[{"id":"q1","selected":["继续"]},{"id":"q2","selected":[]},{"id":"ghost","selected":["野回答"]}]}',
+        ),
+      ],
+    });
+    const xml = renderEntriesXml(buildObserveView(session, [0, 1]).entries);
+    expect(xml).toBe(
+      '<ask-user-question index="0"><![CDATA[q:继续吗 a:继续\nq:如何处理 a:(未回答)\na:野回答]]></ask-user-question>',
+    );
+  });
+
+  it('观察视图：无返回内容时每题记为 a:(未回答)', () => {
     const session = makeSession({
       events: [
         assistantEvent([toolCallBlock('c1', 'ask_user_question', '{"questions":["继续吗"]}')]),
@@ -377,15 +427,36 @@ describe('ask_user_question 条目', () => {
     });
     const view = buildObserveView(session, [0, 1]);
     const xml = renderEntriesXml(view.entries);
-    expect(xml).toBe('<ask-user-question index="0"><![CDATA[q:继续吗]]></ask-user-question>');
+    expect(xml).toBe(
+      '<ask-user-question index="0"><![CDATA[q:继续吗 a:(未回答)]]></ask-user-question>',
+    );
   });
 
-  it('观察视图：ask_user_question 参数无问题文本时仅输出 a: 行，无回答且无问题时回退通用呈现', () => {
-    // 参数 JSON 解析不出问题文本：仅保留回答
+  it('观察视图：返回不是 answers JSON 时回退为问题行加返回原文行', () => {
+    const session = makeSession({
+      events: [
+        assistantEvent([
+          toolCallBlock(
+            'c1',
+            'ask_user_question',
+            '{"questions":[{"id":"q1","question":"继续吗"},{"id":"q2","question":"如何处理"}]}',
+          ),
+        ]),
+        resultEvent('c1', '工具调用被拒绝'),
+      ],
+    });
+    const view = buildObserveView(session, [0, 1]);
+    expect(view.entries[0]?.text).toBe(
+      '<ask-user-question>q:继续吗\nq:如何处理\na:工具调用被拒绝</ask-user-question>',
+    );
+  });
+
+  it('观察视图：参数无问题文本时回答单独成行，无回答且无问题时回退通用呈现', () => {
+    // 参数 JSON 解析不出问题文本：回答逐条单独成行
     const noQuestions = makeSession({
       events: [
         assistantEvent([toolCallBlock('c1', 'ask_user_question', '{"other":1}')]),
-        resultEvent('c1', '回答'),
+        resultEvent('c1', '{"answers":[{"id":"x","selected":["回答"]}]}'),
       ],
     });
     const xml = renderEntriesXml(buildObserveView(noQuestions, [0, 1]).entries);
@@ -400,6 +471,28 @@ describe('ask_user_question 条目', () => {
     const view = buildObserveView(empty, [0, 1]);
     expect(view.entries[0]?.toolName).toBe('ask_user_question');
     expect(view.entries[0]?.text).not.toContain('<ask-user-question>');
+  });
+
+  it('观察视图：真实提问数据按题成对呈现（问题顺序与回答顺序不同）', () => {
+    const session = makeSession({
+      events: [
+        assistantEvent([
+          toolCallBlock(
+            'c1',
+            'ask_user_question',
+            '{"questions":[{"id":"hideScoreScope","question":"问题3「只展示等级不展示评分」的适用范围？"},{"id":"dupIcon","question":"问题2 确认：删除的是粉丝数行中重复的平台图标（保留头像右下角角标）？"}]}',
+          ),
+        ]),
+        resultEvent(
+          'c1',
+          '{"answers":[{"id":"hideScoreScope","selected":["仅团队达人库列表"]},{"id":"dupIcon","selected":["是，删除粉丝数行的重复图标 (Recommended)"]}]}',
+        ),
+      ],
+    });
+    const xml = renderEntriesXml(buildObserveView(session, [0, 1]).entries);
+    expect(xml).toBe(
+      '<ask-user-question index="0"><![CDATA[q:问题3「只展示等级不展示评分」的适用范围？ a:仅团队达人库列表\nq:问题2 确认：删除的是粉丝数行中重复的平台图标（保留头像右下角角标）？ a:是，删除粉丝数行的重复图标 (Recommended)]]></ask-user-question>',
+    );
   });
 
   it('反思视图：旧格式 askuserquestion 条目解析为带 toolName 的 assistant 条目，round-trip 保持旧格式原样', () => {
@@ -436,7 +529,7 @@ describe('ask_user_question 条目', () => {
 
   it('反思视图：ask-user-question 条目解析为带 toolName 的 assistant 条目，round-trip 还原 q:/a: CDATA', () => {
     const block =
-      '<history>\n<ask-user-question index="5"><![CDATA[q:继续吗\na:继续]]></ask-user-question>\n<assistant index="6"><![CDATA[摘要]]></assistant>\n</history>';
+      '<history>\n<ask-user-question index="5"><![CDATA[q:继续吗 a:继续]]></ask-user-question>\n<assistant index="6"><![CDATA[摘要]]></assistant>\n</history>';
     const view = buildReflectView([{ text: block, seq: 7 }]);
     expect(view.entries).toHaveLength(2);
     const ask = view.entries[0];
@@ -447,11 +540,11 @@ describe('ask_user_question 条目', () => {
       toolName: 'ask_user_question',
       blockSeq: 7,
     });
-    expect(ask?.text).toBe('<ask-user-question>q:继续吗\na:继续</ask-user-question>');
+    expect(ask?.text).toBe('<ask-user-question>q:继续吗 a:继续</ask-user-question>');
     // 缺失 index 的 ask-user-question 条目不可定位、被跳过
     const noIndex = buildReflectView([
       {
-        text: '<history>\n<ask-user-question><![CDATA[q:问题]]></ask-user-question>\n</history>',
+        text: '<history>\n<ask-user-question><![CDATA[q:问题 a:(未回答)]]></ask-user-question>\n</history>',
         seq: 8,
       },
     ]);
@@ -460,7 +553,7 @@ describe('ask_user_question 条目', () => {
     // round-trip：解析后的条目重新渲染还原 q:/a: CDATA 结构
     const xml = renderEntriesXml(view.entries);
     expect(xml).toContain(
-      '<ask-user-question index="5"><![CDATA[q:继续吗\na:继续]]></ask-user-question>',
+      '<ask-user-question index="5"><![CDATA[q:继续吗 a:继续]]></ask-user-question>',
     );
   });
 

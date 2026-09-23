@@ -396,14 +396,14 @@ describe('buildFinalBlock', () => {
         kind: 'assistant',
         lo: 1,
         hi: 1,
-        text: '<ask-user-question>q:继续吗\na:用户回答</ask-user-question>',
+        text: '<ask-user-question>q:继续吗 a:用户回答</ask-user-question>',
         toolName: 'ask_user_question',
       },
     ]);
     const state = new CompressionState(view);
-    // getHistory 与最终块中 ask_user_question 条目均为 <ask-user-question> 结构化形态（CDATA 内 q:/a: 行）
+    // getHistory 与最终块中 ask_user_question 条目均为 <ask-user-question> 结构化形态（CDATA 内 q:/a: 成对行）
     const structured =
-      '<ask-user-question index="1"><![CDATA[q:继续吗\na:用户回答]]></ask-user-question>';
+      '<ask-user-question index="1"><![CDATA[q:继续吗 a:用户回答]]></ask-user-question>';
     expect(state.getHistory({}).text).toContain(structured);
     expect(state.buildFinalBlock()).toContain(structured);
     // 二次确认后才允许压缩：首次覆盖报错且不执行，错误信息点名工具并要求重新思考
@@ -459,7 +459,7 @@ describe('buildFinalBlock', () => {
         kind: 'assistant',
         lo: 3,
         hi: 3,
-        text: '<ask-user-question>q:问题\na:回答</ask-user-question>',
+        text: '<ask-user-question>q:问题 a:回答</ask-user-question>',
         toolName: 'ask_user_question',
       },
     ]);
