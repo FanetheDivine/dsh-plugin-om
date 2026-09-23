@@ -49,7 +49,7 @@ export function historyFormatNote(sections: HistoryNoteSections = {}): string {
   if (sections.skill) parts.push('<skill_content name="S" index="N"> 表示未压缩的原始 skill');
   if (sections.askUserQuestion)
     parts.push(
-      '<ask-user-question index="N"> 表示向用户提问，CDATA 内为 q:（提问）与 a:（用户回答）行',
+      '<ask-user-question index="N"> 表示向用户提问，CDATA 内为逐题成对的 q:（提问）与 a:（用户回答）行，未作答的题记为 a:(未回答)',
     );
   return `<!-- ${parts.join('；')} -->`;
 }
