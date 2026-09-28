@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-om",
-  "version": "0.0.41",
+  "version": "0.0.42",
   "type": "module",
   "main": "./dist/index.mjs",
   "module": "./dist/index.mjs",
