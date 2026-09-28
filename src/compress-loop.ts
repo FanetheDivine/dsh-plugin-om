@@ -209,7 +209,6 @@ function pushPartialAssistant(
   if (blocks.every((block) => block.type === 'text' && block.text.trim() === '')) return;
   messages.push(
     assembler.message({
-      kind: 'model',
       provider: target.provider,
       model: target.model,
     }),
@@ -360,7 +359,6 @@ export async function runCompressionLoop(
       ...(assembler.usage === undefined ? {} : { usage: assembler.usage }),
     });
     const assistantMessage = assembler.message({
-      kind: 'model',
       provider: options.target.provider,
       model: options.target.model,
     });

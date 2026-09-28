@@ -101,6 +101,14 @@ describe('runCompressionLoop', () => {
     // 消息组：user 指令 + assistant(tool-call) + tool-result 逐条原样，末尾统计消息
     expect(events.filter((e) => e.type === 'user/message')).toHaveLength(6);
     expect(events.filter((e) => e.type === 'assistant/message')).toHaveLength(3);
+    // 助手消息归因：source 精确为模型产出标识（provider/model 与 target 一致，无多余字段）
+    for (const e of events.filter((e) => e.type === 'assistant/message')) {
+      expect((e.data as { message?: { source?: unknown } }).message?.source).toEqual({
+        kind: 'model',
+        provider: 'test',
+        model: 'test-model',
+      });
+    }
     expect(ctx._flushedSessions).toHaveLength(1);
     expect(result.recordSessionId).toBe(record?.id);
   });

@@ -7,7 +7,7 @@
  */
 
 import type { ChatNode } from '@deepseek-ai/dsh-client-ui-chat/client';
-import { DisclosureRow, IconBrowseOutline16 } from '@deepseek-ai/dsh-client-ui-primitives';
+import { DisclosureRow, IconBrowseOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots';
 import type { CSSProperties } from 'react';
 import { memo, useState } from 'react';
@@ -65,7 +65,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCo
       <div style={styles.row}>
         <DisclosureRow
           className={css.root}
-          icon={<IconBrowseOutline16 size={14} />}
+          icon={<IconBrowseOutlineRegular size={14} />}
           title={runningLabel}
           open={false}
           expandable={false}
@@ -89,7 +89,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCo
       <div style={styles.row}>
         <DisclosureRow
           className={css.root}
-          icon={<IconBrowseOutline16 size={14} />}
+          icon={<IconBrowseOutlineRegular size={14} />}
           chevronClassName={css.chevron}
           title={failedLabel}
           collapsedContent={
@@ -141,7 +141,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCo
     <div style={styles.row}>
       <DisclosureRow
         className={css.root}
-        icon={<IconBrowseOutline16 size={14} />}
+        icon={<IconBrowseOutlineRegular size={14} />}
         chevronClassName={css.chevron}
         title={t('compaction')}
         collapsedContent={
