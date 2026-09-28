@@ -11,14 +11,7 @@ import {
 } from '../src/compress-view.ts';
 import { indexCompleteMessages } from '../src/log-index.ts';
 import type { SessionEvent } from '../src/types.ts';
-import {
-  imageBlock,
-  makeMessage,
-  makeSession,
-  textBlock,
-  toolCallBlock,
-  toolResultBlock,
-} from './helpers.ts';
+import { imageBlock, makeMessage, makeSession, textBlock, toolCallBlock } from './helpers.ts';
 
 /** 构造一条 assistant 消息事件。 */
 function assistantEvent(content: unknown[], id = `assistant-${Math.random()}`) {
@@ -32,7 +25,7 @@ function assistantEvent(content: unknown[], id = `assistant-${Math.random()}`) {
         id,
       }),
     },
-  } as SessionEvent;
+  } as unknown as SessionEvent;
 }
 
 /** 构造一条 user/message 事件。 */
@@ -40,23 +33,27 @@ function userEvent(content: unknown[], source?: unknown) {
   return {
     type: 'user/message',
     data: makeMessage({ content, ...(source ? { source } : {}) }),
-  } as SessionEvent;
+  } as unknown as SessionEvent;
 }
 
-/** 构造一条 tool/result 事件（callId 关联）。 */
+/** 构造一条 tool/result 事件（callId 关联；message 为独立 tool 角色）。 */
 function resultEvent(callId: string, resultText: string) {
   return {
     type: 'tool/result',
     data: {
       turn: 1,
       step: 1,
-      message: makeMessage({
-        role: 'user',
-        content: [toolResultBlock(callId, [textBlock(resultText)], false)],
-        source: { kind: 'tool', callId },
-      }),
+      message: {
+        ...makeMessage({
+          role: 'tool',
+          content: [textBlock(resultText)],
+          source: { kind: 'tool', callId },
+        }),
+        toolCallId: callId,
+        isError: false,
+      },
     },
-  } as SessionEvent;
+  } as unknown as SessionEvent;
 }
 
 describe('buildObserveView', () => {

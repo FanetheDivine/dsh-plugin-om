@@ -45,7 +45,7 @@ function makeStats(
   };
 }
 
-/** 构造循环消息组：user 指令 + assistant（tool-call）+ tool-result。 */
+/** 构造循环消息组：user 指令 + assistant（tool-call）+ tool 结果消息。 */
 function loopMessages(): Message[] {
   return [
     {
@@ -65,24 +65,21 @@ function loopMessages(): Message[] {
     } as unknown as Message,
     {
       id: 'm3' as never,
-      role: 'user',
-      content: [
-        {
-          type: 'tool-result',
-          toolCallId: 'c1' as never,
-          content: [textBlock('历史条目')],
-        },
-      ],
+      role: 'tool',
+      content: [textBlock('历史条目')],
+      toolCallId: 'c1' as never,
+      isError: false,
       source: { kind: 'tool', callId: 'c1' as never },
     } as unknown as Message,
   ];
 }
 
-/** 断言辅助：取子会话事件中的 user/assistant 消息（descriptor 占 seq 0）。 */
-function messageEvents(child: Session): { user: unknown[]; assistant: unknown[] } {
+/** 断言辅助：取子会话事件中的 user/assistant/tool 消息（descriptor 占 seq 0）。 */
+function messageEvents(child: Session): { user: unknown[]; assistant: unknown[]; tool: unknown[] } {
   return {
     user: child.snapshotEvents().filter((e) => e.type === 'user/message'),
     assistant: child.snapshotEvents().filter((e) => e.type === 'assistant/message'),
+    tool: child.snapshotEvents().filter((e) => e.type === 'tool/result'),
   };
 }
 
@@ -145,13 +142,24 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     });
     expect(compressionRecordLabel('reflect', 2, true)).toContain('会话记录');
     expect(compressionRecordLabel('observe', 1, false)).toContain('失败日志');
-    // 消息组原样：user 指令 + assistant（含 tool-call 块）+ tool-result，末尾再追加
-    // 一条统计消息，共 4 条（user 3 + assistant 1）
-    const { user, assistant } = child ? messageEvents(child) : { user: [], assistant: [] };
-    expect(user).toHaveLength(3);
+    // 消息组原样：user 指令 + assistant（含 tool-call 块）+ tool 结果消息，末尾再追加
+    // 一条统计消息（user 2 + assistant 1 + tool 1）
+    const { user, assistant, tool } = child
+      ? messageEvents(child)
+      : { user: [], assistant: [], tool: [] };
+    expect(user).toHaveLength(2);
     expect(assistant).toHaveLength(1);
+    expect(tool).toHaveLength(1);
     expect(JSON.stringify(assistant)).toContain('getHistory');
-    expect(JSON.stringify(user[1])).toContain('tool-result');
+    // tool 结果落盘为 tool/result 事件：载荷携带 turn/step 与完整的 tool 角色消息
+    const toolData = (tool[0] as { data?: unknown } | undefined)?.data as
+      | { turn?: number; step?: number; message?: Record<string, unknown> }
+      | undefined;
+    expect(toolData?.turn).toBe(0);
+    expect(toolData?.step).toBe(3); // 消息序号：m3 为第 3 条
+    expect(toolData?.message?.role).toBe('tool');
+    expect(toolData?.message?.toolCallId).toBe('c1');
+    expect(JSON.stringify(toolData?.message)).toContain('历史条目');
   });
 
   it('末尾统计消息：插件来源，含起止时间、总耗时、逐轮明细与 usage 合计', async () => {
@@ -173,7 +181,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     const statsEvent = userEvents[userEvents.length - 1];
     if (statsEvent === undefined) throw new Error('缺统计消息');
     const statsData = statsEvent.data as {
-      content?: Array<{ text?: string }>;
+      content?: ReadonlyArray<{ text?: string }>;
       source?: { kind?: string; plugin?: string };
     };
     const text = (statsData.content ?? []).map((block) => block.text ?? '').join('');
@@ -248,10 +256,11 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     ).toBe(true);
   });
 
-  it('新宿主契约：assistant/message 事件携带 stream 字段，真实 Session.append 接受载荷', async () => {
-    // 真实宿主 0.1.5 起 assistant/message 载荷必填 stream（模型流的紧凑记录）；
-    // 诊断子会话不保留逐 chunk 流，落盘为空数组。create 桥接到真实 SessionStore
-    // 会话，验证载荷满足真实宿主的追加校验（mock 会话不做载荷校验，测不出违约）。
+  it('新宿主契约：assistant/message 携带 stream、tool/result 携带 tool 角色消息，真实 Session.append 接受载荷', async () => {
+    // assistant/message 载荷必填 stream（模型流的紧凑记录），tool/result 载荷的 message
+    // 为独立 tool 角色（顶层 toolCallId/isError）；诊断子会话不保留逐 chunk 流，落盘为
+    // 空数组。create 桥接到真实 SessionStore 会话，验证载荷满足真实宿主的追加校验
+    // （mock 会话不做载荷校验，测不出违约）。
     const host = new Context();
     await host.plugin(SessionStore);
     const ctx = makeCtx();
@@ -277,7 +286,14 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     expect(assistant).toHaveLength(1);
     // 诊断记录不保留逐 chunk 流：stream 恒为空数组
     expect((assistant[0]?.data as { stream?: unknown } | undefined)?.stream).toEqual([]);
-    // 落盘未被宿主拒绝：user 指令、tool-result 与统计消息同样在真实会话中
-    expect(realChild?.snapshotEvents().filter((e) => e.type === 'user/message')).toHaveLength(3);
+    // 落盘未被宿主拒绝：user 指令与统计消息、tool 结果同样在真实会话中
+    expect(realChild?.snapshotEvents().filter((e) => e.type === 'user/message')).toHaveLength(2);
+    const tool = realChild?.snapshotEvents().filter((e) => e.type === 'tool/result') ?? [];
+    expect(tool).toHaveLength(1);
+    const toolMessage = (tool[0]?.data as { message?: Record<string, unknown> } | undefined)
+      ?.message;
+    expect(toolMessage?.role).toBe('tool');
+    expect(toolMessage?.toolCallId).toBe('c1');
+    expect(toolMessage?.isError).toBe(false);
   });
 });

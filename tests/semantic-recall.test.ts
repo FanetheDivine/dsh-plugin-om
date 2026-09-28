@@ -297,18 +297,16 @@ describe('recall-semantic 工具', () => {
       {
         type: 'tool/result',
         data: {
-          message: makeMessage({
-            role: 'user',
-            content: [
-              {
-                type: 'tool-result',
-                toolCallId: 'tc1',
-                content: [{ type: 'text', text: 'X'.repeat(20000) }],
-              },
-            ],
-            source: { kind: 'tool', callId: 'tc1' },
-            id: 'big-result',
-          }),
+          message: {
+            ...makeMessage({
+              role: 'tool',
+              content: [{ type: 'text', text: 'X'.repeat(20000) }],
+              source: { kind: 'tool', callId: 'tc1' },
+              id: 'big-result',
+            }),
+            toolCallId: 'tc1',
+            isError: false,
+          },
         },
       },
     ] as unknown as SessionEvent[];

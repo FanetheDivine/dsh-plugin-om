@@ -63,8 +63,11 @@ export const SKILL_TOOL_NAME = 'skill';
  */
 export const ASK_USER_QUESTION_TOOL_NAME = 'ask_user_question';
 
-/** 旧日志压缩消息的宿主 checkpoint 标记 plugin 名（历史兼容识别用）。 */
+/** 宿主压缩 checkpoint 消息的 source 标记（0.1.7 起为 kind 'compact-checkpoint'；旧日志为 plugin 'compact'）。 */
 export const COMPACT_CHECKPOINT_PLUGIN = 'compact';
+
+/** 宿主压缩 checkpoint 消息的 source kind。 */
+export const COMPACT_CHECKPOINT_KIND = 'compact-checkpoint';
 
 /**
  * 压缩因 signal 中止而放弃时 compaction/end 的 error 标识（服务端写入、客户端过滤）：
@@ -72,10 +75,14 @@ export const COMPACT_CHECKPOINT_PLUGIN = 'compact';
  */
 export const COMPACTION_ABORTED_ERROR = '压缩已中止（signal aborted）';
 
-/** 判定 user/message 的 source 是否为本插件自产（压缩日志消息；含旧宿主 checkpoint 标记兼容）。这类消息不占完整消息 index。 */
+/**
+ * 判定 user/message 的 source 是否为本插件自产或宿主压缩 checkpoint（压缩日志消息与
+ * 宿主压缩替换消息）。这类消息不占完整消息 index。
+ */
 export function isPluginOwnedSource(
   source: { kind?: string; plugin?: string } | undefined,
 ): boolean {
+  if (source?.kind === COMPACT_CHECKPOINT_KIND) return true;
   if (source?.kind !== 'plugin') return false;
   return source.plugin === PLUGIN_LABEL || source.plugin === COMPACT_CHECKPOINT_PLUGIN;
 }

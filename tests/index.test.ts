@@ -231,7 +231,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     // assistant 消息携带 reasoning 块（参考条目数据源）
     const withReasoning = flowEvents.map((event) => {
       if (event.type !== 'assistant/message') return event;
-      const message = (event.data as { message?: { content?: unknown[] } }).message;
+      const message = (event.data as unknown as { message?: { content?: unknown[] } }).message;
       if (!message) return event;
       message.content = [{ type: 'reasoning', text: '先想再答' }, ...(message.content ?? [])];
       return event;

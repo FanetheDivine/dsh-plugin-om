@@ -5,7 +5,7 @@
  */
 
 import type { ChatNode } from '@deepseek-ai/dsh-client-ui-chat/client';
-import { DisclosureRow, IconBrowseOutline16 } from '@deepseek-ai/dsh-client-ui-primitives';
+import { DisclosureRow, IconBrowseOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots';
 import type { CSSProperties } from 'react';
 import { memo, useState } from 'react';
@@ -27,7 +27,7 @@ export const OmWarningCard = memo(function OmWarningCard({ node, t }: OmWarningC
     <div>
       <DisclosureRow
         className="om-compaction-root"
-        icon={<IconBrowseOutline16 size={14} />}
+        icon={<IconBrowseOutlineRegular size={14} />}
         chevronClassName="om-compaction-chevron"
         title={t('warning')}
         collapsedContent={

@@ -66,7 +66,7 @@ export function toolCallBlock(id: string, name: string, args: unknown) {
   return { type: 'tool-call', id, name, arguments: args };
 }
 
-/** 构造 tool-result 内容块（与宿主 tool/result 载荷同构）。 */
+/** 构造旧版日志形态的 tool-result 内容块（0.1.5 时代 user 角色消息内嵌形态，读取路径仍兼容）。 */
 export function toolResultBlock(callId: string, content: unknown[], isError = false) {
   return { type: 'tool-result', toolCallId: callId, content, isError };
 }
@@ -469,7 +469,7 @@ export function buildToolCallFlow({
   events.push({
     type: 'user/message',
     data: makeMessage({ content: [textBlock('请帮我完成一个任务')], id: userMessageId }),
-  } as SessionEvent);
+  } as unknown as SessionEvent);
   events.push({
     type: 'assistant/message',
     data: {
@@ -484,7 +484,7 @@ export function buildToolCallFlow({
         id: assistantMessageId,
       }),
     },
-  } as SessionEvent);
+  } as unknown as SessionEvent);
   // 真实会话：tool/call 事件 arguments 为原始 JSON 字符串（dsh-session 类型）
   events.push({
     type: 'tool/call',
@@ -495,20 +495,26 @@ export function buildToolCallFlow({
       name: 'run_code',
       arguments: JSON.stringify({ code, description }),
     },
-  } as SessionEvent);
+  } as unknown as SessionEvent);
+  // 真实会话：tool/result 载荷的 message 为独立 tool 角色（顶层 toolCallId/isError，
+  // content 为结果正文块本身，不再内嵌 tool-result 块）
   events.push({
     type: 'tool/result',
     data: {
       turn: 1,
       step: 1,
-      message: makeMessage({
-        role: 'user',
-        content: [toolResultBlock(callId, [textBlock(resultText)], isError)],
-        source: { kind: 'tool', callId },
-        id: resultMessageId,
-      }),
+      message: {
+        ...makeMessage({
+          role: 'tool',
+          content: [textBlock(resultText)],
+          source: { kind: 'tool', callId },
+          id: resultMessageId,
+        }),
+        toolCallId: callId,
+        isError,
+      },
     },
-  } as SessionEvent);
+  } as unknown as SessionEvent);
   if (withTurnEnd) {
     events.push({
       type: 'turn/end',
@@ -524,13 +530,13 @@ export function latestHistoryText(session: Session): string {
     (e) =>
       e.type === 'user/message' &&
       String(
-        ((e.data as { content?: unknown[] }).content?.[0] as { text?: string } | undefined)?.text ??
-          '',
+        ((e.data as { content?: readonly unknown[] }).content?.[0] as { text?: string } | undefined)
+          ?.text ?? '',
       ).includes(`<${HISTORY_TAG}`), // 兼容带 tip 属性的开标签（<history tip="…">）
   );
   const text = String(
     (
-      (historyMsg as { data?: { content?: unknown[] } } | undefined)?.data?.content?.[0] as
+      (historyMsg as { data?: { content?: readonly unknown[] } } | undefined)?.data?.content?.[0] as
         | { text?: string }
         | undefined
     )?.text ?? '',

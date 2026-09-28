@@ -7,7 +7,13 @@
 
 import { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
-import type { GenerateOptions, MessageId, StreamChunk, ToolCallId } from '@deepseek-ai/dsh-llm';
+import type {
+  DeveloperMessage,
+  GenerateOptions,
+  MessageId,
+  StreamChunk,
+  ToolCallId,
+} from '@deepseek-ai/dsh-llm';
 import { LlmAdapter, LlmRuntime } from '@deepseek-ai/dsh-llm';
 import type { Session, SessionId } from '@deepseek-ai/dsh-session';
 import { SessionStore } from '@deepseek-ai/dsh-session';
@@ -130,17 +136,14 @@ function seedUserMessages(session: Session, count: number, chars = 600, from = 0
 /**
  * 成功完成压缩循环的 mock 分块工厂：按请求消息状态产出
  * getHistory → completeCompression（会话状态驱动，不依赖全局调用序号）。
- * 末消息为指令（纯文本 user 消息）→ getHistory；已回填工具结果（含 tool-result 块的
- * user 消息）→ completeCompression。场景全部由 user 消息构成时（无可压缩条目），
+ * 末消息为指令（纯文本 user 消息）→ getHistory；已回填工具结果（独立 tool 角色
+ * 消息）→ completeCompression。场景全部由 user 消息构成时（无可压缩条目），
  * 空提交完成（未替换条目原样保留）。
  */
 function toolRoundChunks() {
   return (options: GenerateOptions, _callIndex: number): StreamChunk[] => {
     const last = options.messages.at(-1);
-    const hasToolResult =
-      last?.role === 'user' &&
-      Array.isArray(last.content) &&
-      last.content.some((b) => b.type === 'tool-result');
+    const hasToolResult = last?.role === 'tool';
     const nextTool = hasToolResult ? 'completeCompression' : 'getHistory';
     return [
       {
@@ -186,7 +189,24 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
       withSystemPrompt: true,
       chunksFor: toolRoundChunks(),
     });
-    seedUserMessages(session, 6);
+    seedUserMessages(session, 3);
+    // developer/message（工具集合增量变更）落入被压缩区间：不参与完整消息索引，
+    // 压缩照常成功且其表层节点被 <history> 块覆盖
+    session.append(
+      'developer/message',
+      {
+        turn: 0,
+        step: 0,
+        message: {
+          id: 'dev-1' as MessageId,
+          role: 'developer',
+          content: [{ type: 'text', text: bigText(200, '工具集合变更') }],
+          source: { kind: 'tool-registry' },
+        } as unknown as DeveloperMessage,
+      },
+      { surfaceOp: 'append' },
+    );
+    seedUserMessages(session, 3, 600, 3);
     const meterBefore = app.tokenMeter.measure(session).totalTokens;
     expect(meterBefore).toBeGreaterThanOrEqual(100);
 
@@ -220,15 +240,18 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(source?.plugin).toBe(PLUGIN_LABEL);
     const shadowed =
       (checkpoint as unknown as { sourceEventSeqs?: number[] }).sourceEventSeqs ?? [];
-    // sourceEventSeqs = compaction/summary seq（影子价格认领）+ 全部 6 条被遮蔽原始消息
-    expect(shadowed).toHaveLength(7);
-    expect(shadowed.slice(1).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6]);
+    // sourceEventSeqs = compaction/summary seq（影子价格认领）+ 全部 7 条被遮蔽原始消息
+    // （6 条 user + 1 条 developer；developer 在 user-2 与 user-3 之间，seq 4）
+    expect(shadowed).toHaveLength(8);
+    expect(shadowed.slice(1).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7]);
 
     // 表层收缩为单一 <history> 节点：未压缩 user 条目原样保留
     expect(session.surface.nodes).toHaveLength(1);
     expect(textOf(checkpoint)).toContain('<history tip=');
     expect(textOf(checkpoint)).toContain('<user_message index="0">');
     expect(textOf(checkpoint)).toContain('任务0');
+    // developer/message 不参与完整消息索引：其内容不进入 <history> 条目
+    expect(textOf(checkpoint)).not.toContain('工具集合变更');
 
     // 第二次 pre-step：压缩边界后无新消息，不重复压缩
     const callsBefore = adapter.calls.filter((c) => c.purpose === 'compaction').length;

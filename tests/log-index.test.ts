@@ -80,10 +80,18 @@ describe('完整消息索引 indexCompleteMessages', () => {
     expect(cms[5]?.seqs).toEqual([5, 7]); // assistant-c2 + result-c2（tool/call 为日志事件不入索引）
   });
 
-  it('本插件自产消息不占位；其他插件/宿主注入的 user_message 为系统消息（sys）占位', () => {
+  it('本插件自产消息与宿主压缩 checkpoint 不占位；其他插件/宿主注入的 user_message 为系统消息（sys）占位', () => {
     const session = makeSession({
       events: [
         historyMessage('旧任务'), // 本插件压缩日志（source.kind=plugin + plugin=dsh-plugin-om）不占位
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('宿主压缩替换消息')],
+            source: { kind: 'compact-checkpoint', compactionId: 'cmp-1' },
+            id: 'host-ckpt',
+          }),
+        } as unknown as SessionEvent, // 宿主压缩 checkpoint（source.kind=compact-checkpoint）不占位
         ...twoCallFlow(),
         {
           type: 'user/message',
@@ -96,12 +104,12 @@ describe('完整消息索引 indexCompleteMessages', () => {
       ],
     });
     const cms = indexCompleteMessages(session);
-    // 两条流程 6 条 + 其他插件快照 1 条（系统消息）；本插件 <history> 块不占位
+    // 两条流程 6 条 + 其他插件快照 1 条（系统消息）；<history> 块与宿主 checkpoint 不占位
     expect(cms).toHaveLength(7);
     expect(cms[0]?.type).toBe('user');
     expect(cms[6]?.type).toBe('sys');
     expect(cms[6]?.kind).toBe('plugin'); // sys.kind = source.kind（区分 kind:user 与其余）
-    expect(cms[6]?.seqs).toEqual([9]); // 快照事件 seq（history@0 + 两条流程 0..7 + 快照@9）
+    expect(cms[6]?.seqs).toEqual([10]); // 快照事件 seq（history@0 + checkpoint@1 + 流程 2..9 + 快照@10）
   });
 
   it('kind:user 归为用户消息；其余 kind 归为系统消息（sys 记录 kind）', () => {
@@ -138,13 +146,14 @@ describe('完整消息索引 indexCompleteMessages', () => {
     expect(cms.map((c) => c.index)).toEqual([0, 1, 2]); // 系统消息也占 index
   });
 
-  it('未匹配的 result 独立成条（防御）', () => {
+  it('未匹配的 result 独立成条（防御；旧版日志形态兼容）', () => {
     const events = [
       {
         type: 'tool/result',
         data: {
           turn: 1,
           step: 1,
+          // 旧版（0.1.5 时代）日志：user 角色消息内嵌 tool-result 块，索引折叠仍须兼容
           message: makeMessage({
             role: 'user',
             content: [toolResultBlock('ghost', [textBlock('r')])],
@@ -186,12 +195,16 @@ describe('完整消息索引 indexCompleteMessages', () => {
         data: {
           turn: 1,
           step: 1,
-          message: makeMessage({
-            role: 'user',
-            content: [toolResultBlock('c1', [textBlock('r1')])],
-            source: { kind: 'tool', callId: 'c1' },
-            id: 'r1',
-          }),
+          message: {
+            ...makeMessage({
+              role: 'tool',
+              content: [textBlock('r1')],
+              source: { kind: 'tool', callId: 'c1' },
+              id: 'r1',
+            }),
+            toolCallId: 'c1',
+            isError: false,
+          },
         },
       },
       {
@@ -199,12 +212,16 @@ describe('完整消息索引 indexCompleteMessages', () => {
         data: {
           turn: 1,
           step: 1,
-          message: makeMessage({
-            role: 'user',
-            content: [toolResultBlock('c2', [textBlock('r2')])],
-            source: { kind: 'tool', callId: 'c2' },
-            id: 'r2',
-          }),
+          message: {
+            ...makeMessage({
+              role: 'tool',
+              content: [textBlock('r2')],
+              source: { kind: 'tool', callId: 'c2' },
+              id: 'r2',
+            }),
+            toolCallId: 'c2',
+            isError: false,
+          },
         },
       },
     ] as unknown as SessionEvent[];

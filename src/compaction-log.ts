@@ -5,7 +5,7 @@
  * （label 区分）。导出 recordCompressionSession / compressionRecordLabel /
  * formatCompressionStats / COMPACTION_LOG_PROVIDER。
  *
- * - 循环消息组（user 指令/提醒、assistant 含 tool-call、tool-result）逐条原样追加；
+ * - 循环消息组（user 指令/提醒、assistant 含 tool-call、tool 结果消息）逐条原样追加；
  *   末尾追加一条插件来源的统计消息（formatCompressionStats：起止时间、总耗时、
  *   逐轮请求耗时与 usage、usage 合计）
  * - 失败时的子会话 id 由调用方写入主会话日志与 compaction/end 载荷（compress.ts /
@@ -13,7 +13,13 @@
  * - 落盘自身绝不抛错：任何失败仅 logger.warn 并返回 undefined，不影响压缩流程
  */
 
-import type { AssistantMessage, Message, TokenUsage, UserMessage } from '@deepseek-ai/dsh-llm';
+import type {
+  AssistantMessage,
+  Message,
+  TokenUsage,
+  ToolResultMessage,
+  UserMessage,
+} from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent';
 import type { CompressionRoundStat, CompressionStats } from './compress-loop.ts';
@@ -119,8 +125,8 @@ function makeStatsMessage(text: string): UserMessage {
  * 把一次压缩工具循环的完整会话消息组落盘为子会话：ctx.sessions.create 创建子会话
  * （header origin 'subagent'、parentSession 指向主会话、delegationDepth = 父 + 1、
  * cwd 继承主会话），追加 one-shot descriptor（provider om-compaction-log，label 含
- * 压缩阶段与轮数），逐消息原样追加（user 指令/提醒与 tool-result 为 user/message，
- * assistant 含 tool-call 块为 assistant/message），末尾追加插件来源统计消息（起止
+ * 压缩阶段与轮数），逐消息按角色原样追加（assistant → assistant/message、tool →
+ * tool/result、其余 → user/message），末尾追加插件来源统计消息（起止
  * 时间、总耗时、逐轮耗时与 usage），flush 持久化，返回子会话 id。成功与失败均调用；
  * 落盘自身绝不抛错，任何失败仅 logger.warn 并返回 undefined。
  */
@@ -166,8 +172,15 @@ export async function recordCompressionSession(
         child.append(
           'assistant/message',
           // 记录会话不运行 agent loop：turn 固定 0，step 标注消息序号（1 起）；
-          // stream 为 0.1.5+ 宿主必填的模型流紧凑记录，诊断记录不保留逐 chunk 流，恒为空数组
+          // stream 为宿主必填的模型流紧凑记录，诊断记录不保留逐 chunk 流，恒为空数组
           { turn: 0, step, message: message as AssistantMessage, stream: [] },
+          { surfaceOp: 'append' },
+        );
+      } else if (message.role === 'tool') {
+        child.append(
+          'tool/result',
+          // 工具结果为独立 tool 角色消息；turn/step 语义同 assistant/message
+          { turn: 0, step, message: message as ToolResultMessage },
           { surfaceOp: 'append' },
         );
       } else {
