@@ -98,9 +98,11 @@ describe('runCompressionLoop', () => {
     const descriptor = events.find((e) => e.type === 'subagent/descriptor');
     expect((descriptor?.data as { label?: string })?.label).toContain('会话记录');
     expect((descriptor?.data as { label?: string })?.label).toContain('3 轮');
-    // 消息组：user 指令 + assistant(tool-call) + tool-result 逐条原样，末尾统计消息
-    expect(events.filter((e) => e.type === 'user/message')).toHaveLength(6);
+    // 消息组：user 指令与统计消息为 user/message，工具结果（getHistory、两次
+    // compressHistory、completeCompression 共 4 条）为 tool/result
+    expect(events.filter((e) => e.type === 'user/message')).toHaveLength(2);
     expect(events.filter((e) => e.type === 'assistant/message')).toHaveLength(3);
+    expect(events.filter((e) => e.type === 'tool/result')).toHaveLength(4);
     // 助手消息归因：source 精确为模型产出标识（provider/model 与 target 一致，无多余字段）
     for (const e of events.filter((e) => e.type === 'assistant/message')) {
       expect((e.data as { message?: { source?: unknown } }).message?.source).toEqual({
@@ -171,11 +173,13 @@ describe('runCompressionLoop', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.rounds).toBe(1);
-    // 只发起一轮请求；getHistory（t2）未执行，无对应 tool-result（assistant 消息原样保留其调用块）
+    // 只发起一轮请求；getHistory（t2）未执行，无对应 tool/result（assistant 消息原样保留其调用块）
     expect(ctx._llmCalls).toHaveLength(1);
     const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
-    expect(events.filter((e) => e.type === 'user/message')).toHaveLength(3); // 指令 + completeCompression 结果 + 统计消息
+    // 指令 + 统计消息为 user/message；completeCompression 结果为 tool/result
+    expect(events.filter((e) => e.type === 'user/message')).toHaveLength(2);
     expect(events.filter((e) => e.type === 'assistant/message')).toHaveLength(1);
+    expect(events.filter((e) => e.type === 'tool/result')).toHaveLength(1);
     expect(JSON.stringify(events)).not.toContain('"toolCallId":"t2"');
   });
 

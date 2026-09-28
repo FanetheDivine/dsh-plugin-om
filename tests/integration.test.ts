@@ -130,17 +130,14 @@ function seedUserMessages(session: Session, count: number, chars = 600, from = 0
 /**
  * 成功完成压缩循环的 mock 分块工厂：按请求消息状态产出
  * getHistory → completeCompression（会话状态驱动，不依赖全局调用序号）。
- * 末消息为指令（纯文本 user 消息）→ getHistory；已回填工具结果（含 tool-result 块的
- * user 消息）→ completeCompression。场景全部由 user 消息构成时（无可压缩条目），
+ * 末消息为指令（纯文本 user 消息）→ getHistory；已回填工具结果（独立 tool 角色
+ * 消息）→ completeCompression。场景全部由 user 消息构成时（无可压缩条目），
  * 空提交完成（未替换条目原样保留）。
  */
 function toolRoundChunks() {
   return (options: GenerateOptions, _callIndex: number): StreamChunk[] => {
     const last = options.messages.at(-1);
-    const hasToolResult =
-      last?.role === 'user' &&
-      Array.isArray(last.content) &&
-      last.content.some((b) => b.type === 'tool-result');
+    const hasToolResult = last?.role === 'tool';
     const nextTool = hasToolResult ? 'completeCompression' : 'getHistory';
     return [
       {

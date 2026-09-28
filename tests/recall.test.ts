@@ -12,7 +12,6 @@ import {
   textBlock,
   textOf,
   toolCallBlock,
-  toolResultBlock,
   twoCallFlow,
 } from './helpers.ts';
 
@@ -297,13 +296,16 @@ describe('recall 工具', () => {
       {
         type: 'tool/result',
         data: {
-          message: makeMessage({
-            content: [
-              toolResultBlock('c9', [textBlock('r1'), imageBlock({ attachmentId: 'att-2' })]),
-            ],
-            source: { kind: 'tool', callId: 'c9' },
-            id: 't-r',
-          }),
+          message: {
+            ...makeMessage({
+              role: 'tool',
+              content: [textBlock('r1'), imageBlock({ attachmentId: 'att-2' })],
+              source: { kind: 'tool', callId: 'c9' },
+              id: 't-r',
+            }),
+            toolCallId: 'c9',
+            isError: false,
+          },
         },
       } as unknown as SessionEvent,
     ];
