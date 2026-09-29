@@ -41,12 +41,22 @@ function installedVersion(name: string): string {
 interface BrowserPlugin {
   inject: string[];
   apply(ctx: {
-    effect(register: () => void, label: string): void;
+    effect(register: () => (() => void) | undefined, label: string): void;
     locale: { register(namespace: string, dictionaries: object): void };
     uiConversation: { events: { register(definition: { kind: string }): void } };
+    configForms: {
+      get(id: string): object;
+      whileServed(names: string[], register: () => () => void): () => void;
+    };
     slots: {
-      inject(slot: string, register: () => void): void;
-      register(options: { key: string }, component: () => void): void;
+      inject(slot: string, register: () => () => void): () => void;
+      register(
+        options: {
+          key: string;
+          inject?: () => { hooks: { omConfigCard: { getSnapshot(): { status: string } } } };
+        },
+        component: () => void,
+      ): () => void;
     };
   }): void;
 }
@@ -106,6 +116,43 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
     let plugin: BrowserPlugin | undefined;
     const loaded: string[] = [];
     const nodeRequire = createRequire(import.meta.url);
+    const platformModules = new Set([
+      'react',
+      'react/jsx-runtime',
+      'react-dom',
+      'react-dom/client',
+      '@deepseek-ai/cordis',
+      '@deepseek-ai/dsh-client-ui-slots',
+      '@deepseek-ai/dsh-client-web-react',
+      '@deepseek-ai/dsh-client-ui-primitives',
+      '@deepseek-ai/dsh-client-ui-attachment',
+      '@deepseek-ai/dsh-client-schema-form',
+    ]);
+    let disposed = 0;
+    class FormModel {
+      bind(project: () => object) {
+        return { getSnapshot: project, subscribe: () => () => {} };
+      }
+      shell() {
+        return {
+          available: true,
+          writable: true,
+          dirty: false,
+          invalid: false,
+          saving: false,
+          failed: false,
+        };
+      }
+      field() {
+        return { text: '', overridden: false, invalid: false };
+      }
+      actions() {
+        return { edit: () => {}, resetField: () => {}, save: () => {}, discard: () => {} };
+      }
+      dispose() {
+        disposed += 1;
+      }
+    }
     runInNewContext(source, {
       window: {
         __ModuleLoader__: {
@@ -117,11 +164,20 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
             factory: (require: (id: string) => object) => BrowserPlugin;
           }) {
             loaded.push(id);
-            plugin = factory((moduleId) =>
-              moduleId === '@deepseek-ai/dsh-client-ui-primitives'
-                ? { DisclosureRow: () => null, IconBrowseOutlineRegular: () => null }
-                : nodeRequire(moduleId),
-            );
+            plugin = factory((moduleId) => {
+              if (!platformModules.has(moduleId)) throw new Error(`未知宿主平台模块: ${moduleId}`);
+              if (moduleId === '@deepseek-ai/dsh-client-ui-primitives')
+                return {
+                  DisclosureRow: () => null,
+                  IconBrowseOutlineRegular: () => null,
+                  SettingsForm: () => null,
+                  SettingsValueField: () => null,
+                  Checkbox: () => null,
+                  SettingsFormModel: FormModel,
+                  settingsTextField: (field: string) => ({ field }),
+                };
+              return nodeRequire(moduleId);
+            });
           },
         },
       },
@@ -131,20 +187,83 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
     const namespaces: string[] = [];
     const definitions: string[] = [];
     const renderers: string[] = [];
+    const served: string[] = [];
+    const scoped: string[] = [];
+    const releases: Array<() => void> = [];
+    let rowStatus: string | undefined;
     plugin.apply({
-      effect: (register) => register(),
-      locale: { register: (namespace) => namespaces.push(namespace) },
-      uiConversation: { events: { register: (definition) => definitions.push(definition.kind) } },
+      effect: (register) => {
+        const release = register();
+        if (release) releases.push(release);
+      },
+      locale: {
+        register: (namespace) => {
+          namespaces.push(namespace);
+          return () => {};
+        },
+      },
+      uiConversation: {
+        events: {
+          register: (definition) => {
+            definitions.push(definition.kind);
+            return () => {};
+          },
+        },
+      },
+      configForms: {
+        get: (id) => {
+          scoped.push(id);
+          return {
+            getSnapshot: () => ({
+              status: 'ready',
+              value: {},
+              base: {},
+              user: {},
+              revision: 4,
+              writable: true,
+            }),
+            subscribe: () => () => {},
+            mutate: async () => true,
+          };
+        },
+        whileServed: (names, register) => {
+          served.push(...names);
+          return register();
+        },
+      },
       slots: {
         inject: (_slot, register) => register(),
-        register: (options) => renderers.push(options.key),
+        register: (options) => {
+          renderers.push(options.key);
+          if (options.key === 'dsh-plugin-om#dsh-plugin-om')
+            rowStatus = options.inject?.().hooks.omConfigCard.getSnapshot().status;
+          return () => {};
+        },
       },
     });
-    expect(plugin.inject).toEqual(expect.arrayContaining(['slots', 'uiConversation', 'locale']));
+    expect(scoped).toEqual(['dsh-plugin-om']);
+    expect(served).toEqual(['dsh-plugin-om']);
+    expect(rowStatus).toBe('ready');
+    for (const release of releases) release();
+    expect(disposed).toBe(1);
+    expect(plugin.inject).toEqual(
+      expect.arrayContaining(['slots', 'uiConversation', 'locale', 'configForms']),
+    );
     expect(namespaces).toHaveLength(1);
     expect(definitions).toHaveLength(2);
-    expect(renderers).toEqual(['om-compaction', 'om-warning']);
+    expect(renderers).toEqual(['om-compaction', 'om-warning', 'dsh-plugin-om#dsh-plugin-om']);
     expect(installedVersion('dsh-client-ui-conversation')).toBe(RELEASE);
+    expect(installedVersion('dsh-client-ui-settings')).toBe(RELEASE);
+    expect(installedVersion('dsh-client-ui-plugin-manager')).toBe(RELEASE);
+    const manifest = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as {
+      dsh: { client: { inject: string[] } };
+    };
+    expect(manifest.dsh.client.inject).toEqual(
+      expect.arrayContaining([
+        '@deepseek-ai/dsh-client-ui-settings',
+        '@deepseek-ai/dsh-client-ui-plugin-manager',
+      ]),
+    );
   }, 30_000);
 
   it('npm 发布包包含可加载的 Node 与浏览器入口', () => {

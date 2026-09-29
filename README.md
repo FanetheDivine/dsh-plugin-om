@@ -14,7 +14,7 @@
 
 ## 安装
 
-要求 DSH 0.1.7-rc.2 或更高版本。
+要求 DSH 0.2.0-rc.2 或更高版本。
 
 ```sh
 dsh plugin --profile <profile> add dsh-plugin-om
@@ -30,7 +30,7 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 
 ## 配置
 
-编辑 `$DSH_HOME/profiles/<profile>/cordis.patch.yml`。配置支持热更新，`$DSH_HOME` 默认为 `~/.dsh`。
+在 WebUI 插件侧边栏打开 `dsh-plugin-om` 行配置页，或编辑 `$DSH_HOME/profiles/<profile>/cordis.patch.yml`。配置支持热更新，`$DSH_HOME` 默认为 `~/.dsh`。
 
 ```yaml
 - id: dsh-plugin-om
@@ -106,8 +106,10 @@ src/
 ├── compress-loop.ts             # 工具压缩循环：多轮请求、工具执行、限流、失败判定与统计
 ├── compaction-log.ts            # 压缩会话记录落盘：循环对话消息组与压缩统计子会话
 ├── compress.ts                  # 两级自动压缩：观察、反思、失败传播与生命周期事件
-└── client/                      # 浏览器客户端 bundle：压缩卡片
-    ├── index.ts                 # 客户端入口：注册卡片定义与渲染器
+└── client/                      # 浏览器客户端 bundle：压缩卡片与插件行配置
+    ├── index.ts                 # 注册卡片、渲染器与行配置槽
+    ├── om-config-controller.ts  # 宿主配置表单、草稿和原子保存
+    ├── OmConfigCard.tsx         # 十四项双语配置控件
     ├── definition.ts            # 压缩卡片定义：生命周期事件、检查点替换与警告事件
     ├── OmCompactionCard.tsx     # 压缩结果与错误卡片
     ├── OmWarningCard.tsx        # 功能降级警告行
