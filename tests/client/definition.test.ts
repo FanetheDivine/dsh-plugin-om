@@ -15,10 +15,10 @@ import {
   omCompactionDefinition,
   omWarningDefinition,
 } from '../../src/client/definition.ts';
-import { COMPACTION_ABORTED_ERROR, PLUGIN_LABEL } from '../../src/constants.ts';
+import { COMPACTION_ABORTED_ERROR, PLUGIN_SOURCE_KIND } from '../../src/constants.ts';
 
-/** 宿主 compaction-basic 的检查点标记：宿主自己渲染，插件不认领。 */
-const HOST_COMPACT_PLUGIN = 'compact';
+/** 宿主 compaction-basic 的检查点 source：宿主自己渲染，插件不认领。 */
+const HOST_CHECKPOINT_SOURCE = { kind: 'compact-checkpoint', compactionId: 'x' } as const;
 
 function checkpointEvent(seq: number, source: unknown): SessionEvent {
   return {
@@ -72,33 +72,36 @@ function contextOf(
 
 describe('checkpointCompactionId', () => {
   it('识别插件自产的替换检查点', () => {
-    const source = { kind: 'plugin', plugin: PLUGIN_LABEL, compactionId: 'om-1' };
+    const source = { kind: PLUGIN_SOURCE_KIND, compactionId: 'om-1' };
     expect(checkpointCompactionId(checkpointEvent(10, source))).toBe('om-1');
   });
 
   it('忽略宿主 compact 检查点（由宿主自己渲染，避免双卡片）', () => {
-    const source = { kind: 'plugin', plugin: HOST_COMPACT_PLUGIN, compactionId: 'x' };
-    expect(checkpointCompactionId(checkpointEvent(10, source))).toBeUndefined();
+    expect(checkpointCompactionId(checkpointEvent(10, HOST_CHECKPOINT_SOURCE))).toBeUndefined();
   });
 
   it('忽略 append 来源消息', () => {
-    const source = { kind: 'plugin', plugin: PLUGIN_LABEL, compactionId: 'om-1' };
+    const source = { kind: PLUGIN_SOURCE_KIND, compactionId: 'om-1' };
     expect(checkpointCompactionId(appendEvent(10, source))).toBeUndefined();
   });
 
   it('忽略缺失或非法的标记', () => {
     expect(checkpointCompactionId(checkpointEvent(10, undefined))).toBeUndefined();
     expect(
-      checkpointCompactionId(checkpointEvent(10, { kind: 'plugin', plugin: PLUGIN_LABEL })),
+      checkpointCompactionId(checkpointEvent(10, { kind: PLUGIN_SOURCE_KIND })),
     ).toBeUndefined();
     expect(
       checkpointCompactionId(
-        checkpointEvent(10, { kind: 'plugin', plugin: 'other', compactionId: 'x' }),
+        checkpointEvent(10, { kind: 'plugin:other-plugin', compactionId: 'x' }),
       ),
     ).toBeUndefined();
     expect(
+      checkpointCompactionId(checkpointEvent(10, { kind: 'message', compactionId: 'x' })),
+    ).toBeUndefined();
+    // 宿主迁移前的 v3 信封形态（kind 'plugin' + plugin 字段）不经宿主迁移到达客户端，不认领
+    expect(
       checkpointCompactionId(
-        checkpointEvent(10, { kind: 'message', plugin: PLUGIN_LABEL, compactionId: 'x' }),
+        checkpointEvent(10, { kind: 'plugin', plugin: 'dsh-plugin-om', compactionId: 'om-1' }),
       ),
     ).toBeUndefined();
   });
@@ -133,8 +136,7 @@ describe('omCompactionDefinition.match', () => {
 
   it('认领插件检查点为 update（压缩中段进入窗口时仍能折叠证据）', () => {
     const event = checkpointEvent(8, {
-      kind: 'plugin',
-      plugin: PLUGIN_LABEL,
+      kind: PLUGIN_SOURCE_KIND,
       compactionId: 'om-1',
     });
     expect(omCompactionDefinition.match(event)).toEqual({ id: 'om-1', role: 'update' });
@@ -148,11 +150,7 @@ describe('omCompactionDefinition.match', () => {
       data: { content: 'hi' },
     } as unknown as SessionEvent;
     expect(omCompactionDefinition.match(plain)).toBeNull();
-    const hostCheckpoint = checkpointEvent(8, {
-      kind: 'plugin',
-      plugin: HOST_COMPACT_PLUGIN,
-      compactionId: 'x',
-    });
+    const hostCheckpoint = checkpointEvent(8, HOST_CHECKPOINT_SOURCE);
     expect(omCompactionDefinition.match(hostCheckpoint)).toBeNull();
   });
 });
@@ -161,7 +159,7 @@ describe('omCompactionDefinition.update', () => {
   it('折叠 summary 与检查点证据', () => {
     const summary = matchOf(lifecycle('compaction/summary', 6, { compactionId: 'om-1' }));
     const checkpoint = matchOf(
-      checkpointEvent(8, { kind: 'plugin', plugin: PLUGIN_LABEL, compactionId: 'om-1' }),
+      checkpointEvent(8, { kind: PLUGIN_SOURCE_KIND, compactionId: 'om-1' }),
     );
     const afterSummary = omCompactionDefinition.update({ ...contextOf([]), state: {} }, summary);
     expect(afterSummary).toEqual({ summary });
@@ -183,7 +181,7 @@ describe('omCompactionDefinition.update', () => {
 
 describe('omCompactionDefinition.buildViewNode', () => {
   const checkpoint = matchOf(
-    checkpointEvent(8, { kind: 'plugin', plugin: PLUGIN_LABEL, compactionId: 'om-1' }),
+    checkpointEvent(8, { kind: PLUGIN_SOURCE_KIND, compactionId: 'om-1' }),
   );
 
   it('无检查点时不产出节点', () => {

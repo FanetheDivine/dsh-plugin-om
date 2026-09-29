@@ -36,7 +36,8 @@
  *   辅助估算的普通运行时报错仅记日志。降级与报错都不阻塞压缩（tokenMeter 压力数据
  *   缺失时本轮跳过观察）
  */
-import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm';
+import { CompactionId } from '@deepseek-ai/dsh-compaction';
+import { createUserMessage, type ReasoningEffortId } from '@deepseek-ai/dsh-llm';
 import { scopeOf } from '@deepseek-ai/dsh-scope';
 import { SessionSeq } from '@deepseek-ai/dsh-session';
 import type { AssembleContext } from '@deepseek-ai/dsh-system-prompt';
@@ -49,7 +50,7 @@ import {
   runCompressionLoop,
 } from './compress-loop.ts';
 import { buildObserveView, buildReflectView } from './compress-view.ts';
-import { HISTORY_TAG, isPluginOwnedSource, PLUGIN_LABEL } from './constants.ts';
+import { HISTORY_TAG, isPluginOwnedSource, omSource } from './constants.ts';
 import { reportDegrade } from './degrade.ts';
 import { indexCompleteMessages, surfaceIndexOf } from './log-index.ts';
 import type { PluginLogger } from './logger.ts';
@@ -58,7 +59,6 @@ import { appendOmEvent, readOmEvent } from './om-event.ts';
 import type {
   Agent,
   CompactionEndPayload,
-  CompactionId,
   CompactionStartPayload,
   CompactionSummaryPayload,
   Context,
@@ -66,7 +66,6 @@ import type {
   Session,
   SessionEvent,
   TokenUsage,
-  UserMessage,
 } from './types.ts';
 import { blocksToText, type RoutedTarget, routedTarget, textCharCount, uuid } from './utils.ts';
 
@@ -190,8 +189,7 @@ async function runPassLoop(
  */
 function historyTextOf(event: SessionEvent | undefined): string | undefined {
   if (event?.type !== 'user/message') return undefined;
-  const source = event.data.source as { kind?: string; plugin?: string } | undefined;
-  if (!isPluginOwnedSource(source)) return undefined;
+  if (!isPluginOwnedSource(event.data.source)) return undefined;
   const text = blocksToText(event.data.content);
   const idx = text.indexOf(`<${HISTORY_TAG}`);
   if (idx === -1) return undefined;
@@ -349,9 +347,9 @@ function openTurnOf(session: Session): number | null {
   return turn;
 }
 
-/** 生成宿主 compaction 生命周期 id（uuid 按宿主品牌类型 CompactionId 标注）。 */
+/** 生成宿主 compaction 生命周期 id（经宿主品牌构造函数标注）。 */
 function newCompactionId(): CompactionId {
-  return uuid() as unknown as CompactionId;
+  return CompactionId(uuid());
 }
 
 /** compaction 生命周期共享数据（start/summary/end 以 compactionId 关联）。 */
@@ -452,12 +450,10 @@ function appendHistoryMessage(
   surfaceOp: { op: 'replace'; startSeq: number; endSeq: number },
   compactionId: CompactionId,
 ): void {
-  const message = {
-    id: uuid(),
-    role: 'user',
+  const message = createUserMessage({
     content: [{ type: 'text', text: content }],
-    source: { kind: 'plugin', plugin: PLUGIN_LABEL, compactionId },
-  } as unknown as UserMessage; // id 为品牌类型 MessageId，插件自产消息由 session.append 运行时校验
+    source: omSource(compactionId),
+  });
   session.append('user/message', message, {
     surfaceOp: {
       op: 'replace',

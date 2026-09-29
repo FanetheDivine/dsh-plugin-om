@@ -20,10 +20,11 @@ import type {
   ToolResultMessage,
   UserMessage,
 } from '@deepseek-ai/dsh-llm';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent';
 import type { CompressionRoundStat, CompressionStats } from './compress-loop.ts';
-import { PLUGIN_LABEL } from './constants.ts';
+import { omSource } from './constants.ts';
 import { makeLogger } from './logger.ts';
 import type { Context, Session } from './types.ts';
 import { type RoutedTarget, uuid } from './utils.ts';
@@ -111,14 +112,12 @@ export function formatCompressionStats(
   return lines.join('\n');
 }
 
-/** 构造插件自产 user 消息（子会话统计消息；id 为品牌类型 MessageId）。 */
+/** 构造插件自产 user 消息（子会话统计消息；source 为插件自有 kind）。 */
 function makeStatsMessage(text: string): UserMessage {
-  return {
-    id: uuid() as unknown as UserMessage['id'],
-    role: 'user',
+  return createUserMessage({
     content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: PLUGIN_LABEL },
-  } as unknown as UserMessage;
+    source: omSource(),
+  });
 }
 
 /**

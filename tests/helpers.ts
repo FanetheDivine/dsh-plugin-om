@@ -2,7 +2,7 @@
 // 含节点 0 的 system/message 头部保护校验），以及一个可编程的 ctx 模拟；另含跨测试文件
 // 共享的断言辅助（latestHistoryText / compactionLifecycle / checkpointSourceOf /
 // historyMessage / twoCallFlow / textOf）。测试目标是 src 的纯函数与 apply 接线。
-import { HISTORY_TAG, HISTORY_TIP, PLUGIN_LABEL } from '../src/constants.ts';
+import { HISTORY_TAG, HISTORY_TIP, PLUGIN_SOURCE_KIND } from '../src/constants.ts';
 import type { Context, Session, SessionEvent } from '../src/types.ts';
 
 export function makeMessage({
@@ -73,7 +73,7 @@ export function toolResultBlock(callId: string, content: unknown[], isError = fa
 
 /**
  * 构造 system/message 事件数据（与宿主 SystemPromptProjection 提交的载荷同构：
- * source.plugin 为宿主系统提示词归属；message id 的品牌类型在事件层收窄）。
+ * source.kind 为宿主系统提示词生产者 kind；message id 的品牌类型在事件层收窄）。
  */
 export function systemMessageData(text: string) {
   return {
@@ -83,7 +83,7 @@ export function systemMessageData(text: string) {
       id: `sys-${Math.random().toString(36).slice(2)}`,
       role: 'system',
       content: [textBlock(text)],
-      source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' },
+      source: { kind: 'system-prompt' },
     },
   };
 }
@@ -564,7 +564,7 @@ export function compactionLifecycle(session: Session) {
 /** 提取 <history> 替换消息的 source（来源标记断言用）。 */
 export function checkpointSourceOf(event: SessionEvent | undefined) {
   if (event?.type !== 'user/message') return undefined;
-  return event.data.source as { kind?: string; plugin?: string; compactionId?: string } | undefined;
+  return event.data.source;
 }
 
 /** 构造 <history> 压缩日志消息（插件自产 user/message，seq 从 0 起；与真实消息一致：无前缀句，tip 属性在开标签上）。 */
@@ -573,7 +573,7 @@ export function historyMessage(inner: string, id = 'history-msg'): SessionEvent 
     type: 'user/message',
     data: makeMessage({
       content: [textBlock(`<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${inner}\n</${HISTORY_TAG}>`)],
-      source: { kind: 'plugin', plugin: PLUGIN_LABEL },
+      source: { kind: PLUGIN_SOURCE_KIND },
       id,
     }),
   } as unknown as SessionEvent;

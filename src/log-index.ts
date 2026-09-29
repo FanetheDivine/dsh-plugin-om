@@ -78,7 +78,7 @@ export function indexCompleteMessages(session: Session): CompleteMessage[] {
     if (!event) continue;
     if (event.type === 'user/message') {
       // kind:user 为用户消息，其余为系统消息；本插件自产消息不占位
-      const source = event.data.source as { kind?: string; plugin?: string } | undefined;
+      const source = event.data.source;
       if (isPluginOwnedSource(source)) continue;
       if (source?.kind === 'user') {
         cms.push({ index: cms.length, type: 'user', seqs: [seq] });
@@ -115,7 +115,7 @@ export function indexCompleteMessages(session: Session): CompleteMessage[] {
         if (callId !== '') pending.set(callId, cm);
       }
     } else if (event.type === 'tool/result') {
-      const source = event.data.message?.source as { callId?: unknown } | undefined;
+      const source = event.data.message?.source;
       const callId = String(source?.callId ?? '');
       const cm = callId === '' ? undefined : pending.get(callId);
       if (cm) {

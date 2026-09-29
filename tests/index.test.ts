@@ -13,7 +13,7 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
 });
 
 import { buildCompressionPrompt } from '../src/compress-loop.ts';
-import { historyFormatNote, PLUGIN_LABEL } from '../src/constants.ts';
+import { historyFormatNote, isPluginOwnedSource, PLUGIN_SOURCE_KIND } from '../src/constants.ts';
 import { ensureModelReady } from '../src/embedding.ts';
 import { apply } from '../src/index.ts';
 import { findOmEvents } from '../src/om-event.ts';
@@ -203,11 +203,10 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(summaryText).toContain(
       'toolcall index:2 purpose:跑一下 summary:产物符合预期；下一步提交',
     );
-    // 替换消息 source = 插件标识（plugin: PLUGIN_LABEL + compactionId）
+    // 替换消息 source = 插件自有 kind + compactionId
     const source = checkpointSourceOf(replaceEvent);
-    expect(source?.kind).toBe('plugin');
-    expect(source?.plugin).toBe(PLUGIN_LABEL);
-    expect(source?.compactionId).toBe(compactionId);
+    if (source?.kind !== PLUGIN_SOURCE_KIND) throw new Error('替换消息缺插件自产 source');
+    expect(source.compactionId).toBe(compactionId);
     expect(session.surface.replaceGeneration).toBeGreaterThanOrEqual(1);
     // 统计载荷：遮蔽节点 = 整条工具流（user/assistant/tool-result）；压缩前字符数 = 9+6+4（递归计入 tool-result 内嵌文本）
     expect(summaryEvent.data.shadowedSeqs).toEqual([0, 1, 3]);
@@ -364,9 +363,7 @@ describe('apply 接线（OM 观察压缩）', () => {
       .filter(
         (e): e is SessionEvent =>
           e?.type === 'user/message' &&
-          String(
-            ((e.data as { source?: unknown }).source as { kind?: string } | undefined)?.kind,
-          ) === 'plugin',
+          isPluginOwnedSource((e.data as { source?: { kind?: string; plugin?: string } }).source),
       );
     expect(historyMsgs).toHaveLength(2);
     const texts = historyMsgs.map((e) =>
@@ -422,9 +419,7 @@ describe('apply 接线（OM 观察压缩）', () => {
       .find(
         (e): e is SessionEvent =>
           e?.type === 'user/message' &&
-          String(
-            ((e.data as { source?: unknown }).source as { kind?: string } | undefined)?.kind,
-          ) === 'plugin',
+          isPluginOwnedSource((e.data as { source?: { kind?: string; plugin?: string } }).source),
       ) as unknown as
       | { surfaceOp: { op: string; startSeq: number; endSeq: number }; shadowedSeqs?: number[] }
       | undefined;
@@ -1004,9 +999,7 @@ describe('apply 接线（OM 反思压缩）', () => {
       .filter(
         (e): e is SessionEvent =>
           e?.type === 'user/message' &&
-          String(
-            ((e.data as { source?: unknown }).source as { kind?: string } | undefined)?.kind,
-          ) === 'plugin',
+          isPluginOwnedSource((e.data as { source?: { kind?: string; plugin?: string } }).source),
       );
     expect(historyMsgs).toHaveLength(2);
     const texts = historyMsgs.map((e) =>
@@ -1101,10 +1094,10 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
       .map((block) => (block.type === 'text' ? block.text : ''))
       .join('');
     expect(summaryText).toContain('REFLECTED');
-    // 替换消息 source = 插件标识
+    // 替换消息 source = 插件自有 kind
     const source = checkpointSourceOf(replaceEvent);
-    expect(source?.plugin).toBe(PLUGIN_LABEL);
-    expect(source?.compactionId).toBe(startEvent.data.compactionId);
+    if (source?.kind !== PLUGIN_SOURCE_KIND) throw new Error('替换消息缺插件自产 source');
+    expect(source.compactionId).toBe(startEvent.data.compactionId);
   });
 
   it('观察增量追加：compaction/summary 内容 = 新观察日志；遮蔽仅新消息区间', async () => {

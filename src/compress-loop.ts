@@ -22,6 +22,7 @@
 import {
   BlockAssembler,
   createToolResultMessage,
+  createUserMessage,
   type GenerateOptions,
   type Message,
   type ReasoningEffortId,
@@ -36,15 +37,11 @@ import {
   type ToolCallResult,
 } from './compress-tools.ts';
 import type { CompressionView } from './compress-view.ts';
-import {
-  COMPACTION_ABORTED_ERROR,
-  COMPLETE_MESSAGE_DEFINITION,
-  PLUGIN_LABEL,
-} from './constants.ts';
+import { COMPACTION_ABORTED_ERROR, COMPLETE_MESSAGE_DEFINITION, omSource } from './constants.ts';
 import { makeLogger } from './logger.ts';
 import { gateRateLimit, isRateLimitError, noteRateLimit } from './rate-limit.ts';
 import type { Context, Session } from './types.ts';
-import { type RoutedTarget, uuid } from './utils.ts';
+import type { RoutedTarget } from './utils.ts';
 
 /**
  * 共享压缩提示词（观察/反思同一套）：完整消息定义、工具语义、压缩要求、skill 与
@@ -176,14 +173,12 @@ export type CompressionFailure = {
 /** 循环结果（成功/失败二选一）。 */
 export type CompressionOutcome = CompressionSuccess | CompressionFailure;
 
-/** 构造插件自产 user 消息（压缩指令/提醒；id 为品牌类型 MessageId）。 */
+/** 构造插件自产 user 消息（压缩指令/提醒；source 为插件自有 kind）。 */
 function makePluginUserMessage(text: string): UserMessage {
-  return {
-    id: uuid() as unknown as UserMessage['id'],
-    role: 'user',
+  return createUserMessage({
     content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: PLUGIN_LABEL },
-  } as unknown as UserMessage;
+    source: omSource(),
+  });
 }
 
 /** 把工具执行结果封装为 tool-result 消息（回填到压缩会话）。 */

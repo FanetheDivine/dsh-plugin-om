@@ -1,6 +1,6 @@
 /**
  * 压缩卡片业务定义：认领插件自产的压缩生命周期事件（compaction/start|summary|end）
- * 与替换检查点（source.plugin = 'dsh-plugin-om'），聚合出可渲染的摘要卡片节点；
+ * 与替换检查点（source.kind 为插件自有 kind），聚合出可渲染的摘要卡片节点；
  * 并认领 om 警告信封事件（借用 feedback/record，kind 为 om/warning，见 om-event.ts）
  * 渲染为警告行。
  * 导出 COMPACTION_CARD_KIND / OmCompactionChatData / checkpointCompactionId /
@@ -17,7 +17,7 @@ import type {
 } from '@deepseek-ai/dsh-client-ui-conversation/client';
 import type {} from '@deepseek-ai/dsh-compaction/types';
 import type { SessionEvent } from '@deepseek-ai/dsh-session/types';
-import { COMPACTION_ABORTED_ERROR, PLUGIN_LABEL } from '../constants.ts';
+import { COMPACTION_ABORTED_ERROR, PLUGIN_SOURCE_KIND } from '../constants.ts';
 import { readOmEvent } from '../om-event.ts';
 import type { CompactionSummaryPayload } from '../types.ts';
 
@@ -83,24 +83,14 @@ function isReplacementSurface(event: SessionEvent): boolean {
 }
 
 /**
- * 从压缩替换检查点（user/message + replace surface + source.plugin 为本插件）读取
+ * 从压缩替换检查点（user/message + replace surface + source 为插件自产）读取
  * 关联 compactionId；其余事件返回 undefined。
  */
 export function checkpointCompactionId(event: SessionEvent): string | undefined {
   if (event.type !== 'user/message' || !isReplacementSurface(event)) return undefined;
-  const data = event.data as unknown as {
-    source?: { kind?: unknown; plugin?: unknown; compactionId?: unknown };
-  };
-  const source = data.source;
-  if (
-    source === undefined ||
-    source.kind !== 'plugin' ||
-    source.plugin !== PLUGIN_LABEL ||
-    typeof source.compactionId !== 'string'
-  ) {
-    return undefined;
-  }
-  return source.compactionId;
+  const source = event.data.source;
+  if (source?.kind !== PLUGIN_SOURCE_KIND) return undefined;
+  return typeof source.compactionId === 'string' ? source.compactionId : undefined;
 }
 
 /** 从 compaction/summary 载荷提取摘要文本与遮蔽统计（载荷非法时各字段回落 null）。 */
