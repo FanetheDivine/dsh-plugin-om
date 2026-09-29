@@ -6,6 +6,7 @@
  * renderRecallOutput。
  */
 
+import { AttachmentId, type ImageMediaType } from '@deepseek-ai/dsh-attachment';
 import type { ContentBlock, ImageBlock } from '@deepseek-ai/dsh-llm';
 import type { JsonSchemaNode } from '@deepseek-ai/dsh-tools';
 
@@ -78,11 +79,18 @@ export const RECALL_OUTPUT_SCHEMA: JsonSchemaNode = {
 export function renderRecallOutput(value: RecallOutputValue): ContentBlock[] {
   const blocks: ContentBlock[] = [{ type: 'text', text: value.text }];
   for (const ref of value.images) {
-    // ref 来自会话日志中既有 image 块的 attachment，经无损 JSON 往返后按结构还原；
-    // 品牌类型由宿主解析，此处仅透传
+    // ref 来自会话日志中既有 image 块的 attachment，经无损 JSON 往返后按结构还原：
+    // 品牌 id 经宿主品牌构造函数标注；mediaType 来自宿主准入时的四选一取值域
     const block: ImageBlock = {
       type: 'image',
-      attachment: ref as unknown as ImageBlock['attachment'],
+      attachment: {
+        attachmentId: AttachmentId(ref.attachmentId),
+        mediaType: ref.mediaType as ImageMediaType,
+        bytes: ref.bytes,
+        width: ref.width,
+        height: ref.height,
+        ...(ref.name === undefined ? {} : { name: ref.name }),
+      },
     };
     blocks.push(block);
   }

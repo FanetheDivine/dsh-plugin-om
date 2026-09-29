@@ -16,7 +16,11 @@ import type {
 } from '@deepseek-ai/dsh-llm';
 import { LlmAdapter, LlmRuntime } from '@deepseek-ai/dsh-llm';
 import type { Session, SessionId } from '@deepseek-ai/dsh-session';
-import { SessionStore } from '@deepseek-ai/dsh-session';
+import { KNOWN_SESSION_EVENT_TYPES, SessionStore } from '@deepseek-ai/dsh-session';
+import {
+  assertV4RowAdmission,
+  releasedV4SessionFormatCodec,
+} from '@deepseek-ai/dsh-session-format-v3-to-v4';
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection';
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter';
@@ -33,7 +37,7 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
 });
 
 import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent';
-import { PLUGIN_LABEL } from '../src/constants.ts';
+import { PLUGIN_LABEL, PLUGIN_SOURCE_KIND } from '../src/constants.ts';
 // 命中 vi.mock 打桩后的模块（ensureModelReady 为 vi.fn，可断言预热调用）
 import * as embedding from '../src/embedding.ts';
 import { apply, name } from '../src/index.ts';
@@ -161,6 +165,9 @@ function toolRoundChunks() {
   };
 }
 
+/** 宿主 v4 编码器的单行事件入型（避免引入传递依赖的类型再导出）。 */
+type FormatEvent = Parameters<typeof releasedV4SessionFormatCodec.encodeEvent>[0];
+
 /** 读取消息事件的文本内容。 */
 function textOf(event: { data: unknown } | undefined): string {
   const content = (event?.data as { content?: Array<{ type?: string; text?: string }> })?.content;
@@ -230,14 +237,12 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     const end = session.snapshotEvents().find((e) => e.type === 'compaction/end');
     expect((end?.data as { error?: string } | undefined)?.error).toBeUndefined();
 
-    // 替换检查点：source 标记插件自产，sourceEventSeqs 覆盖全部被遮蔽表层节点
+    // 替换检查点：source 为插件自有 kind，sourceEventSeqs 覆盖全部被遮蔽表层节点
     const checkpointSeq = session.surface.nodes[0];
     const checkpoint = session.snapshotEvents()[checkpointSeq as number];
     expect(checkpoint).toBeDefined();
-    const source = (checkpoint?.data as { source?: { kind?: string; plugin?: string } } | undefined)
-      ?.source;
-    expect(source?.kind).toBe('plugin');
-    expect(source?.plugin).toBe(PLUGIN_LABEL);
+    const source = (checkpoint?.data as { source?: { kind?: string } } | undefined)?.source;
+    expect(source?.kind).toBe(PLUGIN_SOURCE_KIND);
     const shadowed =
       (checkpoint as unknown as { sourceEventSeqs?: number[] }).sourceEventSeqs ?? [];
     // sourceEventSeqs = compaction/summary seq（影子价格认领）+ 全部 7 条被遮蔽原始消息
@@ -459,6 +464,47 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(bad.isError).toBe(true);
     const error = (bad as { error?: { message?: string } }).error;
     expect(error?.message).toContain('end 与 offset 至少提供一个');
+  }, 30000);
+
+  it('宿主 format v4 准入：压缩产出事件通过行准入与写编码（会话可重载/导出）', async () => {
+    const { app, session } = await stackHarness({
+      withSystemPrompt: true,
+      chunksFor: toolRoundChunks(),
+    });
+    seedUserMessages(session, 6);
+    await runPreStep(app, session);
+
+    // 主会话与压缩记录子会话都含插件自产消息，逐一验收宿主持久化边界。
+    // 行准入（assertV4RowAdmission）是读路径 scanner 与写路径 encodeEvent 共用的校验，
+    // 即「format v4 message requires a producer-owned source kind」的来源；整卷恢复
+    // 另含的 turn/step 生命周期关系属于宿主 loop 的写入职责，不在本插件验收范围
+    const targets = [session, ...app.sessions.list().filter((s) => s.header.origin === 'subagent')];
+    expect(targets.length).toBeGreaterThan(1);
+    const rowsOf = (target: Session): FormatEvent[] =>
+      // JSON 往返模拟持久化边界（品牌类型与冻结在序列化中擦除，等价于落盘后重读）
+      target.snapshotEvents().map((event) => JSON.parse(JSON.stringify(event)) as FormatEvent);
+    for (const target of targets) {
+      for (const row of rowsOf(target)) {
+        assertV4RowAdmission(row, KNOWN_SESSION_EVENT_TYPES);
+        releasedV4SessionFormatCodec.encodeEvent(row);
+      }
+    }
+
+    // 负向对照：retired 'plugin' source 包装必须被拒绝，证明上述行准入对本用例有效
+    const legacyRow = rowsOf(session).find((row) => row.type === 'user/message');
+    if (legacyRow === undefined) throw new Error('缺 user/message 事件');
+    const legacyData = legacyRow.data;
+    if (legacyData === null || typeof legacyData !== 'object' || Array.isArray(legacyData))
+      throw new Error('user/message 载荷非法');
+    expect(() =>
+      assertV4RowAdmission(
+        {
+          ...legacyRow,
+          data: { ...legacyData, source: { kind: 'plugin', plugin: 'dsh-plugin-om' } },
+        },
+        KNOWN_SESSION_EVENT_TYPES,
+      ),
+    ).toThrow('producer-owned source kind');
   }, 30000);
 
   it('recall-semantic 启用：注册工具并后台预热模型（recall 未启用时不注册 recall）', async () => {

@@ -48,28 +48,13 @@ export type OmEvent = {
   [K in OmEventKind]: { kind: K; data: OmEventPayloadMap[K]; seq: number };
 }[OmEventKind];
 
-/** 校验载荷字段与类别匹配（运行时守卫，保证返回类型的诚实性）。 */
-function isValidPayload(kind: OmEventKind, data: Record<string, unknown>): boolean {
-  switch (kind) {
-    case 'om/warning':
-      return typeof data.problem === 'string' && typeof data.message === 'string';
-    case 'om/observe-pending':
-      return (
-        typeof data.triggerMessageIndex === 'number' &&
-        Number.isSafeInteger(data.triggerMessageIndex)
-      );
-    case 'om/observe-invalidate':
-      return typeof data.pendingSeq === 'number' && Number.isSafeInteger(data.pendingSeq);
-  }
-}
-
 /**
  * 解码一条会话事件为 om 私有事件：仅识别 feedback/record 中带 om 信封前缀的
  * text；前缀缺失、JSON 非法、kind 未知或载荷字段缺失时返回 undefined。
  */
 export function readOmEvent(event: SessionEvent | undefined | null): OmEvent | undefined {
   if (event === undefined || event === null || event.type !== 'feedback/record') return undefined;
-  const text = (event.data as { text?: unknown } | undefined)?.text;
+  const text = event.data.text;
   if (typeof text !== 'string' || !text.startsWith(OM_EVENT_PREFIX)) return undefined;
   let envelope: unknown;
   try {
@@ -80,13 +65,26 @@ export function readOmEvent(event: SessionEvent | undefined | null): OmEvent | u
   if (envelope === null || typeof envelope !== 'object' || Array.isArray(envelope))
     return undefined;
   const { kind, ...rest } = envelope as Record<string, unknown>;
-  if (typeof kind !== 'string') return undefined;
-  const kinds: OmEventKind[] = ['om/warning', 'om/observe-pending', 'om/observe-invalidate'];
-  if (!kinds.includes(kind as OmEventKind)) return undefined;
-  const omKind = kind as OmEventKind;
-  if (!isValidPayload(omKind, rest)) return undefined;
-  // 载荷已由 isValidPayload 运行时校验；seq 为宿主品牌类型，经 unknown 中转收窄为 OmEvent
-  return { kind: omKind, data: rest, seq: event.seq } as unknown as OmEvent;
+  switch (kind) {
+    case 'om/warning': {
+      const { problem, message } = rest;
+      if (typeof problem !== 'string' || typeof message !== 'string') return undefined;
+      return { kind, data: { problem, message }, seq: event.seq };
+    }
+    case 'om/observe-pending': {
+      const { triggerMessageIndex } = rest;
+      if (typeof triggerMessageIndex !== 'number' || !Number.isSafeInteger(triggerMessageIndex))
+        return undefined;
+      return { kind, data: { triggerMessageIndex }, seq: event.seq };
+    }
+    case 'om/observe-invalidate': {
+      const { pendingSeq } = rest;
+      if (typeof pendingSeq !== 'number' || !Number.isSafeInteger(pendingSeq)) return undefined;
+      return { kind, data: { pendingSeq }, seq: event.seq };
+    }
+    default:
+      return undefined;
+  }
 }
 
 /** 编码一条 om 私有事件为 feedback/record 的 text 信封。 */

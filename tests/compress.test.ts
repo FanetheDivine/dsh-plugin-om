@@ -24,7 +24,7 @@ import {
   reflectPass,
 } from '../src/compress.ts';
 import { resolveConfig } from '../src/config.ts';
-import { HISTORY_TAG, HISTORY_TIP, PLUGIN_LABEL } from '../src/constants.ts';
+import { HISTORY_TAG, HISTORY_TIP, PLUGIN_SOURCE_KIND } from '../src/constants.ts';
 import { apply } from '../src/index.ts';
 import { findOmEvents } from '../src/om-event.ts';
 import type { Session, SessionEvent } from '../src/types.ts';
@@ -654,7 +654,7 @@ describe('压缩边界 historySection', () => {
           type: 'user/message',
           data: makeMessage({
             content: [textBlock('运行时上下文快照')],
-            source: { kind: 'plugin', plugin: PLUGIN_LABEL },
+            source: { kind: PLUGIN_SOURCE_KIND },
             id: 'snap',
           }),
         } as unknown as SessionEvent,

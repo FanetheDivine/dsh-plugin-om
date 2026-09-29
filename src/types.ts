@@ -2,7 +2,9 @@
  * 共享类型：宿主类型再导出（type-only，编译期擦除）+ 插件领域类型。
  * 导出官方包宿主类型（Context/Agent/Session 等）、PluginConfig、
  * MessageNode/MessageIndex/CompleteMessage（完整消息索引）与 compaction 载荷扩展。
- * 各 dsh-* 包通过 declare module 增强 Context/Events，使 ctx.tools 等获得宿主一致类型。
+ * 各 dsh-* 包通过 declare module 增强 Context/Events，使 ctx.tools 等获得宿主一致类型；
+ * 本文件同时向宿主 MessageSourceMap 声明插件自产消息的 producer-owned source
+ * （'plugin:dsh-plugin-om'，见 constants.ts），使写入的 source 形态原生可类型化。
  */
 
 import type { Context, EventOptions, Events } from '@deepseek-ai/cordis';
@@ -21,9 +23,21 @@ import type { SubagentResult, SubagentRun, SubagentStartRequest } from '@deepsee
 import type { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import type { TokenMeter } from '@deepseek-ai/dsh-token-meter';
 import type { JsonSchemaNode, ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools';
+import type { OmMessageSource } from './constants.ts';
 
 /** 插件配置类型（来自 config.ts）。 */
 export type { PluginConfig } from './config.ts';
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    /**
+     * 插件自产消息的 producer-owned source（与宿主 MessageSourceMap 的官方扩展机制
+     * 一致：生产者在自有模块声明自有 kind）。声明后 UserMessage.source 原生接受
+     * 插件写入的 source 形态，宿主持久化读路径的 producer-owned 准入随之满足。
+     */
+    'plugin:dsh-plugin-om': OmMessageSource;
+  }
+}
 
 declare module '@deepseek-ai/dsh-session/types' {
   interface SessionEventMap {

@@ -16,7 +16,7 @@ import {
   recordCompressionSession,
 } from '../src/compaction-log.ts';
 import type { CompressionStats } from '../src/compress-loop.ts';
-import { PLUGIN_LABEL } from '../src/constants.ts';
+import { PLUGIN_SOURCE_KIND } from '../src/constants.ts';
 import type { Message, Session } from '../src/types.ts';
 import { makeCtx, makeSession, textBlock, twoCallFlow } from './helpers.ts';
 
@@ -52,7 +52,7 @@ function loopMessages(): Message[] {
       id: 'm1' as never,
       role: 'user',
       content: [textBlock('压缩指令')],
-      source: { kind: 'plugin', plugin: PLUGIN_LABEL },
+      source: { kind: PLUGIN_SOURCE_KIND },
     } as unknown as Message,
     {
       id: 'm2' as never,
@@ -182,7 +182,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     if (statsEvent === undefined) throw new Error('缺统计消息');
     const statsData = statsEvent.data as {
       content?: ReadonlyArray<{ text?: string }>;
-      source?: { kind?: string; plugin?: string };
+      source?: { kind?: string };
     };
     const text = (statsData.content ?? []).map((block) => block.text ?? '').join('');
     expect(text).toContain('总耗时：5000 ms');
@@ -191,8 +191,8 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     expect(text).toContain('input 10 / output 5');
     expect(text).toContain('第 2 轮：耗时 200 ms');
     expect(text).toContain('usage 合计：input 10 / output 5');
-    // 统计消息为插件来源，与压缩指令消息区分
-    expect(statsData.source).toEqual({ kind: 'plugin', plugin: PLUGIN_LABEL });
+    // 统计消息为插件自产来源（producer-owned kind），与压缩指令消息一致
+    expect(statsData.source?.kind).toBe(PLUGIN_SOURCE_KIND);
   });
 
   it('formatCompressionStats：全部轮次无 usage 时不输出 usage 合计行', () => {

@@ -1,12 +1,33 @@
 /**
  * 共享常量：插件级魔法字符串，集中定义避免散落各模块。
- * 导出 PLUGIN_LABEL / HISTORY_TAG / HISTORY_TIP / COMPLETE_MESSAGE_DEFINITION /
+ * 导出 PLUGIN_LABEL / PLUGIN_SOURCE_KIND / OmMessageSource / omSource /
+ * HISTORY_TAG / HISTORY_TIP / COMPLETE_MESSAGE_DEFINITION /
  * historyFormatNote / SKILL_TOOL_NAME / ASK_USER_QUESTION_TOOL_NAME /
  * COMPACT_CHECKPOINT_PLUGIN / COMPACTION_ABORTED_ERROR / isPluginOwnedSource。
  */
+import type { CompactionId } from '@deepseek-ai/dsh-compaction';
 
-/** 插件标识：压缩消息 source.plugin 取值与日志前缀。 */
+/** 插件标识：日志前缀与历史日志的 source.plugin 取值。 */
 export const PLUGIN_LABEL = 'dsh-plugin-om';
+
+/**
+ * 插件自产消息的 producer-owned source kind（format v4 要求消息 source 为生产者自有
+ * kind，与宿主 v3→v4 迁移对本插件旧日志的产出一致；types.ts 把它声明进宿主
+ * MessageSourceMap，使 UserMessage.source 原生接受该形态）。
+ */
+export const PLUGIN_SOURCE_KIND = 'plugin:dsh-plugin-om';
+
+/** 插件自产消息的 source（compactionId 仅 <history> 替换检查点消息携带）。 */
+export type OmMessageSource = {
+  readonly kind: typeof PLUGIN_SOURCE_KIND;
+  /** 关联的 compaction 生命周期 id（仅替换检查点消息）。 */
+  readonly compactionId?: CompactionId;
+};
+
+/** 构造插件自产消息的 source（compactionId 仅替换检查点消息传入）。 */
+export function omSource(compactionId?: CompactionId): OmMessageSource {
+  return { kind: PLUGIN_SOURCE_KIND, ...(compactionId === undefined ? {} : { compactionId }) };
+}
 
 /** 压缩日志标签名：<history>...</history> 包裹观察/反思日志块。 */
 export const HISTORY_TAG = 'history';
@@ -77,12 +98,14 @@ export const COMPACTION_ABORTED_ERROR = '压缩已中止（signal aborted）';
 
 /**
  * 判定 user/message 的 source 是否为本插件自产或宿主压缩 checkpoint（压缩日志消息与
- * 宿主压缩替换消息）。这类消息不占完整消息 index。
+ * 宿主压缩替换消息）。这类消息不占完整消息 index。宿主迁移前的 v3 信封形态
+ * （kind 'plugin' + plugin 字段）仅作读取防御保留。
  */
 export function isPluginOwnedSource(
   source: { kind?: string; plugin?: string } | undefined,
 ): boolean {
   if (source?.kind === COMPACT_CHECKPOINT_KIND) return true;
+  if (source?.kind === PLUGIN_SOURCE_KIND) return true;
   if (source?.kind !== 'plugin') return false;
   return source.plugin === PLUGIN_LABEL || source.plugin === COMPACT_CHECKPOINT_PLUGIN;
 }

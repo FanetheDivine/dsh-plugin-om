@@ -7,7 +7,7 @@
  * toolCallNameOf / skillNameOf。
  */
 
-import type { Document, Element } from '@xmldom/xmldom';
+import type { Document, Element, Node } from '@xmldom/xmldom';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import { ASK_USER_QUESTION_TOOL_NAME, HISTORY_TAG, SKILL_TOOL_NAME } from './constants.ts';
 import {
@@ -67,6 +67,11 @@ export type CompressionView = {
 /** 静默 DOMParser：非致命解析问题不刷 console，fatalError 仍抛 ParseError、解析语义不变。 */
 function newQuietParser(): DOMParser {
   return new DOMParser({ onError: () => {} });
+}
+
+/** 判定 DOM 节点为元素节点（nodeType 1；text/comment 等节点跳过）。 */
+function isElement(node: Node | undefined): node is Element {
+  return node?.nodeType === 1;
 }
 
 /**
@@ -510,9 +515,8 @@ function parseBlockEntries(blockText: string, blockSeq: number): ViewEntry[] {
   const entries: ViewEntry[] = [];
   const children = root.childNodes;
   for (let i = 0; i < children.length; i += 1) {
-    const node = children[i];
-    if (node?.nodeType !== 1) continue;
-    const el = node as unknown as Element;
+    const el = children[i];
+    if (!isElement(el)) continue;
     const text = el.textContent ?? '';
     if (el.nodeName === 'user_message') {
       const index = intAttr(el, 'index');

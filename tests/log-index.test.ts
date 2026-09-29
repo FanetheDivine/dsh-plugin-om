@@ -83,7 +83,7 @@ describe('完整消息索引 indexCompleteMessages', () => {
   it('本插件自产消息与宿主压缩 checkpoint 不占位；其他插件/宿主注入的 user_message 为系统消息（sys）占位', () => {
     const session = makeSession({
       events: [
-        historyMessage('旧任务'), // 本插件压缩日志（source.kind=plugin + plugin=dsh-plugin-om）不占位
+        historyMessage('旧任务'), // 本插件压缩日志（source.kind=plugin:dsh-plugin-om）不占位
         {
           type: 'user/message',
           data: makeMessage({
@@ -97,7 +97,7 @@ describe('完整消息索引 indexCompleteMessages', () => {
           type: 'user/message',
           data: makeMessage({
             content: [textBlock('其他插件的运行时上下文快照')],
-            source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' },
+            source: { kind: 'runtime-context' },
             id: 'snap',
           }),
         } as unknown as SessionEvent,
@@ -108,7 +108,7 @@ describe('完整消息索引 indexCompleteMessages', () => {
     expect(cms).toHaveLength(7);
     expect(cms[0]?.type).toBe('user');
     expect(cms[6]?.type).toBe('sys');
-    expect(cms[6]?.kind).toBe('plugin'); // sys.kind = source.kind（区分 kind:user 与其余）
+    expect(cms[6]?.kind).toBe('runtime-context'); // sys.kind = source.kind（区分 kind:user 与其余）
     expect(cms[6]?.seqs).toEqual([10]); // 快照事件 seq（history@0 + checkpoint@1 + 流程 2..9 + 快照@10）
   });
 
