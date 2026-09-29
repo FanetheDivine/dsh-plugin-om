@@ -66,6 +66,7 @@
     "@biomejs/biome": "^2.5.8",
     "@deepseek-ai/cordis": "^4.0.4",
     "@deepseek-ai/dsh-agent": "^0.1.7-rc.2",
+    "@deepseek-ai/dsh-agent-loop": "0.1.7-rc.2",
     "@deepseek-ai/dsh-attachment": "^0.1.7-rc.2",
     "@deepseek-ai/dsh-client-locale": "^0.1.7-rc.2",
     "@deepseek-ai/dsh-client-ui-chat": "^0.1.7-rc.2",
