@@ -2,38 +2,35 @@
 
 [![npm version](https://img.shields.io/npm/v/dsh-plugin-om.svg)](https://www.npmjs.com/package/dsh-plugin-om)
 
-在 DSH 里应用 [Observational Memory](https://mastra.ai/research/observational-memory) 风格的上下文管理：自动把历史消息压缩为摘要并提供工具回看原始内容。
+为 DSH 提供 [Observational Memory](https://mastra.ai/research/observational-memory) 风格的上下文压缩和原文召回。
 
 ## 功能
 
-- **自动压缩**：仅主会话，在 agent/pre-step 阻塞串行执行。净压力达到 `observeThresholdTokens` 后再累计 `tailMessageCount` 条完整消息时，把触发点前的全部消息摘要为新 `<history>` 块并精确替换对应消息区间；全部 `<history>` 块 token 合计达到 `reflectThresholdTokens` 时把全部块内条目送入重新压缩，合并为一条更紧凑的摘要。待定标记以 log-only 会话事件持久化，重启后从日志恢复
-- **工具驱动压缩**：摘要生成走多轮工具会话，模型经 getHistory 查看区间条目、compressHistory 分批替换 assistant 条目、completeCompression 结束。首条消息仅含压缩指令与 index 区间，不含历史内容。用户消息与系统消息不可压缩且原样保留；未压缩条目原样保留，条目正文一律以 CDATA 包裹；toolcall 条目以 `<assistant type="toolcall" tool-name="…" callId="…" index="…">` 元素呈现，内含 `<tool-args>`（调用参数 JSON，仅一层转义）与 `<tool-result>` 两段 CDATA 子元素，与 recall 工具输出同构；skill 加载条目以 `<skill_content name="…" index="…">` 元素呈现，内含 `<skill_resources>` 与 `<skill_instructions>` 两段；ask_user_question 提问条目以 `<ask-user-question index="…">` 元素呈现，CDATA 内为逐题成对的 q:（问题文本）与 a:（用户回答）行，未作答的题记为 a:(未回答)，旧版 `<askuserquestion>` 条目原样保留；两类条目首次压缩时都要求模型再次确认相关性，压缩后变为常规 assistant 摘要条目。最终 `<history>` 块由插件构建，天然合法无需校验，块首格式说明注释中的 `<user_message>`、`<sys>`、`<skill_content>`、`<ask-user-question>` 条目说明仅在块内存在对应条目时包含
-- **压缩会话记录**：每次压缩的工具循环完整对话与压缩统计（起止时间、总耗时、逐轮请求耗时与 token usage 及合计）落盘为 one-shot 子会话，成功为会话记录、失败为失败日志，便于查看模型实际的查看与压缩行为及其 token 成本。主会话日志只保留汇总：`compaction/summary` 携带 usage 与起止时间、总耗时，失败路径 `compaction/end` 携带总耗时
-- **降级容错**：systemPrompt 或 tokenMeter 服务异常时按 0 计继续压缩，问题通过 console 输出与 log-only `om/warning` 会话事件上报，同会话同一问题至多一条
-- **recall 工具**：按完整消息 index 区间回看原始会话，含被压缩内容；输出为 XML 条目序列（`<user_message>`、`<sys>`、`<assistant type="text"|"toolcall">`），正文一律以 CDATA 包裹逐字原样，toolcall 条目内嵌 `<tool-args>`（合法 JSON，仅一层转义）与 `<tool-result>` CDATA 子元素，图片附件随结果保留
-- **recall-semantic 工具**：本地嵌入模型 paraphrase-multilingual-MiniLM-L12-v2 按语义检索全部完整消息，输出与 recall 相同的 XML 条目序列并以 XML 注释标注相似度与命中词；只匹配文本，纯图片消息不进候选池，本次调用自身的 toolcall 不参与检索
-- **压缩卡片**：浏览器客户端渲染折叠式已压缩卡片、压缩中提示行与可展开的失败错误行
-- **降级警告行**：浏览器客户端把 om 警告会话事件渲染为可展开的警告行
+- 自动压缩主会话历史，并在摘要过大时再次合并
+- 通过工具循环生成摘要，保留用户消息、系统消息和未压缩内容
+- 使用 `recall` 按消息序号回看原文，使用 `recall-semantic` 进行本地语义检索
+- 记录压缩过程、耗时和 token 用量
+- 在浏览器中显示压缩结果、错误和降级警告
 
-## 已知风险
+## 安装
 
-- **借用 `feedback/record` 事件**：插件的 log-only 会话事件（警告与观察压缩标记）写入宿主已知类型 `feedback/record` 的 `text` 字段（`om:1:` 前缀 JSON 信封，见 `src/om-event.ts`）。原因是持久化读取路径拒绝目录外未知事件类型而 `Session.append` 不提供 ignorable 写入途径，借用宿主目录内的无配对审计事件是插件写入私有事件的唯一可行通道
-
-## 安装与启用
-
-本插件适配 dsh 0.1.7-rc.2 及以上版本（客户端压缩卡片依赖宿主 `uiConversation` 服务）。`$DSH_HOME` 缺省为 `~/.dsh`，profile 描述 dsh 进程的启动模式。
+要求 DSH 0.1.7-rc.2 或更高版本。
 
 ```sh
 dsh plugin --profile <profile> add dsh-plugin-om
 ```
 
-安装完成后重启 dsh，可用 `dsh --profile <profile> --dump-config` 审查配置。
+重启 DSH 后检查配置：
 
-> pnpm 11+ 默认禁止依赖构建脚本，安装失败时把 `$DSH_HOME/profiles/<profile>/pnpm-workspace.yaml` 的 `allowBuilds` 改为 `true`，或安装时追加 `--allow-build=onnxruntime-node --allow-build=protobufjs --allow-build=sharp`
+```sh
+dsh --profile <profile> --dump-config
+```
 
-### 配置覆盖
+pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allowBuilds: true`，或允许 `onnxruntime-node`、`protobufjs` 和 `sharp` 构建。
 
-编辑 `$DSH_HOME/profiles/<profile>/cordis.patch.yml`，删除空数组并加入，可热更新：
+## 配置
+
+编辑 `$DSH_HOME/profiles/<profile>/cordis.patch.yml`。配置支持热更新，`$DSH_HOME` 默认为 `~/.dsh`。
 
 ```yaml
 - id: dsh-plugin-om
@@ -41,9 +38,30 @@ dsh plugin --profile <profile> add dsh-plugin-om
     observeThresholdTokens: 35000
 ```
 
-### 开发插件
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `observeThresholdTokens` | `35000` | 观察压缩阈值 |
+| `reflectThresholdTokens` | `40000` | 摘要合并阈值 |
+| `tailMessageCount` | `20` | 触发后保留的完整消息数 |
+| `compressMaxTokens` | 模型默认值 | 单轮生成上限 |
+| `compressProvider` | 会话路由 | 压缩 provider，需与 `compressModel` 同时配置 |
+| `compressModel` | 会话路由 | 压缩模型，需与 `compressProvider` 同时配置 |
+| `compressReasoningEffort` | 模型默认值 | 思考等级 |
+| `compressSkipReasoning` | `true` | 是否忽略 reasoning |
+| `rateLimitWaitMs` | `60000` | 429 后的等待毫秒数，`0` 表示不等待 |
+| `modelDir` | DSH 共享目录 | 嵌入模型目录 |
+| `omEnabled` | `true` | 是否启用自动压缩 |
+| `recallEnabled` | `true` | 是否启用原文召回 |
+| `semanticRecallEnabled` | `true` | 是否启用语义召回 |
+| `debug` | 开发环境启用 | 是否输出步骤日志 |
 
-运行 `pnpm dev` 构建，本地嵌入模型运行时自动下载，也可 `pnpm run download:model` 预下载。在 `cordis.patch.yml` 加入，可热重载：
+较小的观察阈值更早节省上下文，较大的阈值提供更多摘要信息。只有 reasoning 包含关键决策时才需将 `compressSkipReasoning` 设为 `false`。
+
+[机制说明与成本计算器](https://fanethedivine.github.io/dsh-plugin-om/)可估算不同配置的 token 成本。
+
+## 开发
+
+运行 `pnpm dev` 自动构建，并在 `cordis.patch.yml` 中加载本地 bundle：
 
 ```yaml
 - insert:
@@ -51,54 +69,19 @@ dsh plugin --profile <profile> add dsh-plugin-om
       name: file:///<repo>/dist/index.mjs
 ```
 
-### 与 compaction-basic 的关系
-
-preset-agent 自带 compaction-basic 压缩，阈值为上下文窗口的 80%，一般先用 om 进行压缩。
-
-## 插件配置项
-
-| 键 | 默认 | 含义 |
-| --- | --- | --- |
-| `observeThresholdTokens` | `35000` | 净压力达到该值时触发观察压缩 |
-| `reflectThresholdTokens` | `40000` | 全部 `<history>` 块 token 合计达到该值时触发反思合并 |
-| `compressMaxTokens` | 不设置 | 压缩循环单轮生成上限，不设置时由模型适配器默认值决定 |
-| `compressProvider` | 不设置 | 压缩请求的 provider，与 `compressModel` 成对配置才生效，只配置其一回落会话路由，成对配置后未路由会话也会执行压缩 |
-| `compressModel` | 不设置 | 压缩请求的模型，与 `compressProvider` 成对配置才生效 |
-| `compressReasoningEffort` | 不设置 | 压缩请求的思考等级，需为目标模型支持的等级，不设置时用模型默认；配置值不被目标模型支持时降级为模型默认并输出 `reasoning-effort-unavailable` 警告（每会话一次） |
-| `rateLimitWaitMs` | `60000` | 遇 429 限流后下一次压缩请求前的等待毫秒数，`0` 不限流 |
-| `tailMessageCount` | `20` | 观察触发后等待新增完整消息达到该条数才执行压缩，`0` 表示触发当轮立即执行 |
-| `compressSkipReasoning` | `true` | 工具循环 getHistory 输出是否携带 `<reasoning>` 参考条目，`true` 时不携带，压缩指令同步省略对应说明 |
-| `modelDir` | 共享目录 | recall-semantic 嵌入模型目录，默认 `$DSH_HOME/plugin-data/dsh-plugin-om/models/<id>`，onnx 缺失且启用语义召回时运行时自动下载 |
-| `omEnabled` | `true` | 是否启用自动压缩，关闭后 recall 工具不受影响 |
-| `debug` | dev | 步骤级日志开关，缺省按 `NODE_ENV` 非 production 判定，压缩结果与失败日志始终输出 |
-| `recallEnabled` | `true` | 是否注册 `recall` 工具 |
-| `semanticRecallEnabled` | `true` | 是否注册 `recall-semantic` 工具，关闭时不触发模型下载 |
-
-> 检测到未压缩消息到达观察阈值后，插件会等待至少 tailMessageCount 后再压缩之前的消息，因此这个配置可以影响首次压缩的时机，也可以保留更多的会话信息。
-
-合理设置 `observeThresholdTokens` 和 `compressSkipReasoning`：
-- 若模型 reasoning 输出质量差且会把关键结论以 text 形式输出（例如glm和deepseek），无需携带reasoning
-- 若使用 openai/responses 或 anthropic/messages API，reasoning 内容包含大量决策信息，建议携带reasoning
-- 若观察阈值太小，涵盖信息不足以形成逻辑链路，应当让观察阈值覆盖多个 text/reasoning
-- 若观察阈值太大摘要质量也会降低，大幅增加单次观察的耗时，且越早 OM 收益越高
-
-> 想直观理解机制并估算不同参数下的 token 成本，可打开交互式[机制说明与成本计算器](https://fanethedivine.github.io/dsh-plugin-om/)。
-
-## npm 命令
+语义召回首次使用时自动下载嵌入模型，也可运行 `pnpm run download:model` 预下载。
 
 | 命令 | 作用 |
 | --- | --- |
-| `pnpm check` | typecheck + lint + test + build |
-| `pnpm typecheck` | TypeScript 类型检查 |
-| `pnpm lint` / `pnpm format` | 代码检查 / 格式化 |
-| `pnpm test` | vitest 单元测试 |
-| `pnpm run download:model` | 手动预下载嵌入模型，已存在跳过，`--force` 重下 |
-| `pnpm build` / `pnpm dev` | 构建 / 自动打包 |
-| `pnpm run release` | check → CHANGELOG 归档 → 版本号更新 → 打 tag 推送 |
+| `pnpm dev` | 监听并构建 |
+| `pnpm check` | 检查类型、lint、测试和构建 |
+| `pnpm test` | 运行测试 |
+| `pnpm run download:model` | 预下载嵌入模型 |
+| `pnpm run release` | 检查并发布新版本 |
 
 ## 文件地图
 
-```
+```text
 cordis.patch.yml                 # bundle patch，dsh plugin add 后作为组合层插入插件行
 src/
 ├── index.ts                     # 打包入口：注册 recall 工具并接线 pre-step 自动压缩
@@ -113,29 +96,29 @@ src/
 ├── rate-limit.ts                # 全局 429 限流冷却门，进程级共享状态
 ├── log-index.ts                 # 完整消息索引与渲染，recall 与压缩共用同一套编号
 ├── recall.ts                    # recall 工具：按完整消息 index 区间回看
-├── recall-xml.ts                # 完整消息到 CDATA 包裹 XML 条目的渲染（recall 系工具共用）
+├── recall-xml.ts                # 完整消息到 CDATA 包裹 XML 条目的渲染，recall 系工具共用
 ├── recall-output.ts             # recall 输出契约：{ text, images } 与 render 投影
 ├── semantic-recall.ts           # recall-semantic 工具：本地嵌入语义检索
 ├── embedding.ts                 # 本地 ONNX 嵌入：懒加载、批量、运行时按需下载编排
 ├── model-download.ts            # 模型下载原语：URL、跳过判定、原子落盘
 ├── compress-view.ts             # 压缩视图：观察与反思区间到统一条目序列的投影与渲染
 ├── compress-tools.ts            # 压缩工具状态机：getHistory/compressHistory/completeCompression 与最终块构建
-├── compress-loop.ts             # 工具压缩循环：多轮请求、工具执行、限流与失败判定、逐轮耗时与 usage 统计
-├── compaction-log.ts            # 压缩会话记录落盘：循环对话消息组与压缩统计子会话（成功记录与失败日志）
-├── compress.ts                  # 两级自动压缩：观察与反思、失败中断传播、compaction 生命周期事件（summary 携带 usage 与压缩耗时）
+├── compress-loop.ts             # 工具压缩循环：多轮请求、工具执行、限流、失败判定与统计
+├── compaction-log.ts            # 压缩会话记录落盘：循环对话消息组与压缩统计子会话
+├── compress.ts                  # 两级自动压缩：观察、反思、失败传播与生命周期事件
 └── client/                      # 浏览器客户端 bundle：压缩卡片
     ├── index.ts                 # 客户端入口：注册卡片定义与渲染器
-    ├── definition.ts            # 压缩卡片业务定义：认领生命周期事件、检查点替换与 om 警告事件
-    ├── OmCompactionCard.tsx     # 折叠卡片渲染器：统计标题与 summary、失败报错展开
-    ├── OmWarningCard.tsx        # 功能降级警告行渲染器：折叠摘要与完整说明展开
-    ├── format.ts                # 统计数字紧凑格式化：k、w、M
-    └── locales.ts               # om-compaction 文案字典：zh 与 en
-models/                          # 嵌入模型目录：小文件随包分发，onnx 运行时按需下载，不进 git
-scripts/                         # release-archive.mjs 为 CHANGELOG 归档脚本，download-model.mjs 为预下载 CLI
-tests/                           # vitest 测试：服务端各模块、客户端卡片、成本模型与整条链路集成测试
-web/                             # 机制说明与成本计算器站点：独立 Vite + React + Tailwind CSS + shadcn/ui 工程，发布到 GitHub Pages，不随插件包分发
-    ├── src/model.ts             # 成本模型纯函数：om 开关全会话模拟与三类 token 计价
-    └── src/components/          # 机制简述、侧边栏参数面板、合并单元格成本表、shadcn/ui 原语
-.agents/skills/agent-workflow/SKILL.md # agent-workflow skill：仓库内任何变更触发的完整开发工作流
-.github/workflows/web-deploy.yml # web/ 变更合入 main 时构建并部署 GitHub Pages
+    ├── definition.ts            # 压缩卡片定义：生命周期事件、检查点替换与警告事件
+    ├── OmCompactionCard.tsx     # 压缩结果与错误卡片
+    ├── OmWarningCard.tsx        # 功能降级警告行
+    ├── format.ts                # 统计数字紧凑格式化
+    └── locales.ts               # 中英文文案
+models/                          # 嵌入模型目录
+scripts/                         # 下载和发布脚本
+tests/                           # 服务端、客户端与集成测试
+web/                             # 机制说明与成本计算器站点
+    ├── src/model.ts             # 成本模型
+    └── src/components/          # 页面组件与 UI 原语
+.agents/skills/agent-workflow/SKILL.md # 仓库开发工作流
+.github/workflows/web-deploy.yml # GitHub Pages 部署工作流
 ```
