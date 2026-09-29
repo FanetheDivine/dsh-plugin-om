@@ -10,6 +10,7 @@ allowBuilds:
 
 minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-agent@0.1.7-rc.2'
+  - '@deepseek-ai/dsh-agent-loop@0.1.7-rc.2'
   - '@deepseek-ai/dsh-agent-presets@0.1.7-rc.2'
   - '@deepseek-ai/dsh-api-remotes@0.1.7-rc.2'
   - '@deepseek-ai/dsh-attachment@0.1.7-rc.2'
