@@ -40,9 +40,9 @@ export type ViewEntry = {
   notes?: string[];
   /** sys 条目的 source.kind。 */
   sysKind?: string;
-  /** 观察视图 toolcall 条目的工具名（skill / ask_user_question 判定用；结构化渲染为 tool-name 属性）。 */
+  /** skill 条目的工具名（skill 判定用）或普通 toolcall 的工具名。 */
   toolName?: string;
-  /** skill 条目的 skill 名（toolName 为 skill 时存在；反思视图取自 name 属性，缺失为空串）。 */
+  /** skill 条目的名称（工具参数或手动加载的消息来源提供；反思视图取自 name 属性）。 */
   skillName?: string;
   /** toolcall 条目的调用 id（结构化渲染为 callId 属性）。 */
   callId?: string;
@@ -279,8 +279,8 @@ export type BuildViewOptions = {
 
 /**
  * 观察视图：被压缩区间（表层 seq 集合）内的完整消息投影为条目——
- * user → 原文（图片等非文本块为注释）、sys → 空条目、assistant/toolcall → 原文渲染，
- * reasoning 作为参考条目置于其所属 assistant 条目之前（每条 assistant 消息输出一次；
+ * user → 原文（图片等非文本块为注释）、sys → 空条目（手动加载的 skill 为 skill 条目）、
+ * assistant/toolcall → 原文渲染，reasoning 作为参考条目置于其所属 assistant 条目之前（每条 assistant 消息输出一次；
  * skipReasoning 时省略）。
  * 要求区间为区间内完整消息的首尾 index。
  */
@@ -307,6 +307,30 @@ export function buildObserveView(
   for (const cm of indexCompleteMessages(session)) {
     if (!cm.seqs.every((seq) => shadowed.has(seq))) continue;
     if (cm.type === 'sys') {
+      const seq = cm.seqs[0];
+      const event = seq === undefined ? undefined : session.snapshotEvents()[seq];
+      const source =
+        event?.type === 'user/message'
+          ? (event.data.source as { kind: string; name?: string })
+          : undefined;
+      if (
+        cm.kind === 'skill-invocation' &&
+        source?.kind === 'skill-invocation' &&
+        typeof source.name === 'string'
+      ) {
+        const text = renderCompleteMessage(session, cm);
+        if (text.trim() !== '') {
+          entries.push({
+            kind: 'assistant',
+            lo: cm.index,
+            hi: cm.index,
+            text,
+            toolName: SKILL_TOOL_NAME,
+            skillName: source.name,
+          });
+          continue;
+        }
+      }
       entries.push({
         kind: 'sys',
         lo: cm.index,
@@ -749,7 +773,7 @@ export function entryToElement(doc: Document, entry: ViewEntry): Element {
     return el;
   }
   if (entry.kind === 'assistant' && entry.toolName === SKILL_TOOL_NAME) {
-    // skill 条目：<skill_content name="…" index="N">，内文为工具返回内容；
+    // skill 条目：<skill_content name="…" index="N">，内文为加载内容；
     // 原生 skill_content 包裹形态拆为 <skill_resources> / <skill_instructions> 两段，
     // 各自以 CDATA 包裹，避免层层嵌套包裹。
     const el = doc.createElement('skill_content');
