@@ -108,10 +108,20 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       origin: 'subagent',
       delegationDepth: 3,
     });
-    // 主会话未被改动（落盘只创建子会话，不追加任何事件）
-    expect(parent.snapshotEvents()).toHaveLength(twoCallFlow().length);
-    // 子会话耐久性由专属 persistence 句柄的 flush 保证。
-    expect(ctx._flushedSessions).toHaveLength(0);
+    const catalog = parent.snapshotEvents().at(-1);
+    expect(parent.snapshotEvents()).toHaveLength(twoCallFlow().length + 1);
+    expect(catalog).toMatchObject({
+      type: 'subagent/catalog',
+      data: {
+        version: 0,
+        childId: id,
+        childCreatedAt: created?.session.header.createdAt,
+        mode: 'one-shot',
+        label: compressionRecordLabel('observe', 1, true),
+      },
+    });
+    // 父会话目录写入宿主活跃会话后进入持久化屏障。
+    expect(ctx._flushedSessions).toEqual([parent]);
     const write = ctx._persistenceWrites[0];
     expect(write?.header).toEqual(created?.session.header);
     expect(write?.events).toEqual(created?.session.snapshotEvents());
@@ -256,6 +266,13 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     const child = ctx._createdSessions[0]?.session;
     const descriptor = child?.snapshotEvents().find((e) => e.type === 'subagent/descriptor');
     expect((descriptor?.data as { label?: string })?.label).toContain('失败日志');
+    expect(parent.snapshotEvents().at(-1)).toMatchObject({
+      type: 'subagent/catalog',
+      data: {
+        childId: child?.id,
+        label: compressionRecordLabel('observe', 1, false),
+      },
+    });
   });
 
   it('落盘自身失败：create 抛错时仅 warn 并返回 undefined', async () => {
@@ -306,7 +323,8 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
         },
       };
     };
-    const id = await recordCompressionSession(ctx, makeSession(), {
+    const parent = makeSession();
+    const id = await recordCompressionSession(ctx, parent, {
       phase: 'observe',
       target: TARGET,
       messages: loopMessages(),
@@ -315,6 +333,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       debug: false,
     });
     expect(id).toBeUndefined();
+    expect(parent.snapshotEvents().some((event) => event.type === 'subagent/catalog')).toBe(false);
     expect(ctx._persistenceWrites[0]?.closes).toBe(1);
     expect(
       ctx._loggerCalls.some((c) => c.level === 'warn' && c.args.join('').includes('落盘失败')),
@@ -341,7 +360,8 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
           },
         };
       };
-      const id = await recordCompressionSession(ctx, makeSession(), {
+      const parent = makeSession();
+      const id = await recordCompressionSession(ctx, parent, {
         phase: 'observe',
         target: TARGET,
         messages: loopMessages(),
@@ -350,6 +370,9 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
         debug: false,
       });
       expect(id).toBeUndefined();
+      expect(parent.snapshotEvents().some((event) => event.type === 'subagent/catalog')).toBe(
+        false,
+      );
       expect(ctx._persistenceWrites[0]?.closes).toBe(stage === 'create' ? undefined : 1);
       expect(ctx._loggerCalls.some((entry) => entry.level === 'warn')).toBe(true);
     },

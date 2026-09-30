@@ -25,6 +25,7 @@ import {
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl';
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection';
 import SqliteSessionQueryEngine from '@deepseek-ai/dsh-session-query-sqlite';
+import { SubagentRuntime } from '@deepseek-ai/dsh-subagent';
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter';
 import { ToolRuntime } from '@deepseek-ai/dsh-tools';
@@ -185,6 +186,43 @@ async function stackAgentLoop(mode: 'success' | 'failure', storageRoot?: string)
     return { app, handle, adapter, exportRoute };
   } catch (error) {
     await handle?.dispose();
+    await app.fiber.dispose();
+    throw error;
+  }
+}
+
+/** 新宿主进程仅读磁盘日志，注册真实子代理目录与导出 handler。 */
+async function stackColdExport(storageRoot: string) {
+  const app = new Context();
+  let exportRoute: ExportRoute | undefined;
+  try {
+    await app.plugin(JsonlSessionPersistence, {
+      root: join(storageRoot, 'sessions'),
+      compression: 'none',
+    });
+    await app.plugin(SessionStore);
+    await app.plugin(SessionProjectionRegistry);
+    await app.plugin(SubagentRuntime);
+    await app.plugin(SqliteSessionQueryEngine, { path: ':memory:', openAt: 'never' });
+    await app.plugin(LocalAttachmentStore, { dshHome: storageRoot });
+    app.provide('commands', { register: () => () => {} });
+    app.provide('connection', {
+      fetch: {
+        register(route: ExportRoute) {
+          exportRoute = route;
+          return () => {
+            exportRoute = undefined;
+          };
+        },
+      },
+    });
+    await app.plugin(
+      { name: exportName, inject: exportInject, apply: applySessionLogExport },
+      { compressionLevel: 0 },
+    );
+    if (exportRoute === undefined) throw new Error('冷启动宿主未注册会话导出路由');
+    return { app, exportRoute };
+  } catch (error) {
     await app.fiber.dispose();
     throw error;
   }
@@ -470,6 +508,106 @@ describe('真实 agent loop + mock AI', () => {
           await stack.handle.dispose();
           await stack.app.fiber.dispose();
         }
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    30000,
+  );
+
+  it.each(['success', 'failure'] as const)(
+    '冷启动 %s 压缩后从父目录发现子会话并导出完整日志',
+    async (mode) => {
+      const root = await mkdtemp(join(tmpdir(), 'dsh-om-cold-export-'));
+      let cold: Awaited<ReturnType<typeof stackColdExport>> | undefined;
+      try {
+        const live = await stackAgentLoop(mode, root);
+        const { parentId, childId } = await (async () => {
+          try {
+            const session = live.handle.agent.session;
+            live.handle.agent.followup(prompt('首轮：请保留详细背景资料。'));
+            await live.handle.agent.whenIdle();
+            live.handle.agent.followup(prompt('次轮：自动压缩后继续。'));
+            await live.handle.agent.whenIdle();
+            const compaction = session
+              .snapshotEvents()
+              .find((event) => event.type === 'compaction/end');
+            if (compaction?.type !== 'compaction/end') throw new Error('缺少真实压缩回合');
+            const childId =
+              'diagnosticSessionId' in compaction.data
+                ? compaction.data.diagnosticSessionId
+                : undefined;
+            if (typeof childId !== 'string') throw new Error('缺少压缩子会话 id');
+            await live.app.sessions.flush(session);
+            return { parentId: session.id, childId: childId as SessionId };
+          } finally {
+            await live.handle.dispose();
+            await live.app.fiber.dispose();
+          }
+        })();
+
+        cold = await stackColdExport(root);
+        const { app, exportRoute } = cold;
+        expect(app.sessions.list()).toEqual([]);
+        const parent = await app.sessionQuery.readSession(parentId);
+        const child = await app.sessionQuery.readSession(childId);
+        expect(parent.session.id).toBe(parentId);
+        expect(child.session).toMatchObject({
+          id: childId,
+          parentSession: parentId,
+          origin: 'subagent',
+        });
+        expect(child.events[0]).toMatchObject({
+          type: 'subagent/descriptor',
+          data: { provider: 'om-compaction-log' },
+        });
+        expect(parent.events).toContainEqual(
+          expect.objectContaining({
+            type: 'subagent/catalog',
+            data: expect.objectContaining({ childId }),
+          }),
+        );
+        expect(await app.subagents.listChildren(parentId)).toContainEqual(
+          expect.objectContaining({
+            id: childId,
+            mode: 'one-shot',
+            label: expect.stringContaining(mode === 'success' ? '会话记录' : '失败日志'),
+          }),
+        );
+        const lineage = await app.sessionQuery.traceSession(parentId);
+        expect(lineage.descendants.map((node) => node.session.header.id)).toContain(childId);
+        expect(
+          lineage.descendants.find((node) => node.session.header.id === childId)?.session,
+        ).toMatchObject({
+          live: false,
+          persisted: true,
+        });
+
+        expect(exportRoute.path).toBe(SESSION_LOG_EXPORT_PATH);
+        const url = `http://localhost${SESSION_LOG_EXPORT_PATH}?sessionId=${encodeURIComponent(parentId)}&includeDescendants=true`;
+        const head = await exportRoute.fetch(new Request(url, { method: 'HEAD' }));
+        expect(head.status).toBe(200);
+        expect(head.body).toBeNull();
+        const get = await exportRoute.fetch(new Request(url, { method: 'GET' }));
+        expect(get.status).toBe(200);
+        expect(head.headers.get('content-type')).toBe(get.headers.get('content-type'));
+        const zip = unzipSync(new Uint8Array(await get.arrayBuffer()));
+        const childPath = `subagents/${childId}/${SESSION_LOG_FILENAME}`;
+        expect(Object.keys(zip)).toEqual(expect.arrayContaining([SESSION_LOG_FILENAME, childPath]));
+        const archivedParent = archivedLog(zip, SESSION_LOG_FILENAME);
+        const archivedChild = archivedLog(zip, childPath);
+        expect(archivedParent.header.id).toBe(parentId);
+        expect(archivedChild.header.parentSession).toBe(parentId);
+        expect(JSON.stringify(archivedParent.events)).toContain(ORIGINAL);
+        expect(JSON.stringify(archivedChild.events)).toContain('【压缩统计】');
+        if (mode === 'success') {
+          expect(JSON.stringify(archivedChild.events)).toContain(ORIGINAL);
+          expect(archivedChild.events.some((event) => event.type === 'tool/result')).toBe(true);
+        } else {
+          expect(JSON.stringify(archivedChild.events)).toContain('失败');
+          expect(JSON.stringify(archivedParent.events)).toContain('mock 压缩失败');
+        }
+      } finally {
+        await cold?.app.fiber.dispose();
         await rm(root, { recursive: true, force: true });
       }
     },

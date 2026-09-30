@@ -160,11 +160,16 @@ export async function recordCompressionSession(
         delegationDepth: (header.delegationDepth ?? 0) + 1,
       },
     });
+    const label = compressionRecordLabel(
+      options.phase,
+      options.stats.rounds.length,
+      options.success,
+    );
     child.append('subagent/descriptor', {
       version: SUBAGENT_DESCRIPTOR_VERSION,
       mode: 'one-shot',
       provider: COMPACTION_LOG_PROVIDER,
-      label: compressionRecordLabel(options.phase, options.stats.rounds.length, options.success),
+      label,
     });
     child.append('turn/start', { turn: 1 });
     let step = 0;
@@ -249,6 +254,14 @@ export async function recordCompressionSession(
     } finally {
       await write.close();
     }
+    parentSession.append('subagent/catalog', {
+      version: 0,
+      childId: child.id,
+      childCreatedAt: child.header.createdAt,
+      mode: 'one-shot',
+      label,
+    });
+    await ctx.sessions.flush(parentSession);
     return child.id;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

@@ -146,7 +146,7 @@ export function makeSession({
   const session = {
     id: 'test-session',
     seq: 0,
-    header: header ?? {},
+    header: { createdAt: Date.now(), ...header },
     // 与真实 Session 一致：snapshotEvents 返回当前日志快照（seq = 数组下标）
     snapshotEvents: () => log,
     surface,
