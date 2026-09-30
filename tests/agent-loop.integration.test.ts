@@ -1,7 +1,11 @@
-// 真实 DSH agent loop 与 mock AI 集成测试：验证 OM 压缩、召回和回合生命周期。
+// 真实 DSH agent loop 与 mock AI 集成测试：验证 OM 压缩、召回、持久化导出和回合生命周期。
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Context } from '@deepseek-ai/cordis';
 import { type AgentHandle, AgentRegistry } from '@deepseek-ai/dsh-agent';
 import AgentLoop from '@deepseek-ai/dsh-agent-loop';
+import LocalAttachmentStore from '@deepseek-ai/dsh-attachment-local';
 import {
   createUserMessage,
   type GenerateOptions,
@@ -10,11 +14,21 @@ import {
   type StreamChunk,
   type ToolCallId,
 } from '@deepseek-ai/dsh-llm';
-import { type SessionId, SessionStore } from '@deepseek-ai/dsh-session';
+import { type SessionEvent, type SessionId, SessionStore } from '@deepseek-ai/dsh-session';
+import {
+  apply as applySessionLogExport,
+  inject as exportInject,
+  name as exportName,
+  SESSION_LOG_EXPORT_PATH,
+  SESSION_LOG_FILENAME,
+} from '@deepseek-ai/dsh-session-log-export';
+import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl';
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection';
+import SqliteSessionQueryEngine from '@deepseek-ai/dsh-session-query-sqlite';
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter';
 import { ToolRuntime } from '@deepseek-ai/dsh-tools';
+import { unzipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import { PLUGIN_SOURCE_KIND } from '../src/constants.ts';
 import { apply, inject, name } from '../src/index.ts';
@@ -99,12 +113,48 @@ class ScriptedAi extends LlmAdapter {
   }
 }
 
+/** 宿主注册的 HEAD/GET 导出 handler；只替换网络接入层。 */
+interface ExportRoute {
+  path: string;
+  methods: readonly string[];
+  fetch: (request: Request) => Promise<Response>;
+}
+
 /** 堆叠完整宿主服务、插件和真实 Agent，按资源所有权逆序释放。 */
-async function stackAgentLoop(mode: 'success' | 'failure') {
+async function stackAgentLoop(mode: 'success' | 'failure', storageRoot?: string) {
   const app = new Context();
   let handle: AgentHandle | undefined;
+  let exportRoute: ExportRoute | undefined;
   try {
+    if (storageRoot !== undefined) {
+      await app.plugin(JsonlSessionPersistence, {
+        root: join(storageRoot, 'sessions'),
+        compression: 'none',
+      });
+    }
     await app.plugin(SessionStore);
+    if (storageRoot !== undefined) {
+      await app.plugin(SqliteSessionQueryEngine, { path: ':memory:', openAt: 'never' });
+      await app.plugin(LocalAttachmentStore, { dshHome: storageRoot });
+      // HTTP 服务仅提供路由注册；fetch handler、查询、持久化和附件均来自真实宿主。
+      app.provide('commands', { register: () => () => {} });
+      app.provide('connection', {
+        fetch: {
+          register(route: ExportRoute) {
+            exportRoute = route;
+            return () => {
+              exportRoute = undefined;
+            };
+          },
+        },
+      });
+      await app.plugin(
+        { name: exportName, inject: exportInject, apply: applySessionLogExport },
+        {
+          compressionLevel: 0,
+        },
+      );
+    }
     await app.plugin(SessionProjectionRegistry);
     await app.plugin(LlmRuntime);
     await app.plugin(TokenMeter);
@@ -129,7 +179,10 @@ async function stackAgentLoop(mode: 'success' | 'failure') {
       sessionId: `it-full-loop-${mode}` as SessionId,
       agentOptions: { provider: 'mock', model: 'mock-model' },
     });
-    return { app, handle, adapter };
+    if (storageRoot !== undefined && exportRoute === undefined) {
+      throw new Error('宿主未注册会话导出路由');
+    }
+    return { app, handle, adapter, exportRoute };
   } catch (error) {
     await handle?.dispose();
     await app.fiber.dispose();
@@ -137,9 +190,27 @@ async function stackAgentLoop(mode: 'success' | 'failure') {
   }
 }
 
+/** 将 ZIP 中的一条真实会话日志解析为 header 与事件序列。 */
+function archivedLog(zip: Record<string, Uint8Array>, path: string) {
+  const bytes = zip[path];
+  if (!bytes) throw new Error(`导出 ZIP 缺少 ${path}`);
+  const [headerLine, ...eventLines] = new TextDecoder().decode(bytes).trimEnd().split('\n');
+  if (!headerLine) throw new Error(`导出 ZIP 中 ${path} 缺少 header`);
+  return {
+    header: JSON.parse(headerLine) as {
+      type: 'session';
+      id: string;
+      parentSession?: string;
+      origin?: string;
+    },
+    events: eventLines.map((line) => JSON.parse(line) as SessionEvent),
+  };
+}
+
 describe('真实 agent loop + mock AI', () => {
   it('在真实回合中完成压缩、通过模型调用召回并以摘要继续对话', async () => {
-    const { app, handle, adapter } = await stackAgentLoop('success');
+    const root = await mkdtemp(join(tmpdir(), 'dsh-om-agent-success-'));
+    const { app, handle, adapter } = await stackAgentLoop('success', root);
     try {
       const session = handle.agent.session;
       handle.agent.followup(prompt('首轮：请保留详细背景资料。'));
@@ -268,11 +339,13 @@ describe('真实 agent loop + mock AI', () => {
     } finally {
       await handle.dispose();
       await app.fiber.dispose();
+      await rm(root, { recursive: true, force: true });
     }
   }, 30000);
 
   it('压缩请求失败时保留原表层并将真实回合标为 blocked', async () => {
-    const { app, handle, adapter } = await stackAgentLoop('failure');
+    const root = await mkdtemp(join(tmpdir(), 'dsh-om-agent-failure-'));
+    const { app, handle, adapter } = await stackAgentLoop('failure', root);
     try {
       const session = handle.agent.session;
       handle.agent.followup(prompt('首轮：请保留详细背景资料。'));
@@ -315,6 +388,91 @@ describe('真实 agent loop + mock AI', () => {
     } finally {
       await handle.dispose();
       await app.fiber.dispose();
+      await rm(root, { recursive: true, force: true });
     }
   }, 30000);
+
+  it.each(['success', 'failure'] as const)(
+    '持久化 %s 压缩后通过真实宿主 HEAD/GET 导出父子会话日志',
+    async (mode) => {
+      const root = await mkdtemp(join(tmpdir(), 'dsh-om-export-'));
+      let stack: Awaited<ReturnType<typeof stackAgentLoop>> | undefined;
+      try {
+        stack = await stackAgentLoop(mode, root);
+        const { app, handle, exportRoute } = stack;
+        if (!exportRoute) throw new Error('宿主没有注册导出 handler');
+        const session = handle.agent.session;
+        handle.agent.followup(prompt('首轮：请保留详细背景资料。'));
+        await handle.agent.whenIdle();
+        handle.agent.followup(prompt('次轮：自动压缩后继续。'));
+        await handle.agent.whenIdle();
+
+        const compaction = session
+          .snapshotEvents()
+          .find((event) => event.type === 'compaction/end');
+        if (compaction?.type !== 'compaction/end') throw new Error('缺少真实压缩回合');
+        const childId =
+          'diagnosticSessionId' in compaction.data
+            ? compaction.data.diagnosticSessionId
+            : undefined;
+        if (typeof childId !== 'string') throw new Error('缺少压缩子会话 id');
+
+        expect(exportRoute.path).toBe(SESSION_LOG_EXPORT_PATH);
+        expect(exportRoute.methods).toEqual(expect.arrayContaining(['HEAD', 'GET']));
+        const url = `http://localhost${SESSION_LOG_EXPORT_PATH}?sessionId=${encodeURIComponent(session.id)}&includeDescendants=true`;
+        const head = await exportRoute.fetch(new Request(url, { method: 'HEAD' }));
+        expect(head.status).toBe(200);
+        expect(head.headers.get('content-type')).toBe('application/zip');
+        expect(head.body).toBeNull();
+        const get = await exportRoute.fetch(new Request(url, { method: 'GET' }));
+        expect(get.status).toBe(200);
+        expect(get.headers.get('content-type')).toBe(head.headers.get('content-type'));
+        expect(get.headers.get('content-disposition')).toBe(
+          head.headers.get('content-disposition'),
+        );
+        const zip = unzipSync(new Uint8Array(await get.arrayBuffer()));
+        const childPath = `subagents/${childId}/${SESSION_LOG_FILENAME}`;
+        expect(Object.keys(zip)).toEqual(expect.arrayContaining([SESSION_LOG_FILENAME, childPath]));
+        const parent = archivedLog(zip, SESSION_LOG_FILENAME);
+        const child = archivedLog(zip, childPath);
+        expect(parent.header).toMatchObject({ type: 'session', id: session.id });
+        expect(child.header).toMatchObject({
+          type: 'session',
+          id: childId,
+          parentSession: session.id,
+          origin: 'subagent',
+        });
+        expect(child.events[0]).toMatchObject({
+          type: 'subagent/descriptor',
+          data: { provider: 'om-compaction-log' },
+        });
+        expect(parent.events).toContainEqual(
+          expect.objectContaining({
+            type: 'compaction/end',
+            data: expect.objectContaining({ diagnosticSessionId: childId }),
+          }),
+        );
+        expect(JSON.stringify(parent.events)).toContain(ORIGINAL);
+        expect(JSON.stringify(child.events)).toContain('【压缩统计】');
+        expect(child.events.some((event) => event.type === 'user/message')).toBe(true);
+        if (mode === 'success') {
+          expect(child.events.some((event) => event.type === 'tool/result')).toBe(true);
+          expect(JSON.stringify(child.events)).toContain(ORIGINAL);
+          expect(JSON.stringify(parent.events)).toContain(SUMMARY);
+        } else {
+          expect(JSON.stringify(parent.events)).toContain('mock 压缩失败');
+          expect(JSON.stringify(child.events)).toContain('失败');
+          expect(parent.events.some((event) => event.type === 'compaction/summary')).toBe(false);
+        }
+        expect(await app.sessionPersistence.stat(childId as SessionId)).toBeDefined();
+      } finally {
+        if (stack) {
+          await stack.handle.dispose();
+          await stack.app.fiber.dispose();
+        }
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    30000,
+  );
 });

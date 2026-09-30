@@ -349,6 +349,31 @@ export function makeCtx({
       return true;
     },
   };
+  /** persistence 服务 mock：仅创建持久化句柄时才记录已提交的事件。 */
+  const persistenceWrites: Array<{
+    header: unknown;
+    options: unknown;
+    events: SessionEvent[];
+    flushes: number;
+    closes: number;
+  }> = [];
+  const sessionPersistence = {
+    create: async (header: unknown, options: unknown) => {
+      const write = { header, options, events: [] as SessionEvent[], flushes: 0, closes: 0 };
+      persistenceWrites.push(write);
+      return {
+        append: async (events: readonly SessionEvent[]) => {
+          write.events.push(...events);
+        },
+        flush: async () => {
+          write.flushes += 1;
+        },
+        close: async () => {
+          write.closes += 1;
+        },
+      };
+    },
+  };
   const systemPromptStub = {
     section: (s: unknown) => {
       sections.push(s);
@@ -391,6 +416,7 @@ export function makeCtx({
     },
     tokenMeter: meter,
     sessions,
+    sessionPersistence,
     on(type: string, fn: (...args: unknown[]) => unknown) {
       let list = onCallbacks.get(type);
       if (!list) {
@@ -402,6 +428,7 @@ export function makeCtx({
     },
     get(name: string) {
       if (name === 'toolResultPruner') return pruner;
+      if (name === 'sessionPersistence') return sessionPersistence;
       if (name === 'systemPrompt') return systemPromptMountedNow ? systemPromptStub : undefined;
       return undefined;
     },
@@ -413,6 +440,8 @@ export function makeCtx({
     _loggerCalls: loggerCalls,
     _createdSessions: createdSessions,
     _flushedSessions: flushedSessions,
+    _mockSessionPersistence: sessionPersistence,
+    _persistenceWrites: persistenceWrites,
   };
   // 与真实 cordis 一致：服务未挂载时属性访问抛错（回归验证压缩必须经 ctx.get 容错读取）
   Object.defineProperty(ctx, 'systemPrompt', {
@@ -425,6 +454,7 @@ export function makeCtx({
     },
   });
   return ctx as unknown as Context & {
+    _mockSessionPersistence: typeof sessionPersistence;
     _onCallbacks: Map<string, ((...args: unknown[]) => unknown)[]>;
     _registeredTools: Array<{ name?: string }>;
     _sections: Array<{ name?: string }>;
@@ -433,6 +463,13 @@ export function makeCtx({
     _loggerCalls: Array<{ level: 'debug' | 'info' | 'warn'; args: unknown[] }>;
     _createdSessions: Array<{ id: string; options: unknown; session: Session }>;
     _flushedSessions: Session[];
+    _persistenceWrites: Array<{
+      header: unknown;
+      options: unknown;
+      events: SessionEvent[];
+      flushes: number;
+      closes: number;
+    }>;
   };
 }
 

@@ -17,11 +17,13 @@ import type {
   AssistantMessage,
   Message,
   TokenUsage,
+  ToolCallBlock,
   ToolResultMessage,
   UserMessage,
 } from '@deepseek-ai/dsh-llm';
-import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
+import type {} from '@deepseek-ai/dsh-session-persistence';
 import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent';
 import type { CompressionRoundStat, CompressionStats } from './compress-loop.ts';
 import { omSource } from './constants.ts';
@@ -164,38 +166,88 @@ export async function recordCompressionSession(
       provider: COMPACTION_LOG_PROVIDER,
       label: compressionRecordLabel(options.phase, options.stats.rounds.length, options.success),
     });
+    child.append('turn/start', { turn: 1 });
     let step = 0;
-    for (const message of options.messages) {
-      step += 1;
-      if (message.role === 'assistant') {
+    const executed = new Set(
+      options.messages
+        .filter((message): message is ToolResultMessage => message.role === 'tool')
+        .map((message) => message.toolCallId),
+    );
+    let pending: ToolCallBlock[] = [];
+    const closeStep = (): void => {
+      if (step === 0) return;
+      for (const call of pending) {
+        if (executed.has(call.id)) continue;
+        const repair = createToolResultMessage({
+          callId: call.id,
+          content: [{ type: 'text', text: '压缩循环未执行此工具调用' }],
+          isError: true,
+        });
         child.append(
-          'assistant/message',
-          // 记录会话不运行 agent loop：turn 固定 0，step 标注消息序号（1 起）；
-          // stream 为宿主必填的模型流紧凑记录，诊断记录不保留逐 chunk 流，恒为空数组
-          { turn: 0, step, message: message as AssistantMessage, stream: [] },
+          'tool/result',
+          {
+            turn: 1,
+            step,
+            message: {
+              ...repair,
+              id: `forked-tool-result-${call.id}-${uuid()}` as ToolResultMessage['id'],
+            },
+            error: { name: 'ToolNotStartedError', code: 'TOOL_NOT_STARTED' },
+          },
           { surfaceOp: 'append' },
         );
+      }
+      child.append('step/end', { turn: 1, step });
+      pending = [];
+    };
+    for (const message of options.messages) {
+      if (message.role === 'assistant') {
+        closeStep();
+        step += 1;
+        child.append('step/start', { turn: 1, step });
+        child.append(
+          'assistant/message',
+          { turn: 1, step, message: message as AssistantMessage, stream: [] },
+          { surfaceOp: 'append' },
+        );
+        pending = message.content.filter(
+          (block): block is ToolCallBlock => block.type === 'tool-call',
+        );
+        for (const call of pending) {
+          if (!executed.has(call.id)) continue;
+          child.append('tool/call', {
+            turn: 1,
+            step,
+            callId: call.id,
+            name: call.name,
+            arguments: call.arguments,
+          });
+        }
       } else if (message.role === 'tool') {
         child.append(
           'tool/result',
-          // 工具结果为独立 tool 角色消息；turn/step 语义同 assistant/message
-          { turn: 0, step, message: message as ToolResultMessage },
+          { turn: 1, step, message: message as ToolResultMessage },
           { surfaceOp: 'append' },
         );
       } else {
         child.append('user/message', message as UserMessage, { surfaceOp: 'append' });
       }
     }
+    closeStep();
     child.append(
       'user/message',
       makeStatsMessage(formatCompressionStats(options.phase, options.success, options.stats)),
       { surfaceOp: 'append' },
     );
+    child.append('turn/end', { turn: 1, reason: { kind: 'completed' } });
+    const persistence = ctx.get('sessionPersistence');
+    if (persistence === undefined) throw new Error('宿主未提供 sessionPersistence 服务');
+    const write = await persistence.create(child.header);
     try {
-      await ctx.sessions.flush(child);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger.warn(`压缩会话记录子会话 flush 失败（子会话 ${child.id} 已创建）: ${message}`);
+      await write.append(child.snapshotEvents());
+      await write.flush();
+    } finally {
+      await write.close();
     }
     return child.id;
   } catch (error) {

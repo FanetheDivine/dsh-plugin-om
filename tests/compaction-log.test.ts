@@ -110,9 +110,16 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     });
     // 主会话未被改动（落盘只创建子会话，不追加任何事件）
     expect(parent.snapshotEvents()).toHaveLength(twoCallFlow().length);
-    // flush 已对子会话执行
-    expect(ctx._flushedSessions).toHaveLength(1);
-    expect(ctx._flushedSessions[0]?.id).toBe(created?.session.id);
+    // 子会话耐久性由专属 persistence 句柄的 flush 保证。
+    expect(ctx._flushedSessions).toHaveLength(0);
+    const write = ctx._persistenceWrites[0];
+    expect(write?.header).toEqual(created?.session.header);
+    expect(write?.events).toEqual(created?.session.snapshotEvents());
+    expect(write?.events.map((event) => event.seq)).toEqual(
+      created?.session.snapshotEvents().map((event) => event.seq),
+    );
+    expect(write?.flushes).toBe(1);
+    expect(write?.closes).toBe(1);
   });
 
   it('成功：descriptor 载荷与循环消息组原样落盘', async () => {
@@ -155,11 +162,44 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     const toolData = (tool[0] as { data?: unknown } | undefined)?.data as
       | { turn?: number; step?: number; message?: Record<string, unknown> }
       | undefined;
-    expect(toolData?.turn).toBe(0);
-    expect(toolData?.step).toBe(3); // 消息序号：m3 为第 3 条
+    expect(toolData?.turn).toBe(1);
+    expect(toolData?.step).toBe(1);
     expect(toolData?.message?.role).toBe('tool');
     expect(toolData?.message?.toolCallId).toBe('c1');
     expect(JSON.stringify(toolData?.message)).toContain('历史条目');
+    expect(child?.snapshotEvents().map((event) => event.type)).toEqual([
+      'subagent/descriptor',
+      'turn/start',
+      'user/message',
+      'step/start',
+      'assistant/message',
+      'tool/call',
+      'tool/result',
+      'step/end',
+      'user/message',
+      'turn/end',
+    ]);
+  });
+
+  it('未执行的工具调用补齐宿主可读取的 TOOL_NOT_STARTED 结果', async () => {
+    const ctx = makeCtx();
+    const id = await recordCompressionSession(ctx, makeSession(), {
+      phase: 'observe',
+      target: TARGET,
+      messages: loopMessages().slice(0, 2),
+      stats: makeStats([{ durationMs: 50 }]),
+      success: false,
+      debug: false,
+    });
+    expect(id).toBeDefined();
+    const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
+    expect(events.find((event) => event.type === 'tool/result')).toMatchObject({
+      data: {
+        error: { code: 'TOOL_NOT_STARTED' },
+        message: { toolCallId: 'c1', isError: true },
+      },
+    });
+    expect(events.at(-1)?.type).toBe('turn/end');
   });
 
   it('末尾统计消息：插件来源，含起止时间、总耗时、逐轮明细与 usage 合计', async () => {
@@ -237,10 +277,34 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     ).toBe(true);
   });
 
-  it('flush 抛错：仅 warn，子会话 id 仍返回', async () => {
+  it('没有持久化服务时不报告已落盘子会话', async () => {
     const ctx = makeCtx();
-    (ctx.sessions as { flush: unknown }).flush = async () => {
-      throw new Error('flush down');
+    const originalGet = (ctx as { get: (name: string) => object | undefined }).get.bind(ctx);
+    (ctx as { get: (name: string) => object | undefined }).get = (name) =>
+      name === 'sessionPersistence' ? undefined : originalGet(name);
+    const id = await recordCompressionSession(ctx, makeSession(), {
+      phase: 'observe',
+      target: TARGET,
+      messages: loopMessages(),
+      stats: makeStats([]),
+      success: true,
+      debug: false,
+    });
+    expect(id).toBeUndefined();
+    expect(ctx._loggerCalls.some((entry) => entry.level === 'warn')).toBe(true);
+  });
+
+  it('flush 抛错：仅 warn，不返回未落盘子会话 id', async () => {
+    const ctx = makeCtx();
+    const originalCreate = ctx._mockSessionPersistence.create;
+    ctx._mockSessionPersistence.create = async (header, options) => {
+      const write = await originalCreate(header, options);
+      return {
+        ...write,
+        flush: async () => {
+          throw new Error('flush down');
+        },
+      };
     };
     const id = await recordCompressionSession(ctx, makeSession(), {
       phase: 'observe',
@@ -250,11 +314,46 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       success: true,
       debug: false,
     });
-    expect(id).toBe(ctx._createdSessions[0]?.id);
+    expect(id).toBeUndefined();
+    expect(ctx._persistenceWrites[0]?.closes).toBe(1);
     expect(
-      ctx._loggerCalls.some((c) => c.level === 'warn' && c.args.join('').includes('flush 失败')),
+      ctx._loggerCalls.some((c) => c.level === 'warn' && c.args.join('').includes('落盘失败')),
     ).toBe(true);
   });
+
+  it.each(['create', 'append', 'close'] as const)(
+    '持久化 %s 失败时警告并且不返回子会话 id',
+    async (stage) => {
+      const ctx = makeCtx();
+      const originalCreate = ctx._mockSessionPersistence.create;
+      ctx._mockSessionPersistence.create = async (header, options) => {
+        if (stage === 'create') throw new Error('create down');
+        const write = await originalCreate(header, options);
+        return {
+          ...write,
+          append: async (events) => {
+            if (stage === 'append') throw new Error('append down');
+            return write.append(events);
+          },
+          close: async () => {
+            await write.close();
+            if (stage === 'close') throw new Error('close down');
+          },
+        };
+      };
+      const id = await recordCompressionSession(ctx, makeSession(), {
+        phase: 'observe',
+        target: TARGET,
+        messages: loopMessages(),
+        stats: makeStats([{ durationMs: 100 }]),
+        success: false,
+        debug: false,
+      });
+      expect(id).toBeUndefined();
+      expect(ctx._persistenceWrites[0]?.closes).toBe(stage === 'create' ? undefined : 1);
+      expect(ctx._loggerCalls.some((entry) => entry.level === 'warn')).toBe(true);
+    },
+  );
 
   it('新宿主契约：assistant/message 携带 stream、tool/result 携带 tool 角色消息，真实 Session.append 接受载荷', async () => {
     // assistant/message 载荷必填 stream（模型流的紧凑记录），tool/result 载荷的 message
