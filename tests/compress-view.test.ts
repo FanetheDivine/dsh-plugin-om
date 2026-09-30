@@ -1,6 +1,7 @@
 // 压缩视图单测：观察视图（完整消息 → 条目）、反思视图（<history> 块 → 条目）、
 // 条目 XML 渲染（CDATA 包裹 / ]]> 拆段 / 注释 / 属性）与工具名 / skill 名提取。
 import { describe, expect, it } from 'vitest';
+import { CompressionState } from '../src/compress-tools.ts';
 import {
   buildObserveView,
   buildReflectView,
@@ -181,6 +182,99 @@ describe('buildObserveView', () => {
     });
     expect(skill?.text).toBe('skill 加载内容');
     expect(skill?.text).not.toContain('[tool-call');
+  });
+
+  it('手动加载的 skill 与工具加载一致：不渲染 sys、保留指令、二次确认且反思后仍可识别', () => {
+    const content =
+      '<skill_content name="manual-skill">\n<skill_resources>\n资源位置\n</skill_resources>\n\n<skill_instructions>\n操作步骤\n</skill_instructions>\n</skill_content>';
+    const session = makeSession({
+      events: [
+        userEvent([textBlock(content)], {
+          kind: 'skill-invocation',
+          name: 'manual-skill',
+          form: 'instructions',
+        }),
+      ],
+    });
+    const view = buildObserveView(session, [0]);
+    expect(view.entries).toEqual([
+      {
+        kind: 'assistant',
+        lo: 0,
+        hi: 0,
+        toolName: 'skill',
+        skillName: 'manual-skill',
+        text: content,
+      },
+    ]);
+    const xml =
+      '<skill_content name="manual-skill" index="0"><skill_resources><![CDATA[\n资源位置\n]]></skill_resources><skill_instructions><![CDATA[\n操作步骤\n]]></skill_instructions></skill_content>';
+    expect(renderEntriesXml(view.entries)).toBe(xml);
+    expect(renderEntriesXml(view.entries)).not.toContain('<sys');
+
+    const state = new CompressionState(view);
+    expect(state.getHistory({}).text).toContain(xml);
+    expect(state.compressHistory({ index: 0, content: '摘要' }).isError).toBe(true);
+    expect(state.buildFinalBlock()).toContain(xml);
+    const reflected = buildReflectView([{ text: state.buildFinalBlock(), seq: 4 }]);
+    expect(reflected.entries[0]).toMatchObject({
+      kind: 'assistant',
+      lo: 0,
+      hi: 0,
+      toolName: 'skill',
+      skillName: 'manual-skill',
+    });
+    expect(
+      new CompressionState(reflected).compressHistory({ index: 0, content: '摘要' }).isError,
+    ).toBe(true);
+    expect(state.compressHistory({ index: 0, content: '摘要' }).isError).toBe(false);
+    expect(state.buildFinalBlock()).toContain('<assistant index="0"><![CDATA[摘要]]></assistant>');
+  });
+
+  it('工具名识别无需 skill 来源标记；普通系统消息保持不可压缩且索引稳定', () => {
+    const session = makeSession({
+      events: [
+        userEvent([textBlock('用户输入')]),
+        userEvent([textBlock('技能目录')], { kind: 'skill-catalog', form: 'catalog' }),
+        userEvent(
+          [
+            textBlock(
+              '<skill_content name="manual"><skill_resources>路径</skill_resources><skill_instructions>执行</skill_instructions></skill_content>',
+            ),
+          ],
+          {
+            kind: 'skill-invocation',
+            name: 'manual',
+            form: 'instructions',
+          },
+        ),
+        assistantEvent([toolCallBlock('c1', 'skill', '{"name":"tool-loaded"}')]),
+        resultEvent(
+          'c1',
+          '<skill_content name="tool-loaded"><skill_resources>位置</skill_resources><skill_instructions>步骤</skill_instructions></skill_content>',
+        ),
+        userEvent([textBlock('系统通知')], { kind: 'runtime-context' }),
+      ],
+    });
+    const view = buildObserveView(session, [0, 1, 2, 3, 4, 5]);
+    expect(
+      view.entries.map(({ kind, lo, toolName, skillName }) => ({ kind, lo, toolName, skillName })),
+    ).toEqual([
+      { kind: 'user', lo: 0, toolName: undefined, skillName: undefined },
+      { kind: 'sys', lo: 1, toolName: undefined, skillName: undefined },
+      { kind: 'assistant', lo: 2, toolName: 'skill', skillName: 'manual' },
+      { kind: 'assistant', lo: 3, toolName: 'skill', skillName: 'tool-loaded' },
+      { kind: 'sys', lo: 4, toolName: undefined, skillName: undefined },
+    ]);
+    const xml = renderEntriesXml(view.entries);
+    expect(xml).toContain('<sys type="skill-catalog" index="1"/>');
+    expect(xml).toContain('<skill_content name="manual" index="2">');
+    expect(xml).toContain('<skill_content name="tool-loaded" index="3">');
+    expect(xml).toContain('<sys type="runtime-context" index="4"/>');
+    const state = new CompressionState(view);
+    expect(state.compressHistory({ index: 1, content: '摘要' }).isError).toBe(true);
+    expect(state.compressHistory({ index: 4, content: '摘要' }).isError).toBe(true);
+    expect(state.compressHistory({ index: 3, content: '摘要' }).isError).toBe(true);
   });
 
   it('skillNameOf：非 skill 工具为 undefined，skill 参数缺失或非法为空串', () => {
