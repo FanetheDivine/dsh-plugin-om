@@ -167,7 +167,8 @@ describe('apply 接线（OM 观察压缩）', () => {
     // compaction 生命周期：start → summary → 替换消息 → end（同 compactionId）
     const { start, summary, end, replace } = compactionLifecycle(session);
     expect(start).not.toBe(-1);
-    expect(summary).toBe(start + 1);
+    expect(session.snapshotEvents()[start + 1]?.type).toBe('subagent/catalog');
+    expect(summary).toBe(start + 2);
     expect(replace).toBe(summary + 1);
     expect(end).toBe(replace + 1);
     // 不再单独发 compaction/prune（summary 承担影子价格认领）
@@ -1063,7 +1064,8 @@ describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () =>
     await runPreStep(ctx, session);
     const { start, summary, end, replace } = compactionLifecycle(session);
     expect(start).not.toBe(-1);
-    expect(summary).toBe(start + 1);
+    expect(session.snapshotEvents()[start + 1]?.type).toBe('subagent/catalog');
+    expect(summary).toBe(start + 2);
     expect(replace).toBe(summary + 1);
     expect(end).toBe(replace + 1);
     const startEvent = session.snapshotEvents()[start];

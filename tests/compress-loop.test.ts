@@ -179,8 +179,11 @@ describe('runCompressionLoop', () => {
     // 指令 + 统计消息为 user/message；completeCompression 结果为 tool/result
     expect(events.filter((e) => e.type === 'user/message')).toHaveLength(2);
     expect(events.filter((e) => e.type === 'assistant/message')).toHaveLength(1);
-    expect(events.filter((e) => e.type === 'tool/result')).toHaveLength(1);
-    expect(JSON.stringify(events)).not.toContain('"toolCallId":"t2"');
+    // 压缩只执行 completeCompression，未执行的 t2 被补为可冷读取的失败结果。
+    expect(events.filter((e) => e.type === 'tool/result')).toHaveLength(2);
+    expect(
+      events.find((e) => e.type === 'tool/result' && e.data.message.toolCallId === 't2'),
+    )?.toMatchObject({ data: { error: { code: 'TOOL_NOT_STARTED' } } });
   });
 
   it('空提交允许：直接 completeCompression 成功，最终块为原样条目', async () => {

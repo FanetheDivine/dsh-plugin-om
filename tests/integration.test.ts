@@ -5,6 +5,9 @@
 //   → 表层替换 → 压力下降 的完整链路，以及 systemPrompt 服务未挂载时的降级；
 // - recall / recall-semantic 工具经真实 ToolRuntime 注册与 execute 管线调用。
 
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type {
@@ -21,6 +24,7 @@ import {
   assertV4RowAdmission,
   releasedV4SessionFormatCodec,
 } from '@deepseek-ai/dsh-session-format-v3-to-v4';
+import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl';
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection';
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter';
@@ -74,6 +78,8 @@ async function stackHarness(options: {
   withSystemPrompt: boolean;
   /** mock adapter 的分块工厂。 */
   chunksFor: (options: GenerateOptions, callIndex: number) => StreamChunk[];
+  /** 可选的真实 JSONL 会话存储目录。 */
+  storageRoot?: string;
   /** 覆盖默认插件配置的键（未给出的键保持默认堆叠值）。 */
   configOverrides?: Partial<{
     observeThresholdTokens: number;
@@ -85,6 +91,12 @@ async function stackHarness(options: {
   }>;
 }) {
   const app = new Context();
+  if (options.storageRoot) {
+    await app.plugin(JsonlSessionPersistence, {
+      root: join(options.storageRoot, 'sessions'),
+      compression: 'none',
+    });
+  }
   await app.plugin(SessionStore);
   // TokenMeter 依赖 sessionProjections 注册表（0.1.2 起），须先挂载
   await app.plugin(SessionProjectionRegistry);
@@ -265,7 +277,9 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
   }, 30000);
 
   it('压缩循环失败：compaction/end(error) + 诊断子会话落盘 + pre-step 拒绝本 step', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-om-failure-'));
     const { app, session, adapter } = await stackHarness({
+      storageRoot: root,
       withSystemPrompt: true,
       // 适配器输出纯文本（无工具调用）再以 error 终止：两轮无工具调用判失败
       chunksFor: () => [
@@ -273,58 +287,62 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
         { type: 'finish', reason: { kind: 'error' } } as StreamChunk,
       ],
     });
-    seedUserMessages(session, 6);
+    try {
+      seedUserMessages(session, 6);
 
-    const decision = await runPreStep(app, session);
-    expect(decision).toEqual({ kind: 'reject' });
-    expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(1);
-    const types = session.snapshotEvents().map((e) => e.type);
-    expect(types).toContain('compaction/start');
-    expect(types).toContain('compaction/end');
-    const end = session.snapshotEvents().find((e) => e.type === 'compaction/end');
-    const error = (end?.data as { error?: string } | undefined)?.error;
-    expect(typeof error === 'string' && error !== '').toBe(true);
-    // 失败不产生部分替换：表层仍为 6 条原始消息
-    expect(session.surface.nodes).toHaveLength(6);
+      const decision = await runPreStep(app, session);
+      expect(decision).toEqual({ kind: 'reject' });
+      expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(1);
+      const types = session.snapshotEvents().map((e) => e.type);
+      expect(types).toContain('compaction/start');
+      expect(types).toContain('compaction/end');
+      const end = session.snapshotEvents().find((e) => e.type === 'compaction/end');
+      const error = (end?.data as { error?: string } | undefined)?.error;
+      expect(typeof error === 'string' && error !== '').toBe(true);
+      // 失败不产生部分替换：表层仍为 6 条原始消息
+      expect(session.surface.nodes).toHaveLength(6);
 
-    // 诊断子会话：最终失败即落盘，header 元数据指向主会话
-    const children = app.sessions.list().filter((s) => s.header.origin === 'subagent');
-    expect(children).toHaveLength(1);
-    const child = children[0];
-    expect(child?.header.parentSession).toBe(session.id);
-    expect(child?.header.delegationDepth).toBe(1);
-    // compaction/end error 载荷带诊断子会话 sessionId（UI 渲染行为不变）
-    expect((end?.data as { diagnosticSessionId?: string } | undefined)?.diagnosticSessionId).toBe(
-      child?.id,
-    );
-    // 首事件 descriptor：one-shot + provider om-compaction-log + label 含阶段与轮数
-    const descriptor = child?.snapshotEvents()[0];
-    expect(descriptor?.type).toBe('subagent/descriptor');
-    expect(descriptor?.data).toMatchObject({
-      version: SUBAGENT_DESCRIPTOR_VERSION,
-      mode: 'one-shot',
-      provider: 'om-compaction-log',
-      label: 'OM 压缩失败日志（观察 · 0 轮）', // 首轮请求即 error：无完成的模型轮
-    });
-    // 子会话内容零加工：指令 + assistant（含模型原始输出）
-    const promptText = (
-      (child?.snapshotEvents()[1]?.data as { content?: Array<{ text?: string }> } | undefined)
-        ?.content ?? []
-    )
-      .map((b) => b.text ?? '')
-      .join('');
-    expect(promptText).toContain('压缩完整消息区间'); // user 指令（压缩指令 + 区间）
-    expect(promptText).not.toContain('任务0'); // 历史内容不进指令
-    const rawText = (
-      (
-        child?.snapshotEvents()[2]?.data as
-          | { message?: { content?: Array<{ text?: string }> } }
-          | undefined
-      )?.message?.content ?? []
-    )
-      .map((b) => b.text ?? '')
-      .join('');
-    expect(rawText).toBe('模型输出的非日志内容，未通过校验');
+      // 诊断子会话：最终失败即落盘，header 元数据指向主会话
+      const children = app.sessions.list().filter((s) => s.header.origin === 'subagent');
+      expect(children).toHaveLength(1);
+      const child = children[0];
+      expect(child?.header.parentSession).toBe(session.id);
+      expect(child?.header.delegationDepth).toBe(1);
+      // compaction/end error 载荷带诊断子会话 sessionId（UI 渲染行为不变）
+      expect((end?.data as { diagnosticSessionId?: string } | undefined)?.diagnosticSessionId).toBe(
+        child?.id,
+      );
+      // 首事件 descriptor：one-shot + provider om-compaction-log + label 含阶段与轮数
+      const descriptor = child?.snapshotEvents()[0];
+      expect(descriptor?.type).toBe('subagent/descriptor');
+      expect(descriptor?.data).toMatchObject({
+        version: SUBAGENT_DESCRIPTOR_VERSION,
+        mode: 'one-shot',
+        provider: 'om-compaction-log',
+        label: 'OM 压缩失败日志（观察 · 0 轮）', // 首轮请求即 error：无完成的模型轮
+      });
+      // 子会话内容零加工：指令 + assistant（含模型原始输出）
+      const promptEvent = child?.snapshotEvents().find((event) => event.type === 'user/message');
+      const promptText =
+        promptEvent?.type === 'user/message'
+          ? promptEvent.data.content
+              .map((block) => (block.type === 'text' ? block.text : ''))
+              .join('')
+          : '';
+      expect(promptText).toContain('压缩完整消息区间'); // user 指令（压缩指令 + 区间）
+      expect(promptText).not.toContain('任务0'); // 历史内容不进指令
+      const rawEvent = child?.snapshotEvents().find((event) => event.type === 'assistant/message');
+      const rawText =
+        rawEvent?.type === 'assistant/message'
+          ? rawEvent.data.message.content
+              .map((block) => (block.type === 'text' ? block.text : ''))
+              .join('')
+          : '';
+      expect(rawText).toBe('模型输出的非日志内容，未通过校验');
+    } finally {
+      await app.fiber.dispose();
+      await rm(root, { recursive: true, force: true });
+    }
   }, 30000);
 
   it('systemPrompt 服务未挂载：压缩不被阻塞，om 警告事件每会话一条 + console 外部输出', async () => {

@@ -1,11 +1,11 @@
 /**
  * 压缩会话记录落盘：把工具压缩循环的完整会话消息组原样落盘为一个 one-shot 诊断
- * 子会话（header origin 'subagent' + 首事件 subagent/descriptor），使其以 subagent
- * 形式出现在宿主子代理列表中，便于查看压缩循环的完整会话。成功与失败均落盘
- * （label 区分）。导出 recordCompressionSession / compressionRecordLabel /
+ * 子会话（header origin 'subagent' + 首事件 subagent/descriptor），在父会话登记
+ * subagent/catalog，使其出现在宿主子智能体列表并随父会话日志导出。成功与失败
+ * 均落盘（label 区分）。导出 recordCompressionSession / compressionRecordLabel /
  * formatCompressionStats / COMPACTION_LOG_PROVIDER。
  *
- * - 循环消息组（user 指令/提醒、assistant 含 tool-call、tool 结果消息）逐条原样追加；
+ * - 循环消息组按宿主 turn/step 生命周期追加；未执行的工具调用补齐失败结果；
  *   末尾追加一条插件来源的统计消息（formatCompressionStats：起止时间、总耗时、
  *   逐轮请求耗时与 usage、usage 合计）
  * - 失败时的子会话 id 由调用方写入主会话日志与 compaction/end 载荷（compress.ts /
