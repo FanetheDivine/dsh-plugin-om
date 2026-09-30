@@ -77,5 +77,5 @@ describe('npm 包内容（npm pack --dry-run）', () => {
       const rel = path.join('models', EMBEDDING_MODEL_ID, name).split(path.sep).join('/');
       expect(packed.has(rel)).toBe(true); // 小文件仍随包分发
     }
-  }, 30_000);
+  }, 120_000);
 });

@@ -4,6 +4,7 @@ packages:
 
 allowBuilds:
   esbuild: true
+  koffi: true
   onnxruntime-node: true
   protobufjs: true
   sharp: true
@@ -94,3 +95,9 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-client-store@0.2.0-rc.2'
   - '@deepseek-ai/dsh-util-code-language@0.2.0-rc.2'
   - '@deepseek-ai/dsh-util-workspace-path@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-attachment-local@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-lazy-require@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-session-format-catalog@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-session-log-export@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-session-persistence-jsonl@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-session-query-sqlite@0.2.0-rc.2'
