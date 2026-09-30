@@ -9,5 +9,6 @@ export default defineConfig({
   test: {
     environment: 'node',
     exclude: [...configDefaults.exclude, '.dsh/**'],
+    server: { deps: { inline: ['@deepseek-ai/dsh-client-ui-primitives'] } },
   },
 });

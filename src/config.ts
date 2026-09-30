@@ -1,8 +1,9 @@
 /**
- * 插件配置：默认值与合并。
- * 导出 PluginConfig / DEFAULT_CONFIG / resolveConfig；宽松校验——未知键忽略、
- * 非法值回退默认值，配置错误不影响插件加载。
+ * 插件配置：宿主 Config 严格校验、volatile 引用读取与兼容 YAML 的宽松合并。
+ * 导出 Config / PluginConfig / DEFAULT_CONFIG / currentConfig / resolveConfig；
+ * 旧输入在 resolveConfig 中未知键忽略、非法值回退默认值。
  */
+import Schema from '@deepseek-ai/schemastery';
 import { sharedModelDir } from './embedding.ts';
 import { isRecord } from './utils.ts';
 
@@ -56,7 +57,43 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   compressReasoningEffort: undefined,
 });
 
-/** 数值配置键（仅接受有限数；整数键另校验整数性，不限制取值区间）。 */
+/** 宿主保存时严格校验，所有字段均为稳定 volatile 引用，运行时由 Loader 原地提交。 */
+export const Config = Schema.object({
+  observeThresholdTokens: Schema.number()
+    .step(1)
+    .default(DEFAULT_CONFIG.observeThresholdTokens)
+    .volatile(),
+  reflectThresholdTokens: Schema.number()
+    .step(1)
+    .default(DEFAULT_CONFIG.reflectThresholdTokens)
+    .volatile(),
+  compressMaxTokens: Schema.number().step(1).volatile(),
+  rateLimitWaitMs: Schema.number().step(1).default(DEFAULT_CONFIG.rateLimitWaitMs).volatile(),
+  tailMessageCount: Schema.number().step(1).default(DEFAULT_CONFIG.tailMessageCount).volatile(),
+  compressSkipReasoning: Schema.boolean().default(DEFAULT_CONFIG.compressSkipReasoning).volatile(),
+  omEnabled: Schema.boolean().default(DEFAULT_CONFIG.omEnabled).volatile(),
+  debug: Schema.boolean()
+    .default(process.env.NODE_ENV !== 'production')
+    .volatile(),
+  recallEnabled: Schema.boolean().default(DEFAULT_CONFIG.recallEnabled).volatile(),
+  semanticRecallEnabled: Schema.boolean().default(DEFAULT_CONFIG.semanticRecallEnabled).volatile(),
+  modelDir: Schema.string().default(DEFAULT_CONFIG.modelDir).volatile(),
+  compressProvider: Schema.string().volatile(),
+  compressModel: Schema.string().volatile(),
+  compressReasoningEffort: Schema.string().volatile(),
+}).default({});
+
+/** 解析宿主 volatile 引用中的当前值，也兼容直接传入的原始配置对象。 */
+export function currentConfig(config?: unknown): Readonly<PluginConfig> {
+  if (!isRecord(config)) return resolveConfig(config);
+  const values: Record<string, unknown> = {};
+  for (const key of Object.keys(DEFAULT_CONFIG)) {
+    const value = config[key];
+    values[key] = isRecord(value) && typeof value.get === 'function' ? value.get() : value;
+  }
+  return resolveConfig(values);
+}
+
 type NumberKey =
   | 'observeThresholdTokens'
   | 'reflectThresholdTokens'

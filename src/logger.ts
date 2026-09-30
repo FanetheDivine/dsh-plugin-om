@@ -16,10 +16,11 @@ export type PluginLogger = {
 };
 
 /** 构建插件日志门面：统一加 PLUGIN_LABEL 前缀，step 按 debug 开关过滤。 */
-export function makeLogger(ctx: Context, debug: boolean): PluginLogger {
+export function makeLogger(ctx: Context, debug: boolean | (() => boolean)): PluginLogger {
   return {
     step(message: string): void {
-      if (debug) ctx.logger.debug(`${PLUGIN_LABEL}: ${message}`);
+      if (typeof debug === 'function' ? debug() : debug)
+        ctx.logger.debug(`${PLUGIN_LABEL}: ${message}`);
     },
     info(message: string): void {
       ctx.logger.info(`${PLUGIN_LABEL}: ${message}`);

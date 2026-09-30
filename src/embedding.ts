@@ -68,26 +68,24 @@ export type EmbedFn = (texts: readonly string[]) => Promise<Float32Array[]>;
 /** 单批最大文本数（避免单次推理过大）。 */
 const BATCH_SIZE = 32;
 
-/** 懒加载中的 pipeline 单例（null = 尚未加载/已重置）。 */
-let pipelinePromise: Promise<EmbedFn> | null = null;
+/** 各模型目录的单飞加载缓存。 */
+const pipelines = new Map<string, Promise<EmbedFn>>();
 
-/**
- * 获取（或加载）嵌入函数。首次调用动态 import transformers 并加载本地模型，
- * 之后复用同一 pipeline。失败时抛出可读错误（调用方自行降级）。
- */
+/** 懒加载 transformers 模块，跨模型目录并发初始化共享同一个导入。 */
+let transformersPromise: Promise<typeof import('@huggingface/transformers')> | undefined;
+
+/** 获取模型目录对应的嵌入函数，同目录单飞，失败允许再次加载。 */
 export function getEmbedder(modelDir: string = BUNDLED_MODEL_DIR): Promise<EmbedFn> {
-  if (pipelinePromise !== null) return pipelinePromise;
-  pipelinePromise = (async () => {
-    // 非打包目录先补齐随包小文件，保证离线可加载
-    ensureModelSmallFiles(modelDir);
-    const { env, pipeline } = await import('@huggingface/transformers');
-    // 只从本地目录加载（allowRemoteModels=false 保证离线）
-    env.localModelPath = `${path.dirname(modelDir)}${path.sep}`;
-    env.allowLocalModels = true;
-    env.allowRemoteModels = false;
-    // dtype: 'q8' → 加载 onnx/model_quantized.onnx
-    const extractor = await pipeline('feature-extraction', EMBEDDING_MODEL_ID, {
+  const directory = path.resolve(modelDir);
+  const existing = pipelines.get(directory);
+  if (existing) return existing;
+  const loading = (async () => {
+    ensureModelSmallFiles(directory);
+    if (!transformersPromise) transformersPromise = import('@huggingface/transformers');
+    const { pipeline } = await transformersPromise;
+    const extractor = await pipeline('feature-extraction', directory, {
       dtype: 'q8',
+      local_files_only: true,
     });
     return async (texts: readonly string[]): Promise<Float32Array[]> => {
       const vectors: Float32Array[] = [];
@@ -109,12 +107,16 @@ export function getEmbedder(modelDir: string = BUNDLED_MODEL_DIR): Promise<Embed
       return vectors;
     };
   })();
-  return pipelinePromise;
+  pipelines.set(directory, loading);
+  void loading.catch(() => {
+    if (pipelines.get(directory) === loading) pipelines.delete(directory);
+  });
+  return loading;
 }
 
-/** 重置模型单例（测试用：卸载已加载的 pipeline）。 */
+/** 重置模型目录缓存（测试用；在途加载完成后不缓存旧结果）。 */
 export function resetEmbedder(): void {
-  pipelinePromise = null;
+  pipelines.clear();
 }
 
 /** 模型就绪状态：ready=本地已就绪；downloading=缺失，后台下载中/将自动重试。 */
