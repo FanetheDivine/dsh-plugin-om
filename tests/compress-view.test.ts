@@ -38,7 +38,7 @@ function userEvent(content: unknown[], source?: unknown) {
 }
 
 /** 构造一条 tool/result 事件（callId 关联；message 为独立 tool 角色）。 */
-function resultEvent(callId: string, resultText: string) {
+function resultEvent(callId: string, resultText: string, isError = false) {
   return {
     type: 'tool/result',
     data: {
@@ -51,7 +51,7 @@ function resultEvent(callId: string, resultText: string) {
           source: { kind: 'tool', callId },
         }),
         toolCallId: callId,
-        isError: false,
+        isError,
       },
     },
   } as unknown as SessionEvent;
@@ -454,14 +454,20 @@ describe('ask_user_question 条目', () => {
       lo: 0,
       hi: 0,
       toolName: 'ask_user_question',
+      ask: {
+        questions: [
+          { question: '继续吗', options: [], answer: '继续' },
+          { question: '如何处理', options: [], answer: '重试' },
+        ],
+      },
     });
     // 条目正文为原生 ask-user-question 包裹形态，内文为成对的 q:/a: 行
     expect(ask?.text).toBe(
-      '<ask-user-question>q:继续吗 a:继续\nq:如何处理 a:重试</ask-user-question>',
+      '<ask-user-question>q:继续吗\na:继续\nq:如何处理\na:重试</ask-user-question>',
     );
     const xml = renderEntriesXml(view.entries);
     expect(xml).toBe(
-      '<ask-user-question index="0"><![CDATA[q:继续吗 a:继续\nq:如何处理 a:重试]]></ask-user-question>',
+      '<ask-user-question index="0"><![CDATA[q:继续吗\na:继续\nq:如何处理\na:重试]]></ask-user-question>',
     );
   });
 
@@ -483,11 +489,11 @@ describe('ask_user_question 条目', () => {
     });
     const xml = renderEntriesXml(buildObserveView(session, [0, 1]).entries);
     expect(xml).toBe(
-      '<ask-user-question index="0"><![CDATA[q:适用范围？ a:列表, 详情, 其他页面]]></ask-user-question>',
+      '<ask-user-question index="0"><![CDATA[q:适用范围？\na:列表, 详情, 其他页面]]></ask-user-question>',
     );
   });
 
-  it('观察视图：未作答的题记为 a:(未回答)，匹配不到问题的回答单独成行', () => {
+  it('观察视图：各题空答案仍为合法问答，自定义答案无需选择选项', () => {
     const session = makeSession({
       events: [
         assistantEvent([
@@ -499,69 +505,147 @@ describe('ask_user_question 条目', () => {
         ]),
         resultEvent(
           'c1',
-          '{"answers":[{"id":"q1","selected":["继续"]},{"id":"q2","selected":[]},{"id":"ghost","selected":["野回答"]}]}',
+          '{"answers":[{"id":"q1","selected":[],"custom":""},{"id":"q2","selected":[],"custom":"稍后处理"}]}',
         ),
       ],
     });
     const xml = renderEntriesXml(buildObserveView(session, [0, 1]).entries);
     expect(xml).toBe(
-      '<ask-user-question index="0"><![CDATA[q:继续吗 a:继续\nq:如何处理 a:(未回答)\na:野回答]]></ask-user-question>',
+      '<ask-user-question index="0"><![CDATA[q:继续吗\na:(未回答)\nq:如何处理\na:稍后处理]]></ask-user-question>',
     );
   });
 
-  it('观察视图：无返回内容时每题记为 a:(未回答)', () => {
-    const session = makeSession({
-      events: [
-        assistantEvent([toolCallBlock('c1', 'ask_user_question', '{"questions":["继续吗"]}')]),
-        resultEvent('c1', ''),
-      ],
-    });
-    const view = buildObserveView(session, [0, 1]);
-    const xml = renderEntriesXml(view.entries);
-    expect(xml).toBe(
-      '<ask-user-question index="0"><![CDATA[q:继续吗 a:(未回答)]]></ask-user-question>',
+  const validArgs = '{"questions":[{"id":"q1","question":"继续吗"}]}';
+  const validResult = '{"answers":[{"id":"q1","selected":["继续"]}]}';
+  const invalidCalls = [
+    {
+      name: 'abort',
+      result: 'Error: ask_user_question was aborted before the user answered',
+      isError: true,
+    },
+    { name: '宿主错误且正文貌似合法', result: validResult, isError: true },
+    { name: '无 result', result: undefined },
+    { name: '空结果', result: '' },
+    { name: '普通错误文本', result: '工具调用被拒绝' },
+    { name: '坏结果 JSON', result: '{broken' },
+    { name: 'pending', result: '{"pending":true,"answers":[{"id":"q1","selected":["继续"]}]}' },
+    { name: '显式 error', result: '{"error":"失败","answers":[{"id":"q1","selected":["继续"]}]}' },
+    {
+      name: '显式 aborted',
+      result: '{"aborted":true,"answers":[{"id":"q1","selected":["继续"]}]}',
+    },
+    { name: '缺 answers', result: '{}' },
+    { name: '缺 answer 项', result: '{"answers":[]}' },
+    { name: '未知 answer id', result: '{"answers":[{"id":"ghost","selected":["继续"]}]}' },
+    {
+      name: '重复 answer id',
+      result: '{"answers":[{"id":"q1","selected":["继续"]},{"id":"q1","selected":[]}]}',
+    },
+    {
+      name: '额外未知 answer',
+      result: '{"answers":[{"id":"q1","selected":[]},{"id":"ghost","selected":["野回答"]}]}',
+    },
+    { name: 'answer 缺 id', result: '{"answers":[{"selected":[]}]}' },
+    { name: 'answer 缺 selected', result: '{"answers":[{"id":"q1","custom":"回答"}]}' },
+    { name: 'selected 非字符串数组', result: '{"answers":[{"id":"q1","selected":["继续",1]}]}' },
+    { name: 'selected 非数组', result: '{"answers":[{"id":"q1","selected":"继续"}]}' },
+    { name: 'custom 非字符串', result: '{"answers":[{"id":"q1","selected":[],"custom":null}]}' },
+    { name: 'answer 非对象', result: '{"answers":[null]}' },
+    { name: '坏参数 JSON', args: '{broken', result: validResult },
+    { name: '缺 questions', args: '{"other":1}', result: validResult },
+    { name: '空 questions', args: '{"questions":[]}', result: validResult },
+    { name: '字符串问题', args: '{"questions":["继续吗"]}', result: validResult },
+    { name: 'question 缺 id', args: '{"questions":[{"question":"继续吗"}]}', result: validResult },
+    {
+      name: '空白 id',
+      args: '{"questions":[{"id":" ","question":"继续吗"}]}',
+      result: validResult,
+    },
+    {
+      name: '空白 question',
+      args: '{"questions":[{"id":"q1","question":" "}]}',
+      result: validResult,
+    },
+    {
+      name: '重复 question id',
+      args: '{"questions":[{"id":"q1","question":"继续吗"},{"id":"q1","question":"如何处理"}]}',
+      result: validResult,
+    },
+    {
+      name: '问题中夹杂非法项',
+      args: '{"questions":[{"id":"q1","question":"继续吗"},null]}',
+      result: validResult,
+    },
+    {
+      name: '多题缺回答',
+      args: '{"questions":[{"id":"q1","question":"继续吗"},{"id":"q2","question":"如何处理"}]}',
+      result: validResult,
+    },
+  ];
+
+  it.each(invalidCalls)(
+    '观察视图：$name 整体保留为普通 structured toolcall',
+    ({ args = validArgs, result, isError = false }) => {
+      const events = [assistantEvent([toolCallBlock('c1', 'ask_user_question', args)])];
+      if (result !== undefined) events.push(resultEvent('c1', result, isError));
+      const view = buildObserveView(
+        makeSession({ events }),
+        events.map((_, index) => index),
+      );
+      expect(view.entries).toHaveLength(1);
+      expect(view.entries[0]).toMatchObject({
+        toolName: 'ask_user_question',
+        callId: 'c1',
+        toolArgs: args,
+        ...(result === undefined ? {} : { toolResult: result }),
+      });
+      const xml = renderEntriesXml(view.entries);
+      expect(xml).toContain(
+        '<assistant index="0" type="toolcall" tool-name="ask_user_question" callId="c1">',
+      );
+      expect(xml).toContain(`<tool-args><![CDATA[${args}]]></tool-args>`);
+      if (result !== undefined && result !== '')
+        expect(xml).toContain(`<tool-result><![CDATA[${result}]]></tool-result>`);
+      expect(xml).not.toContain('<ask-user-question');
+      expect(xml).not.toContain('<askuserquestion');
+    },
+  );
+
+  it('观察视图：工具结果 source 配对但实际 toolCallId 不匹配，不能生成 ask', () => {
+    const result = resultEvent('c1', validResult);
+    if (result.type !== 'tool/result') throw new Error('Expected tool result');
+    result.data.message = {
+      ...result.data.message,
+      toolCallId: 'other-call' as typeof result.data.message.toolCallId,
+    };
+    const view = buildObserveView(
+      makeSession({
+        events: [assistantEvent([toolCallBlock('c1', 'ask_user_question', validArgs)]), result],
+      }),
+      [0, 1],
     );
+    expect(view.entries[0]).toMatchObject({
+      toolName: 'ask_user_question',
+      callId: 'c1',
+      toolArgs: validArgs,
+      toolResult: validResult,
+    });
+    expect(view.entries[0]?.ask).toBeUndefined();
+    expect(renderEntriesXml(view.entries)).not.toContain('<ask-user-question');
   });
 
-  it('观察视图：返回不是 answers JSON 时回退为问题行加返回原文行', () => {
-    const session = makeSession({
-      events: [
-        assistantEvent([
-          toolCallBlock(
-            'c1',
-            'ask_user_question',
-            '{"questions":[{"id":"q1","question":"继续吗"},{"id":"q2","question":"如何处理"}]}',
-          ),
-        ]),
-        resultEvent('c1', '工具调用被拒绝'),
-      ],
-    });
-    const view = buildObserveView(session, [0, 1]);
-    expect(view.entries[0]?.text).toBe(
-      '<ask-user-question>q:继续吗\nq:如何处理\na:工具调用被拒绝</ask-user-question>',
+  it('观察视图：成功正文附有宿主失败身份仍是普通 toolcall', () => {
+    const result = resultEvent('c1', validResult);
+    if (result.type !== 'tool/result') throw new Error('Expected tool result');
+    result.data.error = { name: 'UserQuestionError', code: 'ASK_ABORTED' };
+    const view = buildObserveView(
+      makeSession({
+        events: [assistantEvent([toolCallBlock('c1', 'ask_user_question', validArgs)]), result],
+      }),
+      [0, 1],
     );
-  });
-
-  it('观察视图：参数无问题文本时回答单独成行，无回答且无问题时回退通用呈现', () => {
-    // 参数 JSON 解析不出问题文本：回答逐条单独成行
-    const noQuestions = makeSession({
-      events: [
-        assistantEvent([toolCallBlock('c1', 'ask_user_question', '{"other":1}')]),
-        resultEvent('c1', '{"answers":[{"id":"x","selected":["回答"]}]}'),
-      ],
-    });
-    const xml = renderEntriesXml(buildObserveView(noQuestions, [0, 1]).entries);
-    expect(xml).toBe('<ask-user-question index="0"><![CDATA[a:回答]]></ask-user-question>');
-    // 回答与问题文本均缺失：条目正文回退为通用完整消息呈现（不含专用元素结构）
-    const empty = makeSession({
-      events: [
-        assistantEvent([toolCallBlock('c1', 'ask_user_question', '{"questions":[]}')]),
-        resultEvent('c1', ''),
-      ],
-    });
-    const view = buildObserveView(empty, [0, 1]);
-    expect(view.entries[0]?.toolName).toBe('ask_user_question');
-    expect(view.entries[0]?.text).not.toContain('<ask-user-question>');
+    expect(view.entries[0]).toMatchObject({ toolArgs: validArgs, toolResult: validResult });
+    expect(view.entries[0]?.ask).toBeUndefined();
   });
 
   it('观察视图：真实提问数据按题成对呈现（问题顺序与回答顺序不同）', () => {
@@ -582,8 +666,75 @@ describe('ask_user_question 条目', () => {
     });
     const xml = renderEntriesXml(buildObserveView(session, [0, 1]).entries);
     expect(xml).toBe(
-      '<ask-user-question index="0"><![CDATA[q:问题3「只展示等级不展示评分」的适用范围？ a:仅团队达人库列表\nq:问题2 确认：删除的是粉丝数行中重复的平台图标（保留头像右下角角标）？ a:是，删除粉丝数行的重复图标 (Recommended)]]></ask-user-question>',
+      '<ask-user-question index="0"><![CDATA[q:问题3「只展示等级不展示评分」的适用范围？\na:仅团队达人库列表\nq:问题2 确认：删除的是粉丝数行中重复的平台图标（保留头像右下角角标）？\na:是，删除粉丝数行的重复图标 (Recommended)]]></ask-user-question>',
     );
+  });
+
+  it('观察视图：选项完整呈现，多行和 XML 特殊字符可经反思原样还原', () => {
+    const questions = [
+      {
+        id: 'release',
+        question: '发布方式？\n<保留>&]]>',
+        options: [
+          { label: '灰度\n发布', description: '少量用户\n<逐步>&]]>' },
+          { label: '全量', description: '' },
+          { label: '暂缓' },
+        ],
+      },
+      { id: 'note', question: '备注？' },
+    ];
+    const answers = [
+      { id: 'note', selected: [], custom: '自由回答\nq:不是新问题\na:也不是新答案' },
+      { id: 'release', selected: ['第一个'], custom: '<补充>&]]>\n下一行' },
+    ];
+    const session = makeSession({
+      events: [
+        assistantEvent([toolCallBlock('c1', 'ask_user_question', JSON.stringify({ questions }))]),
+        resultEvent('c1', JSON.stringify({ answers })),
+      ],
+    });
+    const view = buildObserveView(session, [0, 1]);
+    expect(view.entries[0]?.ask).toEqual({
+      questions: [
+        {
+          question: questions[0]?.question,
+          options: questions[0]?.options,
+          answer: '第一个, <补充>&]]>\n下一行',
+        },
+        { question: '备注？', options: [], answer: '自由回答\nq:不是新问题\na:也不是新答案' },
+      ],
+    });
+    const body =
+      'q:发布方式？\n<保留>&]]>\no1:灰度\n发布 — 少量用户\n<逐步>&]]>\no2:全量\no3:暂缓\na:第一个, <补充>&]]>\n下一行\nq:备注？\na:自由回答\nq:不是新问题\na:也不是新答案';
+    const xml = renderEntriesXml(view.entries);
+    expect(xml).toContain('<ask-user-question index="0"><![CDATA[q:发布方式？');
+    const reflect = buildReflectView([{ text: `<history>${xml}</history>`, seq: 2 }]);
+    expect(reflect.entries[0]?.text).toBe(`<ask-user-question>${body}</ask-user-question>`);
+    expect(reflect.entries[0]?.ask).toBeUndefined();
+    expect(renderEntriesXml(reflect.entries)).toBe(xml);
+  });
+
+  it.each([
+    { options: null },
+    { options: 'bad' },
+    { options: [null] },
+    { options: [{ description: 'missing label' }] },
+    { options: [{ label: 1 }] },
+    { options: [{ label: '选择', description: null }] },
+  ])('观察视图：非法 options $options 整调用回退且保留原参数', ({ options }) => {
+    const args = JSON.stringify({ questions: [{ id: 'q1', question: '继续吗', options }] });
+    const view = buildObserveView(
+      makeSession({
+        events: [
+          assistantEvent([toolCallBlock('c1', 'ask_user_question', args)]),
+          resultEvent('c1', validResult),
+        ],
+      }),
+      [0, 1],
+    );
+    expect(view.entries[0]).toMatchObject({ toolArgs: args, toolResult: validResult });
+    expect(view.entries[0]?.ask).toBeUndefined();
+    expect(renderEntriesXml(view.entries)).not.toContain('<ask-user-question');
   });
 
   it('反思视图：旧格式 askuserquestion 条目解析为带 toolName 的 assistant 条目，round-trip 保持旧格式原样', () => {
@@ -599,6 +750,7 @@ describe('ask_user_question 条目', () => {
       toolName: 'ask_user_question',
       blockSeq: 7,
     });
+    expect(ask?.ask).toBeUndefined();
     expect(ask?.text).toBe(
       '<askuserquestion><questions>{"questions":["继续吗"]}</questions><answers>继续</answers></askuserquestion>',
     );
@@ -631,6 +783,7 @@ describe('ask_user_question 条目', () => {
       toolName: 'ask_user_question',
       blockSeq: 7,
     });
+    expect(ask?.ask).toBeUndefined();
     expect(ask?.text).toBe('<ask-user-question>q:继续吗 a:继续</ask-user-question>');
     // 缺失 index 的 ask-user-question 条目不可定位、被跳过
     const noIndex = buildReflectView([
