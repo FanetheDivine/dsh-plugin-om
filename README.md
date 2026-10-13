@@ -7,8 +7,7 @@
 ## 功能
 
 - 自动压缩主会话历史，并在摘要过大时再次合并
-- OM 启用时提示模型在关键节点说明后续规划与结果，系统提示在压缩后持续保留
-- 完整系统提示词预设保持原文，不追加关键节点提示
+- OM 启用时以 system-reminder 消息提示模型边做边简述计划与进展，压缩后自动补发
 - 通过工具循环生成摘要，保留用户消息、系统消息和未压缩内容
 - 保留工具加载与手动加载的 skill 原文，并在压缩前再次确认
 - 有效提问首次直接压缩需再次确认，保留时查看选项后在下一轮重写问答并展开选项引用
@@ -56,7 +55,7 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 | `compressSkipReasoning` | `true` | 是否忽略 reasoning |
 | `rateLimitWaitMs` | `60000` | 429 后的等待毫秒数，`0` 表示不等待 |
 | `modelDir` | DSH 共享目录 | 嵌入模型目录 |
-| `omEnabled` | `true` | 是否启用自动压缩和关键节点提示 |
+| `omEnabled` | `true` | 是否启用自动压缩和进度提醒 |
 | `recallEnabled` | `true` | 是否启用原文召回 |
 | `semanticRecallEnabled` | `true` | 是否启用语义召回 |
 | `debug` | 开发环境启用 | 是否输出步骤日志 |
@@ -90,7 +89,8 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 ```text
 cordis.patch.yml                 # bundle patch，dsh plugin add 后作为组合层插入插件行
 src/
-├── index.ts                     # 打包入口：注册 recall 工具并接线关键节点提示和自动压缩
+├── index.ts                     # 打包入口：注册 recall 工具并接线自动压缩和进度提醒
+├── progress-reminder.ts         # 进度提醒：system-reminder 消息的构造与缺失时补发
 ├── config.ts                    # 配置默认值与宽松合并，未知键忽略、非法值回退默认
 ├── constants.ts                 # 共享常量：插件标识、history 标签、完整消息定义、格式说明注释
 ├── degrade.ts                   # 挂载失败降级上报：console 外部输出与 om/warning 会话事件
