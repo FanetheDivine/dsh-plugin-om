@@ -24,6 +24,7 @@ import type { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import type { TokenMeter } from '@deepseek-ai/dsh-token-meter';
 import type { JsonSchemaNode, ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools';
 import type { OmMessageSource } from './constants.ts';
+import type { ProgressReminderSource } from './progress-reminder.ts';
 
 /** 插件配置类型（来自 config.ts）。 */
 export type { PluginConfig } from './config.ts';
@@ -36,6 +37,8 @@ declare module '@deepseek-ai/dsh-llm' {
      * 插件写入的 source 形态，宿主持久化读路径的 producer-owned 准入随之满足。
      */
     'plugin:dsh-plugin-om': OmMessageSource;
+    /** 进度提醒消息（system-reminder 用户消息）的 producer-owned source。 */
+    'plugin:dsh-plugin-om:progress': ProgressReminderSource;
   }
 }
 

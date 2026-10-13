@@ -799,7 +799,7 @@ describe('apply 接线（OM 观察压缩）', () => {
         return undefined;
       },
     );
-    expect(decision).toBeUndefined(); // next() 的返回值（放行）
+    expect(decision).toEqual({ kind: 'enter', messages: [] }); // 放行 next() 的决策，中止时不补提醒
     expect(nextCalled).toBe(true);
     expect(ctx._llmCalls).toHaveLength(0); // 中止时不发起压缩请求
   });

@@ -33,6 +33,7 @@ import { unzipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import { PLUGIN_SOURCE_KIND } from '../src/constants.ts';
 import { apply, inject, name } from '../src/index.ts';
+import { PROGRESS_REMINDER_SOURCE_KIND, PROGRESS_REMINDER_TEXT } from '../src/progress-reminder.ts';
 
 const ORIGINAL = `原始助手长文本标记：${'用于压缩的真实会话历史。'.repeat(600)}`;
 const SUMMARY = '助手摘要标记';
@@ -105,7 +106,7 @@ class ScriptedAi extends LlmAdapter {
     if (this.ordinaryCalls === 1) {
       yield* textReply(ORIGINAL);
     } else if (this.ordinaryCalls === 2) {
-      yield* toolCall('recall', { start: 1, end: 1 }, 'recall-1');
+      yield* toolCall('recall', { start: 2, end: 2 }, 'recall-1');
     } else if (this.ordinaryCalls === 3) {
       yield* textReply('已查看原文，继续回答。');
     } else {
@@ -283,34 +284,33 @@ describe('真实 agent loop + mock AI', () => {
         'completeCompression',
       ]);
       expect(adapter.calls.filter((call) => call.purpose === 'compaction')).toHaveLength(6);
-      const progressPrompt =
-        '在任务推进的关键节点，简要输出后续规划，并在执行后说明对应结果；无需逐次播报工具调用。';
+      const textOf = (message: GenerateOptions['messages'][number]) =>
+        message.content
+          .filter((block) => block.type === 'text')
+          .map((block) => block.text)
+          .join('');
       const ordinaryCalls = adapter.calls.filter((call) => call.purpose !== 'compaction');
       expect(ordinaryCalls).toHaveLength(3);
       for (const call of ordinaryCalls) {
-        const systemText = call.messages
-          .filter((message) => message.role === 'system')
-          .flatMap((message) => message.content)
-          .filter((block) => block.type === 'text')
-          .map((block) => block.text)
-          .join('');
-        expect(systemText.split(progressPrompt)).toHaveLength(2);
+        // 提醒是用户消息：每次普通请求恰有一条，系统提示词保持原文
+        const reminders = call.messages.filter(
+          (message) => message.role === 'user' && textOf(message) === PROGRESS_REMINDER_TEXT,
+        );
+        expect(reminders).toHaveLength(1);
+        for (const message of call.messages.filter((message) => message.role === 'system')) {
+          expect(textOf(message)).not.toContain('<system-reminder>');
+        }
       }
       for (const call of adapter.calls.filter((call) => call.purpose === 'compaction')) {
-        expect(call.system).not.toContain(progressPrompt);
+        expect(call.system).not.toContain(PROGRESS_REMINDER_TEXT);
       }
-      const systemNodes = session.surface.nodes
-        .map((seq) => session.eventAt(seq))
-        .filter((event) => event?.type === 'system/message');
-      expect(systemNodes.length).toBeGreaterThan(0);
-      for (const event of systemNodes) {
-        if (event?.type !== 'system/message') throw new Error('缺少系统提示词消息');
-        const text = event.data.message.content
-          .filter((block) => block.type === 'text')
-          .map((block) => block.text)
-          .join('');
-        expect(text.split(progressPrompt)).toHaveLength(2);
-      }
+      // 压缩遮蔽旧提醒后会补发：日志可有多条，表层始终只有一条可见
+      const isReminder = (event: SessionEvent | undefined) =>
+        event?.type === 'user/message' && event.data.source.kind === PROGRESS_REMINDER_SOURCE_KIND;
+      expect(events.filter(isReminder).length).toBeGreaterThan(1);
+      expect(session.surface.nodes.filter((seq) => isReminder(session.eventAt(seq)))).toHaveLength(
+        1,
+      );
       const secondCompactionRequest = adapter.calls.filter(
         (call) => call.purpose === 'compaction',
       )[4];

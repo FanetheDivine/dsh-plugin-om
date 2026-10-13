@@ -1,8 +1,8 @@
 /**
  * dsh-plugin-om 入口（tsdown 打包入口）：导出 name / inject / Config / apply。
  * apply 维护 recall / recall-semantic 工具列表，处理 Loader volatile 配置提交，
- * 并接线主会话关键节点系统提示与 agent/pre-step 自动压缩
- * （先反思后观察，仅主会话生效）。压缩走工具驱动的压缩循环（模型经 getHistory /
+ * 并接线 agent/pre-step 自动压缩（先反思后观察，仅主会话生效）与进度提醒补发
+ * （system-reminder 用户消息，见 progress-reminder.ts）。压缩走工具驱动的压缩循环（模型经 getHistory /
  * compressHistory / completeCompression 工具完成，见 compress-loop.ts）；最终失败
  * （连续无工具调用 / 请求级错误）时拒绝本 step 中断当前 turn（signal 中止除外），
  * 主会话日志记录失败原因与诊断子会话 sessionId（完整循环会话由 compaction-log.ts
@@ -14,6 +14,7 @@ import { type CompressPassResult, maybeCompress } from './compress.ts';
 import { Config, currentConfig } from './config.ts';
 import { ensureModelReady, getEmbedder } from './embedding.ts';
 import { makeLogger } from './logger.ts';
+import { ensureProgressReminder } from './progress-reminder.ts';
 import { buildRecallTool } from './recall.ts';
 import { buildSemanticRecallTool } from './semantic-recall.ts';
 import type { Context } from './types.ts';
@@ -27,11 +28,7 @@ export { Config };
 /** 插件注入的服务依赖（tools/llm/tokenMeter/sessions），由宿主按序注入。 */
 export const inject = ['tools', 'llm', 'tokenMeter', 'sessions'];
 
-/** OM 主会话在任务推进中保留规划与结果节点。 */
-const PROGRESS_PROMPT =
-  '在任务推进的关键节点，简要输出后续规划，并在执行后说明对应结果；无需逐次播报工具调用。';
-
-/** 插件激活入口：解析配置、注册工具、接线系统提示与 pre-step 自动压缩。 */
+/** 插件激活入口：解析配置、注册工具、接线 pre-step 自动压缩与进度提醒。 */
 export function apply(ctx: Context, config?: unknown): void {
   const resolved = currentConfig(config);
   const logger = makeLogger(ctx, () => currentConfig(config).debug);
@@ -84,20 +81,8 @@ export function apply(ctx: Context, config?: unknown): void {
   syncTools();
   ctx.on('loader/volatile-update', () => syncTools());
 
-  // 每次请求重新组装，不依赖压缩摘要；无需 systemPrompt 服务硬依赖。
-  ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
-    const assembly = await next();
-    if (currentConfig(config).omEnabled && context.agent && isMainSession(context.agent.session)) {
-      assembly.sections.push({
-        name: 'dsh-plugin-om:progress',
-        text: PROGRESS_PROMPT,
-        interpolate: false,
-      });
-    }
-    return assembly;
-  });
-
   // 两级自动压缩：pre-step 阻塞串行（先反思后观察）；仅主会话生效。
+  // 压缩之后再确保进度提醒在消息列表中：被压缩遮蔽则补发。
   // 压缩循环最终失败（非 signal 中止）时拒绝本 step：当前 turn 以 blocked 结束，
   // 不再继续 AI 会话（实际报错已写入日志与 compaction/end error，UI 渲染失败行）。
   ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
@@ -122,6 +107,16 @@ export function apply(ctx: Context, config?: unknown): void {
       logger.warn(`上下文压缩失败，拒绝本 step 中断当前 turn：${outcome.error}${diagnostic}`);
       return { kind: 'reject' };
     }
-    return next();
+    const decision = await next();
+    // 压缩之后检查表层：提醒被压缩遮蔽时补发，启用 OM 的主会话请求中恒有一条。
+    if (
+      decision.kind === 'enter' &&
+      !signal.aborted &&
+      currentConfig(config).omEnabled &&
+      isMainSession(agent.session)
+    ) {
+      return { ...decision, messages: ensureProgressReminder(agent.session, decision.messages) };
+    }
+    return decision;
   });
 }

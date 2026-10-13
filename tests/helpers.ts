@@ -423,7 +423,16 @@ export function makeCtx({
         list = [];
         onCallbacks.set(type, list);
       }
-      list.push(fn);
+      // 真实 pre-step 的 next() 产出 enter 决策；桩 next 只记录被调用，这里补成决策
+      list.push(
+        type === 'agent/pre-step'
+          ? (payload: unknown, next: unknown) =>
+              fn(payload, async () => {
+                if (typeof next === 'function') await next();
+                return { kind: 'enter', messages: [] };
+              })
+          : fn,
+      );
       return () => true;
     },
     get(name: string) {

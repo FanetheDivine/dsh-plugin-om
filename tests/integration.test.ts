@@ -230,7 +230,11 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(meterBefore).toBeGreaterThanOrEqual(100);
 
     const decision = await runPreStep(app, session);
-    expect(decision).toEqual({ kind: 'enter', messages: [] }); // 未拒绝，step 放行
+    // 未拒绝，step 放行；压缩遮蔽后补发一条进度提醒
+    expect(decision).toMatchObject({ kind: 'enter' });
+    expect(
+      (decision as { messages: { source: { kind: string } }[] }).messages.map((m) => m.source.kind),
+    ).toEqual(['plugin:dsh-plugin-om:progress']);
 
     // mock adapter 收到压缩循环调用（getHistory → completeCompression），请求形态正确
     const summaryCalls = adapter.calls.filter((c) => c.purpose === 'compaction');
