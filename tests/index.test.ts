@@ -32,6 +32,7 @@ import {
   roundChunks,
   systemMessageEvent,
   textBlock,
+  toolCallBlock,
 } from './helpers.ts';
 
 /**
@@ -124,6 +125,176 @@ describe('apply 接线（OM 观察压缩）', () => {
       llmStreamFactory: successRoundFactory(compressCalls),
     });
   }
+
+  /** 使用真实配对事件形态构造带选项引用的提问。 */
+  function askFlow(callId: string): SessionEvent[] {
+    const args = JSON.stringify({
+      questions: [
+        {
+          id: 'release',
+          question: '采用哪种发布方式？',
+          options: [
+            { label: '灰度发布', description: '先向少量用户开放' },
+            { label: '全量发布', description: '一次向所有用户开放' },
+          ],
+        },
+      ],
+    });
+    return buildToolCallFlow({
+      code: '',
+      description: '',
+      callId,
+      resultText: '',
+      withTurnEnd: true,
+    }).map((event) => {
+      if (event.type === 'assistant/message')
+        return {
+          ...event,
+          data: {
+            ...event.data,
+            message: {
+              ...event.data.message,
+              content: [
+                textBlock('确认发布方案'),
+                toolCallBlock(callId, 'ask_user_question', args),
+              ],
+            },
+          },
+        } as SessionEvent;
+      if (event.type === 'tool/call')
+        return { ...event, data: { ...event.data, name: 'ask_user_question', arguments: args } };
+      if (event.type === 'tool/result')
+        return {
+          ...event,
+          data: {
+            ...event.data,
+            message: {
+              ...event.data.message,
+              content: [
+                textBlock(JSON.stringify({ answers: [{ id: 'release', selected: ['第一个'] }] })),
+              ],
+            },
+          },
+        };
+      return event;
+    });
+  }
+
+  it.each(['compress', 'rewrite'] as const)(
+    '原始 ask 经 %s 路径写入 history，保留产物消除选项引用',
+    async (route) => {
+      const session = makeSession({ events: askFlow(`ask-${route}`) });
+      const ctx = makeCtx({
+        llmStreamFactory: (round) => {
+          if (round === 0) return roundChunks({ calls: [{ id: 'view', name: 'getHistory' }] });
+          if (round === 1)
+            return roundChunks({
+              calls:
+                route === 'compress'
+                  ? [
+                      {
+                        id: 'first',
+                        name: 'compressHistory',
+                        args: { index: 2, content: '用户选择灰度发布，先向少量用户开放。' },
+                      },
+                      {
+                        id: 'second',
+                        name: 'compressHistory',
+                        args: { index: 2, content: '用户选择灰度发布，先向少量用户开放。' },
+                      },
+                    ]
+                  : [
+                      {
+                        id: 'rewrite',
+                        name: 'rewriteAskUserQuestion',
+                        args: {
+                          index: 2,
+                          qa: [
+                            {
+                              ordinal: 1,
+                              q: '采用哪种发布方式？',
+                              a: '采用灰度发布，先向少量用户开放。',
+                            },
+                          ],
+                        },
+                      },
+                    ],
+            });
+          if (round === 2)
+            return roundChunks({ calls: [{ id: 'done', name: 'completeCompression' }] });
+          return roundChunks({
+            finish: { kind: 'error', failure: { message: 'unexpected extra round' } },
+          });
+        },
+      });
+      apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1, rateLimitWaitMs: 0 });
+      expect(await runPreStep(ctx, session)).toBe(true);
+      const result = latestHistoryText(session);
+      expect(result).toContain('灰度发布，先向少量用户开放');
+      expect(result).not.toContain('o1:');
+      expect(result).not.toContain('全量发布');
+      expect(result).not.toContain('a:第一个');
+      expect(result).toContain(
+        route === 'compress' ? '<assistant index="2">' : '<ask-user-question index="2">',
+      );
+      expect(session.surface.nodes).toHaveLength(1);
+      expect(JSON.stringify(ctx._llmCalls[1]?.options)).toContain('o1:灰度发布');
+      const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
+      expect(
+        events.find(
+          (e) =>
+            e.type === 'tool/result' &&
+            e.data.message.toolCallId === (route === 'compress' ? 'second' : 'rewrite'),
+        ),
+      ).toMatchObject({ data: { message: { isError: false } } });
+    },
+  );
+
+  it.each(['error', 'aborted'] as const)(
+    '一条 ask 已重写、另一条未处理时 %s：父历史完全不替换',
+    async (failure) => {
+      const session = makeSession({ events: [...askFlow('one'), ...askFlow('two')] });
+      const nodes = session.surface.nodes;
+      const ctx = makeCtx({
+        llmStreamFactory: (round) => {
+          if (round === 0)
+            return roundChunks({
+              calls: [
+                { id: 'view', name: 'getHistory' },
+                {
+                  id: 'rewrite',
+                  name: 'rewriteAskUserQuestion',
+                  args: {
+                    index: 2,
+                    qa: [
+                      {
+                        ordinal: 1,
+                        q: '采用哪种发布方式？',
+                        a: '采用灰度发布，先向少量用户开放。',
+                      },
+                    ],
+                  },
+                },
+              ],
+            });
+          return roundChunks({
+            finish:
+              failure === 'error'
+                ? { kind: 'error', failure: { message: 'provider boom' } }
+                : { kind: 'aborted' },
+          });
+        },
+      });
+      apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1, rateLimitWaitMs: 0 });
+      await runPreStep(ctx, session);
+      expect(session.surface.nodes).toEqual(nodes);
+      expect(session.snapshotEvents().some((e) => e.type === 'compaction/summary')).toBe(false);
+      const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
+      expect(
+        events.find((e) => e.type === 'tool/result' && e.data.message.toolCallId === 'rewrite'),
+      ).toMatchObject({ data: { message: { isError: false } } });
+    },
+  );
 
   it('触发观察：压缩循环 → 追加为 <history>，替换被压缩区间', async () => {
     const flowEvents = buildToolCallFlow({

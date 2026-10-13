@@ -1,6 +1,6 @@
 // 工具压缩循环单测：多轮工具调用执行、completeCompression 立即停止、纯文本提醒与
 // 失败、429 限流重试、流终态错误、signal 中止、usage 汇总与会话记录落盘。
-import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm';
+import type { GenerateOptions, ReasoningEffortId } from '@deepseek-ai/dsh-llm';
 import { describe, expect, it } from 'vitest';
 import {
   buildCompressionPrompt,
@@ -9,7 +9,7 @@ import {
   type CompressionLoopOptions,
   runCompressionLoop,
 } from '../src/compress-loop.ts';
-import type { CompressionView, ViewEntry } from '../src/compress-view.ts';
+import { buildReflectView, type CompressionView, type ViewEntry } from '../src/compress-view.ts';
 import { COMPACTION_ABORTED_ERROR, HISTORY_TAG } from '../src/constants.ts';
 import { resetRateLimitGate } from '../src/rate-limit.ts';
 import { makeCtx, makeSession, roundChunks, throwingStream } from './helpers.ts';
@@ -23,6 +23,244 @@ function testView(): CompressionView {
   ];
   return { entries, minIndex: 0, maxIndex: 2 };
 }
+
+/** 带两条原始合法 ask 的视图，覆盖混合处理路径。 */
+function askView(): CompressionView {
+  const makeAsk = (index: number, answer: string): ViewEntry => ({
+    kind: 'assistant',
+    lo: index,
+    hi: index,
+    toolName: 'ask_user_question',
+    text: '',
+    ask: {
+      questions: [
+        {
+          question: '采用哪种发布方式？',
+          options: [
+            { label: '灰度发布', description: '先向少量用户开放' },
+            { label: '全量发布', description: '一次向所有用户开放' },
+          ],
+          answer,
+        },
+      ],
+    },
+  });
+  return { entries: [makeAsk(1, '第一个'), makeAsk(2, '(未回答)')], minIndex: 1, maxIndex: 2 };
+}
+
+/** 模拟已展开选项引用的逐题重写提交。 */
+function rewriteCall(index = 1) {
+  return {
+    id: `rewrite-${index}`,
+    name: 'rewriteAskUserQuestion',
+    args: {
+      index,
+      qa: [
+        {
+          ordinal: 1,
+          q: '采用哪种发布方式？',
+          a: index === 1 ? '采用灰度发布，先向少量用户开放。' : '(未回答)',
+        },
+      ],
+    },
+  };
+}
+
+describe('原始 ask 的循环处理', () => {
+  it('拒绝提前完成后，同轮仍可查看和重写，再次完成才停止', async () => {
+    const view = askView();
+    view.entries = view.entries.slice(0, 1);
+    view.maxIndex = 1;
+    const ctx = makeCtx({
+      llmStreamFactory: (round, rawOptions) => {
+        const options = rawOptions as GenerateOptions;
+        if (round === 0)
+          return roundChunks({
+            calls: [
+              { id: 'early', name: 'completeCompression' },
+              { id: 'view', name: 'getHistory' },
+              rewriteCall(),
+            ],
+          });
+        expect(JSON.stringify(options.messages)).toContain('o1:灰度发布');
+        expect(JSON.stringify(options.messages)).toContain('先向少量用户开放');
+        return roundChunks({
+          calls: [
+            { id: 'done', name: 'completeCompression' },
+            { id: 'not-started', name: 'getHistory' },
+          ],
+        });
+      },
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions({ view }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.rounds).toBe(2);
+    expect(result.text).toContain('a:采用灰度发布，先向少量用户开放。');
+    expect(result.text).not.toContain('o1:');
+    expect(result.text).not.toContain('全量发布');
+    const options = ctx._llmCalls[0]?.options as GenerateOptions;
+    expect(options.tools?.map((t) => t.name)).toContain('rewriteAskUserQuestion');
+    expect(options.system).toContain('rewriteAskUserQuestion');
+    expect(options.system).toContain('o1:');
+    const secondOptions = ctx._llmCalls[1]?.options as GenerateOptions | undefined;
+    expect(secondOptions?.tools).toEqual(options.tools);
+    expect(
+      ctx._loggerCalls.some((c) => c.level === 'warn' && c.args.join('').includes('空提交')),
+    ).toBe(false);
+    const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
+    expect(
+      events.find((e) => e.type === 'tool/result' && e.data.message.toolCallId === 'early'),
+    ).toMatchObject({ data: { message: { isError: true } } });
+    expect(
+      events.find((e) => e.type === 'tool/result' && e.data.message.toolCallId === 'not-started'),
+    ).toMatchObject({ data: { error: { code: 'TOOL_NOT_STARTED' } } });
+  });
+
+  it('直接压缩首次被阻止，再次成功，无需重写也能完成', async () => {
+    const ctx = makeCtx({
+      llmStreamFactory: (round) => {
+        if (round === 0)
+          return roundChunks({
+            calls: [
+              { id: 'view', name: 'getHistory' },
+              {
+                id: 'first',
+                name: 'compressHistory',
+                args: { start: 1, end: 2, content: '发布决策摘要' },
+              },
+              { id: 'early', name: 'completeCompression' },
+            ],
+          });
+        if (round === 1)
+          return roundChunks({
+            calls: [
+              {
+                id: 'second',
+                name: 'compressHistory',
+                args: { start: 1, end: 2, content: '发布决策摘要' },
+              },
+              { id: 'done', name: 'completeCompression' },
+            ],
+          });
+        return roundChunks({ text: '不应继续请求' });
+      },
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions({ view: askView() }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.rounds).toBe(2);
+    expect(result.text).toContain(
+      '<assistant start="1" end="2"><![CDATA[发布决策摘要]]></assistant>',
+    );
+    expect(result.text).not.toContain('<ask-user-question');
+  });
+
+  it('一条直接压缩，另一条重写，输出各自的最终结果', async () => {
+    const ctx = makeCtx({
+      llmStreamFactory: (round) =>
+        round === 0
+          ? roundChunks({
+              calls: [
+                { id: 'view', name: 'getHistory' },
+                {
+                  id: 'first',
+                  name: 'compressHistory',
+                  args: { index: 1, content: '采用灰度发布' },
+                },
+                {
+                  id: 'second',
+                  name: 'compressHistory',
+                  args: { index: 1, content: '采用灰度发布' },
+                },
+                rewriteCall(2),
+                { id: 'done', name: 'completeCompression' },
+              ],
+            })
+          : roundChunks({ text: '不应继续请求' }),
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions({ view: askView() }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.text).toContain('<assistant index="1"><![CDATA[采用灰度发布]]></assistant>');
+    expect(result.text).toContain('<ask-user-question index="2">');
+    expect(result.text).toContain('a:(未回答)');
+    expect(result.text).not.toContain('o1:');
+  });
+
+  it.each(['invalid', 'history'] as const)('%s ask 不注入新增工具，允许原样完成', async (kind) => {
+    const view =
+      kind === 'history'
+        ? buildReflectView([
+            {
+              seq: 9,
+              text: '<history><ask-user-question index="1"><![CDATA[q:继续吗\na:继续]]></ask-user-question></history>',
+            },
+          ])
+        : {
+            entries: [
+              {
+                kind: 'assistant' as const,
+                lo: 1,
+                hi: 1,
+                text: '',
+                toolName: 'ask_user_question',
+                callId: 'invalid',
+                toolArgs: '{"questions":[]}',
+                toolResult: 'Error: aborted',
+              },
+            ],
+            minIndex: 1,
+            maxIndex: 1,
+          };
+    const ctx = makeCtx({
+      llmStreamFactory: () => roundChunks({ calls: [{ id: 'done', name: 'completeCompression' }] }),
+    });
+    const result = await runCompressionLoop(
+      ctx,
+      makeSession(),
+      loopOptions({ view, phase: kind === 'history' ? 'reflect' : 'observe' }),
+    );
+    expect(result.ok).toBe(true);
+    const options = ctx._llmCalls[0]?.options as GenerateOptions;
+    expect(options.tools?.map((t) => t.name)).toEqual([
+      'getHistory',
+      'compressHistory',
+      'completeCompression',
+    ]);
+    expect(options.system).not.toContain('rewriteAskUserQuestion');
+    if (!result.ok) return;
+    expect(result.text).toContain(kind === 'history' ? 'a:继续' : 'Error: aborted');
+  });
+
+  it.each(['error', 'aborted', 'text'] as const)(
+    '部分重写后 %s：失败不返回部分产物',
+    async (failure) => {
+      const ctx = makeCtx({
+        llmStreamFactory: (round) => {
+          if (round === 0)
+            return roundChunks({ calls: [{ id: 'view', name: 'getHistory' }, rewriteCall()] });
+          if (failure === 'text') return roundChunks({ text: '无法继续' });
+          return roundChunks({
+            finish:
+              failure === 'error'
+                ? { kind: 'error', failure: { message: 'provider boom' } }
+                : { kind: 'aborted' },
+          });
+        },
+      });
+      const result = await runCompressionLoop(ctx, makeSession(), loopOptions({ view: askView() }));
+      expect(result.ok).toBe(false);
+      expect(result).not.toHaveProperty('text');
+      if (result.ok) return;
+      expect(result.aborted).toBe(failure === 'aborted');
+      const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
+      expect(
+        events.find((e) => e.type === 'tool/result' && e.data.message.toolCallId === 'rewrite-1'),
+      ).toMatchObject({ data: { message: { isError: false } } });
+    },
+  );
+});
 
 /** 构造循环选项（rateLimitWaitMs=0 关闭限流等待）。 */
 function loopOptions(overrides: Partial<CompressionLoopOptions> = {}): CompressionLoopOptions {

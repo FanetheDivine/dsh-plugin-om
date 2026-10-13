@@ -9,6 +9,8 @@
 - 自动压缩主会话历史，并在摘要过大时再次合并
 - 通过工具循环生成摘要，保留用户消息、系统消息和未压缩内容
 - 保留工具加载与手动加载的 skill 原文，并在压缩前再次确认
+- 有效提问首次直接压缩需再次确认，保留时重写问答并展开选项引用
+- 中断或错误的提问作为普通工具调用处理
 - 使用 `recall` 按消息序号回看原文，使用 `recall-semantic` 进行本地语义检索
 - 记录压缩过程、耗时和 token 用量
 - 压缩会话记录显示在子智能体列表，随父会话 Session 日志一起下载
@@ -103,9 +105,9 @@ src/
 ├── semantic-recall.ts           # recall-semantic 工具：本地嵌入语义检索
 ├── embedding.ts                 # 本地 ONNX 嵌入：懒加载、批量、运行时按需下载编排
 ├── model-download.ts            # 模型下载原语：URL、跳过判定、原子落盘
-├── compress-view.ts             # 压缩视图：观察与反思区间到统一条目序列的投影与渲染
-├── compress-tools.ts            # 压缩工具状态机：getHistory/compressHistory/completeCompression 与最终块构建
-├── compress-loop.ts             # 工具压缩循环：多轮请求、工具执行、限流、失败判定与统计
+├── compress-view.ts             # 压缩视图：观察与反思投影、有效提问配对与选项展示
+├── compress-tools.ts            # 压缩工具状态机：查看、压缩、问答重写、完成门禁与最终块构建
+├── compress-loop.ts             # 工具压缩循环：条件提示、多轮请求、工具执行、限流、失败判定与统计
 ├── compaction-log.ts            # 压缩会话记录落盘：循环对话消息组与压缩统计子会话
 ├── compress.ts                  # 两级自动压缩：观察、反思、失败传播与生命周期事件
 └── client/                      # 浏览器客户端 bundle：压缩卡片与插件行配置
