@@ -2,13 +2,14 @@
  * 压缩视图：把被压缩区间投影为统一的条目序列（ViewEntry）。
  * 观察视图由完整消息原文构建（buildObserveView），反思视图由已有 <history> 块内条目构建
  * （buildReflectView）；getHistory 查看、compressHistory 区间校验与最终 <history> 块构建
- * 共用同一套条目。导出 ViewEntry / CompressionView / BuildViewOptions / buildObserveView /
+ * 共用同一套条目。导出 AskUserQuestionView / ViewEntry / CompressionView / BuildViewOptions / buildObserveView /
  * buildReflectView / renderEntriesXml / entryToElement / appendCdataText / historyInner /
  * toolCallNameOf / skillNameOf。
  */
 
 import type { Document, Element, Node } from '@xmldom/xmldom';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
+import { z } from 'zod';
 import { ASK_USER_QUESTION_TOOL_NAME, HISTORY_TAG, SKILL_TOOL_NAME } from './constants.ts';
 import {
   indexCompleteMessages,
@@ -19,6 +20,19 @@ import {
 } from './log-index.ts';
 import type { CompleteMessage, Session } from './types.ts';
 import { appendCdataText, isRecord, renderMessageText, toolArgsJson } from './utils.ts';
+
+/** 合法原始 ask 的逐题数据，选项仅用于观察视图。 */
+export type AskUserQuestionView = {
+  /** 按调用参数题序排列的问答。 */
+  questions: {
+    /** 原始问题文本。 */
+    question: string;
+    /** 选项文本和说明。 */
+    options: { label: string; description?: string }[];
+    /** 已配对的回答，空答记为未回答。 */
+    answer: string;
+  }[];
+};
 
 /**
  * 视图条目：压缩区间内一条可定位的内容单位。
@@ -50,6 +64,8 @@ export type ViewEntry = {
   toolArgs?: string;
   /** toolcall 条目的工具返回文本（缺失或为空时不输出 <tool-result> 子元素）。 */
   toolResult?: string;
+  /** 合法原始 ask 的数据；已有 history 条目不设置。 */
+  ask?: AskUserQuestionView;
   /** 所属压缩块 seq（反思视图；块整体展开以此分组）。 */
   blockSeq?: number;
 };
@@ -152,123 +168,107 @@ export function skillNameOf(session: Session, cm: CompleteMessage): string | und
   return '';
 }
 
-/** 提问项：id 用于与回答配对（字符串形式的问题没有 id），text 为问题文本。 */
-type AskQuestionItem = {
-  /** 问题 id（字符串形式的问题缺省）。 */
-  id?: string;
-  /** 问题文本。 */
-  text: string;
-};
-
-/** 回答项：id 与提问配对，text 为用户所选内容的呈现文本。 */
-type AskAnswerItem = {
-  /** 回答对应的提问 id（缺失时无法配对）。 */
-  id?: string;
-  /** 所选内容的呈现文本。 */
-  text: string;
-};
-
-/** 未作答的题在条目正文中的回答段。 */
+/** 未作答题目的呈现文本。 */
 const ASK_UNANSWERED_TEXT = '(未回答)';
 
-/**
- * 从 ask_user_question 调用参数 JSON 提取提问项：questions 数组逐项取 id 与
- * question 字段（字符串元素原样、无 id），保持参数序。参数缺失、非法或解析不出
- * 问题文本时返回空数组。
- */
-function askQuestionItems(args: string | undefined): AskQuestionItem[] {
-  if (args === undefined || args.trim() === '') return [];
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(args);
-  } catch {
-    return [];
-  }
-  if (!isRecord(parsed) || !Array.isArray(parsed.questions)) return [];
-  const items: AskQuestionItem[] = [];
-  for (const q of parsed.questions) {
-    if (typeof q === 'string' && q.trim() !== '') {
-      items.push({ text: q });
-    } else if (isRecord(q) && typeof q.question === 'string' && q.question.trim() !== '') {
-      const id = typeof q.id === 'string' && q.id !== '' ? q.id : undefined;
-      items.push(id === undefined ? { text: q.question } : { id, text: q.question });
-    }
-  }
-  return items;
-}
+/** 提问参数的完整结构；非法项使整次调用回退。 */
+const askQuestionsSchema = z.object({
+  questions: z
+    .array(
+      z.object({
+        id: z.string().refine((id) => id.trim() !== ''),
+        question: z.string().refine((question) => question.trim() !== ''),
+        options: z
+          .array(z.object({ label: z.string(), description: z.string().optional() }))
+          .optional(),
+      }),
+    )
+    .min(1),
+});
 
-/**
- * 从 ask_user_question 工具返回文本提取回答项：返回为 JSON 且含 answers 数组时，
- * 逐项取 id 与所选内容（selected 逐项拼接、custom 追加在后）。
- * 返回不是可解析的 answers JSON 时返回 null（调用方回退为返回原文呈现）。
- */
-function askAnswerItems(result: string): AskAnswerItem[] | null {
-  let parsed: unknown;
+/** 回答结果的完整结构；等待和失败状态不是合法问答。 */
+const askAnswersSchema = z.object({
+  pending: z.literal(false).optional(),
+  aborted: z.literal(false).optional(),
+  isError: z.literal(false).optional(),
+  error: z.never().optional(),
+  answers: z.array(
+    z.object({
+      id: z.string().refine((id) => id.trim() !== ''),
+      selected: z.array(z.string()),
+      custom: z.string().optional(),
+    }),
+  ),
+});
+
+/** 校验配对成功的原始 ask，按题序保存问题、选项和回答。 */
+function askUserQuestionData(session: Session, cm: CompleteMessage): AskUserQuestionView | null {
+  const call = toolCallBlockOf(session, cm);
+  const resultMessage = toolResultMessageOf(session, cm);
+  if (!call || !resultMessage) return null;
+  const resultSeq = cm.seqs[1];
+  const resultEvent = resultSeq === undefined ? undefined : session.snapshotEvents()[resultSeq];
+  if (resultEvent?.type !== 'tool/result' || resultEvent.data.error !== undefined) return null;
+  if (
+    resultMessage.role === 'tool' &&
+    (resultMessage.isError || resultMessage.toolCallId !== cm.callId)
+  )
+    return null;
+  if (
+    resultMessage.content.some((block) => {
+      const legacy = block as { type: string; isError?: boolean };
+      return legacy.type === 'tool-result' && legacy.isError === true;
+    })
+  )
+    return null;
+  const args = toolArgsJson(call.arguments);
+  const result = renderMessageText(resultMessage);
   try {
-    parsed = JSON.parse(result);
+    const questions = askQuestionsSchema.safeParse(JSON.parse(args));
+    const answers = askAnswersSchema.safeParse(JSON.parse(result));
+    if (!questions.success || !answers.success) return null;
+    const ids = new Set(questions.data.questions.map((question) => question.id));
+    const answerMap = new Map(answers.data.answers.map((answer) => [answer.id, answer]));
+    if (
+      ids.size !== questions.data.questions.length ||
+      answerMap.size !== answers.data.answers.length ||
+      answerMap.size !== ids.size ||
+      [...answerMap.keys()].some((id) => !ids.has(id))
+    )
+      return null;
+    return {
+      questions: questions.data.questions.map((question) => {
+        const answer = answerMap.get(question.id);
+        const text = answer
+          ? [...answer.selected, ...(answer.custom ? [answer.custom] : [])].join(', ')
+          : '';
+        return {
+          question: question.question,
+          options: (question.options ?? []).map((option) => ({
+            label: option.label,
+            ...(option.description === undefined ? {} : { description: option.description }),
+          })),
+          answer: text === '' ? ASK_UNANSWERED_TEXT : text,
+        };
+      }),
+    };
   } catch {
     return null;
   }
-  if (!isRecord(parsed) || !Array.isArray(parsed.answers)) return null;
-  const items: AskAnswerItem[] = [];
-  for (const a of parsed.answers) {
-    if (!isRecord(a)) continue;
-    const selected = Array.isArray(a.selected)
-      ? a.selected.filter((s): s is string => typeof s === 'string')
-      : [];
-    const custom = typeof a.custom === 'string' && a.custom !== '' ? [a.custom] : [];
-    const id = typeof a.id === 'string' && a.id !== '' ? a.id : undefined;
-    const text = [...selected, ...custom].join(', ');
-    items.push(id === undefined ? { text } : { id, text });
-  }
-  return items;
 }
 
-/**
- * ask_user_question 条目正文行：回答可解析时按题输出 q:（问题文本）与 a:（用户回答）
- * 成对的行——按 id 配对，未作答的题记为 a:(未回答)，匹配不到问题的回答单独成行；
- * 回答不可解析时逐行输出问题、末尾单行输出返回原文。
- */
-function askUserQuestionLines(
-  questions: AskQuestionItem[],
-  answers: AskAnswerItem[] | null,
-  result: string,
-): string[] {
-  if (answers === null) {
-    const lines = questions.map((q) => `q:${q.text}`);
-    if (result.trim() !== '') lines.push(`a:${result}`);
-    return lines;
-  }
-  const lines: string[] = [];
-  const paired = new Set<number>();
-  for (const q of questions) {
-    const index =
-      q.id === undefined ? -1 : answers.findIndex((a, i) => !paired.has(i) && a.id === q.id);
-    if (index >= 0) paired.add(index);
-    const answer = index >= 0 ? (answers[index]?.text ?? '') : '';
-    lines.push(`q:${q.text} a:${answer === '' ? ASK_UNANSWERED_TEXT : answer}`);
-  }
-  answers.forEach((a, i) => {
-    if (!paired.has(i) && a.text !== '') lines.push(`a:${a.text}`);
-  });
-  return lines;
-}
-
-/**
- * ask_user_question 条目正文：构造为原生 <ask-user-question> 包裹形态，内文见
- * askUserQuestionLines。问题与回答均取不到内容时返回 null（调用方回退为通用完整消息呈现）。
- */
-function askUserQuestionText(session: Session, cm: CompleteMessage): string | null {
-  const call = toolCallBlockOf(session, cm);
-  const args = call === undefined ? undefined : toolArgsJson(call.arguments);
-  const resultMessage = toolResultMessageOf(session, cm);
-  const result =
-    resultMessage && Array.isArray(resultMessage.content) ? renderMessageText(resultMessage) : '';
-  const questions = askQuestionItems(args);
-  const answers = result.trim() === '' ? [] : askAnswerItems(result);
-  const lines = askUserQuestionLines(questions, answers, result);
-  if (lines.length === 0) return null;
-  return `<ask-user-question>${lines.join('\n')}</ask-user-question>`;
+/** 观察 ask 正文：保留多行原文，每题按 q/options/a 呈现。 */
+function askUserQuestionText(ask: AskUserQuestionView): string {
+  return `<ask-user-question>${ask.questions
+    .flatMap((question) => [
+      `q:${question.question}`,
+      ...question.options.map(
+        (option, index) =>
+          `o${index + 1}:${option.label}${option.description ? ` — ${option.description}` : ''}`,
+      ),
+      `a:${question.answer}`,
+    ])
+    .join('\n')}</ask-user-question>`;
 }
 
 /** 视图构建选项：skipReasoning=true 时不含 <reasoning> 参考条目。 */
@@ -365,15 +365,13 @@ export function buildObserveView(
     }
     const toolName = cm.type === 'toolcall' ? toolCallNameOf(session, cm) : undefined;
     const isSkill = toolName === SKILL_TOOL_NAME;
-    const isAsk = toolName === ASK_USER_QUESTION_TOOL_NAME;
-    // skill 条目正文仅保留工具返回内容（调用参数由 <skill_content> 的 name 属性表达）；
-    // ask_user_question 条目正文构造为原生 ask-user-question 包裹（问题与回答均缺失时
-    // 回退为通用完整消息呈现）
-    const askText = isAsk ? askUserQuestionText(session, cm) : undefined;
+    const ask = toolName === ASK_USER_QUESTION_TOOL_NAME ? askUserQuestionData(session, cm) : null;
+    const isAsk = ask !== null;
+    // skill 保留返回内容；合法 ask 保留问答；其余调用保留完整参数和结果。
     const text = isSkill
       ? renderToolResultText(session, cm)
-      : isAsk
-        ? (askText ?? renderCompleteMessage(session, cm))
+      : ask !== null
+        ? askUserQuestionText(ask)
         : renderCompleteMessage(session, cm);
     if (text.trim() === '') continue;
     const skillName = isSkill ? skillNameOf(session, cm) : undefined;
@@ -398,6 +396,7 @@ export function buildObserveView(
       ...(cm.callId === undefined || toolArgs === undefined ? {} : { callId: cm.callId }),
       ...(toolArgs === undefined ? {} : { toolArgs }),
       ...(toolResult === undefined ? {} : { toolResult }),
+      ...(ask === null ? {} : { ask }),
     });
   }
   return { entries, ...viewBounds(entries) };
@@ -729,6 +728,12 @@ export function entryToElement(doc: Document, entry: ViewEntry): Element {
       appendCdataText(doc, result, entry.toolResult);
       el.appendChild(result);
     }
+    return el;
+  }
+  if (entry.kind === 'assistant' && entry.ask !== undefined) {
+    const el = doc.createElement('ask-user-question');
+    if (entry.lo !== undefined && entry.lo === entry.hi) el.setAttribute('index', String(entry.lo));
+    appendCdataText(doc, el, askUserQuestionInner(askUserQuestionText(entry.ask)) ?? '');
     return el;
   }
   if (entry.kind === 'assistant' && entry.toolName === ASK_USER_QUESTION_TOOL_NAME) {

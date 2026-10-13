@@ -665,6 +665,36 @@ describe('压缩边界 historySection', () => {
   });
 });
 
+describe('反思保留已处理问答', () => {
+  it('只含 q/a 的 history ask 原样保留，不要求重新处理或回读选项', async () => {
+    const inner =
+      '<ask-user-question index="3"><![CDATA[q:采用哪种发布方式？\na:采用灰度发布，先向少量用户开放。]]></ask-user-question>';
+    const session = makeSession({ events: [historyMessage(inner)] });
+    const ctx = makeCtx({
+      llmStreamFactory: () =>
+        roundChunks({
+          calls: [
+            { id: 'view', name: 'getHistory' },
+            { id: 'done', name: 'completeCompression' },
+          ],
+        }),
+    });
+    const result = await reflectPass(
+      ctx,
+      { session } as never,
+      resolveConfig({ reflectThresholdTokens: 1, rateLimitWaitMs: 0 }),
+      { provider: 'test', model: 'test-model' },
+    );
+    expect(result.failed).toBe(false);
+    expect(ctx._llmCalls).toHaveLength(1);
+    expect(JSON.stringify(ctx._llmCalls[0]?.options)).not.toContain('rewriteAskUserQuestion');
+    const { blocks } = historySection(session);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.text).toContain(inner);
+    expect(blocks[0]?.text).not.toContain('o1:');
+  });
+});
+
 describe('反思压缩循环失败：诊断子会话 id 传播', () => {
   it('循环失败：CompressPassResult 与 compaction/end 载荷携带诊断子会话 sessionId', async () => {
     const session = makeSession({

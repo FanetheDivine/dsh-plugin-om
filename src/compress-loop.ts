@@ -1,14 +1,14 @@
 /**
  * 工具驱动的压缩循环：以新会话方式直连 ctx.llm.stream()，模型通过 getHistory /
- * compressHistory / completeCompression 三个工具完成压缩，替代直出 <history> 块。
+ * compressHistory / completeCompression 完成压缩，存在原始合法提问时加入重写工具。
  * 导出 runCompressionLoop / buildCompressionPrompt / buildCompressionTaskText /
- * CompressionLoopOptions / CompressionOutcome / CompressionStats / COMPRESSION_NUDGE_TEXT。
+ * ASK_COMPRESSION_PROMPT / CompressionLoopOptions / CompressionOutcome / CompressionStats / COMPRESSION_NUDGE_TEXT。
  *
  * - 首条 user 消息仅含压缩指令与 start/end 区间（buildCompressionTaskText），不含
  *   历史消息内容；共享压缩提示词作为 system
  * - 每轮请求携带压缩工具 schemas（purpose='compaction'，maxTokens 沿用配置）；流经
  *   BlockAssembler 组装为 assistant 消息，工具执行结果以 tool-result 消息回填
- * - completeCompression 调用后立即停止（同轮后续工具调用不再执行），最终 <history>
+ * - completeCompression 校验通过后立即停止（同轮后续工具调用不再执行），最终 <history>
  *   块由 CompressionState 构建，全程无需整块校验
  * - 模型输出纯文本（无工具调用）时追加提醒消息继续，连续 2 轮仍无工具调用判失败
  * - 429 限流走全局限流等待门（gateRateLimit / noteRateLimit）；其余请求级错误依赖
@@ -34,6 +34,7 @@ import { recordCompressionSession } from './compaction-log.ts';
 import {
   COMPRESSION_TOOL_SCHEMAS,
   CompressionState,
+  REWRITE_ASK_TOOL_SCHEMA,
   type ToolCallResult,
 } from './compress-tools.ts';
 import type { CompressionView } from './compress-view.ts';
@@ -69,8 +70,8 @@ export function buildCompressionPrompt(skipReasoning: boolean): string {
     '- <history> 条目正文以 CDATA 包裹（空的 <sys> 条目为自闭合空元素，无正文），CDATA 内为逐字原样内容。',
     '- 工具调用条目为 <assistant index="N" type="toolcall" tool-name="…" callId="…">，内含 <tool-args>（调用参数 JSON）与 <tool-result>（工具返回内容）两个 CDATA 子元素。',
     '- 加载的 skill 以 <skill_content name="…" index="N"> 条目呈现，内含 <skill_resources> 与 <skill_instructions> 两段，内文为加载的 skill 内容，属于关键信息。仅在你明确判断该 skill 与后续任务无关时，压缩它；如果该 skill 与后续任务相关，或者你无法判断，不要压缩，**保持原文**。',
-    '- ask_user_question 工具调用（向用户的提问）以 <ask-user-question index="N"> 条目呈现，CDATA 内为逐题成对的 q:（问题文本）与 a:（用户回答）行，未作答的题记为 a:(未回答)，属于关键信息。仅在你明确判断该提问与后续任务无关时，压缩它；如果该提问与后续任务相关，或者你无法判断，不要压缩，**保持原文**。',
-    '- 未压缩的条目将原样保留；宁可保留也不要强行压缩不确定的内容。',
+    '- 已有 <history> 块中的 ask_user_question 以 <ask-user-question index="N"> 呈现，CDATA 内为逐题成对的 q:（问题文本）与 a:（用户回答）行，未作答的题记为 a:(未回答)。这些提问已经处理；仅在明确判断与后续任务无关时压缩，否则保持原样。原始提问按本会话的专用处理规则执行。',
+    '- 除原始提问外，未压缩的条目将原样保留；宁可保留也不要强行压缩不确定的内容。',
     '- 全部完成后调用 completeCompression 结束；不要输出与工具调用无关的文本。',
   ];
   return lines.join('\n');
@@ -89,6 +90,19 @@ export function buildCompressionTaskText(
   }
   return `压缩完整消息区间 [${start}..${end}]：用 getHistory 查看条目，用 compressHistory 分批压缩 assistant 条目，完成后调用 completeCompression。`;
 }
+
+/** 原始合法 ask 的处理约束，只在视图含待处理原始提问时注入。 */
+export const ASK_COMPRESSION_PROMPT = [
+  '【原始提问处理】',
+  '- 原始合法 ask_user_question 在 getHistory 中以 <ask-user-question index="N"> 展示，每题为 q:问题、o1:选项一、o2:选项二等及 a:回答；选项包含 label 与 description，无选项题省略 oN 行。',
+  '- 每个原始提问必须二选一：直接用 compressHistory 压成普通 assistant 摘要；或者保留 ask 标签并用 rewriteAskUserQuestion 重写 q/a。不能原样跳过。',
+  '- 直接压缩：仅在明确判断该提问与后续任务无关时执行；首次覆盖会被阻止一次，重新思考后再次调用才执行。不确定或相关时走保留重写路径。',
+  '- 保留重写：先用 getHistory 查看该提问及全部选项，收到返回结果后的下一轮再调用 rewriteAskUserQuestion({index, qa:[{ordinal:1,q:"问题",a:"回答"},...]})，不要与查看同轮提交；ordinal 从 1 开始，按原题序提交全部题，不增删、不重复。',
+  '- q/a 均可忠实精炼，保留语境与用户真实意图。将回答中对选项的编号、标签等引用展开为自足表述；产物仅有 q:/a:，不能保留 oN 选项列表或 options 字段。',
+  '- 空答案明确为 (未回答)，不得补造用户决定。仅提交纯文本 q/a，不自行拼接 XML 或 CDATA 包裹。',
+  '- 允许切换路径；最终成功的直接压缩覆盖优先，已覆盖的 ask 不能再次重写。history 块中的 ask 已处理，不需重写。',
+  '- completeCompression 仅在每个原始合法 ask 已成功直接压缩或重写后完成；若返回待处理 index，请处理后再次调用。',
+].join('\n');
 
 /** 模型输出纯文本（无工具调用）时追加的提醒消息文本。 */
 export const COMPRESSION_NUDGE_TEXT =
@@ -244,6 +258,13 @@ export async function runCompressionLoop(
 ): Promise<CompressionOutcome> {
   const logger = makeLogger(ctx, options.debug);
   const state = new CompressionState(options.view);
+  const tools = state.hasPendingAsks
+    ? [...COMPRESSION_TOOL_SCHEMAS, REWRITE_ASK_TOOL_SCHEMA]
+    : COMPRESSION_TOOL_SCHEMAS;
+  const system = [
+    buildCompressionPrompt(options.skipReasoning),
+    ...(state.hasPendingAsks ? [ASK_COMPRESSION_PROMPT] : []),
+  ].join('\n\n');
   const messages: Message[] = [makePluginUserMessage(options.taskText)];
   let rounds = 0;
   let nudges = 0;
@@ -305,11 +326,12 @@ export async function runCompressionLoop(
       sessionId: session.id,
       purpose: 'compaction',
       ...(options.signal === undefined ? {} : { signal: options.signal }),
-      system: buildCompressionPrompt(options.skipReasoning),
+      system,
       messages: [...messages],
-      tools: COMPRESSION_TOOL_SCHEMAS,
+      tools,
     };
     const assembler = new BlockAssembler();
+    state.markHistoryDelivered();
     try {
       for await (const chunk of ctx.llm.stream(requestOptions)) assembler.push(chunk);
     } catch (error) {
@@ -373,23 +395,19 @@ export async function runCompressionLoop(
       continue;
     }
     nudges = 0;
-    let completed = false;
     for (const call of calls) {
-      if (call.name === 'completeCompression') {
-        messages.push(toolResultOf(call, state.complete()));
-        completed = true;
-        // completeCompression 调用后立即停止：同轮后续工具调用不再执行
-        break;
-      }
       messages.push(toolResultOf(call, state.executeCall(call.name, call.arguments)));
+      // 仅实际完成时停止；被门禁拒绝后允许执行同轮后续调用。
+      if (state.completed) break;
     }
-    if (completed) {
+    if (state.completed) {
+      if (options.signal?.aborted) return await failWith(COMPACTION_ABORTED_ERROR, true);
       const text = state.buildFinalBlock();
-      if (state.replacementCount === 0) {
+      if (state.replacementCount === 0 && state.rewriteCount === 0) {
         logger.warn('压缩完成但未执行任何压缩替换（空提交）');
       }
       logger.info(
-        `压缩循环完成（${rounds} 轮，${state.replacementCount} 次压缩替换，输出 ${text.length} 字符）`,
+        `压缩循环完成（${rounds} 轮，${state.replacementCount} 次压缩替换，${state.rewriteCount} 条提问重写，输出 ${text.length} 字符）`,
       );
       const stats = buildStats();
       const id = await recordSessionId(true, stats);
