@@ -67,7 +67,7 @@ function rewriteCall(index = 1) {
 }
 
 describe('原始 ask 的循环处理', () => {
-  it('拒绝提前完成后，同轮仍可查看和重写，再次完成才停止', async () => {
+  it('拒绝提前完成和同轮提前重写，下一轮看到选项后可以重写完成', async () => {
     const view = askView();
     view.entries = view.entries.slice(0, 1);
     view.maxIndex = 1;
@@ -79,13 +79,14 @@ describe('原始 ask 的循环处理', () => {
             calls: [
               { id: 'early', name: 'completeCompression' },
               { id: 'view', name: 'getHistory' },
-              rewriteCall(),
+              { ...rewriteCall(), id: 'premature-rewrite' },
             ],
           });
         expect(JSON.stringify(options.messages)).toContain('o1:灰度发布');
         expect(JSON.stringify(options.messages)).toContain('先向少量用户开放');
         return roundChunks({
           calls: [
+            rewriteCall(),
             { id: 'done', name: 'completeCompression' },
             { id: 'not-started', name: 'getHistory' },
           ],
@@ -112,6 +113,14 @@ describe('原始 ask 的循环处理', () => {
     expect(
       events.find((e) => e.type === 'tool/result' && e.data.message.toolCallId === 'early'),
     ).toMatchObject({ data: { message: { isError: true } } });
+    expect(
+      events.find(
+        (e) => e.type === 'tool/result' && e.data.message.toolCallId === 'premature-rewrite',
+      ),
+    ).toMatchObject({ data: { message: { isError: true } } });
+    expect(
+      events.find((e) => e.type === 'tool/result' && e.data.message.toolCallId === 'rewrite-1'),
+    ).toMatchObject({ data: { message: { isError: false } } });
     expect(
       events.find((e) => e.type === 'tool/result' && e.data.message.toolCallId === 'not-started'),
     ).toMatchObject({ data: { error: { code: 'TOOL_NOT_STARTED' } } });
@@ -158,26 +167,27 @@ describe('原始 ask 的循环处理', () => {
 
   it('一条直接压缩，另一条重写，输出各自的最终结果', async () => {
     const ctx = makeCtx({
-      llmStreamFactory: (round) =>
-        round === 0
-          ? roundChunks({
-              calls: [
-                { id: 'view', name: 'getHistory' },
-                {
-                  id: 'first',
-                  name: 'compressHistory',
-                  args: { index: 1, content: '采用灰度发布' },
-                },
-                {
-                  id: 'second',
-                  name: 'compressHistory',
-                  args: { index: 1, content: '采用灰度发布' },
-                },
-                rewriteCall(2),
-                { id: 'done', name: 'completeCompression' },
-              ],
-            })
-          : roundChunks({ text: '不应继续请求' }),
+      llmStreamFactory: (round) => {
+        if (round === 0) return roundChunks({ calls: [{ id: 'view', name: 'getHistory' }] });
+        if (round === 1)
+          return roundChunks({
+            calls: [
+              {
+                id: 'first',
+                name: 'compressHistory',
+                args: { index: 1, content: '采用灰度发布' },
+              },
+              {
+                id: 'second',
+                name: 'compressHistory',
+                args: { index: 1, content: '采用灰度发布' },
+              },
+              rewriteCall(2),
+              { id: 'done', name: 'completeCompression' },
+            ],
+          });
+        return roundChunks({ text: '不应继续请求' });
+      },
     });
     const result = await runCompressionLoop(ctx, makeSession(), loopOptions({ view: askView() }));
     expect(result.ok).toBe(true);
@@ -238,8 +248,8 @@ describe('原始 ask 的循环处理', () => {
     async (failure) => {
       const ctx = makeCtx({
         llmStreamFactory: (round) => {
-          if (round === 0)
-            return roundChunks({ calls: [{ id: 'view', name: 'getHistory' }, rewriteCall()] });
+          if (round === 0) return roundChunks({ calls: [{ id: 'view', name: 'getHistory' }] });
+          if (round === 1) return roundChunks({ calls: [rewriteCall()] });
           if (failure === 'text') return roundChunks({ text: '无法继续' });
           return roundChunks({
             finish:

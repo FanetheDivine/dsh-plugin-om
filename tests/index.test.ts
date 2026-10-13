@@ -257,10 +257,10 @@ describe('apply 接线（OM 观察压缩）', () => {
       const nodes = session.surface.nodes;
       const ctx = makeCtx({
         llmStreamFactory: (round) => {
-          if (round === 0)
+          if (round === 0) return roundChunks({ calls: [{ id: 'view', name: 'getHistory' }] });
+          if (round === 1)
             return roundChunks({
               calls: [
-                { id: 'view', name: 'getHistory' },
                 {
                   id: 'rewrite',
                   name: 'rewriteAskUserQuestion',

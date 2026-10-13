@@ -97,7 +97,7 @@ export const ASK_COMPRESSION_PROMPT = [
   '- 原始合法 ask_user_question 在 getHistory 中以 <ask-user-question index="N"> 展示，每题为 q:问题、o1:选项一、o2:选项二等及 a:回答；选项包含 label 与 description，无选项题省略 oN 行。',
   '- 每个原始提问必须二选一：直接用 compressHistory 压成普通 assistant 摘要；或者保留 ask 标签并用 rewriteAskUserQuestion 重写 q/a。不能原样跳过。',
   '- 直接压缩：仅在明确判断该提问与后续任务无关时执行；首次覆盖会被阻止一次，重新思考后再次调用才执行。不确定或相关时走保留重写路径。',
-  '- 保留重写：先用 getHistory 查看该提问及全部选项，再调用 rewriteAskUserQuestion({index, qa:[{ordinal:1,q:"问题",a:"回答"},...]})；ordinal 从 1 开始，按原题序提交全部题，不增删、不重复。',
+  '- 保留重写：先用 getHistory 查看该提问及全部选项，收到返回结果后的下一轮再调用 rewriteAskUserQuestion({index, qa:[{ordinal:1,q:"问题",a:"回答"},...]})，不要与查看同轮提交；ordinal 从 1 开始，按原题序提交全部题，不增删、不重复。',
   '- q/a 均可忠实精炼，保留语境与用户真实意图。将回答中对选项的编号、标签等引用展开为自足表述；产物仅有 q:/a:，不能保留 oN 选项列表或 options 字段。',
   '- 空答案明确为 (未回答)，不得补造用户决定。仅提交纯文本 q/a，不自行拼接 XML 或 CDATA 包裹。',
   '- 允许切换路径；最终成功的直接压缩覆盖优先，已覆盖的 ask 不能再次重写。history 块中的 ask 已处理，不需重写。',
@@ -331,6 +331,7 @@ export async function runCompressionLoop(
       tools,
     };
     const assembler = new BlockAssembler();
+    state.markHistoryDelivered();
     try {
       for await (const chunk of ctx.llm.stream(requestOptions)) assembler.push(chunk);
     } catch (error) {

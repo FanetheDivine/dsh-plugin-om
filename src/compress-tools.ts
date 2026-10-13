@@ -68,6 +68,7 @@ export class CompressionState {
   private readonly replacements: Replacement[] = [];
   private readonly challengedSkills = new Set<number>();
   private readonly viewedAsks = new Set<number>();
+  private readonly undeliveredAsks = new Set<number>();
   private readonly rewrittenAsks = new Map<number, RewrittenQuestion[]>();
   private _completed = false;
 
@@ -138,6 +139,12 @@ export class CompressionState {
     };
   }
 
+  /** 下一模型请求已携带成功的 getHistory 结果，允许使用其选项重写。 */
+  markHistoryDelivered(): void {
+    for (const index of this.undeliveredAsks) this.viewedAsks.add(index);
+    this.undeliveredAsks.clear();
+  }
+
   /** 解析可选数值参数（缺省 undefined；非有限数返回 NaN）。 */
   private optionalNumber(value: unknown): number | undefined {
     if (value === undefined || value === null) return undefined;
@@ -192,7 +199,7 @@ export class CompressionState {
     }
     const text = `<!-- 完整消息区间 [${start}..${end}]，共 ${selected.length} 条 -->\n${renderEntriesXml(selected)}`;
     for (const entry of selected) {
-      if (entry.ask !== undefined && entry.lo !== undefined) this.viewedAsks.add(entry.lo);
+      if (entry.ask !== undefined && entry.lo !== undefined) this.undeliveredAsks.add(entry.lo);
     }
     return { text, isError: false };
   }
@@ -388,7 +395,10 @@ export class CompressionState {
       return { text: `index ${index} 已被 compressHistory 覆盖，不能重写`, isError: true };
     }
     if (!this.viewedAsks.has(index)) {
-      return { text: `请先用 getHistory 查看 index ${index} 的问题、选项和回答`, isError: true };
+      return {
+        text: `请先用 getHistory 查看 index ${index} 的问题、选项和回答，收到返回结果后的下一轮再重写，不要在同轮提交`,
+        isError: true,
+      };
     }
     if (!Array.isArray(qa) || qa.length !== entry.ask.questions.length) {
       return {
@@ -420,6 +430,12 @@ export class CompressionState {
       }
       if (q.includes('<![CDATA[') || a.includes('<![CDATA[')) {
         return { text: 'q 与 a 不要包含 CDATA 包裹，插件会自动添加', isError: true };
+      }
+      if (/^\s*o\d+\s*[:：]/m.test(q) || /^\s*o\d+\s*[:：]/m.test(a)) {
+        return {
+          text: 'q 与 a 不要包含 oN: 选项列表行；请将回答中的选项引用展开为自足表述',
+          isError: true,
+        };
       }
       ordinals.add(ordinal);
       rewritten.push({ ordinal, q, a });

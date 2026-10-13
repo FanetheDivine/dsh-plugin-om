@@ -124,10 +124,30 @@ describe('rewriteAskUserQuestion', () => {
     expect(state.getHistory({ start: -1, end: 1 }).isError).toBe(true);
     expect(rewrite(state).isError).toBe(true);
     expect(state.getHistory({ start: 1, end: 1 }).text).toContain('o1:灰度发布');
+    expect(rewrite(state).isError).toBe(true);
+    state.markHistoryDelivered();
     expect(rewrite(state).isError).toBe(false);
     expect(rewrite(state, rewriteArgs(3)).isError).toBe(true);
     expect(state.getHistory({ start: 3, end: 3 }).isError).toBe(false);
+    expect(rewrite(state, rewriteArgs(3)).isError).toBe(true);
+    state.markHistoryDelivered();
     expect(rewrite(state, rewriteArgs(3)).isError).toBe(false);
+  });
+
+  it.each(['q', 'a'] as const)('拒绝 %s 中的选项列表行且不修改已重写结果', (field) => {
+    const state = new CompressionState(viewOf([originalAsk()]));
+    state.getHistory({});
+    state.markHistoryDelivered();
+    expect(rewrite(state).isError).toBe(false);
+    const previous = state.buildFinalBlock();
+    const args = rewriteArgs();
+    const first = args.qa[0];
+    if (!first) throw new Error('Expected question');
+    first[field] += '\n  o1:灰度发布\n\to2:全量发布';
+    expect(rewrite(state, args).isError).toBe(true);
+    expect(state.complete().isError).toBe(false);
+    expect(state.buildFinalBlock()).toBe(previous);
+    expect(previous).not.toContain('o1:');
   });
 
   it('严校验参数形态、目标、全部题序和纯文本字段', () => {
@@ -146,6 +166,7 @@ describe('rewriteAskUserQuestion', () => {
       ]),
     );
     expect(state.getHistory({}).isError).toBe(false);
+    state.markHistoryDelivered();
     const valid = rewriteArgs();
     const first = valid.qa[0];
     const second = valid.qa[1];
@@ -189,6 +210,7 @@ describe('rewriteAskUserQuestion', () => {
   it('有效重提整体替换，无效提交不改变成功结果，查看仍返回原始 options', () => {
     const state = new CompressionState(viewOf([originalAsk()]));
     state.getHistory({});
+    state.markHistoryDelivered();
     expect(rewrite(state).isError).toBe(false);
     const initial = state.buildFinalBlock();
     expect(initial).toContain('a:采用灰度发布，先向少量用户开放。');
@@ -212,6 +234,7 @@ describe('rewriteAskUserQuestion', () => {
   it('保留逐题 q/a 与 index，不输出 options，并支持 XML字面文本和 CDATA闭合字符', () => {
     const state = new CompressionState(viewOf([originalAsk()]));
     state.getHistory({});
+    state.markHistoryDelivered();
     const args = rewriteArgs();
     args.qa[0] = {
       ordinal: 1,
@@ -241,6 +264,7 @@ describe('原始 ask 路径切换', () => {
     const state = new CompressionState(viewOf([originalAsk()]));
     expect(state.compressHistory({ index: 1, content: '问答摘要' }).isError).toBe(true);
     state.getHistory({});
+    state.markHistoryDelivered();
     expect(rewrite(state).isError).toBe(false);
     expect(state.complete().isError).toBe(false);
     expect(state.buildFinalBlock()).toContain('<ask-user-question index="1">');
@@ -251,6 +275,7 @@ describe('原始 ask 路径切换', () => {
       viewOf([originalAsk(1), { kind: 'assistant', lo: 2, hi: 2, text: '后续执行' }]),
     );
     state.getHistory({});
+    state.markHistoryDelivered();
     expect(rewrite(state).isError).toBe(false);
     expect(state.compressHistory({ start: 1, end: 2, content: '最终摘要' }).isError).toBe(true);
     expect(state.buildFinalBlock()).toContain('<ask-user-question index="1">');
@@ -275,6 +300,7 @@ describe('原始 ask 完成门禁', () => {
     expect(() => state.buildFinalBlock()).toThrow();
     expect(state.compressHistory({ index: 1, content: '摘要' }).isError).toBe(true);
     state.getHistory({ start: 3, end: 3 });
+    state.markHistoryDelivered();
     expect(rewrite(state, rewriteArgs(3)).isError).toBe(false);
     const pending = state.executeCall('completeCompression', '{}');
     expect(pending.isError).toBe(true);
@@ -294,6 +320,7 @@ describe('原始 ask 处理计数', () => {
     expect(state.hasPendingAsks).toBe(true);
     expect(state.rewriteCount).toBe(0);
     state.getHistory({});
+    state.markHistoryDelivered();
     expect(rewrite(state).isError).toBe(false);
     expect(state.rewriteCount).toBe(1);
     expect(rewrite(state).isError).toBe(false);
