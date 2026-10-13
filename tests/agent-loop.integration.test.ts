@@ -1,4 +1,4 @@
-// 真实 DSH agent loop 与 mock AI 集成测试：验证 OM 压缩、召回、持久化导出和回合生命周期。
+// 真实 DSH agent loop 与 mock AI 集成测试：验证 OM 压缩、提示词保留、召回、持久化导出和回合生命周期。
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -283,6 +283,34 @@ describe('真实 agent loop + mock AI', () => {
         'completeCompression',
       ]);
       expect(adapter.calls.filter((call) => call.purpose === 'compaction')).toHaveLength(6);
+      const progressPrompt =
+        '在任务推进的关键节点，简要输出后续规划，并在执行后说明对应结果；无需逐次播报工具调用。';
+      const ordinaryCalls = adapter.calls.filter((call) => call.purpose !== 'compaction');
+      expect(ordinaryCalls).toHaveLength(3);
+      for (const call of ordinaryCalls) {
+        const systemText = call.messages
+          .filter((message) => message.role === 'system')
+          .flatMap((message) => message.content)
+          .filter((block) => block.type === 'text')
+          .map((block) => block.text)
+          .join('');
+        expect(systemText.split(progressPrompt)).toHaveLength(2);
+      }
+      for (const call of adapter.calls.filter((call) => call.purpose === 'compaction')) {
+        expect(call.system).not.toContain(progressPrompt);
+      }
+      const systemNodes = session.surface.nodes
+        .map((seq) => session.eventAt(seq))
+        .filter((event) => event?.type === 'system/message');
+      expect(systemNodes.length).toBeGreaterThan(0);
+      for (const event of systemNodes) {
+        if (event?.type !== 'system/message') throw new Error('缺少系统提示词消息');
+        const text = event.data.message.content
+          .filter((block) => block.type === 'text')
+          .map((block) => block.text)
+          .join('');
+        expect(text.split(progressPrompt)).toHaveLength(2);
+      }
       const secondCompactionRequest = adapter.calls.filter(
         (call) => call.purpose === 'compaction',
       )[4];
