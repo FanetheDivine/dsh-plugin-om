@@ -50,7 +50,7 @@ export type HistoryNoteSections = {
   sys?: boolean;
   /** 块内存在未压缩 skill 条目时追加 <skill_content> 说明。 */
   skill?: boolean;
-  /** 块内存在 ask_user_question 条目时追加 <ask-user-question> 说明。 */
+  /** 块内存在保留的合法或历史 ask 条目时追加 <ask-user-question> 说明。 */
   askUserQuestion?: boolean;
 };
 
@@ -79,8 +79,8 @@ export function historyFormatNote(sections: HistoryNoteSections = {}): string {
 export const SKILL_TOOL_NAME = 'skill';
 
 /**
- * ask_user_question 工具名：toolcall 条目的工具名为该值时视为向用户的提问，
- * <history> 块中以 <ask-user-question> 元素呈现，压缩时与 skill 一样要求二次确认。
+ * 提问工具名：成功且问题与答案完整配对时视为合法 ask，失败调用按普通 toolcall 处理。
+ * 合法 ask 直接压缩需二次确认；未直接压缩的原始 ask 重写后以 q/a 形式保留。
  */
 export const ASK_USER_QUESTION_TOOL_NAME = 'ask_user_question';
 

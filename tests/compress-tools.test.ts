@@ -1,5 +1,5 @@
-// 压缩工具状态机单测：getHistory / compressHistory / completeCompression 的校验与执行、
-// skill 与 ask_user_question 二次确认、替换区间重叠规则、动态块顶注释与最终 <history> 块构建。
+// 压缩状态机行为：历史查看、二次确认与区间替换、原始 ask 重写和完成门禁，
+// 验证双路径切换、参数校验、仅 q/a 的保留产物及历史反思兼容。
 import { describe, expect, it } from 'vitest';
 import { CompressionState } from '../src/compress-tools.ts';
 import { buildReflectView, type CompressionView, type ViewEntry } from '../src/compress-view.ts';
@@ -36,6 +36,285 @@ function observeView(overrides: ViewEntry[] = []): CompressionView {
   ];
   return viewOf(base);
 }
+
+/** 原始合法提问：包含两题、完整选项与空答案。 */
+function originalAsk(index = 1): ViewEntry {
+  return {
+    kind: 'assistant',
+    lo: index,
+    hi: index,
+    text: '<ask-user-question>q:采用哪种发布方式？\no1:灰度发布 — 先向少量用户开放\no2:全量发布 — 一次向所有用户开放\na:第一个\nq:是否指定日期？\na:(未回答)</ask-user-question>',
+    toolName: 'ask_user_question',
+    ask: {
+      questions: [
+        {
+          question: '采用哪种发布方式？',
+          options: [
+            { label: '灰度发布', description: '先向少量用户开放' },
+            { label: '全量发布', description: '一次向所有用户开放' },
+          ],
+          answer: '第一个',
+        },
+        { question: '是否指定日期？', options: [], answer: '(未回答)' },
+      ],
+    },
+  };
+}
+
+/** 重写整次提问的工具参数。 */
+function rewriteArgs(index = 1) {
+  return {
+    index,
+    qa: [
+      { ordinal: 1, q: '采用哪种发布方式？', a: '采用灰度发布，先向少量用户开放。' },
+      { ordinal: 2, q: '是否指定日期？', a: '(未回答)' },
+    ],
+  };
+}
+
+/** 使用真实工具分发提交重写。 */
+function rewrite(state: CompressionState, args = rewriteArgs()) {
+  return state.executeCall('rewriteAskUserQuestion', JSON.stringify(args));
+}
+
+describe('原始 ask 的直接压缩', () => {
+  it('首次阻止后再次覆盖生成普通摘要，无需重写', () => {
+    const state = new CompressionState(
+      viewOf([originalAsk(), { kind: 'assistant', lo: 2, hi: 2, text: '执行灰度发布' }]),
+    );
+    expect(
+      state.compressHistory({ start: 1, end: 2, content: '确认采用灰度发布并执行' }).isError,
+    ).toBe(true);
+    expect(state.replacementCount).toBe(0);
+    expect(state.compressHistory({ index: 1, content: '确认采用灰度发布' }).isError).toBe(false);
+    expect(state.complete().isError).toBe(false);
+    const final = state.buildFinalBlock();
+    expect(final).toContain('<assistant index="1"><![CDATA[确认采用灰度发布]]></assistant>');
+    expect(final).not.toContain('<ask-user-question');
+    expect(final).not.toContain('表示向用户提问');
+  });
+
+  it('失败 ask 是普通 toolcall，不触发确认或 ask 格式说明', () => {
+    const entry: ViewEntry = {
+      kind: 'assistant',
+      lo: 1,
+      hi: 1,
+      text: '失败的调用',
+      toolName: 'ask_user_question',
+      callId: 'failed-ask',
+      toolArgs: '{"questions":[{"id":"q","question":"继续吗"}]}',
+      toolResult: 'Error: ask_user_question was aborted before the user answered',
+    };
+    const state = new CompressionState(viewOf([entry]));
+    const before = state.buildFinalBlock();
+    expect(before).toContain('type="toolcall" tool-name="ask_user_question" callId="failed-ask"');
+    expect(before).not.toContain('表示向用户提问');
+    expect(state.compressHistory({ index: 1, content: '用户中止提问' }).isError).toBe(false);
+    expect(state.complete().isError).toBe(false);
+    expect(state.buildFinalBlock()).toContain(
+      '<assistant index="1"><![CDATA[用户中止提问]]></assistant>',
+    );
+  });
+});
+
+describe('rewriteAskUserQuestion', () => {
+  it('只允许重写成功 getHistory 已返回的原始 ask', () => {
+    const state = new CompressionState(viewOf([originalAsk(1), originalAsk(3)]));
+    expect(rewrite(state).isError).toBe(true);
+    expect(state.getHistory({ start: -1, end: 1 }).isError).toBe(true);
+    expect(rewrite(state).isError).toBe(true);
+    expect(state.getHistory({ start: 1, end: 1 }).text).toContain('o1:灰度发布');
+    expect(rewrite(state).isError).toBe(false);
+    expect(rewrite(state, rewriteArgs(3)).isError).toBe(true);
+    expect(state.getHistory({ start: 3, end: 3 }).isError).toBe(false);
+    expect(rewrite(state, rewriteArgs(3)).isError).toBe(false);
+  });
+
+  it('严校验参数形态、目标、全部题序和纯文本字段', () => {
+    const state = new CompressionState(
+      viewOf([
+        originalAsk(1),
+        { kind: 'assistant', lo: 2, hi: 2, text: '普通消息' },
+        {
+          kind: 'assistant',
+          lo: 4,
+          hi: 4,
+          text: '<ask-user-question>q:旧题 a:旧答</ask-user-question>',
+          toolName: 'ask_user_question',
+          blockSeq: 10,
+        },
+      ]),
+    );
+    expect(state.getHistory({}).isError).toBe(false);
+    const valid = rewriteArgs();
+    const first = valid.qa[0];
+    const second = valid.qa[1];
+    const badArgs = [
+      null,
+      [],
+      'text',
+      { index: 1 },
+      { ...valid, index: 1.5 },
+      { ...valid, index: -1 },
+      { ...valid, index: '1' },
+      { ...valid, index: 3 },
+      { ...valid, index: 2 },
+      { ...valid, index: 4 },
+      { ...valid, extra: true },
+      { ...valid, options: [] },
+      { ...valid, qa: [] },
+      { ...valid, qa: [first] },
+      { ...valid, qa: [first, first] },
+      { ...valid, qa: [{ ...first, ordinal: 0 }, second] },
+      { ...valid, qa: [{ ...first, ordinal: 1.5 }, second] },
+      { ...valid, qa: [{ ...first, ordinal: '1' }, second] },
+      { ...valid, qa: [{ ...first, ordinal: 3 }, second] },
+      { ...valid, qa: [null, second] },
+      { ...valid, qa: [{ ...first, q: '' }, second] },
+      { ...valid, qa: [{ ...first, a: '   ' }, second] },
+      { ...valid, qa: [{ ...first, a: 42 }, second] },
+      { ...valid, qa: [{ ...first, q: '<![CDATA[题]]>' }, second] },
+      { ...valid, qa: [{ ...first, a: '<![CDATA[答]]>' }, second] },
+      { ...valid, qa: [{ ...first, options: [] }, second] },
+      { ...valid, qa: [{ ...first, extra: 'unknown' }, second] },
+    ];
+    for (const args of badArgs) {
+      const result = state.executeCall('rewriteAskUserQuestion', JSON.stringify(args));
+      expect(result.isError, JSON.stringify(args)).toBe(true);
+    }
+    expect(state.executeCall('rewriteAskUserQuestion', 'not-json').isError).toBe(true);
+    expect(rewrite(state).isError).toBe(false);
+  });
+
+  it('有效重提整体替换，无效提交不改变成功结果，查看仍返回原始 options', () => {
+    const state = new CompressionState(viewOf([originalAsk()]));
+    state.getHistory({});
+    expect(rewrite(state).isError).toBe(false);
+    const initial = state.buildFinalBlock();
+    expect(initial).toContain('a:采用灰度发布，先向少量用户开放。');
+    const replacement = rewriteArgs();
+    replacement.qa[0] = { ordinal: 1, q: '发布策略？', a: '灰度发布，先开放给少量用户。' };
+    expect(rewrite(state, replacement).isError).toBe(false);
+    const after = state.buildFinalBlock();
+    expect(after).toContain('q:发布策略？');
+    expect(after).not.toContain('a:采用灰度发布，先向少量用户开放。');
+    expect(
+      state.executeCall(
+        'rewriteAskUserQuestion',
+        JSON.stringify({ ...replacement, qa: [replacement.qa[0]] }),
+      ).isError,
+    ).toBe(true);
+    expect(state.buildFinalBlock()).toBe(after);
+    expect(state.getHistory({}).text).toContain('o2:全量发布');
+    expect(state.getHistory({}).text).toContain('a:第一个');
+  });
+
+  it('保留逐题 q/a 与 index，不输出 options，并支持 XML字面文本和 CDATA闭合字符', () => {
+    const state = new CompressionState(viewOf([originalAsk()]));
+    state.getHistory({});
+    const args = rewriteArgs();
+    args.qa[0] = {
+      ordinal: 1,
+      q: '保留 <xml>、比较 x < y\n及换行？',
+      a: '保留 & 和 a]]>b\n文字。',
+    };
+    expect(rewrite(state, args).isError).toBe(false);
+    expect(state.complete().isError).toBe(false);
+    const block = state.buildFinalBlock();
+    expect(block).toContain('<ask-user-question index="1">');
+    expect(block).toContain('q:保留 <xml>、比较 x < y\n及换行？');
+    expect(block).toContain('a:保留 & 和 a]]><![CDATA[]]]]><![CDATA[>b\n文字。');
+    expect(block).toContain('q:是否指定日期？\na:(未回答)');
+    expect(block).not.toContain('o1:');
+    expect(block).not.toContain('o2:');
+    expect(block).not.toContain('全量发布');
+    const reflect = new CompressionState(buildReflectView([{ text: block, seq: 10 }]));
+    expect(reflect.complete().isError).toBe(false);
+    expect(reflect.buildFinalBlock()).toBe(block);
+    expect(reflect.compressHistory({ index: 1, content: '旧问答摘要' }).isError).toBe(true);
+    expect(reflect.compressHistory({ index: 1, content: '旧问答摘要' }).isError).toBe(false);
+  });
+});
+
+describe('原始 ask 路径切换', () => {
+  it('首次压缩阻止后可以改走重写', () => {
+    const state = new CompressionState(viewOf([originalAsk()]));
+    expect(state.compressHistory({ index: 1, content: '问答摘要' }).isError).toBe(true);
+    state.getHistory({});
+    expect(rewrite(state).isError).toBe(false);
+    expect(state.complete().isError).toBe(false);
+    expect(state.buildFinalBlock()).toContain('<ask-user-question index="1">');
+  });
+
+  it('重写后直接压缩仍先阻止再放行，覆盖后拒绝重写且仅输出摘要', () => {
+    const state = new CompressionState(
+      viewOf([originalAsk(1), { kind: 'assistant', lo: 2, hi: 2, text: '后续执行' }]),
+    );
+    state.getHistory({});
+    expect(rewrite(state).isError).toBe(false);
+    expect(state.compressHistory({ start: 1, end: 2, content: '最终摘要' }).isError).toBe(true);
+    expect(state.buildFinalBlock()).toContain('<ask-user-question index="1">');
+    expect(state.compressHistory({ start: 1, end: 2, content: '最终摘要' }).isError).toBe(false);
+    expect(rewrite(state).isError).toBe(true);
+    expect(state.complete().isError).toBe(false);
+    const block = state.buildFinalBlock();
+    expect(block).toContain('<assistant start="1" end="2"><![CDATA[最终摘要]]></assistant>');
+    expect(block).not.toContain('<ask-user-question');
+    expect(block).not.toContain('采用灰度发布');
+  });
+});
+
+describe('原始 ask 完成门禁', () => {
+  it('未处理或仅首次阻止不能完成，构建同样拒绝', () => {
+    const state = new CompressionState(viewOf([originalAsk(1), originalAsk(3)]));
+    const first = state.complete();
+    expect(first.isError).toBe(true);
+    expect(first.text).toContain('1');
+    expect(first.text).toContain('3');
+    expect(state.completed).toBe(false);
+    expect(() => state.buildFinalBlock()).toThrow();
+    expect(state.compressHistory({ index: 1, content: '摘要' }).isError).toBe(true);
+    state.getHistory({ start: 3, end: 3 });
+    expect(rewrite(state, rewriteArgs(3)).isError).toBe(false);
+    const pending = state.executeCall('completeCompression', '{}');
+    expect(pending.isError).toBe(true);
+    expect(pending.text).toContain('1');
+    expect(state.completed).toBe(false);
+    expect(() => state.buildFinalBlock()).toThrow();
+    expect(state.compressHistory({ index: 1, content: '摘要' }).isError).toBe(false);
+    expect(state.complete().isError).toBe(false);
+    expect(state.buildFinalBlock()).toContain('<assistant index="1"><![CDATA[摘要]]></assistant>');
+    expect(state.buildFinalBlock()).toContain('<ask-user-question index="3">');
+  });
+});
+
+describe('原始 ask 处理计数', () => {
+  it('原始 ask 存在标记恒定，重写计数只包含未被覆盖的成功结果', () => {
+    const state = new CompressionState(viewOf([originalAsk(1), originalAsk(3)]));
+    expect(state.hasPendingAsks).toBe(true);
+    expect(state.rewriteCount).toBe(0);
+    state.getHistory({});
+    expect(rewrite(state).isError).toBe(false);
+    expect(state.rewriteCount).toBe(1);
+    expect(rewrite(state).isError).toBe(false);
+    expect(state.rewriteCount).toBe(1);
+    expect(rewrite(state, rewriteArgs(3)).isError).toBe(false);
+    expect(state.rewriteCount).toBe(2);
+    expect(state.compressHistory({ index: 1, content: '直接摘要' }).isError).toBe(true);
+    expect(state.rewriteCount).toBe(2);
+    expect(state.compressHistory({ index: 1, content: '直接摘要' }).isError).toBe(false);
+    expect(state.rewriteCount).toBe(1);
+    expect(state.hasPendingAsks).toBe(true);
+    expect(state.complete().isError).toBe(false);
+    expect(state.hasPendingAsks).toBe(true);
+    const historical = new CompressionState(
+      buildReflectView([{ text: state.buildFinalBlock(), seq: 10 }]),
+    );
+    expect(historical.hasPendingAsks).toBe(false);
+    expect(historical.rewriteCount).toBe(0);
+    expect(historical.complete().isError).toBe(false);
+  });
+});
 
 describe('getHistory', () => {
   it('start/end 缺省返回要求区间全部条目，带区间注释头，无 history 包裹', () => {
