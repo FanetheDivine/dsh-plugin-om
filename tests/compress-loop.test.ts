@@ -371,6 +371,40 @@ describe('runCompressionLoop', () => {
     expect(result.recordSessionId).toBe(record?.id);
   });
 
+  it('retryTarget 透传到会话记录标题：成功与失败日志均带重压缩标记', async () => {
+    const retryTarget = { provider: 'alt', model: 'big-1' };
+    /** 读取首个落盘子会话的 descriptor label。 */
+    const labelOf = (ctx: ReturnType<typeof makeCtx>): string | undefined => {
+      const data = ctx._createdSessions[0]?.session
+        .snapshotEvents()
+        .find((e) => e.type === 'subagent/descriptor')?.data;
+      return (data as { label?: string } | undefined)?.label;
+    };
+    const completing = () =>
+      makeCtx({
+        llmStreamFactory: () => roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] }),
+      });
+
+    const okCtx = completing();
+    const ok = await runCompressionLoop(okCtx, makeSession(), { ...loopOptions(), retryTarget });
+    expect(ok.ok).toBe(true);
+    expect(labelOf(okCtx)).toContain('会话记录');
+    expect(labelOf(okCtx)).toContain('重压缩 alt/big-1');
+
+    const failCtx = makeCtx({ llmStreamFactory: () => roundChunks({ text: '纯文本' }) });
+    const failed = await runCompressionLoop(failCtx, makeSession(), {
+      ...loopOptions(),
+      retryTarget,
+    });
+    expect(failed.ok).toBe(false);
+    expect(labelOf(failCtx)).toContain('失败日志');
+    expect(labelOf(failCtx)).toContain('重压缩 alt/big-1');
+
+    const plainCtx = completing();
+    await runCompressionLoop(plainCtx, makeSession(), loopOptions());
+    expect(labelOf(plainCtx)).not.toContain('重压缩');
+  });
+
   it('请求选项：system 为共享提示词、携带压缩工具、purpose=compaction、首条消息为任务文本', async () => {
     const ctx = makeCtx({
       llmStreamFactory: () => roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] }),

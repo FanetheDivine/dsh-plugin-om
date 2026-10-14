@@ -152,6 +152,8 @@ export type CompressionLoopOptions = {
   debug: boolean;
   /** 压缩请求的思考等级（已按目标模型校验）；undefined 用模型默认。 */
   reasoningEffort?: ReasoningEffortId;
+  /** 换模型重压缩的目标模型（仅标记会话记录标题）；常规压缩缺省。 */
+  retryTarget?: RoutedTarget;
   /** 取消信号。 */
   signal?: AbortSignal;
 };
@@ -286,6 +288,7 @@ export async function runCompressionLoop(
       stats,
       success,
       debug: options.debug,
+      ...(options.retryTarget === undefined ? {} : { retryTarget: options.retryTarget }),
     });
   const failWith = async (error: string, aborted: boolean): Promise<CompressionFailure> => {
     const stats = buildStats();

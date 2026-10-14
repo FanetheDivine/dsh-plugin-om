@@ -2,7 +2,7 @@
  * 压缩会话记录落盘：把工具压缩循环的完整会话消息组以 seed 事件重建为一个 one-shot
  * 诊断子会话（header origin 'subagent' + 首事件 subagent/descriptor），在父会话登记
  * subagent/catalog，使其出现在宿主子智能体列表并随父会话日志导出。成功与失败均落盘
- * （label 区分）。导出 recordCompressionSession / compressionRecordLabel /
+ * （label 区分，换模型重压缩另带目标模型标记）。导出 recordCompressionSession / compressionRecordLabel /
  * COMPACTION_LOG_PROVIDER。
  *
  * - 子会话经 ctx.sessions.create(seed) 构造：每个事件携带从循环统计重建的 time
@@ -29,7 +29,7 @@ import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent';
 import type { CompressionStats } from './compress-loop.ts';
 import { makeLogger } from './logger.ts';
 import type { Context, Session, SessionEvent, SessionEventMap } from './types.ts';
-import { uuid } from './utils.ts';
+import { type RoutedTarget, uuid } from './utils.ts';
 
 /** 诊断子会话的 descriptor provider（宿主子代理列表识别用）。 */
 export const COMPACTION_LOG_PROVIDER = 'om-compaction-log';
@@ -41,13 +41,19 @@ function phaseLabel(phase: 'observe' | 'reflect' | undefined): string {
   return '压缩';
 }
 
-/** 压缩会话记录 label：成功为会话记录、失败为失败日志，均含压缩阶段与轮数。 */
+/**
+ * 压缩会话记录 label：成功为会话记录、失败为失败日志，均含压缩阶段与轮数；
+ * 换模型重压缩传入 retryTarget，label 末尾追加「重压缩 provider/model」以区分。
+ */
 export function compressionRecordLabel(
   phase: 'observe' | 'reflect' | undefined,
   rounds: number,
   success: boolean,
+  retryTarget?: RoutedTarget,
 ): string {
-  return `OM 压缩${success ? '会话记录' : '失败日志'}（${phaseLabel(phase)} · ${rounds} 轮）`;
+  const retry =
+    retryTarget === undefined ? '' : ` · 重压缩 ${retryTarget.provider}/${retryTarget.model}`;
+  return `OM 压缩${success ? '会话记录' : '失败日志'}（${phaseLabel(phase)} · ${rounds} 轮${retry}）`;
 }
 
 /**
@@ -230,6 +236,8 @@ export async function recordCompressionSession(
     success: boolean;
     /** 插件 debug 开关（落盘失败的 warn 是否带步骤细节）。 */
     debug: boolean;
+    /** 换模型重压缩的目标模型（label 区分用）；常规压缩缺省。 */
+    retryTarget?: RoutedTarget;
   },
 ): Promise<string | undefined> {
   const logger = makeLogger(ctx, options.debug);
@@ -239,6 +247,7 @@ export async function recordCompressionSession(
       options.phase,
       options.stats.rounds.length,
       options.success,
+      options.retryTarget,
     );
     const seed = buildCompressionSeed(options.messages, options.stats, label);
     const child = ctx.sessions.create(SessionId(`om-compaction-log-${uuid()}`), {

@@ -126,6 +126,36 @@ function times(child: Session | undefined, type: string): number[] {
 }
 
 describe('recordCompressionSession：压缩会话记录落盘', () => {
+  it('重压缩目标写入标题与父会话目录，普通压缩标题保持原样', async () => {
+    const retryTarget = { provider: 'alt', model: 'vendor/big-1' };
+    expect(compressionRecordLabel('observe', 3, true, retryTarget)).toBe(
+      'OM 压缩会话记录（观察 · 3 轮 · 重压缩 alt/vendor/big-1）',
+    );
+    expect(compressionRecordLabel('reflect', 1, false, retryTarget)).toBe(
+      'OM 压缩失败日志（反思 · 1 轮 · 重压缩 alt/vendor/big-1）',
+    );
+    expect(compressionRecordLabel('observe', 3, true)).toBe('OM 压缩会话记录（观察 · 3 轮）');
+    const ctx = makeCtx();
+    const parent = makeSession({ events: twoCallFlow() });
+    await recordCompressionSession(ctx, parent, {
+      phase: 'observe',
+      messages: loopMessages(),
+      stats: makeStats([{ durationMs: 100 }]),
+      success: true,
+      debug: false,
+      retryTarget,
+    });
+    const label = compressionRecordLabel('observe', 1, true, retryTarget);
+    expect(parent.snapshotEvents().at(-1)).toMatchObject({
+      type: 'subagent/catalog',
+      data: { label },
+    });
+    const descriptor = ctx._createdSessions[0]?.session
+      .snapshotEvents()
+      .find((e) => e.type === 'subagent/descriptor');
+    expect(descriptor?.data).toMatchObject({ label });
+  });
+
   it('header 元数据：origin subagent + parentSession + delegationDepth = 父 + 1 + cwd 继承', async () => {
     const ctx = makeCtx();
     const parent = makeSession({
