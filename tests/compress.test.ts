@@ -451,14 +451,14 @@ describe('观察压缩区间 computeCompressRange', () => {
 });
 
 describe('观察待定标记 findObservePending', () => {
-  /** 构造 om/observe-pending 信封事件（seq 由 makeSession 按日志下标补齐）。 */
+  /** 构造 plugin:dsh-plugin-om:observe-pending 事件（seq 由 makeSession 按日志下标补齐）。 */
   function pendingEvent(triggerMessageIndex: number): SessionEvent {
-    return makeOmEvent('om/observe-pending', { triggerMessageIndex });
+    return makeOmEvent('plugin:dsh-plugin-om:observe-pending', { triggerMessageIndex });
   }
 
-  /** 构造 om/observe-invalidate 信封事件。 */
+  /** 构造 plugin:dsh-plugin-om:observe-invalidate 事件。 */
   function invalidateEvent(pendingSeq: number): SessionEvent {
-    return makeOmEvent('om/observe-invalidate', { pendingSeq });
+    return makeOmEvent('plugin:dsh-plugin-om:observe-invalidate', { pendingSeq });
   }
 
   it('无标记事件时返回 undefined', () => {
@@ -754,12 +754,12 @@ describe('压缩目标与思考等级配置（compressProvider / compressModel /
     };
   }
 
-  /** 读取 om/warning 警告（session.snapshotEvents() 中的 log-only 信封事件），按 problem 过滤。 */
+  /** 读取 plugin:dsh-plugin-om:warning 警告，按 problem 过滤。 */
   function warningsOf(
     session: Session,
     problem: string,
   ): Array<{ problem: string; message: string }> {
-    return findOmEvents(session, 'om/warning')
+    return findOmEvents(session, 'plugin:dsh-plugin-om:warning')
       .map((om) => om.data)
       .filter((warning) => warning.problem === problem);
   }
