@@ -5,9 +5,11 @@
 
 import type { ChatNode } from '@deepseek-ai/dsh-client-ui-chat/client';
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots';
+import type { SessionId } from '@deepseek-ai/dsh-session/types';
+import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { NS } from '../../src/client/locales.ts';
 import { zh } from '../../src/client/locales.ts';
 import { OmCompactionCard } from '../../src/client/OmCompactionCard.tsx';
@@ -132,5 +134,118 @@ describe('消息列表卡片水平滚动适配', () => {
       root.unmount();
     });
     container.remove();
+  });
+
+  describe('查看诊断子会话', () => {
+    type CompactionData = ChatNode<'om-compaction'>['data'];
+
+    const baseData: CompactionData = {
+      running: false,
+      phase: null,
+      error: null,
+      diagnosticSessionId: null,
+      summaryEventSeq: 1,
+      shadowedItemCount: 10,
+      shadowedCharCount: 1000,
+      shadowedTokenCount: 200,
+      summaryCharCount: 200,
+      summaryTokenCount: 50,
+      summary: '摘要文本',
+    };
+
+    function nodeOf(data: Partial<CompactionData>): ChatNode<'om-compaction'> {
+      return {
+        key: 'om-compaction:1',
+        id: 'om-compaction:1',
+        kind: 'om-compaction',
+        target: 'chat',
+        anchorSeq: 1,
+        location: { kind: 'unresolved' },
+        visibility: 'visible',
+        data: { ...baseData, ...data },
+      };
+    }
+
+    function mount(
+      data: Partial<CompactionData>,
+      openSession?: (target: SubagentAddress) => void,
+    ): { container: HTMLElement; unmount: () => void } {
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      const root = createRoot(container);
+      act(() => {
+        root.render(
+          <OmCompactionCard
+            node={nodeOf(data)}
+            t={mockTranslate}
+            sessionId={'parent-1' as SessionId}
+            {...(openSession === undefined ? {} : { openSession })}
+          />,
+        );
+      });
+      return {
+        container,
+        unmount: () => {
+          act(() => {
+            root.unmount();
+          });
+          container.remove();
+        },
+      };
+    }
+
+    function click(element: Element | null): void {
+      act(() => {
+        element?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+    }
+
+    it('成功卡片点击「查看」以 one-shot 地址跳转诊断子会话，且不切换展开', () => {
+      const openSession = vi.fn();
+      const view = mount({ diagnosticSessionId: 'diag-1' }, openSession);
+      const button = view.container.querySelector('[data-om-compaction-inspect]');
+      expect(button?.textContent).toContain('查看');
+      click(button);
+      expect(openSession).toHaveBeenCalledExactlyOnceWith({
+        parentSessionId: 'parent-1',
+        childSessionId: 'diag-1',
+        mode: 'one-shot',
+      });
+      expect(view.container.querySelector('.om-compaction-body')).toBeNull();
+      view.unmount();
+    });
+
+    it('summary 不可展开时仍可「查看」', () => {
+      const openSession = vi.fn();
+      const view = mount({ diagnosticSessionId: 'diag-1', summary: null }, openSession);
+      click(view.container.querySelector('[data-om-compaction-inspect]'));
+      expect(openSession).toHaveBeenCalledOnce();
+      view.unmount();
+    });
+
+    it('失败行有 id 时可「查看」，点击不展开错误详情', () => {
+      const openSession = vi.fn();
+      const view = mount({ error: 'LLM 429', diagnosticSessionId: 'diag-fail' }, openSession);
+      click(view.container.querySelector('[data-om-compaction-inspect]'));
+      expect(openSession).toHaveBeenCalledExactlyOnceWith({
+        parentSessionId: 'parent-1',
+        childSessionId: 'diag-fail',
+        mode: 'one-shot',
+      });
+      expect(view.container.querySelector('.om-compaction-body')).toBeNull();
+      view.unmount();
+    });
+
+    it('无 id、无 openSession 或进行中时不渲染「查看」', () => {
+      const openSession = vi.fn();
+      for (const view of [
+        mount({ diagnosticSessionId: null }, openSession),
+        mount({ diagnosticSessionId: 'diag-1' }),
+        mount({ running: true, phase: 'observe', diagnosticSessionId: 'diag-1' }, openSession),
+      ]) {
+        expect(view.container.querySelector('[data-om-compaction-inspect]')).toBeNull();
+        view.unmount();
+      }
+    });
   });
 });
