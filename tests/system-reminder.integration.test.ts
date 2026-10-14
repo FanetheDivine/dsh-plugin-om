@@ -389,6 +389,43 @@ describe('system-reminder 的真实宿主集成', () => {
     }
   });
 
+  it('表层保留旧进度提醒时补发当前文本，后续请求不重复补发', async () => {
+    const { app, adapter, handle } = await stackPromptHost(true, true);
+    try {
+      const previousReminder: SystemReminder = {
+        kind: PROGRESS_REMINDER.kind,
+        text: [
+          '<system-reminder>',
+          '在工作过程中同步输出文本，简洁记录关键结论与后续规划。思考内容不计入记录。',
+          '- 每个阶段性工作开始前记录一次，一个阶段通常是 1-5 个工具调用',
+          '- 禁止连续 10 个以上工具调用而无记录',
+          '- 记录后在同一回复中继续调用工具，不要停下等待',
+          '- 最终答案仅总结结果，不能替代这些记录',
+          '</system-reminder>',
+        ].join('\n'),
+      };
+      handle.agent.session.append(
+        'user/message',
+        createUserMessage({
+          content: [{ type: 'text', text: previousReminder.text }],
+          source: { kind: previousReminder.kind, form: 'instructions' },
+        }),
+        { surfaceOp: 'append' },
+      );
+
+      for (let index = 0; index < 2; index += 1) {
+        const request = await runTurn(adapter, handle.agent, `更新提醒后的任务 ${index}。`);
+        expectSystemUntouched(requestSystem(request));
+        expect(requestReminders(request, previousReminder)).toBe(1);
+        expect(bothReminders(request)).toEqual([1, 1]);
+        expect(bothLogged(handle.agent)).toEqual([2, 1]);
+      }
+    } finally {
+      await handle.dispose();
+      await app.fiber.dispose();
+    }
+  });
+
   it('提醒被表层替换遮蔽后，下个请求补发一条且请求中仍只有一条', async () => {
     const { app, adapter, handle } = await stackPromptHost(true, true);
     try {
