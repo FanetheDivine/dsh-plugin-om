@@ -439,6 +439,82 @@ describe('omCompactionDefinition.buildViewNode', () => {
     });
   });
 });
+describe('omCompactionDefinition 诊断子会话 id', () => {
+  const checkpoint = matchOf(
+    checkpointEvent(8, { kind: PLUGIN_SOURCE_KIND, compactionId: 'om-1' }),
+  );
+
+  function summaryWith(extra: Record<string, unknown>): ConversationMatch {
+    return matchOf(
+      lifecycle('compaction/summary', 6, {
+        compactionId: 'om-1',
+        summary: [{ type: 'text', text: 's' }],
+        shadowedSeqs: [1],
+        shadowedTokenCount: 9,
+        shadowedCharCount: 88,
+        ...extra,
+      }),
+    );
+  }
+
+  function endWith(extra: Record<string, unknown>): ConversationMatch {
+    return matchOf(lifecycle('compaction/end', 9, { compactionId: 'om-1', ...extra }));
+  }
+
+  function build(state: Record<string, ConversationMatch>, matches: ConversationMatch[]) {
+    return omCompactionDefinition.buildViewNode?.(contextOf(matches, state));
+  }
+
+  it('成功卡片读取 summary 载荷的 diagnosticSessionId', () => {
+    const summary = summaryWith({ diagnosticSessionId: 'diag-1' });
+    const node = build({ summary, checkpoint }, [summary, checkpoint]);
+    expect(node?.data).toMatchObject({ diagnosticSessionId: 'diag-1' });
+  });
+
+  it('summary 缺失时回落 compaction/end 载荷的 diagnosticSessionId', () => {
+    const end = endWith({ diagnosticSessionId: 'diag-end' });
+    const node = build({ checkpoint, end }, [checkpoint, end]);
+    expect(node?.data).toMatchObject({ diagnosticSessionId: 'diag-end' });
+  });
+
+  it('summary 与 end 同时带 id 时 summary 优先', () => {
+    const summary = summaryWith({ diagnosticSessionId: 'diag-summary' });
+    const end = endWith({ diagnosticSessionId: 'diag-end' });
+    const node = build({ summary, checkpoint, end }, [summary, checkpoint, end]);
+    expect(node?.data).toMatchObject({ diagnosticSessionId: 'diag-summary' });
+  });
+
+  it('失败行读取 compaction/end 载荷的 diagnosticSessionId', () => {
+    const start = matchOf(
+      lifecycle('compaction/start', 5, { compactionId: 'om-1', turn: 1, phase: 'observe' }),
+      'start',
+    );
+    const end = endWith({ error: 'LLM 429', diagnosticSessionId: 'diag-fail' });
+    const node = omCompactionDefinition.buildViewNode?.(contextOf([start, end], { end }));
+    expect(node?.data).toMatchObject({ error: 'LLM 429', diagnosticSessionId: 'diag-fail' });
+  });
+
+  it('缺失、空串或非字符串的 id 回落为 null', () => {
+    for (const value of [undefined, '', 42, { id: 'x' }]) {
+      const summary = summaryWith(value === undefined ? {} : { diagnosticSessionId: value });
+      const node = build({ summary, checkpoint }, [summary, checkpoint]);
+      expect(node?.data).toMatchObject({ diagnosticSessionId: null });
+    }
+  });
+
+  it('进行中提示行与窗外 summary 的 id 为 null', () => {
+    const start = matchOf(
+      lifecycle('compaction/start', 5, { compactionId: 'om-1', turn: 1 }),
+      'start',
+    );
+    expect(omCompactionDefinition.buildViewNode?.(contextOf([start]))?.data).toMatchObject({
+      diagnosticSessionId: null,
+    });
+    expect(build({ checkpoint }, [checkpoint])?.data).toMatchObject({
+      diagnosticSessionId: null,
+    });
+  });
+});
 
 describe('omWarningDefinition（plugin:dsh-plugin-om:warning 事件的功能降级警告行）', () => {
   /** 构造 plugin:dsh-plugin-om:warning 事件。 */

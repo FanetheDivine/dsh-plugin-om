@@ -7,7 +7,7 @@
 ## 功能
 
 - 自动压缩主会话历史，并在摘要过大时再次合并
-- OM 启用时以 system-reminder 消息提示模型边做边简述计划与进展，压缩后自动补发
+- OM 启用时以 system-reminder 消息提示模型边做边以文本记录结论与规划，压缩后自动补发
 - recall 启用或表层存在压缩历史块时以 system-reminder 消息说明完整消息定义，压缩后自动补发
 - 通过工具循环生成摘要，保留用户消息、系统消息和未压缩内容
 - 保留工具加载与手动加载的 skill 原文，并在压缩前再次确认
@@ -118,7 +118,7 @@ src/
     ├── om-config-controller.ts  # 宿主配置表单、草稿和原子保存
     ├── OmConfigCard.tsx         # 十四项双语配置控件
     ├── definition.ts            # 压缩卡片定义：生命周期事件、检查点替换与警告事件
-    ├── OmCompactionCard.tsx     # 压缩结果与错误卡片
+    ├── OmCompactionCard.tsx     # 压缩结果与错误卡片，可跳转诊断子会话
     ├── OmWarningCard.tsx        # 功能降级警告行
     ├── format.ts                # 统计数字紧凑格式化
     └── locales.ts               # 中英文文案
