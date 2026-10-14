@@ -522,7 +522,7 @@ describe('真实 agent loop + mock AI', () => {
           }),
         );
         expect(JSON.stringify(parent.events)).toContain(ORIGINAL);
-        // 不再注入统计文本；循环以 seed 重建时间线，turn 边界与任务指令仍在
+        // 循环以 seed 重建时间线：turn 边界与任务指令在，且无统计文本消息
         expect(JSON.stringify(child.events)).not.toContain('【压缩统计】');
         expect(child.events.some((event) => event.type === 'turn/end')).toBe(true);
         expect(child.events.some((event) => event.type === 'user/message')).toBe(true);

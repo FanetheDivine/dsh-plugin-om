@@ -282,7 +282,6 @@ export async function runCompressionLoop(
   ): Promise<string | undefined> =>
     recordCompressionSession(ctx, session, {
       phase: options.phase,
-      target: options.target,
       messages,
       stats,
       success,

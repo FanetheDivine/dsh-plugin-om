@@ -354,7 +354,7 @@ describe('runCompressionLoop', () => {
     const descriptor = events.find((e) => e.type === 'subagent/descriptor');
     expect((descriptor?.data as { label?: string })?.label).toContain('会话记录');
     expect((descriptor?.data as { label?: string })?.label).toContain('3 轮');
-    // 消息组：user 指令为唯一 user/message（无注入统计消息），工具结果（getHistory、
+    // 消息组：user 指令为唯一 user/message，工具结果（getHistory、
     // 两次 compressHistory、completeCompression 共 4 条）为 tool/result
     expect(events.filter((e) => e.type === 'user/message')).toHaveLength(1);
     expect(events.filter((e) => e.type === 'assistant/message')).toHaveLength(3);
@@ -432,7 +432,7 @@ describe('runCompressionLoop', () => {
     // 只发起一轮请求；getHistory（t2）未执行，无对应 tool/result（assistant 消息原样保留其调用块）
     expect(ctx._llmCalls).toHaveLength(1);
     const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
-    // 指令为唯一 user/message（无注入统计消息）；completeCompression 结果为 tool/result
+    // 指令为唯一 user/message；completeCompression 结果为 tool/result
     expect(events.filter((e) => e.type === 'user/message')).toHaveLength(1);
     expect(events.filter((e) => e.type === 'assistant/message')).toHaveLength(1);
     // 压缩只执行 completeCompression，未执行的 t2 被补为可冷读取的失败结果。

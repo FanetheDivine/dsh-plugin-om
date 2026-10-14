@@ -19,8 +19,6 @@ import { PLUGIN_SOURCE_KIND } from '../src/constants.ts';
 import type { Message, Session, SessionEvent, SessionEventMap, TokenUsage } from '../src/types.ts';
 import { makeCtx, makeSession, textBlock, twoCallFlow } from './helpers.ts';
 
-const TARGET = { provider: 'test', model: 'test-model' };
-
 /** 构造循环统计：startedAt=1000、completedAt=6000，逐轮 startedAt 累加、耗时与 usage 可指定。 */
 function makeStats(
   rounds: Array<{ durationMs: number; usage?: { inputTokens: number; outputTokens: number } }>,
@@ -136,7 +134,6 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     });
     const id = await recordCompressionSession(ctx, parent, {
       phase: 'observe',
-      target: TARGET,
       messages: loopMessages(),
       stats: makeStats([{ durationMs: 100, usage: { inputTokens: 10, outputTokens: 5 } }]),
       success: true,
@@ -176,12 +173,11 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     expect(write?.closes).toBe(1);
   });
 
-  it('成功：descriptor 载荷与循环消息组原样落盘，事件序列不含注入统计消息', async () => {
+  it('成功：descriptor 载荷与循环消息组原样落盘，事件序列仅含循环消息', async () => {
     const ctx = makeCtx();
     const parent = makeSession({ events: twoCallFlow() });
     const id = await recordCompressionSession(ctx, parent, {
       phase: 'reflect',
-      target: TARGET,
       messages: loopMessages(),
       stats: makeStats([
         { durationMs: 100, usage: { inputTokens: 10, outputTokens: 5 } },
@@ -203,7 +199,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     });
     expect(compressionRecordLabel('reflect', 2, true)).toContain('会话记录');
     expect(compressionRecordLabel('observe', 1, false)).toContain('失败日志');
-    // 消息组原样：user 指令 + assistant（含 tool-call 块）+ tool 结果消息，无尾部统计消息
+    // 消息组原样：user 指令 + assistant（含 tool-call 块）+ tool 结果消息
     const { user, assistant, tool } = child
       ? messageEvents(child)
       : { user: [], assistant: [], tool: [] };
@@ -237,7 +233,6 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     const ctx = makeCtx();
     await recordCompressionSession(ctx, makeSession(), {
       phase: 'observe',
-      target: TARGET,
       messages: twoRoundMessages(),
       stats: makeStats([
         { durationMs: 100, usage: { inputTokens: 10, outputTokens: 5 } },
@@ -263,11 +258,61 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     expect(all).toEqual([...all].sort((a, b) => a - b));
   });
 
+  it('轮次统计少于 assistant 数时回落：缺统计的 assistant 止于循环结束时刻', async () => {
+    const ctx = makeCtx();
+    await recordCompressionSession(ctx, makeSession(), {
+      phase: 'observe',
+      messages: twoRoundMessages(),
+      stats: makeStats([{ durationMs: 100, usage: { inputTokens: 10, outputTokens: 5 } }]),
+      success: false,
+      debug: false,
+    });
+    const child = ctx._createdSessions[0]?.session;
+    // 第二个 assistant 无对应轮次：起于上一轮结束，止于循环结束
+    expect(times(child, 'step/start')).toEqual([1_000, 1_100]);
+    expect(times(child, 'assistant/message')).toEqual([1_100, 6_000]);
+    expect(times(child, 'tool/result')).toEqual([1_100, 6_000]);
+    expect(times(child, 'turn/end')).toEqual([6_000]);
+    const assistant = (child?.snapshotEvents() ?? []).filter((e) => e.type === 'assistant/message');
+    expect('usage' in ((assistant[1]?.data ?? {}) as Record<string, unknown>)).toBe(false);
+    const all = (child?.snapshotEvents() ?? []).map((e) => e.time);
+    expect(all).toEqual([...all].sort((a, b) => a - b));
+  });
+
+  it('轮间提醒消息与上一轮 assistant 同刻', async () => {
+    const ctx = makeCtx();
+    const [instruction, , , second, secondTool] = twoRoundMessages();
+    const textOnly = {
+      id: 'm2' as never,
+      role: 'assistant',
+      content: [{ type: 'text', text: '仅文本' }],
+      source: { kind: 'model', provider: 'test', model: 'test-model' },
+    } as unknown as Message;
+    const nudge = {
+      id: 'm3' as never,
+      role: 'user',
+      content: [textBlock('请调用工具')],
+      source: { kind: PLUGIN_SOURCE_KIND },
+    } as unknown as Message;
+    await recordCompressionSession(ctx, makeSession(), {
+      phase: 'observe',
+      messages: [instruction, textOnly, nudge, second, secondTool].filter(
+        (m): m is Message => m !== undefined,
+      ),
+      stats: makeStats([{ durationMs: 100 }, { durationMs: 200 }]),
+      success: true,
+      debug: false,
+    });
+    const child = ctx._createdSessions[0]?.session;
+    expect(times(child, 'user/message')).toEqual([1_000, 1_100]);
+    expect(times(child, 'step/start')).toEqual([1_000, 1_100]);
+    expect(times(child, 'assistant/message')).toEqual([1_100, 1_300]);
+  });
+
   it('逐轮 usage 附加到对应 assistant/message；缺 usage 的轮次不写该字段', async () => {
     const ctx = makeCtx();
     await recordCompressionSession(ctx, makeSession(), {
       phase: 'observe',
-      target: TARGET,
       messages: twoRoundMessages(),
       stats: makeStats([
         { durationMs: 100, usage: { inputTokens: 10, outputTokens: 5 } },
@@ -291,7 +336,6 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     const ctx = makeCtx();
     const id = await recordCompressionSession(ctx, makeSession(), {
       phase: 'observe',
-      target: TARGET,
       messages: loopMessages().slice(0, 2),
       stats: makeStats([{ durationMs: 50 }]),
       success: false,
@@ -313,7 +357,6 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     const parent = makeSession();
     await recordCompressionSession(ctx, parent, {
       phase: 'observe',
-      target: TARGET,
       messages: loopMessages(),
       stats: makeStats([{ durationMs: 100 }]),
       success: false,
@@ -338,7 +381,6 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     };
     const id = await recordCompressionSession(ctx, makeSession(), {
       phase: 'observe',
-      target: TARGET,
       messages: loopMessages(),
       stats: makeStats([{ durationMs: 100 }]),
       success: false,
@@ -357,7 +399,6 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       name === 'sessionPersistence' ? undefined : originalGet(name);
     const id = await recordCompressionSession(ctx, makeSession(), {
       phase: 'observe',
-      target: TARGET,
       messages: loopMessages(),
       stats: makeStats([]),
       success: true,
@@ -382,7 +423,6 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     const parent = makeSession();
     const id = await recordCompressionSession(ctx, parent, {
       phase: 'observe',
-      target: TARGET,
       messages: loopMessages(),
       stats: makeStats([{ durationMs: 100 }]),
       success: true,
@@ -419,7 +459,6 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       const parent = makeSession();
       const id = await recordCompressionSession(ctx, parent, {
         phase: 'observe',
-        target: TARGET,
         messages: loopMessages(),
         stats: makeStats([{ durationMs: 100 }]),
         success: false,
@@ -452,7 +491,6 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     };
     const id = await recordCompressionSession(ctx, makeSession(), {
       phase: 'observe',
-      target: TARGET,
       messages: loopMessages(),
       stats: makeStats([{ durationMs: 100, usage: { inputTokens: 10, outputTokens: 5 } }]),
       success: true,
@@ -469,7 +507,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       inputTokens: 10,
       outputTokens: 5,
     });
-    // 任务指令落盘为 user/message（无注入统计消息）
+    // 任务指令落盘为唯一 user/message
     expect(events.filter((e) => e.type === 'user/message')).toHaveLength(1);
     const tool = events.filter((e) => e.type === 'tool/result');
     expect(tool).toHaveLength(1);

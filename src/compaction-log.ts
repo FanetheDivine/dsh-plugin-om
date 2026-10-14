@@ -29,7 +29,7 @@ import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent';
 import type { CompressionStats } from './compress-loop.ts';
 import { makeLogger } from './logger.ts';
 import type { Context, Session, SessionEvent, SessionEventMap } from './types.ts';
-import { type RoutedTarget, uuid } from './utils.ts';
+import { uuid } from './utils.ts';
 
 /** 诊断子会话的 descriptor provider（宿主子代理列表识别用）。 */
 export const COMPACTION_LOG_PROVIDER = 'om-compaction-log';
@@ -222,8 +222,6 @@ export async function recordCompressionSession(
   options: {
     /** 压缩 pass（记录 label 用）。 */
     phase: 'observe' | 'reflect' | undefined;
-    /** 摘要调用的路由目标（保留于调用契约）。 */
-    target: RoutedTarget;
     /** 循环全部消息（user 指令/提醒、assistant 含 tool-call、tool-result，原样）。 */
     messages: readonly Message[];
     /** 循环统计（label 轮数、时间线重建与逐轮 usage 来源）。 */
