@@ -44,6 +44,7 @@ describe('消息列表卡片水平滚动适配', () => {
         running: false,
         phase: null,
         error: null,
+        diagnosticSessionId: null,
         summaryEventSeq: 1,
         shadowedItemCount: 10,
         shadowedCharCount: 1000,
