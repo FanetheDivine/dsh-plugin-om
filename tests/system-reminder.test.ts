@@ -8,6 +8,7 @@ import {
 } from '@deepseek-ai/dsh-llm';
 import { describe, expect, it } from 'vitest';
 import { COMPLETE_MESSAGE_DEFINITION, isPluginOwnedSource } from '../src/constants.ts';
+import { indexCompleteMessages } from '../src/log-index.ts';
 import {
   activeSystemReminders,
   DEFINITION_REMINDER,
@@ -128,9 +129,14 @@ describe('systemReminderMessage', () => {
     );
   });
 
-  it.each(BOTH)('$kind 不被识别为插件自产压缩日志消息，记为系统消息参与索引', (reminder) => {
-    expect(isPluginOwnedSource(systemReminderMessage(reminder).source)).toBe(false);
-  });
+  it.each(BOTH)(
+    '$kind 不被识别为插件自产压缩日志消息，作为系统消息不占完整消息 index',
+    (reminder) => {
+      expect(isPluginOwnedSource(systemReminderMessage(reminder).source)).toBe(false);
+      const session = makeSession({ events: [reminderEvent(reminder)] });
+      expect(indexCompleteMessages(session)).toEqual([]);
+    },
+  );
 
   it('每次构造使用新的消息 id', () => {
     expect(systemReminderMessage(DEFINITION_REMINDER).id).not.toBe(

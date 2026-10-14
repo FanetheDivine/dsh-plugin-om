@@ -40,14 +40,12 @@ export const HISTORY_TIP = '当前块是历史消息的压缩产物，不要复�
  * 完整消息是摘要日志与 recall 共用的定位单位；首条 index 为 0，按会话顺序递增、全局稳定。
  */
 export const COMPLETE_MESSAGE_DEFINITION =
-  '`完整消息`指一条`用户消息`、`系统消息`、`模型输出文本`或`具有result的toolcall`；首条 index 为 0，按会话顺序递增。';
+  '`完整消息`指一条`用户消息`、`模型输出文本`或`具有result的toolcall`；首条 index 为 0，按会话顺序递增。';
 
 /** 块顶格式说明注释中按块内条目动态追加的分段开关。 */
 export type HistoryNoteSections = {
   /** 块内存在 user 条目时追加 <user_message> 说明。 */
   user?: boolean;
-  /** 块内存在 sys 条目时追加 <sys> 说明。 */
-  sys?: boolean;
   /** 块内存在未压缩 skill 条目时追加 <skill_content> 说明。 */
   skill?: boolean;
   /** 块内存在保留的合法或历史 ask 条目时追加 <ask-user-question> 说明。 */
@@ -56,7 +54,7 @@ export type HistoryNoteSections = {
 
 /**
  * 最终 <history> 块内文块首的格式说明注释（XML 注释）。通用部分（条目标签语义 +
- * CDATA 约定 + toolcall 结构）始终保留；<user_message> / <sys> /
+ * CDATA 约定 + toolcall 结构）始终保留；<user_message> /
  * <skill_content> / <ask-user-question> 的条目说明仅在块内存在对应条目时追加。
  */
 export function historyFormatNote(sections: HistoryNoteSections = {}): string {
@@ -65,7 +63,6 @@ export function historyFormatNote(sections: HistoryNoteSections = {}): string {
     '<assistant type="toolcall" tool-name="T" callId="C" index="N"> 表示工具调用，内含 <tool-args> 与 <tool-result> 两个CDATA子元素（调用参数与工具返回内容）',
   ];
   if (sections.user) parts.push('<user_message index="N"> 表示用户消息原文');
-  if (sections.sys) parts.push('<sys type="KIND" index="N"> 表示被压缩的系统消息，块中为空');
   if (sections.skill) parts.push('<skill_content name="S" index="N"> 表示未压缩的原始 skill');
   if (sections.askUserQuestion)
     parts.push(
