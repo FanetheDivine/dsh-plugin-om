@@ -136,7 +136,7 @@ describe('消息列表卡片水平滚动适配', () => {
     container.remove();
   });
 
-  describe('查看诊断子会话', () => {
+  describe('展开体操作栏', () => {
     type CompactionData = ChatNode<'om-compaction'>['data'];
 
     const baseData: CompactionData = {
@@ -200,52 +200,79 @@ describe('消息列表卡片水平滚动适配', () => {
       });
     }
 
-    it('成功卡片点击「查看」以 one-shot 地址跳转诊断子会话，且不切换展开', () => {
+    function expand(container: HTMLElement): void {
+      click(container.querySelector('[data-disclosure-row]'));
+    }
+
+    it('折叠态不渲染操作栏，展开后「诊断日志」按钮位于展开体下方', () => {
+      const view = mount({ diagnosticSessionId: 'diag-1' }, vi.fn());
+      expect(view.container.querySelector('[data-om-compaction-inspect]')).toBeNull();
+      expect(view.container.querySelector('[data-om-compaction-actions]')).toBeNull();
+      expand(view.container);
+      const body = view.container.querySelector('.om-compaction-body');
+      const actions = view.container.querySelector('[data-om-compaction-actions]');
+      expect(actions?.querySelector('[data-om-compaction-inspect]')).not.toBeNull();
+      // 操作栏紧随展开体之后
+      expect(body?.nextElementSibling).toBe(actions);
+      view.unmount();
+    });
+
+    it('成功卡片点击「诊断日志」以 one-shot 地址跳转诊断子会话，且不折叠', () => {
       const openSession = vi.fn();
       const view = mount({ diagnosticSessionId: 'diag-1' }, openSession);
+      expand(view.container);
       const button = view.container.querySelector('[data-om-compaction-inspect]');
-      expect(button?.textContent).toContain('查看');
+      expect(button?.textContent).toContain('诊断日志');
       click(button);
       expect(openSession).toHaveBeenCalledExactlyOnceWith({
         parentSessionId: 'parent-1',
         childSessionId: 'diag-1',
         mode: 'one-shot',
       });
-      expect(view.container.querySelector('.om-compaction-body')).toBeNull();
+      expect(view.container.querySelector('.om-compaction-body')).not.toBeNull();
       view.unmount();
     });
 
-    it('summary 不可展开时仍可「查看」', () => {
-      const openSession = vi.fn();
-      const view = mount({ diagnosticSessionId: 'diag-1', summary: null }, openSession);
-      click(view.container.querySelector('[data-om-compaction-inspect]'));
-      expect(openSession).toHaveBeenCalledOnce();
-      view.unmount();
-    });
-
-    it('失败行有 id 时可「查看」，点击不展开错误详情', () => {
+    it('失败行展开后可「诊断日志」，按钮位于报错下方', () => {
       const openSession = vi.fn();
       const view = mount({ error: 'LLM 429', diagnosticSessionId: 'diag-fail' }, openSession);
+      expect(view.container.querySelector('[data-om-compaction-inspect]')).toBeNull();
+      expand(view.container);
+      const body = view.container.querySelector('.om-compaction-body');
+      expect(body?.nextElementSibling).toBe(
+        view.container.querySelector('[data-om-compaction-actions]'),
+      );
       click(view.container.querySelector('[data-om-compaction-inspect]'));
       expect(openSession).toHaveBeenCalledExactlyOnceWith({
         parentSessionId: 'parent-1',
         childSessionId: 'diag-fail',
         mode: 'one-shot',
       });
-      expect(view.container.querySelector('.om-compaction-body')).toBeNull();
+      expect(view.container.querySelector('.om-compaction-body')).not.toBeNull();
       view.unmount();
     });
 
-    it('无 id、无 openSession 或进行中时不渲染「查看」', () => {
+    it('无 id、无 openSession 或进行中时不渲染「诊断日志」', () => {
       const openSession = vi.fn();
       for (const view of [
         mount({ diagnosticSessionId: null }, openSession),
         mount({ diagnosticSessionId: 'diag-1' }),
         mount({ running: true, phase: 'observe', diagnosticSessionId: 'diag-1' }, openSession),
       ]) {
+        expand(view.container);
         expect(view.container.querySelector('[data-om-compaction-inspect]')).toBeNull();
+        expect(view.container.querySelector('[data-om-compaction-actions]')).toBeNull();
         view.unmount();
       }
+    });
+
+    it('按钮样式对齐宿主 inspectButton 胶囊', () => {
+      mount({ diagnosticSessionId: 'diag-1' }, vi.fn()).unmount();
+      const css = document.querySelector('style[data-dsh-plugin-om-card]')?.textContent ?? '';
+      expect(css).toContain('border-radius:999px');
+      expect(css).toContain('border:.5px solid var(--dsw-alias-border-l4)');
+      expect(css).toContain('font-size:11px');
+      expect(css).toContain('var(--dsw-alias-interactive-bg-hover-solid)');
     });
   });
 });
