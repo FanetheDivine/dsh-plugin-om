@@ -67,13 +67,14 @@ export function systemReminderMessage(reminder: SystemReminder): UserMessage {
   });
 }
 
-/** 按配置返回应注入的提醒，顺序固定：进度在前，定义在后。 */
+/** 按配置与当前表层是否有 history 块返回应注入的提醒，顺序固定：进度在前，定义在后。 */
 export function activeSystemReminders(
   config: Pick<PluginConfig, 'omEnabled' | 'recallEnabled'>,
+  hasHistory: boolean,
 ): SystemReminder[] {
   const reminders: SystemReminder[] = [];
   if (config.omEnabled) reminders.push(PROGRESS_REMINDER);
-  if (config.omEnabled || config.recallEnabled) {
+  if (config.recallEnabled || hasHistory) {
     reminders.push(DEFINITION_REMINDER);
   }
   return reminders;
