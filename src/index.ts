@@ -111,7 +111,7 @@ export function apply(ctx: Context, config?: unknown): void {
       return { kind: 'reject' };
     }
     const decision = await next();
-    // 压缩之后检查表层：提醒被压缩遮蔽时补发，主会话请求中每种已启用提醒恒有一条。
+    // 压缩后按表层与待输入消息检查：进度提醒按活动窗口重发，定义提醒缺失或过期时补发。
     const hasHistory = hasHistoryBlock(agent.session);
     const reminders = activeSystemReminders(currentConfig(config), hasHistory);
     if (

@@ -1,6 +1,6 @@
 // 真实 Cordis、Loader 与 Agent 集成测试：验证进度提醒与完整消息定义提醒作为 system-reminder
 // 用户消息进入请求，且不修改系统提示词；覆盖开关、召回工具描述、子会话、热更新、重复请求、
-// 压缩遮蔽与卸载行为。
+// 工具 step 自动重发、文本重置、压缩遮蔽与卸载行为。
 import { Context } from '@deepseek-ai/cordis';
 import Loader from '@deepseek-ai/cordis-plugin-loader';
 import {
@@ -11,17 +11,19 @@ import {
 } from '@deepseek-ai/dsh-agent';
 import AgentLoop from '@deepseek-ai/dsh-agent-loop';
 import {
+  type ContentBlock,
   createUserMessage,
   type GenerateOptions,
   LlmAdapter,
   LlmRuntime,
   type StreamChunk,
+  type ToolCallId,
 } from '@deepseek-ai/dsh-llm';
 import { type SessionId, SessionStore } from '@deepseek-ai/dsh-session';
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection';
 import { renderPrompt, SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter';
-import { ToolRuntime } from '@deepseek-ai/dsh-tools';
+import { defineTool, ToolRuntime } from '@deepseek-ai/dsh-tools';
 import { describe, expect, it } from 'vitest';
 import type { PluginConfig } from '../src/config.ts';
 import { COMPLETE_MESSAGE_DEFINITION } from '../src/constants.ts';
@@ -32,15 +34,53 @@ import {
   type SystemReminder,
 } from '../src/system-reminder.ts';
 
+/** 回放指定顶层内容，工具调用由真实 ToolRuntime 接手。 */
+function modelReply(content: ContentBlock[]): StreamChunk[] {
+  return [
+    ...content.map((block, index): StreamChunk => ({ type: 'block-end', index, block })),
+    {
+      type: 'finish',
+      reason: { kind: content.some((block) => block.type === 'tool-call') ? 'tool-calls' : 'stop' },
+    },
+  ];
+}
+
+/** 每个工具 step 都带 reasoning；只有显式传入的顶层 text 才能重置进度。 */
+function toolStep(step: number, count: number, text?: string): StreamChunk[] {
+  return modelReply([
+    { type: 'reasoning', text: '已经分析工具结果，继续执行下一步。' },
+    ...(text === undefined ? [] : [{ type: 'text' as const, text }]),
+    ...Array.from(
+      { length: count },
+      (_, index): ContentBlock => ({
+        type: 'tool-call',
+        id: `progress-${step}-${index}` as ToolCallId,
+        name: 'progressProbe',
+        arguments: JSON.stringify({ label: `${step}:${index}` }),
+      }),
+    ),
+  ]);
+}
+
 /** 仅回放模型回复；请求组装、会话和生命周期由真实宿主完成。 */
 class RecordingAdapter extends LlmAdapter {
   readonly calls: GenerateOptions[] = [];
 
-  /** 记录真正到达模型边界的请求并结束当前回合。 */
+  constructor(private readonly script: readonly (readonly StreamChunk[])[] = []) {
+    super();
+  }
+
+  /** 记录模型边界请求，按脚本回放；未配置脚本时结束当前回合。 */
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    const index = this.calls.length;
     this.calls.push(options);
-    yield { type: 'block-end', index: 0, block: { type: 'text', text: '已完成当前任务。' } };
-    yield { type: 'finish', reason: { kind: 'stop' } };
+    if (this.script.length === 0) {
+      yield* modelReply([{ type: 'text', text: '已完成当前任务。' }]);
+      return;
+    }
+    const reply = this.script[index];
+    if (!reply) throw new Error(`非预期的模型请求：${index + 1}`);
+    yield* reply;
   }
 }
 
@@ -57,7 +97,11 @@ function pluginConfig(omEnabled: boolean, recallEnabled = false): Partial<Plugin
 }
 
 /** 用真实 Loader 加载插件，并创建可由 inbox 驱动的主 Agent。 */
-async function stackPromptHost(omEnabled: boolean, recallEnabled = false) {
+async function stackPromptHost(
+  omEnabled: boolean,
+  recallEnabled = false,
+  script: readonly (readonly StreamChunk[])[] = [],
+) {
   const app = new Context();
   let handle: AgentHandle | undefined;
   try {
@@ -70,7 +114,32 @@ async function stackPromptHost(omEnabled: boolean, recallEnabled = false) {
     await app.plugin(AgentRegistry);
     await app.plugin(AgentLoop);
     await app.plugin(Loader);
-    const adapter = new RecordingAdapter();
+    const adapter = new RecordingAdapter(script);
+    const toolRuns: string[] = [];
+    if (script.length > 0) {
+      app.tools.register(
+        defineTool({
+          name: 'progressProbe',
+          description: '回放测试中的无外部副作用工具。',
+          parameters: { label: { type: 'string', required: true } },
+          output: {
+            schema: { type: 'string' },
+            render: (_args, value) => [{ type: 'text', text: value }],
+          },
+          async execute({ label }, exec) {
+            exec.signal.throwIfAborted();
+            toolRuns.push(label);
+            exec.deferContext(
+              createUserMessage({
+                content: [{ type: 'text', text: '工具附加上下文不替代模型进度记录。' }],
+                source: { kind: 'plugin:dsh-plugin-om' },
+              }),
+            );
+            return `工具结果 ${label}：已经取得中间结论并规划下一步。`;
+          },
+        }),
+      );
+    }
     app.llm.registerAdapter(['mock'], adapter);
     app.loader.builtins[name] = { name, inject, Config, apply };
     const entryId = await app.loader.create({
@@ -86,7 +155,7 @@ async function stackPromptHost(omEnabled: boolean, recallEnabled = false) {
       sessionId: 'it-progress-main' as SessionId,
       agentOptions: { provider: 'mock', model: 'mock-model' },
     });
-    return { app, adapter, entry, handle };
+    return { app, adapter, entry, handle, toolRuns };
   } catch (error) {
     await handle?.dispose();
     await app.fiber.dispose();
@@ -152,6 +221,35 @@ async function runTurn(adapter: RecordingAdapter, agent: Agent, text: string) {
   expect(request.provider).toBe('mock');
   expect(request.model).toBe('mock-model');
   return request;
+}
+
+/** 验证回放完整通过宿主 step 生命周期与真实工具运行时。 */
+function expectCompletedToolLoop(
+  agent: Agent,
+  adapter: RecordingAdapter,
+  toolRuns: readonly string[],
+  requests: number,
+  tools: number,
+): void {
+  expect(adapter.calls).toHaveLength(requests);
+  expect(toolRuns).toHaveLength(tools);
+  expect(new Set(toolRuns).size).toBe(tools);
+  const events = agent.session.snapshotEvents();
+  expect(events.filter((event) => event.type === 'step/end').map((event) => event.data)).toEqual(
+    Array.from({ length: requests }, (_, index) => ({ turn: 1, step: index + 1 })),
+  );
+  const results = events.filter((event) => event.type === 'tool/result');
+  expect(results).toHaveLength(tools);
+  expect(results.every((event) => !event.data.message.isError)).toBe(true);
+  expect(events.filter((event) => event.type === 'turn/end').map((event) => event.data)).toEqual([
+    { turn: 1, reason: { kind: 'completed' } },
+  ]);
+  for (const request of adapter.calls) {
+    expect(request.sessionId).toBe(agent.session.id);
+    expect(request.purpose).toBeUndefined();
+    expect(request.tools?.some((tool) => tool.name === 'progressProbe')).toBe(true);
+    expectSystemUntouched(requestSystem(request));
+  }
 }
 
 /** 系统提示词保持宿主原文，不含任何提醒文本。 */
@@ -389,7 +487,90 @@ describe('system-reminder 的真实宿主集成', () => {
     }
   });
 
-  it('表层保留旧进度提醒时补发当前文本，后续请求不重复补发', async () => {
+  it('真实 Agent 的工具循环在至少四个已结束 step 且超过十次调用后重发，并从重发 step 重计', async () => {
+    const counts = [5, 4, 2, 1, 5, 4, 2, 1];
+    const script = [
+      ...counts.map((count, index) => toolStep(index + 1, count, ' \n\t ')),
+      modelReply([{ type: 'text', text: '已完成所有工具检查。' }]),
+    ];
+    const { app, adapter, handle, toolRuns } = await stackPromptHost(true, true, script);
+    try {
+      handle.agent.followup(
+        createUserMessage({
+          content: [{ type: 'text', text: '连续执行工具检查，最后汇总。' }],
+          source: { kind: 'user' },
+        }),
+      );
+      await handle.agent.whenIdle();
+      expectCompletedToolLoop(handle.agent, adapter, toolRuns, script.length, 24);
+      expect(adapter.calls.map((request) => requestReminders(request))).toEqual([
+        1, 1, 1, 1, 2, 2, 2, 2, 3,
+      ]);
+      expect(
+        adapter.calls.map((request) => requestReminders(request, DEFINITION_REMINDER)),
+      ).toEqual(Array.from({ length: script.length }, () => 1));
+      expect(bothLogged(handle.agent)).toEqual([3, 1]);
+    } finally {
+      await handle.dispose();
+      await app.fiber.dispose();
+    }
+  });
+
+  it('真实 Agent 四个已结束工具 step 恰好十次调用时不重发，超过十次才重发', async () => {
+    const script = [
+      ...[3, 3, 3, 1, 1].map((count, index) => toolStep(index + 1, count)),
+      modelReply([{ type: 'text', text: '已完成边界检查。' }]),
+    ];
+    const { app, adapter, handle, toolRuns } = await stackPromptHost(true, true, script);
+    try {
+      handle.agent.followup(
+        createUserMessage({
+          content: [{ type: 'text', text: '执行十一次工具检查。' }],
+          source: { kind: 'user' },
+        }),
+      );
+      await handle.agent.whenIdle();
+      expectCompletedToolLoop(handle.agent, adapter, toolRuns, script.length, 11);
+      expect(adapter.calls.map((request) => requestReminders(request))).toEqual([1, 1, 1, 1, 1, 2]);
+      expect(bothLogged(handle.agent)).toEqual([2, 1]);
+    } finally {
+      await handle.dispose();
+      await app.fiber.dispose();
+    }
+  });
+
+  it('真实 Agent 的非空顶层 text 重置进度，从下一 step 累计后仍会重发', async () => {
+    const script = [
+      toolStep(1, 4),
+      toolStep(2, 4),
+      toolStep(3, 3, '  已确认前几步结果，接下来继续检查剩余项目。\n'),
+      toolStep(4, 3),
+      toolStep(5, 3),
+      toolStep(6, 3),
+      toolStep(7, 2),
+      modelReply([{ type: 'text', text: '检查已全部完成。' }]),
+    ];
+    const { app, adapter, handle, toolRuns } = await stackPromptHost(true, true, script);
+    try {
+      handle.agent.followup(
+        createUserMessage({
+          content: [{ type: 'text', text: '持续检查，并记录中间进展。' }],
+          source: { kind: 'user' },
+        }),
+      );
+      await handle.agent.whenIdle();
+      expectCompletedToolLoop(handle.agent, adapter, toolRuns, script.length, 22);
+      expect(adapter.calls.map((request) => requestReminders(request))).toEqual([
+        1, 1, 1, 1, 1, 1, 1, 2,
+      ]);
+      expect(bothLogged(handle.agent)).toEqual([2, 1]);
+    } finally {
+      await handle.dispose();
+      await app.fiber.dispose();
+    }
+  });
+
+  it('表层保留同 kind 旧进度提醒时不补发当前文本，后续请求不重复补发', async () => {
     const { app, adapter, handle } = await stackPromptHost(true, true);
     try {
       const previousReminder: SystemReminder = {
@@ -414,11 +595,11 @@ describe('system-reminder 的真实宿主集成', () => {
       );
 
       for (let index = 0; index < 2; index += 1) {
-        const request = await runTurn(adapter, handle.agent, `更新提醒后的任务 ${index}。`);
+        const request = await runTurn(adapter, handle.agent, `保留旧提醒的任务 ${index}。`);
         expectSystemUntouched(requestSystem(request));
         expect(requestReminders(request, previousReminder)).toBe(1);
-        expect(bothReminders(request)).toEqual([1, 1]);
-        expect(bothLogged(handle.agent)).toEqual([2, 1]);
+        expect(bothReminders(request)).toEqual([0, 1]);
+        expect(bothLogged(handle.agent)).toEqual([1, 1]);
       }
     } finally {
       await handle.dispose();
