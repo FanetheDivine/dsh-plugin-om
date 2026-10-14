@@ -278,13 +278,17 @@ describe('消息列表卡片水平滚动适配', () => {
       view.unmount();
     });
 
-    it('传入 inspectCall 时展开体显示「轨迹」，点击以节点 key 调用且不折叠', () => {
+    it('「轨迹」按钮点击以节点 key 调用 inspectCall 且不折叠，但被 display:none 隐藏', () => {
       const inspectCall = vi.fn();
-      const view = mount({}, undefined, inspectCall);
+      const view = mount({ diagnosticSessionId: 'diag-1' }, vi.fn(), inspectCall);
       expect(view.container.querySelector('[data-om-compaction-trajectory]')).toBeNull();
       expand(view.container);
       const button = view.container.querySelector('[data-om-compaction-trajectory]');
       expect(button?.textContent).toContain('轨迹');
+      // 隐藏规则：无法跳到具体条目，暂不展示
+      const css = document.querySelector('style[data-dsh-plugin-om-card]')?.textContent ?? '';
+      expect(css).toContain('.om-compaction-trajectory{display:none}');
+      expect(button?.classList.contains('om-compaction-trajectory')).toBe(true);
       click(button);
       expect(inspectCall).toHaveBeenCalledExactlyOnceWith('om-compaction:1');
       expect(view.container.querySelector('.om-compaction-body')).not.toBeNull();
@@ -306,15 +310,33 @@ describe('消息列表卡片水平滚动适配', () => {
       both.unmount();
     });
 
-    it('失败卡片同样提供「轨迹」；进行中不渲染操作栏', () => {
+    it('只有「轨迹」（被隐藏）时不渲染空操作栏，summary 缺失的卡片不可展开', () => {
+      const withSummary = mount({}, undefined, vi.fn());
+      expand(withSummary.container);
+      expect(withSummary.container.querySelector('[data-om-compaction-actions]')).toBeNull();
+      expect(withSummary.container.querySelector('[data-om-compaction-trajectory]')).toBeNull();
+      withSummary.unmount();
+
+      const noSummary = mount({ summary: null }, undefined, vi.fn());
+      expand(noSummary.container);
+      expect(noSummary.container.querySelector('.om-compaction-body')).toBeNull();
+      expect(noSummary.container.querySelector('[data-om-compaction-actions]')).toBeNull();
+      noSummary.unmount();
+    });
+
+    it('失败卡片展开后同样渲染「轨迹」；进行中不渲染操作栏', () => {
       const inspectCall = vi.fn();
-      const failed = mount({ error: 'boom' }, undefined, inspectCall);
+      const failed = mount({ error: 'boom', diagnosticSessionId: 'diag-1' }, vi.fn(), inspectCall);
       expand(failed.container);
       click(failed.container.querySelector('[data-om-compaction-trajectory]'));
       expect(inspectCall).toHaveBeenCalledOnce();
       failed.unmount();
 
-      const running = mount({ running: true, phase: 'observe' }, undefined, inspectCall);
+      const running = mount(
+        { running: true, phase: 'observe', diagnosticSessionId: 'diag-1' },
+        vi.fn(),
+        inspectCall,
+      );
       expand(running.container);
       expect(running.container.querySelector('[data-om-compaction-actions]')).toBeNull();
       running.unmount();

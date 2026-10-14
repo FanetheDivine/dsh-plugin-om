@@ -2,10 +2,11 @@
  * 压缩卡片渲染器：与宿主「上下文注入」卡片同款的折叠行。
  * 复用平台原语 DisclosureRow；行内统计与展开体样式按宿主 ContextInjectionRow 的规则
  * 注入 <style>（宿主该卡片样式是编译期哈希的 CSS Module，插件 bundle 无法引用其类名）。
- * 卡片报告模型从何处起不再看到那段历史；summary 留在加载窗口外时行不可展开。
+ * 卡片报告模型从何处起不再看到那段历史；summary 留在加载窗口外且无操作按钮时行不可展开。
  * 压缩失败节点渲染为可展开的错误行：折叠行显示错误摘要，展开体显示完整报错。
- * 展开体下方的操作栏（宿主 inspectButton 同款胶囊）：宿主提供 inspectCall 时显示「轨迹」，
- * 切到轨迹视图；节点带诊断子会话 id 且宿主注入 openSession 时显示「诊断日志」，跳转到该子会话页面。
+ * 展开体下方的操作栏（宿主 inspectButton 同款胶囊）：「轨迹」（宿主提供 inspectCall 时渲染）
+ * 暂以 display:none 隐藏；节点带诊断子会话 id 且宿主注入 openSession 时显示「诊断日志」，
+ * 跳转到该子会话页面。
  */
 
 import type { ChatNode, ToolCallId } from '@deepseek-ai/dsh-client-ui-chat/client';
@@ -43,6 +44,7 @@ const css = {
   body: 'om-compaction-body',
   actions: 'om-compaction-actions',
   inspect: 'om-compaction-inspect',
+  trajectory: 'om-compaction-trajectory',
 } as const;
 
 /** 卡片样式规则：保留宿主外观，对折叠摘要与展开体增加水平滚动适配。 */
@@ -57,6 +59,7 @@ const cardCss = `
 .${css.actions}{flex-wrap:wrap;align-items:center;gap:8px;margin:4px 0 2px 22px;display:flex}
 .${css.inspect}{border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:16px;cursor:pointer;white-space:nowrap;border-radius:999px;flex:none;align-items:center;gap:4px;margin:0;padding:2px 8px;display:inline-flex}
 .${css.inspect}:is(:hover,:focus-visible){background:var(--dsw-alias-interactive-bg-hover-solid);color:var(--dsw-alias-label-primary)}
+.${css.trajectory}{display:none}
 .${css.body}{box-sizing:border-box;background:var(--dsw-alias-markdown-code-block);width:calc(100% - 22px);max-height:141px;color:var(--dsw-alias-label-tertiary);font:400 11px/16px var(--ds-font-family-code);border:none;border-radius:8px;margin:4px 0 0 22px;padding:10px 16px 12px 12px;overflow-x:auto;overflow-y:auto;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
 `;
 
@@ -103,12 +106,14 @@ export const OmCompactionCard = memo(function OmCompactionCard({
         {t('card.inspect')}
       </button>
     ) : null;
-  // 「轨迹」：切到轨迹视图。轨迹按 callId 定位记录，压缩没有 callId，故只切换视图
+  // 「轨迹」：切到轨迹视图。轨迹按 callId 定位记录，压缩没有 callId，无法跳到具体条目，
+  // 只切视图对用户没有意义，故暂以 display:none 隐藏（样式见 css.trajectory）；
+  // 待宿主支持按压缩定位后移除该规则即可恢复
   const trajectory =
     inspectCall === undefined ? null : (
       <button
         type="button"
-        className={css.inspect}
+        className={`${css.inspect} ${css.trajectory}`}
         data-om-compaction-trajectory
         onClick={(event: MouseEvent) => {
           event.stopPropagation();
@@ -119,9 +124,9 @@ export const OmCompactionCard = memo(function OmCompactionCard({
         {t('card.trajectory')}
       </button>
     );
-  // 展开体下方的操作栏；没有可用按钮时不渲染
+  // 展开体下方的操作栏；「轨迹」被隐藏，不单独构成操作栏，避免展开出空栏
   const actions =
-    trajectory === null && inspect === null ? null : (
+    inspect === null ? null : (
       <div className={css.actions} data-om-compaction-actions>
         {trajectory}
         {inspect}
