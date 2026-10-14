@@ -7,7 +7,7 @@
 
 # 开发约定
 
-- 文件变更后运行 `pnpm format && pnpm lint`。
+- 文件变更后运行 `pnpm format && pnpm typecheck && pnpm lint`。
 - 使用准确类型，避免 `unknown` 和 `any`。确需 `any` 时用 TSDoc 说明原因。
 - 新增 `@deepseek-ai/dsh-*` 依赖时，将包名和版本加入 [pnpm-workspace.yaml](./pnpm-workspace.yaml) 的 `minimumReleaseAgeExclude`。
 - `main` 分支的每个 commit 都需更新 [CHANGELOG.md](./CHANGELOG.md)。其他分支在 push 或 merge 前更新。
