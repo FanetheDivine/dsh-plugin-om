@@ -45,11 +45,11 @@ function wrap(lines: readonly string[]): string {
 export const PROGRESS_REMINDER: SystemReminder = {
   kind: PROGRESS_REMINDER_SOURCE_KIND,
   text: wrap([
-    'Narrate your progress while you work, not only when the task is finished.',
-    '- Before your first tool call on a task, state your plan in one or two sentences.',
-    '- After each meaningful chunk of work (a group of related tool calls, a finished investigation, a completed edit), briefly report what you found or did and what you will do next, then continue.',
-    '- Do not narrate every individual tool call; one short note per chunk is enough.',
-    '- Do not save all commentary for the final answer. The final answer summarizes outcomes.',
+    '在工作过程中同步输出文本，简洁记录关键结论与后续规划。思考内容不计入记录。',
+    '- 每个阶段性工作开始前记录一次，一个阶段通常是 1-5 个工具调用',
+    '- 禁止连续 10 个以上工具调用而无记录',
+    '- 记录后在同一回复中继续调用工具，不要停下等待',
+    '- 最终答案仅总结结果，不能替代这些记录',
   ]),
 };
 

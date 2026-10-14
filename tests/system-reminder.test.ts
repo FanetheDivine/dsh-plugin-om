@@ -50,10 +50,14 @@ describe('systemReminderMessage', () => {
     expect(text).not.toMatch(/does not override/i);
   });
 
-  it('进度提醒要求边做边说，而不是只在任务结束时说明', () => {
+  it('进度提醒要求边做边以文本记录，并限定记录间隔', () => {
     const text = textOf(systemReminderMessage(PROGRESS_REMINDER));
-    expect(text).toMatch(/not (only|just|wait)[^.]*(finish|end|complete)/i);
-    expect(text).toMatch(/plan/i);
+    expect(text).toContain('思考内容不计入记录');
+    expect(text).toMatch(/每个阶段性工作开始前记录一次/);
+    expect(text).toMatch(/通常是 1-5 个工具调用/);
+    expect(text).toMatch(/禁止连续 10 个以上工具调用而无记录/);
+    expect(text).toMatch(/在同一回复中继续调用工具/);
+    expect(text).toMatch(/最终答案[^\n]*不能替代[^\n]*记录/);
   });
 
   it('定义提醒携带完整消息定义原文，进度提醒不携带', () => {
