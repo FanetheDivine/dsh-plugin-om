@@ -8,12 +8,12 @@
 
 - 自动压缩主会话历史，并在摘要过大时再次合并
 - OM 启用时以 system-reminder 消息提示模型边做边简述计划与进展，压缩后自动补发
-- OM 或召回工具启用时以 system-reminder 消息说明完整消息定义，压缩后自动补发
+- OM 或 recall 启用时以 system-reminder 消息说明完整消息定义，压缩后自动补发
 - 通过工具循环生成摘要，保留用户消息、系统消息和未压缩内容
 - 保留工具加载与手动加载的 skill 原文，并在压缩前再次确认
 - 有效提问首次直接压缩需再次确认，保留时查看选项后在下一轮重写问答并展开选项引用
 - 中断或错误的提问作为普通工具调用处理
-- 使用 `recall` 按消息序号回看原文，使用 `recall-semantic` 进行本地语义检索
+- 使用 `recall` 按消息序号回看原文，启用语义增强后还可按含义检索
 - 记录压缩过程、耗时和 token 用量
 - 压缩会话记录显示在子智能体列表，随父会话 Session 日志一起下载
 - 在浏览器中显示压缩结果、错误和降级警告
@@ -58,7 +58,7 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 | `modelDir` | DSH 共享目录 | 嵌入模型目录 |
 | `omEnabled` | `true` | 是否启用自动压缩和进度提醒 |
 | `recallEnabled` | `true` | 是否启用原文召回 |
-| `semanticRecallEnabled` | `true` | 是否启用语义召回 |
+| `semanticRecallEnabled` | `true` | 是否为 `recall` 启用语义增强，依赖 `recallEnabled` |
 | `debug` | 开发环境启用 | 是否输出步骤日志 |
 
 较小的观察阈值更早节省上下文，较大的阈值提供更多摘要信息。只有 reasoning 包含关键决策时才需将 `compressSkipReasoning` 设为 `false`。
@@ -75,7 +75,7 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
       name: file:///<repo>/dist/index.mjs
 ```
 
-语义召回首次使用时自动下载嵌入模型，也可运行 `pnpm run download:model` 预下载。
+语义增强首次使用时自动下载嵌入模型，也可运行 `pnpm run download:model` 预下载。
 
 | 命令 | 作用 |
 | --- | --- |
@@ -102,10 +102,10 @@ src/
 ├── logger.ts                    # 插件日志门面，step 按 debug 开关过滤
 ├── rate-limit.ts                # 全局 429 限流冷却门，进程级共享状态
 ├── log-index.ts                 # 完整消息索引与渲染，recall 与压缩共用同一套编号
-├── recall.ts                    # recall 工具：按完整消息 index 区间回看
-├── recall-xml.ts                # 完整消息到 CDATA 包裹 XML 条目的渲染，recall 系工具共用
+├── recall.ts                    # recall 工具：按 index 区间回看，启用语义增强时支持 query
+├── recall-xml.ts                # 完整消息到 CDATA 包裹 XML 条目的渲染，recall 与语义检索共用
 ├── recall-output.ts             # recall 输出契约：{ text, images } 与 render 投影
-├── semantic-recall.ts           # recall-semantic 工具：本地嵌入语义检索
+├── semantic-recall.ts           # recall 语义增强：本地嵌入语义检索实现
 ├── embedding.ts                 # 本地 ONNX 嵌入：懒加载、批量、运行时按需下载编排
 ├── model-download.ts            # 模型下载原语：URL、跳过判定、原子落盘
 ├── compress-view.ts             # 压缩视图：观察与反思投影、有效提问配对与选项展示

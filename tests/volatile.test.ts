@@ -110,22 +110,38 @@ describe('Loader volatile 热更新', () => {
     const { values, refs } = loaderConfig({ recallEnabled: true, semanticRecallEnabled: false });
     const ctx = makeCtx();
     const { active, disposes } = toolsHost(ctx);
+    const preload = vi.mocked(ensureModelReady);
+    preload.mockClear();
     apply(ctx, refs);
+    const params = () =>
+      Object.keys(
+        (active.get('recall')?.parameters as { properties: object } | undefined)?.properties ?? {},
+      ).sort();
     expect([...active.keys()]).toEqual(['recall']);
-    values.recallEnabled = false;
+    expect(params()).toEqual(['end', 'offset', 'start']);
+    expect(preload).not.toHaveBeenCalled();
+    // 开启语义增强：recall 重新注册为带 query 的形态并触发预热
     values.semanticRecallEnabled = true;
-    update(ctx, 'recallEnabled', 'semanticRecallEnabled');
-    expect([...active.keys()]).toEqual(['recall-semantic']);
+    update(ctx, 'semanticRecallEnabled');
+    expect([...active.keys()]).toEqual(['recall']);
+    expect(params()).toEqual(['end', 'offset', 'query', 'start', 'top_k']);
+    expect(preload).toHaveBeenCalledTimes(1);
+    // 无关更新不重复注册、不重复预热
+    update(ctx, 'semanticRecallEnabled');
+    expect(active.size).toBe(1);
+    expect(preload).toHaveBeenCalledTimes(1);
+    // 关闭 recall：工具与语义增强一并移除
+    values.recallEnabled = false;
+    update(ctx, 'recallEnabled');
+    expect([...active.keys()]).toEqual([]);
+    // 仅开启语义增强而 recall 关闭：不注册
+    update(ctx, 'semanticRecallEnabled');
+    expect([...active.keys()]).toEqual([]);
+    // 重新开启 recall：语义增强随之恢复
     values.recallEnabled = true;
     update(ctx, 'recallEnabled');
-    expect([...active.keys()].sort()).toEqual(['recall', 'recall-semantic']);
-    update(ctx, 'recallEnabled');
-    expect(active.size).toBe(2);
-    values.recallEnabled = false;
-    values.semanticRecallEnabled = false;
-    update(ctx, 'recallEnabled', 'semanticRecallEnabled');
-    expect([...active.keys()]).toEqual([]);
-    expect(disposes).toEqual(['recall', 'recall', 'recall-semantic']);
+    expect(params()).toEqual(['end', 'offset', 'query', 'start', 'top_k']);
+    expect(disposes).toEqual(['recall', 'recall']);
   });
 
   it('目录变更预热新目录，新语义查询使用新目录嵌入模型', async () => {
@@ -160,8 +176,8 @@ describe('Loader volatile 热更新', () => {
         withTurnEnd: true,
       }),
     });
-    const tool = active.get('recall-semantic');
-    if (!tool) throw new Error('语义工具未注册');
+    const tool = active.get('recall');
+    if (!tool) throw new Error('recall 未注册');
     const result = await tool.execute({ query: '被检索消息' }, {
       agent: { session },
     } as ToolRunContext);
@@ -174,7 +190,7 @@ describe('Loader volatile 热更新', () => {
     const { values, refs } = loaderConfig({
       modelDir: '/old/model',
       semanticRecallEnabled: true,
-      recallEnabled: false,
+      recallEnabled: true,
     });
     const ctx = makeCtx();
     const { active, disposes } = toolsHost(ctx);
@@ -192,8 +208,8 @@ describe('Loader volatile 热更新', () => {
       };
     });
     apply(ctx, refs);
-    const oldTool = active.get('recall-semantic');
-    if (!oldTool) throw new Error('旧语义工具未注册');
+    const oldTool = active.get('recall');
+    if (!oldTool) throw new Error('旧recall 未注册');
     const session = makeSession({
       events: buildToolCallFlow({
         code: 'search()',
@@ -208,8 +224,8 @@ describe('Loader volatile 热更新', () => {
     await vi.waitFor(() => expect(calls).toEqual([{ dir: '/old/model', text: '旧查询' }]));
     values.modelDir = '/new/model';
     update(ctx, 'modelDir');
-    const newTool = active.get('recall-semantic');
-    if (!newTool) throw new Error('新语义工具未注册');
+    const newTool = active.get('recall');
+    if (!newTool) throw new Error('新recall 未注册');
     expect(active.size).toBe(1);
     const newRun = newTool.execute({ query: '新查询' }, exec);
     await newRun;
@@ -223,7 +239,7 @@ describe('Loader volatile 热更新', () => {
       '/new/model',
       '/old/model',
     ]);
-    expect(disposes).toEqual(['recall-semantic']);
+    expect(disposes).toEqual(['recall']);
     expect(newTool).not.toBe(oldTool);
   });
 });

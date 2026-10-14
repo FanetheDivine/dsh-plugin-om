@@ -1,5 +1,5 @@
 /**
- * 本地语义嵌入（recall-semantic 的向量引擎）：Xenova/paraphrase-multilingual-MiniLM-L12-v2
+ * 本地语义嵌入（recall 语义增强的向量引擎）：Xenova/paraphrase-multilingual-MiniLM-L12-v2
  * 量化 ONNX，懒加载 + 批量推理 + cosine 相似度，模型缺失时按需后台下载。
  * 导出 BUNDLED_MODEL_DIR / EMBEDDING_MODEL_ID / resolveDshHome / sharedModelDir /
  * ensureModelSmallFiles / getEmbedder / resetEmbedder / ensureModelReady /

@@ -1,68 +1,34 @@
 /**
- * recall-semantic 工具：按自然语言 query 对会话全部完整消息（含被压缩/遮蔽的）做
+ * recall 语义增强的检索实现：按自然语言 query 对会话全部完整消息（含被压缩/遮蔽的）做
  * 语义检索，返回最匹配的完整消息与匹配说明。
- * 导出 semanticRecallArgsSchema / SemanticRecallArgs / parseSemanticRecallArgs /
- * resolveSemanticRange / tokenize / matchExplanation / buildSemanticRecallTool。
+ * 导出 SemanticOptions / RangeArgs / resolveSemanticRange / tokenize / matchExplanation /
+ * SEMANTIC_MODEL_NOT_READY_MESSAGE / semanticSearch。
  * 向量为本地 ONNX 嵌入（cosine 相似度）；只匹配文本，纯图片消息不进候选池；
  * 区间缺省检索全部、区间不合法回退全量并在输出中告知；输出契约同 recall
  * （{ text, images }，条目为 XML 形态见 recall-xml.ts，超大结果由 tool-result-pruner
  * 裁剪）；候选池排除本次调用自身的 toolcall 完整消息（其渲染文本含 query 原文，
- * 必居榜首）；仅主会话可用。
+ * 必居榜首）。工具入口与参数校验见 recall.ts。
  */
 
-import { z } from 'zod';
 import { cosineSimilarity, type EmbedFn, getEmbedder, type ModelStatus } from './embedding.ts';
-import { parametersFromZod } from './json-schema.ts';
 import { indexCompleteMessages, type PrunerLike, renderCompleteMessage } from './log-index.ts';
-import {
-  type ImageRefValue,
-  RECALL_OUTPUT_SCHEMA,
-  type RecallOutputValue,
-  renderRecallOutput,
-  textOnly,
-} from './recall-output.ts';
+import { type ImageRefValue, type RecallOutputValue, textOnly } from './recall-output.ts';
 import { renderCompleteMessageXml, xmlCommentText } from './recall-xml.ts';
-import type { CompleteMessage, ToolDefinition, ToolRunContext } from './types.ts';
-import { isMainSession } from './utils.ts';
+import type { CompleteMessage, Session } from './types.ts';
 
-/** recall-semantic 工具参数 schema：query 必填；top_k 默认 3（1-10）；区间参数均可选。 */
-export const semanticRecallArgsSchema = z
-  .object({
-    query: z
-      .string()
-      .describe(
-        '要找的内容的自然语言 query（中英文与代码术语皆可，如 "修复 retry backoff 的逻辑"），不能为空。',
-      ),
-    top_k: z.number().int().min(1).max(10).optional().describe('返回最匹配条数（1-10，默认 3）。'),
-    start: z
-      .number()
-      .optional()
-      .describe('完整消息 index，基准边界，与 end/offset 配合指定搜索区间；缺省检索全部。'),
-    end: z.number().optional().describe('须与 start 配合，与 offset 互斥，指定搜索区间另一边界。'),
-    offset: z
-      .number()
-      .optional()
-      .describe('须与 start 配合，与 end 互斥，相对 start 的步数（正向后、负向前）。'),
-  })
-  .refine((args) => args.query.trim().length > 0, {
-    message: 'query 不能为空',
-  });
+/** 语义增强的可注入依赖（测试传替身；缺省用本地模型）。 */
+export type SemanticOptions = {
+  embedder?: EmbedFn;
+  /** 模型就绪检查（缺省视为已就绪；未就绪时返回告知文案而非报错）。 */
+  modelStatus?: () => ModelStatus | Promise<ModelStatus>;
+};
 
-/** recall-semantic 工具调用参数（由 semanticRecallArgsSchema 推断）。 */
-export type SemanticRecallArgs = z.infer<typeof semanticRecallArgsSchema>;
-
-/** 解析并校验参数：失败时抛出可读错误（普通 Error 而非 ZodError）。 */
-export function parseSemanticRecallArgs(raw: unknown): SemanticRecallArgs {
-  const result = semanticRecallArgsSchema.safeParse(raw);
-  if (!result.success) {
-    throw new Error(
-      result.error.issues
-        .map((issue) => `${issue.path.join('.') || 'args'}:${issue.message}`)
-        .join('; '),
-    );
-  }
-  return result.data;
-}
+/** 检索区间参数（完整消息 index）。 */
+export type RangeArgs = {
+  start?: number | undefined;
+  end?: number | undefined;
+  offset?: number | undefined;
+};
 
 /** 区间解析结果：lo/hi 为完整消息 index（含）；fallback=true 表示区间无效已回退全量。 */
 export type RangeResult = { lo: number; hi: number; fallback: boolean };
@@ -72,10 +38,7 @@ export type RangeResult = { lo: number; hi: number; fallback: boolean };
  * start 未提供 → 全量（fallback=false）；start/end 越界或区间为空 → fallback=true
  * （回退全量并在输出中告知）。
  */
-export function resolveSemanticRange(
-  total: number,
-  args: Pick<SemanticRecallArgs, 'start' | 'end' | 'offset'>,
-): RangeResult {
+export function resolveSemanticRange(total: number, args: RangeArgs): RangeResult {
   if (total <= 0) return { lo: 0, hi: -1, fallback: false };
   if (args.start === undefined) return { lo: 0, hi: total - 1, fallback: false };
   const start = Number.isFinite(args.start) ? Math.floor(args.start) : -1;
@@ -123,97 +86,85 @@ export function matchExplanation(query: string, text: string, score: number): st
 /** 模型未就绪时返回给模型的文案（下载完成后直接再次调用即可）。 */
 export const SEMANTIC_MODEL_NOT_READY_MESSAGE = '语义检索暂不可用，本地向量模型尚未就绪。';
 
-/** 构建 recall-semantic 工具定义（embedder/modelStatus 可注入，测试传替身；缺省用本地模型）。 */
-export function buildSemanticRecallTool(options?: {
-  getPruner?: () => unknown;
-  embedder?: EmbedFn;
-  /** 模型就绪检查（缺省视为已就绪；未就绪时返回告知文案而非报错）。 */
-  modelStatus?: () => ModelStatus | Promise<ModelStatus>;
-}): ToolDefinition {
-  const getPruner = options?.getPruner ?? (() => undefined);
+/** 语义检索入参：query 与区间由 recall 校验后传入。 */
+export type SemanticSearchInput = RangeArgs & {
+  session: Session;
+  query: string;
+  /** 返回条数（1-10，缺省 3）。 */
+  topK?: number | undefined;
+  /** 本次调用自身的 callId，其 toolcall 不进候选池。 */
+  selfCallId: string;
+  getPruner: () => unknown;
+  options?: SemanticOptions | undefined;
+};
+
+/** 在会话完整消息中做语义检索，返回 TOP-K 命中条目。 */
+export async function semanticSearch(input: SemanticSearchInput): Promise<RecallOutputValue> {
+  const { session, query, topK, start, end, offset, selfCallId, getPruner, options } = input;
   const embed: EmbedFn = options?.embedder ?? ((texts) => getEmbedder().then((fn) => fn(texts)));
-  return {
-    name: 'recall-semantic',
-    description:
-      '在你需要按语义检索历史消息时调用。此工具按自然语言含义检索最符合的完整消息，默认全量搜索，可指定区间。注意：只匹配文本。',
-    parameters: parametersFromZod(semanticRecallArgsSchema),
-    output: {
-      schema: RECALL_OUTPUT_SCHEMA,
-      render: (_args, value) => renderRecallOutput(value as RecallOutputValue),
-    },
-    async execute(args: unknown, exec: ToolRunContext): Promise<RecallOutputValue> {
-      const { query, top_k, start, end, offset } = parseSemanticRecallArgs(args);
-      const session = exec.agent?.session;
-      if (!session) return textOnly('会话异常');
-      if (!isMainSession(session)) return textOnly('recall-semantic 仅主会话可用');
-      const status = (await options?.modelStatus?.()) ?? 'ready';
-      if (status !== 'ready') return textOnly(SEMANTIC_MODEL_NOT_READY_MESSAGE);
-      const cms = indexCompleteMessages(session);
-      if (cms.length === 0) return textOnly('会话中没有可检索的消息');
-      const range = resolveSemanticRange(cms.length, { start, end, offset });
-      const selfCallId = String(exec.callId ?? '');
-      const candidates: Array<{ cm: CompleteMessage; text: string }> = [];
-      for (let i = range.lo; i <= range.hi; i += 1) {
-        const cm = cms[i];
-        if (!cm) continue;
-        // 排除本次调用自身：其渲染文本含 query 原文，相似度必居榜首，只会挤占 top_k 名额
-        if (selfCallId !== '' && cm.type === 'toolcall' && cm.callId === selfCallId) continue;
-        let text = '';
-        try {
-          text = renderCompleteMessage(session, cm);
-        } catch {
-          /* 渲染失败的完整消息跳过 */
-        }
-        if (text.trim().length > 0) candidates.push({ cm, text });
-      }
-      if (candidates.length === 0) return textOnly('指定范围内没有可检索的消息');
-      const [queryVec] = await embed([query]);
-      if (!queryVec) return textOnly('语义检索失败：无法生成查询向量');
-      const vectors = await embed(candidates.map((c) => c.text));
-      const scored = candidates.map((c, i) => ({
-        cm: c.cm,
-        text: c.text,
-        score: cosineSimilarity(queryVec, vectors[i] ?? new Float32Array(0)),
-      }));
-      scored.sort((a, b) => b.score - a.score);
-      const limit = top_k ?? 3;
-      const hits = scored.slice(0, limit);
-      const parts: string[] = [];
-      const images: ImageRefValue[] = [];
-      const rangeNote = range.fallback
-        ? '指定区间不合法（start/end 越界等），已回退检索全部消息'
-        : start === undefined
-          ? `检索全部消息（${candidates.length} 条可嵌入）`
-          : `检索区间 [${range.lo}..${range.hi}]（${candidates.length} 条可嵌入）`;
-      // 查询与检索说明以 XML 注释置于条目之前
-      parts.push(`<!-- ${xmlCommentText(`查询: ${query}`)} -->`);
-      parts.push(`<!-- ${xmlCommentText(rangeNote)} -->`);
-      parts.push(
-        `<!-- ${xmlCommentText(`匹配 TOP-${hits.length}（共 ${scored.length} 条候选）`)} -->`,
-      );
-      for (let i = 0; i < hits.length; i += 1) {
-        const hit = hits[i];
-        if (!hit) continue;
-        const note = `<!-- ${xmlCommentText(`${i + 1}. ${matchExplanation(query, hit.text, hit.score)}`)} -->`;
-        let xml: string;
-        let hitImages: ImageRefValue[] = [];
-        try {
-          const pruner = getPruner() as PrunerLike | undefined;
-          const rendered = renderCompleteMessageXml(session, hit.cm, {
-            pruner,
-            fallbackText: hit.text,
-          });
-          xml = rendered.xml;
-          hitImages = rendered.images;
-        } catch {
-          // 回退元素也构建失败时降级为纯文本正文（嵌入用文本）
-          xml = hit.text;
-        }
-        parts.push(note);
-        parts.push(xml);
-        images.push(...hitImages);
-      }
-      return { text: parts.join('\n'), images };
-    },
-  };
+  const status = (await options?.modelStatus?.()) ?? 'ready';
+  if (status !== 'ready') return textOnly(SEMANTIC_MODEL_NOT_READY_MESSAGE);
+  const cms = indexCompleteMessages(session);
+  if (cms.length === 0) return textOnly('会话中没有可检索的消息');
+  const range = resolveSemanticRange(cms.length, { start, end, offset });
+  const candidates: Array<{ cm: CompleteMessage; text: string }> = [];
+  for (let i = range.lo; i <= range.hi; i += 1) {
+    const cm = cms[i];
+    if (!cm) continue;
+    // 排除本次调用自身：其渲染文本含 query 原文，相似度必居榜首，只会挤占 top_k 名额
+    if (selfCallId !== '' && cm.type === 'toolcall' && cm.callId === selfCallId) continue;
+    let text = '';
+    try {
+      text = renderCompleteMessage(session, cm);
+    } catch {
+      /* 渲染失败的完整消息跳过 */
+    }
+    if (text.trim().length > 0) candidates.push({ cm, text });
+  }
+  if (candidates.length === 0) return textOnly('指定范围内没有可检索的消息');
+  const [queryVec] = await embed([query]);
+  if (!queryVec) return textOnly('语义检索失败：无法生成查询向量');
+  const vectors = await embed(candidates.map((c) => c.text));
+  const scored = candidates.map((c, i) => ({
+    cm: c.cm,
+    text: c.text,
+    score: cosineSimilarity(queryVec, vectors[i] ?? new Float32Array(0)),
+  }));
+  scored.sort((a, b) => b.score - a.score);
+  const limit = topK ?? 3;
+  const hits = scored.slice(0, limit);
+  const parts: string[] = [];
+  const images: ImageRefValue[] = [];
+  const rangeNote = range.fallback
+    ? '指定区间不合法（start/end 越界等），已回退检索全部消息'
+    : start === undefined
+      ? `检索全部消息（${candidates.length} 条可嵌入）`
+      : `检索区间 [${range.lo}..${range.hi}]（${candidates.length} 条可嵌入）`;
+  // 查询与检索说明以 XML 注释置于条目之前
+  parts.push(`<!-- ${xmlCommentText(`查询: ${query}`)} -->`);
+  parts.push(`<!-- ${xmlCommentText(rangeNote)} -->`);
+  parts.push(`<!-- ${xmlCommentText(`匹配 TOP-${hits.length}（共 ${scored.length} 条候选）`)} -->`);
+  for (let i = 0; i < hits.length; i += 1) {
+    const hit = hits[i];
+    if (!hit) continue;
+    const note = `<!-- ${xmlCommentText(`${i + 1}. ${matchExplanation(query, hit.text, hit.score)}`)} -->`;
+    let xml: string;
+    let hitImages: ImageRefValue[] = [];
+    try {
+      const pruner = getPruner() as PrunerLike | undefined;
+      const rendered = renderCompleteMessageXml(session, hit.cm, {
+        pruner,
+        fallbackText: hit.text,
+      });
+      xml = rendered.xml;
+      hitImages = rendered.images;
+    } catch {
+      // 回退元素也构建失败时降级为纯文本正文（嵌入用文本）
+      xml = hit.text;
+    }
+    parts.push(note);
+    parts.push(xml);
+    images.push(...hitImages);
+  }
+  return { text: parts.join('\n'), images };
 }

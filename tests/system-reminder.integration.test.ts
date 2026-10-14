@@ -44,7 +44,7 @@ class RecordingAdapter extends LlmAdapter {
   }
 }
 
-/** 保持历史低于压缩阈值，禁用需要下载模型的语义召回。 */
+/** 保持历史低于压缩阈值，禁用需要下载模型的语义增强。 */
 function pluginConfig(omEnabled: boolean, recallEnabled = false): Partial<PluginConfig> {
   return {
     omEnabled,

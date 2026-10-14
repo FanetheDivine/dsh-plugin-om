@@ -198,25 +198,27 @@ describe('recall 工具', () => {
         content: [{ type: 'text', text: 'PRUNED-HEAD ... PRUNED-TAIL' }],
       },
     ];
-    const tool = buildRecallTool(() => ({
-      pruneContent: (blocks: unknown[]) => {
-        const text = (
-          blocks as Array<{
-            type?: string;
-            text?: string;
-            content?: Array<{ type?: string; text?: string }>;
-          }>
-        )
-          .map((b) => {
-            if (b.type === 'text') return b.text ?? '';
-            if (b.type === 'tool-result')
-              return (b.content ?? []).map((c) => (c.type === 'text' ? c.text : '')).join('');
-            return '';
-          })
-          .join('');
-        return text.length > 10 ? prunedBlocks : null;
-      },
-    }));
+    const tool = buildRecallTool({
+      getPruner: () => ({
+        pruneContent: (blocks: unknown[]) => {
+          const text = (
+            blocks as Array<{
+              type?: string;
+              text?: string;
+              content?: Array<{ type?: string; text?: string }>;
+            }>
+          )
+            .map((b) => {
+              if (b.type === 'text') return b.text ?? '';
+              if (b.type === 'tool-result')
+                return (b.content ?? []).map((c) => (c.type === 'text' ? c.text : '')).join('');
+              return '';
+            })
+            .join('');
+          return text.length > 10 ? prunedBlocks : null;
+        },
+      }),
+    });
     const exec = { agent: { session } };
     const span = textOf(await tool.execute({ start: 2, offset: 0 }, exec as never));
     expect(String(span)).toContain('PRUNED-HEAD');
@@ -367,5 +369,71 @@ describe('recall 参数校验（zod schema）', () => {
 
   it('未知键被剥离', () => {
     expect(parseRecallArgs({ start: 0, offset: 1, junk: true })).toEqual({ start: 0, offset: 1 });
+  });
+});
+
+describe('recall 语义增强参数与 wire schema', () => {
+  const enhanced = { semantic: {} };
+
+  it('增强关闭时 wire schema 只暴露 start/end/offset，且不接受 query', () => {
+    const properties = buildRecallTool().parameters.properties as Record<string, unknown>;
+    expect(Object.keys(properties).sort()).toEqual(['end', 'offset', 'start']);
+    expect(() => parseRecallArgs({ query: 'x' })).toThrow(/start/);
+  });
+
+  it('增强开启时 wire schema 增加 query/top_k，且 start 不再必填', () => {
+    const parameters = buildRecallTool(enhanced).parameters;
+    const properties = parameters.properties as Record<string, unknown>;
+    expect(Object.keys(properties).sort()).toEqual(['end', 'offset', 'query', 'start', 'top_k']);
+    expect(parameters.required ?? []).not.toContain('start');
+    expect(parameters).not.toHaveProperty('$schema');
+    expect(parameters).not.toHaveProperty('additionalProperties');
+  });
+
+  it('增强开启时 query 模式的参数解析', () => {
+    expect(parseRecallArgs({ query: '找缓存逻辑' }, true)).toEqual({ query: '找缓存逻辑' });
+    expect(parseRecallArgs({ query: 'x', top_k: 5, start: 2, end: 5 }, true)).toEqual({
+      query: 'x',
+      top_k: 5,
+      start: 2,
+      end: 5,
+    });
+    expect(() => parseRecallArgs({ query: '   ' }, true)).toThrow(/query/);
+    for (const topK of [0, 11, 2.5, '3']) {
+      expect(() => parseRecallArgs({ query: 'x', top_k: topK }, true)).toThrow(/top_k/);
+    }
+  });
+
+  it('增强开启时无 query 仍按区间模式校验', () => {
+    expect(parseRecallArgs({ start: 0, end: 5 }, true)).toEqual({ start: 0, end: 5 });
+    expect(() => parseRecallArgs({}, true)).toThrow(/start/);
+    expect(() => parseRecallArgs({ start: 1 }, true)).toThrow(/end/);
+  });
+
+  it('增强开启时无 query 的区间调用与关闭时结果一致', async () => {
+    const session = makeSession({ events: twoCallFlow() });
+    const exec = { agent: { session } };
+    const plain = textOf(await buildRecallTool().execute({ start: 0, end: 5 }, exec as never));
+    const withSemantic = textOf(
+      await buildRecallTool(enhanced).execute({ start: 0, end: 5 }, exec as never),
+    );
+    expect(withSemantic).toBe(plain);
+  });
+
+  it('描述随增强状态变化：开启时说明 query 用法', () => {
+    expect(buildRecallTool().description).not.toContain('query');
+    expect(buildRecallTool(enhanced).description).toContain('query');
+    expect(buildRecallTool(enhanced).description).toContain('index');
+  });
+
+  it('增强关闭时忽略 query，按区间模式执行', async () => {
+    const session = makeSession({ events: twoCallFlow() });
+    const out = textOf(
+      await buildRecallTool().execute({ query: 'firstCode', start: 0, end: 0 }, {
+        agent: { session },
+      } as never),
+    );
+    expect(String(out)).toContain('<user_message index="0">');
+    expect(String(out)).not.toContain('相似度');
   });
 });

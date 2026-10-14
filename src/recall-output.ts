@@ -1,5 +1,5 @@
 /**
- * recall / recall-semantic 共享输出契约：输出值为固定形态 { text, images }。
+ * recall 输出契约：输出值为固定形态 { text, images }。
  * text 为完整消息的 XML 条目序列（形态见 recall-xml.ts，图片位置以 XML 注释标注），
  * images 为图片附件元数据（按 attachmentId 引用，不含字节）。
  * 导出 ImageRefValue / RecallOutputValue / RECALL_OUTPUT_SCHEMA / textOnly / imageNote /
@@ -26,7 +26,7 @@ export type ImageRefValue = {
   name?: string;
 };
 
-/** recall / recall-semantic 的输出值：text 为文本部分，images 按出现顺序。 */
+/** recall 的输出值：text 为文本部分，images 按出现顺序。 */
 export type RecallOutputValue = {
   text: string;
   images: ImageRefValue[];

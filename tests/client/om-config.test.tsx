@@ -343,6 +343,83 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     expect(boolField?.querySelector('button')).toBeNull();
   });
 
+  describe('语义增强依赖原文召回', () => {
+    const texts = (face: ReturnType<typeof mount>['face']) => {
+      const { fields } = face.hooks.omConfigCard.getSnapshot();
+      return [fields.recallEnabled.text, fields.semanticRecallEnabled.text];
+    };
+
+    it('勾选语义增强时一并勾选原文召回，并原子保存两项', async () => {
+      const { host, container, face } = mount({
+        value: { recallEnabled: false, semanticRecallEnabled: false },
+        user: { recallEnabled: false, semanticRecallEnabled: false },
+      });
+      expect(control(container, 'recallEnabled').checked).toBe(false);
+      act(() => control(container, 'semanticRecallEnabled').click());
+      expect(texts(face)).toEqual(['true', 'true']);
+      expect(control(container, 'recallEnabled').checked).toBe(true);
+      expect(control(container, 'semanticRecallEnabled').checked).toBe(true);
+      await act(async () => face.save());
+      expect(host.calls).toHaveLength(1);
+      expect(host.calls[0]?.ops).toEqual(
+        expect.arrayContaining([
+          { op: 'set', path: ['recallEnabled'], value: true },
+          { op: 'set', path: ['semanticRecallEnabled'], value: true },
+        ]),
+      );
+    });
+
+    it('取消原文召回时一并取消语义增强', () => {
+      const { container, face } = mount({
+        value: { recallEnabled: true, semanticRecallEnabled: true },
+        user: {},
+      });
+      act(() => control(container, 'recallEnabled').click());
+      expect(texts(face)).toEqual(['false', 'false']);
+      expect(control(container, 'semanticRecallEnabled').checked).toBe(false);
+    });
+
+    it('取消语义增强不影响原文召回', () => {
+      const { container, face } = mount({
+        value: { recallEnabled: true, semanticRecallEnabled: true },
+        user: {},
+      });
+      act(() => control(container, 'semanticRecallEnabled').click());
+      expect(texts(face)).toEqual(['true', 'false']);
+      expect(control(container, 'recallEnabled').checked).toBe(true);
+    });
+
+    it('原文召回关闭时语义增强显示为未勾选（与服务端生效值一致）', () => {
+      const { container } = mount({
+        value: { recallEnabled: false, semanticRecallEnabled: true },
+        user: {},
+      });
+      expect(control(container, 'semanticRecallEnabled').checked).toBe(false);
+    });
+
+    it('恢复语义增强默认时一并恢复被关闭的原文召回', async () => {
+      const { host, container, face } = mount({
+        base: { recallEnabled: true, semanticRecallEnabled: true },
+        value: { recallEnabled: false, semanticRecallEnabled: false },
+        user: { recallEnabled: false, semanticRecallEnabled: false },
+      });
+      const reset = [
+        ...(container
+          .querySelector('[data-om-field="semanticRecallEnabled"]')
+          ?.querySelectorAll('button') ?? []),
+      ].find((button) => button.textContent === 'config.reset');
+      act(() => reset?.click());
+      expect(texts(face)).toEqual(['true', 'true']);
+      await act(async () => face.save());
+      expect(host.calls[0]?.ops).toEqual(
+        expect.arrayContaining([
+          { op: 'unset', path: ['recallEnabled'] },
+          { op: 'unset', path: ['semanticRecallEnabled'] },
+        ]),
+      );
+    });
+  });
+
   it('区分加载/不可用，且只读时全部控件和保存均不可用', () => {
     const loading = mount({ status: 'loading', value: undefined });
     expect(loading.container.textContent).toContain('config.loading');

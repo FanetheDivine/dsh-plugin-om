@@ -228,6 +228,19 @@ describe('recallEnabled / semanticRecallEnabled 配置键', () => {
     expect(resolveConfig({ recallEnabled: 'false' }).recallEnabled).toBe(true);
     expect(resolveConfig({ semanticRecallEnabled: 0 }).semanticRecallEnabled).toBe(true);
   });
+
+  it('语义增强依赖原文召回：recallEnabled=false 时语义增强一并失效', () => {
+    expect(resolveConfig({ recallEnabled: false }).semanticRecallEnabled).toBe(false);
+    expect(
+      resolveConfig({ recallEnabled: false, semanticRecallEnabled: true }).semanticRecallEnabled,
+    ).toBe(false);
+    expect(
+      resolveConfig({ recallEnabled: true, semanticRecallEnabled: true }).semanticRecallEnabled,
+    ).toBe(true);
+    expect(
+      resolveConfig({ recallEnabled: true, semanticRecallEnabled: false }).semanticRecallEnabled,
+    ).toBe(false);
+  });
 });
 
 describe('compressProvider / compressModel / compressReasoningEffort 配置键', () => {

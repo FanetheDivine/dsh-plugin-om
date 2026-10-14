@@ -310,7 +310,7 @@ describe('apply 接线（OM 观察压缩）', () => {
 
     expect(ctx._sections).toHaveLength(0);
     expect(ctx._registeredTools.some((t) => t.name === 'recall')).toBe(true);
-    expect(ctx._registeredTools.some((t) => t.name === 'recall-semantic')).toBe(true);
+    expect(ctx._registeredTools.some((t) => t.name === 'recall-semantic')).toBe(false);
     const sessionListeners = ctx._onCallbacks.get('session/event');
     expect(sessionListeners).toBeUndefined(); // 不监听 session/event
 
@@ -1491,43 +1491,47 @@ describe('压缩请求形态（新会话直连）', () => {
   });
 });
 
-// apply 接线（工具注册开关）：recallEnabled / semanticRecallEnabled 配置键
-// 独立控制 recall / recall-semantic 工具注册，缺省启用；false 禁用；不影响压缩接线。
+// apply 接线（工具注册开关）：recallEnabled 控制 recall 注册；semanticRecallEnabled 为其语义增强，
+// 依赖 recallEnabled；不影响压缩接线。
 describe('apply 接线（recallEnabled / semanticRecallEnabled）', () => {
   /** 已注册工具名集合。 */
   function registeredNames(ctx: ReturnType<typeof makeCtx>): string[] {
     return ctx._registeredTools.map((t) => t.name).filter((n): n is string => n !== undefined);
   }
 
-  it('缺省两个工具都注册', () => {
+  /** 已注册 recall 的 wire 参数名。 */
+  function recallParams(ctx: ReturnType<typeof makeCtx>): string[] {
+    const tool = ctx._registeredTools.find((t) => t.name === 'recall') as
+      | { parameters: { properties: object } }
+      | undefined;
+    return Object.keys(tool?.parameters.properties ?? {}).sort();
+  }
+
+  it('缺省只注册 recall，且带语义增强参数', () => {
     const ctx = makeCtx();
     apply(ctx, {});
-    expect(registeredNames(ctx)).toEqual(expect.arrayContaining(['recall', 'recall-semantic']));
+    expect(registeredNames(ctx)).toEqual(['recall']);
+    expect(recallParams(ctx)).toEqual(['end', 'offset', 'query', 'start', 'top_k']);
   });
 
-  it('recallEnabled=false 仅禁用 recall，recall-semantic 仍注册', () => {
-    const ctx = makeCtx();
-    apply(ctx, { recallEnabled: false });
-    const names = registeredNames(ctx);
-    expect(names).not.toContain('recall');
-    expect(names).toContain('recall-semantic');
-  });
-
-  it('semanticRecallEnabled=false 仅禁用 recall-semantic，recall 仍注册', () => {
+  it('semanticRecallEnabled=false：recall 仅区间参数', () => {
     const ctx = makeCtx();
     apply(ctx, { semanticRecallEnabled: false });
-    const names = registeredNames(ctx);
-    expect(names).toContain('recall');
-    expect(names).not.toContain('recall-semantic');
+    expect(registeredNames(ctx)).toEqual(['recall']);
+    expect(recallParams(ctx)).toEqual(['end', 'offset', 'start']);
   });
 
-  it('两个开关都=false 时两个工具都不注册，压缩接线不受影响', () => {
+  it('recallEnabled=false：不注册任何工具，语义增强一并失效', () => {
+    for (const semanticRecallEnabled of [true, false]) {
+      const ctx = makeCtx();
+      apply(ctx, { recallEnabled: false, semanticRecallEnabled });
+      expect(registeredNames(ctx)).toEqual([]);
+    }
+  });
+
+  it('recallEnabled=false 时压缩接线不受影响', () => {
     const ctx = makeCtx();
-    apply(ctx, { recallEnabled: false, semanticRecallEnabled: false });
-    const names = registeredNames(ctx);
-    expect(names).not.toContain('recall');
-    expect(names).not.toContain('recall-semantic');
-    // 工具注册开关只控制 recall 工具，agent/pre-step 压缩监听始终注册
+    apply(ctx, { recallEnabled: false });
     expect(ctx._onCallbacks.has('agent/pre-step')).toBe(true);
   });
 
@@ -1537,6 +1541,14 @@ describe('apply 接线（recallEnabled / semanticRecallEnabled）', () => {
     const ctx = makeCtx();
     apply(ctx, {});
     expect(mockEnsure).toHaveBeenCalled();
+  });
+
+  it('recallEnabled=false：不触发模型下载', () => {
+    const mockEnsure = ensureModelReady as unknown as ReturnType<typeof vi.fn>;
+    mockEnsure.mockClear();
+    const ctx = makeCtx();
+    apply(ctx, { recallEnabled: false });
+    expect(mockEnsure).not.toHaveBeenCalled();
   });
 
   it('semanticRecallEnabled=false：不触发模型下载', () => {
