@@ -367,6 +367,12 @@ describe('runCompressionLoop', () => {
         model: 'test-model',
       });
     }
+    // completeCompression 的 tool/result 落盘为最终 <history> 块，会话记录里可直接查看
+    const lastResult = events.filter((e) => e.type === 'tool/result').at(-1);
+    const persisted = JSON.stringify(lastResult?.data);
+    expect(persisted).toContain(`<${HISTORY_TAG} tip=`);
+    expect(persisted).toContain('B的摘要');
+    expect(persisted).not.toContain('压缩完成');
     expect(ctx._flushedSessions).toHaveLength(1);
     expect(result.recordSessionId).toBe(record?.id);
   });

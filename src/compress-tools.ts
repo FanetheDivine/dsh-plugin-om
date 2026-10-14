@@ -457,7 +457,7 @@ export class CompressionState {
     );
   }
 
-  /** completeCompression：所有原始合法 ask 已压缩或重写后标记完成。 */
+  /** completeCompression：所有原始合法 ask 已压缩或重写后标记完成；result 为最终 <history> 块。 */
   complete(): ToolCallResult {
     const pending = this.unprocessedAskIndices();
     if (pending.length > 0) {
@@ -467,7 +467,8 @@ export class CompressionState {
       };
     }
     this._completed = true;
-    return { text: '压缩完成', isError: false };
+    // 返回与压缩日志一致的 <history> 块，会话记录里才能直接看到压缩产物
+    return { text: this.buildFinalBlock(), isError: false };
   }
 
   /**

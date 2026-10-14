@@ -125,7 +125,7 @@ src/
     ├── om-config-controller.ts  # 宿主配置表单、草稿和原子保存
     ├── OmConfigCard.tsx         # 十四项双语配置控件
     ├── definition.ts            # 压缩卡片定义：生命周期事件、检查点替换与警告事件
-    ├── OmCompactionCard.tsx     # 压缩结果与错误卡片，可跳转诊断子会话
+    ├── OmCompactionCard.tsx     # 压缩结果与错误卡片，可跳转轨迹与诊断子会话
     ├── OmWarningCard.tsx        # 功能降级警告行
     ├── format.ts                # 统计数字紧凑格式化
     └── locales.ts               # 中英文文案

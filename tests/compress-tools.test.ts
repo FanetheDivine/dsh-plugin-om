@@ -532,6 +532,26 @@ describe('executeCall 与 complete', () => {
     expect(state.completed).toBe(true);
     expect(state.replacementCount).toBe(0);
   });
+
+  it('complete 成功时 result 是最终 <history> 块，与 buildFinalBlock 一致', () => {
+    const state = new CompressionState(observeView());
+    state.getHistory({});
+    state.markHistoryDelivered();
+    expect(state.compressHistory({ index: 2, content: '摘要B' }).isError).toBe(false);
+    const result = state.complete();
+    expect(result.isError).toBe(false);
+    expect(result.text).toBe(state.buildFinalBlock());
+    expect(result.text).toContain(`<${HISTORY_TAG} tip=`);
+    expect(result.text).toContain('<assistant index="2"><![CDATA[摘要B]]></assistant>');
+    expect(result.text).not.toBe('压缩完成');
+  });
+
+  it('complete 被门禁拒绝时 result 不含 <history> 块', () => {
+    const state = new CompressionState(viewOf([originalAsk(1)]));
+    const result = state.complete();
+    expect(result.isError).toBe(true);
+    expect(result.text).not.toContain(`<${HISTORY_TAG}`);
+  });
 });
 
 describe('buildFinalBlock', () => {
