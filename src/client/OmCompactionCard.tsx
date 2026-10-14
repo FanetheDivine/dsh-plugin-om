@@ -4,11 +4,11 @@
  * 注入 <style>（宿主该卡片样式是编译期哈希的 CSS Module，插件 bundle 无法引用其类名）。
  * 卡片报告模型从何处起不再看到那段历史；summary 留在加载窗口外时行不可展开。
  * 压缩失败节点渲染为可展开的错误行：折叠行显示错误摘要，展开体显示完整报错。
- * 展开体下方的操作栏（宿主 inspectButton 同款胶囊）：节点带诊断子会话 id 且宿主注入
- * openSession 时显示「诊断日志」，跳转到该子会话页面。
+ * 展开体下方的操作栏（宿主 inspectButton 同款胶囊）：宿主提供 inspectCall 时显示「轨迹」，
+ * 切到轨迹视图；节点带诊断子会话 id 且宿主注入 openSession 时显示「诊断日志」，跳转到该子会话页面。
  */
 
-import type { ChatNode } from '@deepseek-ai/dsh-client-ui-chat/client';
+import type { ChatNode, ToolCallId } from '@deepseek-ai/dsh-client-ui-chat/client';
 import {
   DisclosureRow,
   IconBrowseOutlineRegular,
@@ -27,8 +27,10 @@ export interface OmCompactionCardProps {
   readonly t: TranslateNS<'om-compaction'>;
   /** 当前（父）会话 id，作为诊断子会话地址的 parentSessionId。 */
   readonly sessionId?: SessionId;
-  /** 宿主注入的会话跳转；缺失时不显示「查看」。 */
+  /** 宿主注入的会话跳转；缺失时不显示「诊断日志」。 */
   readonly openSession?: (target: SubagentAddress) => void;
+  /** 宿主 owner 提供的轨迹视图跳转；缺失（轨迹视图不可用）时不显示「轨迹」。 */
+  readonly inspectCall?: ((callId: ToolCallId) => void) | undefined;
 }
 
 /** 卡片样式类名（与宿主 ContextInjectionRow.module.css 同款规则，增加水平滚动支持）。 */
@@ -75,6 +77,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({
   t,
   sessionId,
   openSession,
+  inspectCall,
 }: OmCompactionCardProps) {
   const [expanded, setExpanded] = useState(false);
   const { data } = node;
@@ -100,10 +103,27 @@ export const OmCompactionCard = memo(function OmCompactionCard({
         {t('card.inspect')}
       </button>
     ) : null;
+  // 「轨迹」：切到轨迹视图。轨迹按 callId 定位记录，压缩没有 callId，故只切换视图
+  const trajectory =
+    inspectCall === undefined ? null : (
+      <button
+        type="button"
+        className={css.inspect}
+        data-om-compaction-trajectory
+        onClick={(event: MouseEvent) => {
+          event.stopPropagation();
+          inspectCall(node.key as ToolCallId);
+        }}
+      >
+        <IconInspectOutlineRegular size={12} />
+        {t('card.trajectory')}
+      </button>
+    );
   // 展开体下方的操作栏；没有可用按钮时不渲染
   const actions =
-    inspect === null ? null : (
+    trajectory === null && inspect === null ? null : (
       <div className={css.actions} data-om-compaction-actions>
+        {trajectory}
         {inspect}
       </div>
     );
@@ -168,7 +188,8 @@ export const OmCompactionCard = memo(function OmCompactionCard({
       </div>
     );
   }
-  const expandable = data.summary !== null;
+  // summary 在加载窗口外时仍可展开：展开体只放操作栏
+  const expandable = data.summary !== null || actions !== null;
   const open = expandable && expanded;
   // 统计行：优先完整压缩前后统计，载荷字段不全时逐级回落
   const stats =
@@ -189,7 +210,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({
             items: formatCompactCount(data.shadowedItemCount),
             tokens: formatCompactCount(data.shadowedTokenCount),
           })
-        : expandable
+        : data.summary !== null
           ? t('compaction.expand')
           : t('compaction.unavailable');
   return (
@@ -220,7 +241,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({
             {data.summary}
           </div>
         )}
-        {data.summary !== null && actions}
+        {actions}
       </DisclosureRow>
     </div>
   );

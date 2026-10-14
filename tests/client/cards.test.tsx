@@ -3,7 +3,7 @@
  * 消息卡片组件测试：验证折叠行横向滚动支持与展开体水平滚动适配。
  */
 
-import type { ChatNode } from '@deepseek-ai/dsh-client-ui-chat/client';
+import type { ChatNode, ToolCallId } from '@deepseek-ai/dsh-client-ui-chat/client';
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots';
 import type { SessionId } from '@deepseek-ai/dsh-session/types';
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client';
@@ -169,6 +169,7 @@ describe('消息列表卡片水平滚动适配', () => {
     function mount(
       data: Partial<CompactionData>,
       openSession?: (target: SubagentAddress) => void,
+      inspectCall?: (callId: ToolCallId) => void,
     ): { container: HTMLElement; unmount: () => void } {
       const container = document.createElement('div');
       document.body.appendChild(container);
@@ -180,6 +181,7 @@ describe('消息列表卡片水平滚动适配', () => {
             t={mockTranslate}
             sessionId={'parent-1' as SessionId}
             {...(openSession === undefined ? {} : { openSession })}
+            {...(inspectCall === undefined ? {} : { inspectCall })}
           />,
         );
       });
@@ -264,6 +266,58 @@ describe('消息列表卡片水平滚动适配', () => {
         expect(view.container.querySelector('[data-om-compaction-actions]')).toBeNull();
         view.unmount();
       }
+    });
+
+    it('summary 不在加载窗口内时仍可展开并「诊断日志」', () => {
+      const openSession = vi.fn();
+      const view = mount({ diagnosticSessionId: 'diag-1', summary: null }, openSession);
+      expand(view.container);
+      expect(view.container.querySelector('.om-compaction-body')).toBeNull();
+      click(view.container.querySelector('[data-om-compaction-inspect]'));
+      expect(openSession).toHaveBeenCalledOnce();
+      view.unmount();
+    });
+
+    it('传入 inspectCall 时展开体显示「轨迹」，点击以节点 key 调用且不折叠', () => {
+      const inspectCall = vi.fn();
+      const view = mount({}, undefined, inspectCall);
+      expect(view.container.querySelector('[data-om-compaction-trajectory]')).toBeNull();
+      expand(view.container);
+      const button = view.container.querySelector('[data-om-compaction-trajectory]');
+      expect(button?.textContent).toContain('轨迹');
+      click(button);
+      expect(inspectCall).toHaveBeenCalledExactlyOnceWith('om-compaction:1');
+      expect(view.container.querySelector('.om-compaction-body')).not.toBeNull();
+      view.unmount();
+    });
+
+    it('无 inspectCall 时不渲染「轨迹」；两个按钮并存时「轨迹」在前', () => {
+      const none = mount({ diagnosticSessionId: 'diag-1' }, vi.fn());
+      expand(none.container);
+      expect(none.container.querySelector('[data-om-compaction-trajectory]')).toBeNull();
+      none.unmount();
+
+      const both = mount({ diagnosticSessionId: 'diag-1' }, vi.fn(), vi.fn());
+      expand(both.container);
+      const buttons = [
+        ...both.container.querySelectorAll('[data-om-compaction-actions] button'),
+      ].map((el) => el.getAttribute('data-om-compaction-trajectory') !== null);
+      expect(buttons).toEqual([true, false]);
+      both.unmount();
+    });
+
+    it('失败卡片同样提供「轨迹」；进行中不渲染操作栏', () => {
+      const inspectCall = vi.fn();
+      const failed = mount({ error: 'boom' }, undefined, inspectCall);
+      expand(failed.container);
+      click(failed.container.querySelector('[data-om-compaction-trajectory]'));
+      expect(inspectCall).toHaveBeenCalledOnce();
+      failed.unmount();
+
+      const running = mount({ running: true, phase: 'observe' }, undefined, inspectCall);
+      expand(running.container);
+      expect(running.container.querySelector('[data-om-compaction-actions]')).toBeNull();
+      running.unmount();
     });
 
     it('按钮样式对齐宿主 inspectButton 胶囊', () => {
