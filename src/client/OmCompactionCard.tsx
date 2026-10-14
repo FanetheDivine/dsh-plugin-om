@@ -19,23 +19,26 @@ export interface OmCompactionCardProps {
   readonly t: TranslateNS<'om-compaction'>;
 }
 
-/** 卡片样式类名（与宿主 ContextInjectionRow.module.css 同款规则，见下方注册）。 */
+/** 卡片样式类名（与宿主 ContextInjectionRow.module.css 同款规则，增加水平滚动支持）。 */
 const css = {
   root: 'om-compaction-root',
   chevron: 'om-compaction-chevron',
   sep: 'om-compaction-sep',
   summary: 'om-compaction-summary',
+  scrollable: 'om-compaction-scrollable',
   body: 'om-compaction-body',
 } as const;
 
-/** 宿主 ContextInjectionRow.module.css 的规则（逐字一致，仅类名按插件前缀）。 */
+/** 卡片样式规则：保留宿主外观，对折叠摘要与展开体增加水平滚动适配。 */
 const cardCss = `
 .${css.root}{min-width:0}
 .${css.root}[data-open]{padding-bottom:4px}
 .${css.chevron}{color:var(--dsw-alias-label-secondary)}
 .${css.sep}{background:var(--dsw-alias-label-caption);border-radius:1px;flex:none;width:2px;height:2px;margin:0 8px}
 .${css.summary}{min-width:0;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;flex:auto;font-size:14px;line-height:24px;overflow:hidden}
-.${css.body}{box-sizing:border-box;background:var(--dsw-alias-markdown-code-block);width:calc(100% - 22px);max-height:141px;color:var(--dsw-alias-label-tertiary);font:400 11px/16px var(--ds-font-family-code);border:none;border-radius:8px;margin:4px 0 0 22px;padding:10px 16px 12px 12px;overflow:auto}
+.${css.summary}.${css.scrollable}{overflow-x:auto;overflow-y:hidden;text-overflow:clip;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.${css.summary}.${css.scrollable}::-webkit-scrollbar{display:none}
+.${css.body}{box-sizing:border-box;background:var(--dsw-alias-markdown-code-block);width:calc(100% - 22px);max-height:141px;color:var(--dsw-alias-label-tertiary);font:400 11px/16px var(--ds-font-family-code);border:none;border-radius:8px;margin:4px 0 0 22px;padding:10px 16px 12px 12px;overflow-x:auto;overflow-y:auto;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
 `;
 
 /** 注册卡片样式（无 document 的环境如 node 测试直接跳过）。 */
@@ -95,7 +98,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCo
           collapsedContent={
             <>
               <span className={css.sep} aria-hidden />
-              <span className={css.summary}>{errorSummary}</span>
+              <span className={`${css.summary} ${css.scrollable}`}>{errorSummary}</span>
             </>
           }
           keepContentWhenOpen
@@ -147,7 +150,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({ node, t }: OmCo
         collapsedContent={
           <>
             <span className={css.sep} aria-hidden />
-            <span className={css.summary} data-om-compaction-summary>
+            <span className={`${css.summary} ${css.scrollable}`} data-om-compaction-summary>
               {stats}
             </span>
           </>
