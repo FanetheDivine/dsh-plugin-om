@@ -46,23 +46,14 @@ declare module '@deepseek-ai/dsh-llm' {
 
 declare module '@deepseek-ai/dsh-session/types' {
   interface SessionEventMap {
-    /** 功能降级警告（degrade.ts 报告，客户端渲染「功能降级」警告行）。 */
-    'plugin:dsh-plugin-om:warning': {
-      /** 降级问题标识（会话内去重键，取值见 degrade.ts）。 */
-      problem: string;
-      /** 面向用户的简短说明。 */
-      message: string;
-    };
-    /** 观察压缩待定标记（compress.ts 观察触发时追加）。 */
-    'plugin:dsh-plugin-om:observe-pending': {
-      /** 触发点：追加时的最后一条完整消息 index。 */
-      triggerMessageIndex: number;
-    };
-    /** 观察压缩待定失效标记（压缩执行完成后追加，声明待定可重新触发）。 */
-    'plugin:dsh-plugin-om:observe-invalidate': {
-      /** 被失效的 plugin:dsh-plugin-om:observe-pending 事件 seq。 */
-      pendingSeq: number;
-    };
+    /**
+     * 借用通道（log-only，不进 surface）：dsh-command-feedback 声明的用户反馈
+     * 审计事件（{ text: string }），位于宿主 KNOWN_SESSION_EVENT_TYPES 目录内，
+     * 历史会话加载不受读取路径的未知类型拒绝影响。本插件以 `om:1:` 前缀 JSON
+     * 信封在其 text 字段承载私有事件（编解码见 om-event.ts）。声明与所有者一致，
+     * 所有者类型包加入编译依赖后此处移除。
+     */
+    'feedback/record': { text: string };
   }
 }
 
