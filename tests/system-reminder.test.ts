@@ -83,21 +83,36 @@ describe('systemReminderMessage', () => {
 describe('activeSystemReminders', () => {
   const off = { omEnabled: false, recallEnabled: false };
 
-  it('OM 启用时两条都启用', () => {
-    expect(activeSystemReminders({ ...off, omEnabled: true }).map((r) => r.kind)).toEqual([
-      PROGRESS_REMINDER_SOURCE_KIND,
-      DEFINITION_REMINDER_SOURCE_KIND,
-    ]);
+  it('recall 启用时无论是否有 history 块均启用定义提醒', () => {
+    expect(
+      activeSystemReminders({ ...off, recallEnabled: true }, false).map((r) => r.kind),
+    ).toEqual([DEFINITION_REMINDER_SOURCE_KIND]);
+    expect(activeSystemReminders({ ...off, recallEnabled: true }, true).map((r) => r.kind)).toEqual(
+      [DEFINITION_REMINDER_SOURCE_KIND],
+    );
   });
 
-  it('OM 关闭但召回启用时只启用定义提醒', () => {
-    expect(activeSystemReminders({ ...off, recallEnabled: true }).map((r) => r.kind)).toEqual([
-      DEFINITION_REMINDER_SOURCE_KIND,
-    ]);
+  it('recall 关闭时仅在表层有 history 块时启用定义提醒', () => {
+    expect(
+      activeSystemReminders({ ...off, omEnabled: true, recallEnabled: false }, false).map(
+        (r) => r.kind,
+      ),
+    ).toEqual([PROGRESS_REMINDER_SOURCE_KIND]);
+    expect(
+      activeSystemReminders({ ...off, omEnabled: true, recallEnabled: false }, true).map(
+        (r) => r.kind,
+      ),
+    ).toEqual([PROGRESS_REMINDER_SOURCE_KIND, DEFINITION_REMINDER_SOURCE_KIND]);
   });
 
-  it('全部关闭时不启用任何提醒', () => {
-    expect(activeSystemReminders(off)).toEqual([]);
+  it('全部关闭且无 history 块时不启用任何提醒', () => {
+    expect(activeSystemReminders(off, false)).toEqual([]);
+  });
+
+  it('全部关闭但有 history 块时启用定义提醒', () => {
+    expect(activeSystemReminders(off, true).map((r) => r.kind)).toEqual([
+      DEFINITION_REMINDER_SOURCE_KIND,
+    ]);
   });
 });
 
