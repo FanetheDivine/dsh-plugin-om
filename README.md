@@ -8,6 +8,7 @@
 
 - 自动压缩主会话历史，并在摘要过大时再次合并
 - OM 启用时以 system-reminder 消息提示模型边做边简述计划与进展，压缩后自动补发
+- OM 或召回工具启用时以 system-reminder 消息说明完整消息定义，压缩后自动补发
 - 通过工具循环生成摘要，保留用户消息、系统消息和未压缩内容
 - 保留工具加载与手动加载的 skill 原文，并在压缩前再次确认
 - 有效提问首次直接压缩需再次确认，保留时查看选项后在下一轮重写问答并展开选项引用
@@ -89,8 +90,8 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 ```text
 cordis.patch.yml                 # bundle patch，dsh plugin add 后作为组合层插入插件行
 src/
-├── index.ts                     # 打包入口：注册 recall 工具并接线自动压缩和进度提醒
-├── progress-reminder.ts         # 进度提醒：system-reminder 消息的构造与缺失时补发
+├── index.ts                     # 打包入口：注册 recall 工具并接线自动压缩和提醒补发
+├── system-reminder.ts           # 进度与完整消息定义提醒：system-reminder 消息的构造与缺失时补发
 ├── config.ts                    # 配置默认值与宽松合并，未知键忽略、非法值回退默认
 ├── constants.ts                 # 共享常量：插件标识、history 标签、完整消息定义、格式说明注释
 ├── degrade.ts                   # 挂载失败降级上报：console 外部输出与 om/warning 会话事件

@@ -11,7 +11,6 @@
  */
 
 import { z } from 'zod';
-import { COMPLETE_MESSAGE_DEFINITION } from './constants.ts';
 import { cosineSimilarity, type EmbedFn, getEmbedder, type ModelStatus } from './embedding.ts';
 import { parametersFromZod } from './json-schema.ts';
 import { indexCompleteMessages, type PrunerLike, renderCompleteMessage } from './log-index.ts';
@@ -135,7 +134,8 @@ export function buildSemanticRecallTool(options?: {
   const embed: EmbedFn = options?.embedder ?? ((texts) => getEmbedder().then((fn) => fn(texts)));
   return {
     name: 'recall-semantic',
-    description: `在你需要按语义检索历史消息时调用。${COMPLETE_MESSAGE_DEFINITION}此工具按自然语言含义检索最符合的完整消息，默认全量搜索，可指定区间。注意：只匹配文本。`,
+    description:
+      '在你需要按语义检索历史消息时调用。此工具按自然语言含义检索最符合的完整消息，默认全量搜索，可指定区间。注意：只匹配文本。',
     parameters: parametersFromZod(semanticRecallArgsSchema),
     output: {
       schema: RECALL_OUTPUT_SCHEMA,

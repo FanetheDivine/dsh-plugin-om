@@ -1,6 +1,7 @@
 // recall.ts 单元测试：recall 工具行为（start/end/offset 区间、pruner 裁剪、subagent 拒绝、
 // 图片附件）、wire 参数 schema 与参数校验 parseRecallArgs。
 import { describe, expect, it } from 'vitest';
+import { COMPLETE_MESSAGE_DEFINITION } from '../src/constants.ts';
 import { buildRecallTool, parseRecallArgs } from '../src/recall.ts';
 import type { RecallOutputValue } from '../src/recall-output.ts';
 import type { SessionEvent } from '../src/types.ts';
@@ -16,6 +17,12 @@ import {
 } from './helpers.ts';
 
 describe('recall 工具', () => {
+  it('描述说明 index 用法，完整消息定义交由主会话 system-reminder 提供', () => {
+    const { description } = buildRecallTool();
+    expect(description).toContain('index');
+    expect(description).not.toContain(COMPLETE_MESSAGE_DEFINITION);
+  });
+
   it('start+end 返回区间内全部完整消息（含代码与结果），输出标 index/类型', async () => {
     const session = makeSession({ events: twoCallFlow() });
     const tool = buildRecallTool();

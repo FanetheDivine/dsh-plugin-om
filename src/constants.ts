@@ -36,7 +36,7 @@ export const HISTORY_TAG = 'history';
 export const HISTORY_TIP = '当前块是历史消息的压缩产物，不要复述';
 
 /**
- * 「完整消息」定义（提示词 / 工具描述 / 块顶注释共用）。
+ * 「完整消息」定义（压缩提示词与主会话 system-reminder 共用）。
  * 完整消息是摘要日志与 recall 共用的定位单位；首条 index 为 0，按会话顺序递增、全局稳定。
  */
 export const COMPLETE_MESSAGE_DEFINITION =
@@ -55,13 +55,12 @@ export type HistoryNoteSections = {
 };
 
 /**
- * 最终 <history> 块内文块首的格式说明注释（XML 注释）。通用部分（完整消息定义 +
- * 条目标签语义 + CDATA 约定 + toolcall 结构）始终保留；<user_message> / <sys> /
+ * 最终 <history> 块内文块首的格式说明注释（XML 注释）。通用部分（条目标签语义 +
+ * CDATA 约定 + toolcall 结构）始终保留；<user_message> / <sys> /
  * <skill_content> / <ask-user-question> 的条目说明仅在块内存在对应条目时追加。
  */
 export function historyFormatNote(sections: HistoryNoteSections = {}): string {
   const parts = [
-    COMPLETE_MESSAGE_DEFINITION,
     '<TAG index="N">表示单条完整消息，<TAG start="A" end="B"> 表示多条连续消息，start/end 是首尾完整消息的 index；消息块的内容是用CDATA包裹的纯文本',
     '<assistant type="toolcall" tool-name="T" callId="C" index="N"> 表示工具调用，内含 <tool-args> 与 <tool-result> 两个CDATA子元素（调用参数与工具返回内容）',
   ];

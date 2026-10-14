@@ -1,7 +1,7 @@
 // semantic-recall.ts 单元测试：参数解析 parseSemanticRecallArgs、语义区间 resolveSemanticRange、
 // 相似度匹配说明 matchExplanation、recall-semantic 工具行为与 wire 参数 schema。
 import { describe, expect, it } from 'vitest';
-
+import { COMPLETE_MESSAGE_DEFINITION } from '../src/constants.ts';
 import type { RecallOutputValue } from '../src/recall-output.ts';
 import {
   buildSemanticRecallTool,
@@ -385,6 +385,7 @@ describe('recall-semantic 工具', () => {
   it('命中消息携带图片时随结果输出；描述注明只匹配文本', async () => {
     const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
     expect(tool.description).toContain('只匹配文本');
+    expect(tool.description).not.toContain(COMPLETE_MESSAGE_DEFINITION);
     const events = [
       {
         type: 'user/message',
