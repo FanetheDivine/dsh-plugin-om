@@ -65,6 +65,13 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 
 [机制说明与成本计算器](https://fanethedivine.github.io/dsh-plugin-om/)可估算不同配置的 token 成本。
 
+## 已知风险
+
+- 宿主会拒绝加载含未知事件类型的会话，插件也无法为事件标记 `ignorable`。
+- 因此观察待定标记和降级警告借用宿主已知的 `feedback/record` 事件写入会话日志。
+- 宿主把 `feedback/record` 视为用户反馈。遥测为默认的 `FEEDBACK_ONLY` 模式时，含这类记录的会话日志会上传到 DeepSeek 遥测服务。
+- 不希望上传时，设置环境变量 `DSH_TELEMETRY_MODE=DISABLED` 后启动 DSH。
+
 ## 开发
 
 运行 `pnpm dev` 自动构建，并在 `cordis.patch.yml` 中加载本地 bundle：
