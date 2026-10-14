@@ -6,7 +6,6 @@
  */
 
 import { z } from 'zod';
-import { COMPLETE_MESSAGE_DEFINITION } from './constants.ts';
 import { parametersFromZod } from './json-schema.ts';
 import { indexCompleteMessages, type PrunerLike } from './log-index.ts';
 import {
@@ -61,7 +60,8 @@ export function parseRecallArgs(raw: unknown): RecallArgs {
 export function buildRecallTool(getPruner?: () => unknown): ToolDefinition {
   return {
     name: 'recall',
-    description: `在你需要查看历史消息时调用。${COMPLETE_MESSAGE_DEFINITION}此工具按 index 区间精确返回区间内全部完整消息的内容。`,
+    description:
+      '在你需要查看历史消息时调用。此工具按 index 区间精确返回区间内全部完整消息的内容。',
     parameters: parametersFromZod(recallArgsSchema),
     output: {
       schema: RECALL_OUTPUT_SCHEMA,

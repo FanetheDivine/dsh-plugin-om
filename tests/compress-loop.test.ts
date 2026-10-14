@@ -10,7 +10,11 @@ import {
   runCompressionLoop,
 } from '../src/compress-loop.ts';
 import { buildReflectView, type CompressionView, type ViewEntry } from '../src/compress-view.ts';
-import { COMPACTION_ABORTED_ERROR, HISTORY_TAG } from '../src/constants.ts';
+import {
+  COMPACTION_ABORTED_ERROR,
+  COMPLETE_MESSAGE_DEFINITION,
+  HISTORY_TAG,
+} from '../src/constants.ts';
 import { resetRateLimitGate } from '../src/rate-limit.ts';
 import { makeCtx, makeSession, roundChunks, throwingStream } from './helpers.ts';
 
@@ -301,6 +305,10 @@ describe('buildCompressionPrompt / buildCompressionTaskText', () => {
     expect(prompt).toContain('q:');
     expect(prompt).toContain('a:');
     expect(prompt).not.toContain('<askuserquestion');
+  });
+
+  it('压缩子会话看不到主会话提醒：提示词自带完整消息定义', () => {
+    expect(buildCompressionPrompt(true)).toContain(COMPLETE_MESSAGE_DEFINITION);
   });
 
   it('任务文本含区间：观察与反思各自表述', () => {

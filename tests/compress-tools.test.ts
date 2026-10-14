@@ -3,7 +3,12 @@
 import { describe, expect, it } from 'vitest';
 import { CompressionState } from '../src/compress-tools.ts';
 import { buildReflectView, type CompressionView, type ViewEntry } from '../src/compress-view.ts';
-import { HISTORY_TAG, HISTORY_TIP, historyFormatNote } from '../src/constants.ts';
+import {
+  COMPLETE_MESSAGE_DEFINITION,
+  HISTORY_TAG,
+  HISTORY_TIP,
+  historyFormatNote,
+} from '../src/constants.ts';
 
 /** 由条目列表推导视图区间（与生产 viewBounds 同规则）。 */
 function viewOf(entries: ViewEntry[]): CompressionView {
@@ -786,5 +791,8 @@ describe('buildFinalBlock', () => {
     expect(plainBlock).not.toContain('表示被压缩的系统消息');
     expect(plainBlock).not.toContain('表示未压缩的原始 skill');
     expect(plainBlock).not.toContain('表示向用户提问');
+    // 完整消息定义由主会话的 system-reminder 提供，块顶注释不重复
+    expect(fullBlock).not.toContain(COMPLETE_MESSAGE_DEFINITION);
+    expect(plainBlock).not.toContain(COMPLETE_MESSAGE_DEFINITION);
   });
 });
