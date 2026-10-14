@@ -310,6 +310,39 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     expect(host.state.user).toEqual({});
   });
 
+  it('布尔字段未覆盖时仅呈现开关与说明，覆盖后显示已覆盖徽章与重置按钮', async () => {
+    const { container, face } = mount({
+      value: { omEnabled: true },
+      user: {},
+    });
+    const boolField = container.querySelector('[data-om-field="omEnabled"]');
+    expect(boolField).not.toBeNull();
+    // 默认继承状态下：不应渲染任何冗余的「继承默认」字样或已覆盖标记
+    expect(boolField?.textContent).not.toContain('继承默认');
+    expect(boolField?.textContent).not.toContain('Inherited');
+    expect(boolField?.textContent).not.toContain('config.overridden');
+    expect(boolField?.querySelector('button')).toBeNull();
+
+    // 用户切换开关，发生覆盖
+    const checkbox = control(container, 'omEnabled');
+    expect(checkbox.checked).toBe(true);
+    act(() => {
+      checkbox.click();
+    });
+    expect(face.hooks.omConfigCard.getSnapshot().fields.omEnabled.overridden).toBe(true);
+    expect(boolField?.textContent).toContain('config.overridden');
+
+    // 此时出现重置按钮，点击重置后覆盖标记清除
+    const resetButton = boolField?.querySelector('button');
+    expect(resetButton?.textContent).toBe('config.reset');
+    act(() => {
+      resetButton?.click();
+    });
+    expect(face.hooks.omConfigCard.getSnapshot().fields.omEnabled.overridden).toBe(false);
+    expect(boolField?.textContent).not.toContain('config.overridden');
+    expect(boolField?.querySelector('button')).toBeNull();
+  });
+
   it('区分加载/不可用，且只读时全部控件和保存均不可用', () => {
     const loading = mount({ status: 'loading', value: undefined });
     expect(loading.container.textContent).toContain('config.loading');
