@@ -72,7 +72,7 @@ describe('recall 工具', () => {
     expect(span).toContain('out2');
   });
 
-  it('系统消息（sys）参与 index 并显示原文', async () => {
+  it('系统消息不占 index 且不出现在召回结果', async () => {
     const session = makeSession({
       events: [
         {
@@ -88,13 +88,13 @@ describe('recall 工具', () => {
     });
     const tool = buildRecallTool();
     const exec = { agent: { session } };
-    // sys 占 index 0，后续两条流程从 index 1 起
-    const span = textOf(await tool.execute({ start: 0, end: 6 }, exec as never));
-    expect(String(span)).toContain('<sys index="0" type="agent-instructions">');
-    expect(String(span)).toContain('宿主注入的工作区指令'); // sys 显示原文
-    expect(String(span)).toContain('<user_message index="1">');
-    expect(String(span)).toContain(
-      '<assistant index="6" type="toolcall" tool-name="run_code" callId="c2">',
+    // 系统消息不占位，两条流程从 index 0 起
+    const span = String(textOf(await tool.execute({ start: 0, end: 5 }, exec as never)));
+    expect(span).not.toContain('宿主注入的工作区指令');
+    expect(span).not.toContain('<sys');
+    expect(span).toContain('<user_message index="0">');
+    expect(span).toContain(
+      '<assistant index="5" type="toolcall" tool-name="run_code" callId="c2">',
     );
   });
 

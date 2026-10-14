@@ -106,8 +106,8 @@ class ScriptedAi extends LlmAdapter {
     if (this.ordinaryCalls === 1) {
       yield* textReply(ORIGINAL);
     } else if (this.ordinaryCalls === 2) {
-      // 完整消息：0 用户、1 进度提醒、2 定义提醒、3 原始助手长文本
-      yield* toolCall('recall', { start: 3, end: 3 }, 'recall-1');
+      // 完整消息：0 用户、1 原始助手长文本（system-reminder 系统消息不占 index）
+      yield* toolCall('recall', { start: 1, end: 1 }, 'recall-1');
     } else if (this.ordinaryCalls === 3) {
       yield* textReply('已查看原文，继续回答。');
     } else {

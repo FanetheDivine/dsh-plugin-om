@@ -1,14 +1,14 @@
 /**
  * 会话日志索引：完整消息索引与渲染。
- * 导出 indexCompleteMessages（完整消息四类折叠索引，recall 与摘要共用同一套编号）、
+ * 导出 indexCompleteMessages（完整消息三类折叠索引，recall 与摘要共用同一套编号）、
  * indexMessages / surfaceIndexOf / messageIdOfEvent（消息级定位辅助）、
  * collectImageRefs / toolCallBlockOf / toolResultMessageOf / renderToolResultText /
  * renderCompleteMessageParts /
  * renderCompleteMessage（完整消息渲染与图片附件收集）。事件日志仅追加（被遮蔽的事件仍可读，
  * recall 依赖此性质）。
  *
- * 完整消息分四类：user（用户消息）、sys（系统消息，压缩日志中以 <sys> 空块表示）、
- * assistant（模型输出文本）、toolcall（单个工具调用及其结果，result 按 callId 匹配并入）。
+ * 完整消息分三类：user（用户消息）、assistant（模型输出文本）、
+ * toolcall（单个工具调用及其结果，result 按 callId 匹配并入）。系统消息不占位。
  * index 从 0 起、按日志顺序递增、只追加不重排（压缩后旧摘要条目引用的 index 仍然有效）。
  */
 import { isPluginOwnedSource } from './constants.ts';
@@ -65,7 +65,7 @@ export function indexMessages(session: Session): MessageIndex {
 }
 
 /**
- * 完整消息索引：按日志顺序把消息事件折叠为完整消息序列（四类，见文件头）。
+ * 完整消息索引：按日志顺序把消息事件折叠为完整消息序列（三类，见文件头）。
  * 工具调用结果按 source.callId 匹配其 tool-call 并入该条；未匹配的 result 独立成条（防御）。
  * 本插件自产消息不占位；压缩在 agent/pre-step 触发（call-result 完备），不存在未闭合调用。
  */
@@ -77,19 +77,10 @@ export function indexCompleteMessages(session: Session): CompleteMessage[] {
     const event = events[seq];
     if (!event) continue;
     if (event.type === 'user/message') {
-      // kind:user 为用户消息，其余为系统消息；本插件自产消息不占位
+      // 仅 kind:user 为用户消息；系统消息与本插件自产消息不占位
       const source = event.data.source;
       if (isPluginOwnedSource(source)) continue;
-      if (source?.kind === 'user') {
-        cms.push({ index: cms.length, type: 'user', seqs: [seq] });
-      } else {
-        cms.push({
-          index: cms.length,
-          type: 'sys',
-          seqs: [seq],
-          ...(source?.kind === undefined ? {} : { kind: source.kind }),
-        });
-      }
+      if (source?.kind === 'user') cms.push({ index: cms.length, type: 'user', seqs: [seq] });
     } else if (event.type === 'assistant/message') {
       const message = event.data.message;
       if (!message || !Array.isArray(message.content)) continue;
@@ -220,7 +211,7 @@ export function renderToolResultText(
 }
 
 /** 渲染一条完整消息为「文本 + 图片」（recall 输出用）：
- * user/sys 取消息原文，assistant 取文本块，toolcall 为调用块 + 结果文本
+ * user 取消息原文，assistant 取文本块，toolcall 为调用块 + 结果文本
  * （pruner 裁剪超大结果）；同时收集该条完整消息携带的图片附件（含 tool-result 嵌套，
  * pruner 裁剪掉的图片不收集）。
  */
@@ -230,7 +221,7 @@ export function renderCompleteMessageParts(
   pruner?: PrunerLike,
 ): { text: string; images: ImageRefValue[] } {
   const images: ImageRefValue[] = [];
-  if (cm.type === 'user' || cm.type === 'sys') {
+  if (cm.type === 'user') {
     const seq = cm.seqs[0];
     const event = seq === undefined ? undefined : session.snapshotEvents()[seq];
     const message = event ? session.deriveEventMessage(event) : null;

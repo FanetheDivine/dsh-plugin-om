@@ -418,7 +418,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(latestHistoryText(session)).not.toContain('<reasoning>');
   });
 
-  it('系统消息参与压缩：视图含 <sys> 空块，最终 <history> 保留 sys 条目', async () => {
+  it('系统消息不占 index：不进入压缩指令，最终 <history> 不含 sys 条目', async () => {
     const sysText = '遵循如下工作区指令：先阅读 README.md。';
     const session = makeSession({
       events: [
@@ -443,68 +443,21 @@ describe('apply 接线（OM 观察压缩）', () => {
       {
         id: 't2',
         name: 'compressHistory',
-        args: { start: 2, end: 3, content: 'toolcall index:3 purpose:跑一下 summary:产物符合预期' },
+        args: { start: 1, end: 2, content: 'toolcall index:2 purpose:跑一下 summary:产物符合预期' },
       },
     ]);
     apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1 });
     await runPreStep(ctx, session);
-    // 首条 user 消息为压缩指令 + 区间，不含历史内容；系统消息不进入指令
+    // 首条 user 消息为压缩指令 + 区间，系统消息不占 index、不进入指令
     const options = summaryOptions(ctx);
     const taskText = String(options.messages?.[0]?.content?.[0]?.text ?? '');
-    expect(taskText).toContain('[0..3]');
+    expect(taskText).toContain('[0..2]');
     expect(taskText).not.toContain(sysText);
-    // 压缩成功；<history> 块含 sys 空块（不可压缩条目原样保留）
     expect(ctx._llmCalls).toHaveLength(3);
     const historyText = latestHistoryText(session);
-    expect(historyText).toContain('<sys type="agent-instructions" index="0"/>');
-  });
-
-  it('系统消息不可压缩：compressHistory 覆盖 sys 条目时工具报错，循环继续', async () => {
-    const session = makeSession({
-      events: [
-        {
-          type: 'user/message',
-          data: makeMessage({
-            content: [textBlock('遵循如下工作区指令：先阅读 README.md。')],
-            source: { kind: 'agent-instructions', form: 'instructions' },
-            id: 'sys-instr',
-          }),
-        } as unknown as SessionEvent,
-        ...buildToolCallFlow({
-          code: 'runMe()',
-          description: '跑一下',
-          callId: 'c-eval',
-          resultText: 'done',
-          withTurnEnd: true,
-        }),
-      ],
-    });
-    // 第 2 轮先尝试覆盖 sys（报错），同轮再压缩合法区间 → 成功
-    const ctx = makeCtx({
-      llmStreamFactory: (index) => {
-        if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
-        if (index === 1)
-          return roundChunks({
-            calls: [
-              { id: 't1', name: 'compressHistory', args: { start: 0, end: 3, content: 'x' } },
-              {
-                id: 't2',
-                name: 'compressHistory',
-                args: { start: 2, end: 3, content: '合法压缩' },
-              },
-            ],
-          });
-        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
-      },
-    });
-    apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1 });
-    await runPreStep(ctx, session);
-    // 报错的工具结果进入下一轮请求：第三轮请求含「系统消息不可压缩」
-    const third = ctx._llmCalls[2];
-    expect(JSON.stringify(third?.options)).toContain('系统消息不可压缩');
-    const historyText = latestHistoryText(session);
-    expect(historyText).toContain('<sys type="agent-instructions" index="0"/>');
-    expect(historyText).toContain('合法压缩');
+    expect(historyText).not.toContain('<sys');
+    expect(historyText).not.toContain(sysText);
+    expect(historyText).toContain('toolcall index:2');
   });
 
   it('增量追加：旧摘要消息原地保留，新观察日志作为独立消息只替换新消息区间', async () => {
