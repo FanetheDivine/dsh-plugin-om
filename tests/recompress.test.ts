@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { clearCompressionModelInfoCache, observePass, reflectPass } from '../src/compress.ts';
 import { resolveConfig } from '../src/config.ts';
+import { apply } from '../src/index.ts';
 import { parseRecompressInput, recompress } from '../src/recompress.ts';
 import type { Context, Session } from '../src/types.ts';
 import {
@@ -278,5 +279,49 @@ describe('recompress：拒绝与互斥', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.recordSessionId).toBeUndefined();
     expect(ctx._createdSessions).toHaveLength(0);
+  });
+});
+
+describe('/om-recompress 命令：apply 接线', () => {
+  const quietConfig = { recallEnabled: false, rateLimitWaitMs: 0 };
+
+  it('commands 服务可用时注册命令，缺失时插件照常加载且不注册', () => {
+    const mounted = makeCtx({ commandsMounted: true });
+    apply(mounted, quietConfig);
+    expect(mounted._registeredCommands.map((c) => c.name)).toEqual(['om-recompress']);
+
+    const missing = makeCtx();
+    expect(() => apply(missing, quietConfig)).not.toThrow();
+    expect(missing._registeredCommands).toEqual([]);
+  });
+
+  it('处理函数：成功返回对比文本，参数错误与压缩失败返回 error', async () => {
+    const { session, compactionId } = await observedSession();
+    const ctx = makeCtx({
+      commandsMounted: true,
+      llmStreamFactory: (index) => scriptedFactory({ 1: '另一个模型的摘要' })(index),
+    });
+    apply(ctx, quietConfig);
+    const command = ctx._registeredCommands[0];
+    const call = (rawInput: string) =>
+      command?.handler({
+        agent: { session },
+        rawInput,
+        signal: new AbortController().signal,
+      });
+
+    const ok = await call(` ${compactionId} alt vendor/big-1 high`);
+    expect(ok?.kind).toBe('success');
+    expect(ok?.text).toContain('重压缩完成（观察 · alt/vendor/big-1）');
+    expect(ok?.text).toContain(ctx._createdSessions[0]?.id);
+    expect(ctx._llmCalls[0]?.options).toMatchObject({ provider: 'alt', reasoningEffort: 'high' });
+
+    const bad = await call('only-one-arg');
+    expect(bad).toMatchObject({ kind: 'error' });
+    expect(bad?.text).toContain('用法');
+
+    const missing = await call('nope alt big-1');
+    expect(missing).toMatchObject({ kind: 'error' });
+    expect(missing?.text).toContain('nope');
   });
 });

@@ -1,7 +1,7 @@
 /**
  * 换模型重压缩：对已成功的 compaction 用另一模型在临时循环里重新压缩一次，便于对比
  * 不同模型的压缩效果。导出 parseRecompressInput / recompress / RecompressRequest /
- * RecompressResult。
+ * RecompressResult / buildRecompressCommand / RECOMPRESS_COMMAND_NAME。
  *
  * - 视图重放：compaction/summary 载荷的 shadowedSeqs 加 compaction/start 的 phase 足以
  *   重建当时的压缩视图（观察取被遮蔽的原消息，反思取被合并的 <history> 块），二者都只
@@ -11,7 +11,11 @@
  * - 目标模型与思考等级由调用方显式指定，不做模型信息校验，也不受 compressProvider /
  *   compressModel 配置影响
  * - 仅主会话可用；同一会话同时仅允许一次重压缩
+ * - 命令 /om-recompress 是压缩卡片按钮到服务端的内部通道（宿主命令通道），结果文本
+ *   由发起方 UI 渲染，命令事件 log-only 不进模型上下文
  */
+
+import type { CommandDefinition } from '@deepseek-ai/dsh-commands';
 
 import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm';
 import { historyTextOf } from './compress.ts';
@@ -224,4 +228,41 @@ export async function recompress(
   } finally {
     running.delete(session.id);
   }
+}
+
+/** 重压缩命令名（压缩卡片按钮经宿主命令通道调用）。 */
+export const RECOMPRESS_COMMAND_NAME = 'om-recompress';
+
+/** 毫秒耗时的简短文本。 */
+function secondsText(durationMs: number): string {
+  return `${(durationMs / 1000).toFixed(1)}s`;
+}
+
+/** 渲染命令结果文本：成功给出模型、轮数、新旧摘要字符数与子会话；失败给出原因。 */
+function describeResult(request: RecompressRequest, result: RecompressResult): string {
+  const label = `${request.provider}/${request.model}`;
+  const record =
+    result.recordSessionId === undefined ? '' : `，会话记录子会话 ${result.recordSessionId}`;
+  if (!result.ok) return `重压缩失败（${label}）：${result.error}${record}`;
+  const phase = result.phase === 'reflect' ? '反思' : '观察';
+  return `重压缩完成（${phase} · ${label}）：${result.rounds} 轮，摘要 ${result.previousChars} → ${result.newChars} 字符，耗时 ${secondsText(result.durationMs)}${record}`;
+}
+
+/** 构造 /om-recompress 命令定义；配置按调用时刻读取。 */
+export function buildRecompressCommand(
+  ctx: Context,
+  getConfig: () => Readonly<PluginConfig>,
+): CommandDefinition {
+  return {
+    name: RECOMPRESS_COMMAND_NAME,
+    description: '由压缩卡片调用：用另一模型重新压缩一次已完成的压缩',
+    input: { hint: '<compactionId> <provider> <model> [思考等级]' },
+    handler: async ({ agent, rawInput, signal }) => {
+      const parsed = parseRecompressInput(rawInput);
+      if (!parsed.ok) return { kind: 'error', text: parsed.error };
+      const result = await recompress(ctx, agent, getConfig(), parsed.request, signal);
+      const text = describeResult(parsed.request, result);
+      return result.ok ? { kind: 'success', text } : { kind: 'error', text };
+    },
+  };
 }
