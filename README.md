@@ -94,8 +94,8 @@ src/
 ├── system-reminder.ts           # 进度与完整消息定义提醒：system-reminder 消息的构造与缺失时补发
 ├── config.ts                    # 配置默认值与宽松合并，未知键忽略、非法值回退默认
 ├── constants.ts                 # 共享常量：插件标识、history 标签、完整消息定义、格式说明注释
-├── degrade.ts                   # 挂载失败降级上报：console 外部输出与 om/warning 会话事件
-├── om-event.ts                  # om 事件借用通道：feedback/record 信封的编解码与读写
+├── degrade.ts                   # 挂载失败降级上报：console 外部输出与 plugin:dsh-plugin-om:warning 会话事件
+├── om-event.ts                  # 自定义会话事件辅助：plugin:dsh-plugin-om:* 事件读写与过滤
 ├── types.ts                     # type-only：宿主类型再导出与领域类型
 ├── utils.ts                     # 零依赖工具函数：文本渲染、主会话判定、路由解析
 ├── json-schema.ts               # zod schema 到工具 wire 参数 JSON Schema 的转换
