@@ -4,9 +4,11 @@
  */
 
 import type { ChatNode } from '@deepseek-ai/dsh-client-ui-chat/client';
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { describe, expect, it } from 'vitest';
+import type { NS } from '../../src/client/locales.ts';
 import { zh } from '../../src/client/locales.ts';
 import { OmCompactionCard } from '../../src/client/OmCompactionCard.tsx';
 import { OmWarningCard } from '../../src/client/OmWarningCard.tsx';
@@ -14,15 +16,15 @@ import { OmWarningCard } from '../../src/client/OmWarningCard.tsx';
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
 
-function mockTranslate(key: string, values?: Record<string, string | number>): string {
-  let template = zh[key as keyof typeof zh] ?? key;
+const mockTranslate: TranslateNS<typeof NS> = ((key: string, values?: Record<string, unknown>) => {
+  let template = (zh as Record<string, string>)[key] ?? key;
   if (values !== undefined) {
     for (const [k, v] of Object.entries(values)) {
       template = template.replaceAll(`{${k}}`, String(v));
     }
   }
   return template;
-}
+}) as TranslateNS<typeof NS>;
 
 describe('消息列表卡片水平滚动适配', () => {
   it('压缩卡片展开体支持水平滚动与移动端滑动，且折叠行摘要允许左右滚动', () => {
@@ -31,15 +33,18 @@ describe('消息列表卡片水平滚动适配', () => {
     const root = createRoot(container);
 
     const node: ChatNode<'om-compaction'> = {
+      key: 'om-compaction:1',
       id: 'om-compaction:1',
       kind: 'om-compaction',
-      created: 1,
-      order: 1,
-      turnId: 'turn-1',
+      target: 'chat',
+      anchorSeq: 1,
+      location: { kind: 'unresolved' },
+      visibility: 'visible',
       data: {
         running: false,
         phase: null,
         error: null,
+        summaryEventSeq: 1,
         shadowedItemCount: 10,
         shadowedCharCount: 1000,
         shadowedTokenCount: 200,
@@ -90,11 +95,13 @@ describe('消息列表卡片水平滚动适配', () => {
     const root = createRoot(container);
 
     const node: ChatNode<'om-warning'> = {
+      key: 'om-warning:1',
       id: 'om-warning:1',
       kind: 'om-warning',
-      created: 1,
-      order: 1,
-      turnId: 'turn-1',
+      target: 'chat',
+      anchorSeq: 1,
+      location: { kind: 'unresolved' },
+      visibility: 'visible',
       data: {
         problem: 'ModelDegraded',
         message: 'A very wide warning message that needs horizontal scrolling on mobile devices',
