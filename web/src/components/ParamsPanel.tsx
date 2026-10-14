@@ -124,7 +124,7 @@ export function ParamsPanel({ params, onChange, onReset }: ParamsPanelProps) {
           />
           <SliderField
             label="dsh 注入"
-            tooltip="AGENTS.md、skill 定义等系统消息，首次观察压缩后遮蔽为空条目"
+            tooltip="AGENTS.md、skill 定义等系统消息，首次观察压缩后被遮蔽"
             unit="tok"
             value={params.injectedTokens}
             min={0}
