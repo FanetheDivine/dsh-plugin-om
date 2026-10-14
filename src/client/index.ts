@@ -13,6 +13,9 @@ import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client';
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 // Type-only: 配置表单服务的 Context 合并。
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
+// Type-only: 拉取 uiWorkspace 服务（会话跳转）的 Context 合并。
+import type {} from '@deepseek-ai/dsh-client-ui-workspace/client';
+import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client';
 import { omCompactionDefinition, omWarningDefinition } from './definition.ts';
 import { en, NS, zh } from './locales.ts';
 import { OmCompactionCard } from './OmCompactionCard.tsx';
@@ -20,8 +23,8 @@ import { OmConfigCard } from './OmConfigCard.tsx';
 import { OmWarningCard } from './OmWarningCard.tsx';
 import { CONFIG_NS, OmConfigController } from './om-config-controller.ts';
 
-/** 必需服务：聊天节点槽、会话定义、双语 locale 与宿主配置表单。 */
-export const inject = ['slots', 'uiConversation', 'locale', 'configForms'];
+/** 必需服务：聊天节点槽、会话定义、双语 locale、宿主配置表单与会话跳转。 */
+export const inject = ['slots', 'uiConversation', 'locale', 'configForms', 'uiWorkspace'];
 
 /** 挂载压缩卡片、警告行和可配置的插件行。 */
 export function apply(ctx: Context): void {
@@ -39,7 +42,17 @@ export function apply(ctx: Context): void {
   );
   ctx.slots.inject('conversation.chat.node', () =>
     ctx.slots.register(
-      { name: 'conversation.chat.node', key: 'om-compaction', locale: NS },
+      {
+        name: 'conversation.chat.node',
+        key: 'om-compaction',
+        locale: NS,
+        // 「查看」跳转：诊断子会话是父会话的 one-shot 子智能体
+        inject: () => ({
+          openSession: (target: SubagentAddress) => {
+            ctx.uiWorkspace.openSession(target);
+          },
+        }),
+      },
       OmCompactionCard,
     ),
   );

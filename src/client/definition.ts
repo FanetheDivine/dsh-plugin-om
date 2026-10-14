@@ -57,6 +57,8 @@ export interface OmCompactionChatData {
   readonly summaryTokenCount: number | null;
   /** 压缩失败的错误文案（来自 compaction/end 载荷 error）；非失败节点为 null。 */
   readonly error: string | null;
+  /** 压缩循环落盘的诊断子会话 id（summary 优先、end 回落）；缺失时为 null，卡片不显示「查看」。 */
+  readonly diagnosticSessionId: string | null;
 }
 
 /** 压缩生命周期关联状态：summary / checkpoint / end 事件证据。 */
@@ -92,8 +94,21 @@ export function checkpointCompactionId(event: SessionEvent): string | undefined 
   return typeof source.compactionId === 'string' ? source.compactionId : undefined;
 }
 
+/** 依次从事件载荷读取非空字符串 diagnosticSessionId；均缺失或非法时返回 null。 */
+function diagnosticSessionIdOf(...matches: (ConversationMatch | undefined)[]): string | null {
+  for (const match of matches) {
+    const id = (match?.event.data as { diagnosticSessionId?: unknown } | undefined)
+      ?.diagnosticSessionId;
+    if (typeof id === 'string' && id !== '') return id;
+  }
+  return null;
+}
+
 /** 从 compaction/summary 载荷提取摘要文本与遮蔽统计（载荷非法时各字段回落 null）。 */
-function compactSummaryData(summaryMatch: ConversationMatch | undefined): OmCompactionChatData {
+function compactSummaryData(
+  summaryMatch: ConversationMatch | undefined,
+  endMatch: ConversationMatch | undefined,
+): OmCompactionChatData {
   let summary: string | null = null;
   let shadowedItemCount: number | null = null;
   let shadowedTokenCount: number | null = null;
@@ -132,6 +147,7 @@ function compactSummaryData(summaryMatch: ConversationMatch | undefined): OmComp
     shadowedCharCount,
     summaryCharCount: summary === null ? null : summary.length,
     summaryTokenCount: summary === null ? null : Math.ceil(summary.length / 4),
+    diagnosticSessionId: diagnosticSessionIdOf(summaryMatch, endMatch),
   };
 }
 
@@ -154,6 +170,7 @@ function runningData(start: ConversationMatch | undefined): OmCompactionChatData
     shadowedCharCount: null,
     summaryCharCount: null,
     summaryTokenCount: null,
+    diagnosticSessionId: null,
   };
 }
 
@@ -178,6 +195,7 @@ function failureData(
     shadowedCharCount: null,
     summaryCharCount: null,
     summaryTokenCount: null,
+    diagnosticSessionId: diagnosticSessionIdOf(end),
   };
 }
 
@@ -251,7 +269,7 @@ export const omCompactionDefinition: ConversationNodeDefinition<OmCompactionStat
     const state = context.state ?? fallbackState(context);
     // 替换检查点已到达 → 压缩完成，渲染摘要卡片
     if (state.checkpoint !== undefined) {
-      const data = compactSummaryData(state.summary);
+      const data = compactSummaryData(state.summary, state.end);
       return chatNode(context, COMPACTION_CARD_KIND, state.checkpoint.event.seq, data);
     }
     // end 已到达但无检查点：error 为非中止的实际报错时渲染可见失败行；
