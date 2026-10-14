@@ -710,7 +710,7 @@ export function entryToElement(doc: Document, entry: ViewEntry): Element {
   ) {
     // toolcall 条目：<assistant type="toolcall" tool-name callId index>，内文为
     // <tool-args>（调用参数 JSON）与 <tool-result>（工具返回内容）两个 CDATA 子元素，
-    // 与 recall 系工具的条目形态一致。
+    // 与 recall 的条目形态一致。
     const el = doc.createElement('assistant');
     el.setAttribute('index', String(entry.lo));
     el.setAttribute('type', 'toolcall');

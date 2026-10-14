@@ -1,5 +1,5 @@
 /**
- * 嵌入模型下载原语：recall-semantic 运行时按需下载与开发手动预下载（scripts/
+ * 嵌入模型下载原语：recall 语义增强运行时按需下载与开发手动预下载（scripts/
  * download-model.mjs）共用。导出 EMBEDDING_MODEL_ID / ONNX_REL / MODEL_SMALL_FILES /
  * modelSourceUrl / modelTargetPath / needsDownload / downloadModel 及 DownloadResult /
  * ModelFetch 类型。

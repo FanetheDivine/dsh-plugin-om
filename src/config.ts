@@ -29,7 +29,7 @@ export type PluginConfig = {
   recallEnabled: boolean;
   /** 是否为 recall 启用语义增强（依赖 recallEnabled；false 时不触发模型下载）。 */
   semanticRecallEnabled: boolean;
-  /** 语义召回嵌入模型目录。 */
+  /** 语义增强嵌入模型目录。 */
   modelDir: string;
   /** 压缩请求覆盖的 provider（与 compressModel 成对生效，任一缺失回落会话路由）。 */
   compressProvider: string | undefined;

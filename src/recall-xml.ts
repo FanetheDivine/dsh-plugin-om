@@ -1,5 +1,5 @@
 /**
- * 完整消息的 XML 条目渲染：recall / recall-semantic 的输出条目形态。
+ * 完整消息的 XML 条目渲染：recall 的输出条目形态。
  * 每条完整消息渲染为一个 XML 元素，正文统一以 CDATA 包裹（逐字原样，不做实体转义与
  * 再次序列化），从构建源头避免多层转义：
  * - user → <user_message index>，正文 CDATA，图片等非文本块为 XML 注释

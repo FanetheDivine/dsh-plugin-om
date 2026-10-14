@@ -219,7 +219,7 @@ export function renderToolResultText(
   return message ? renderMessageText(message) : '';
 }
 
-/** 渲染一条完整消息为「文本 + 图片」（recall / recall-semantic 输出用）：
+/** 渲染一条完整消息为「文本 + 图片」（recall 输出用）：
  * user/sys 取消息原文，assistant 取文本块，toolcall 为调用块 + 结果文本
  * （pruner 裁剪超大结果）；同时收集该条完整消息携带的图片附件（含 tool-result 嵌套，
  * pruner 裁剪掉的图片不收集）。

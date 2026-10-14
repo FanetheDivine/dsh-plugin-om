@@ -114,7 +114,9 @@ describe('Loader volatile 热更新', () => {
     preload.mockClear();
     apply(ctx, refs);
     const params = () =>
-      Object.keys((active.get('recall')?.parameters as { properties: object }).properties).sort();
+      Object.keys(
+        (active.get('recall')?.parameters as { properties: object } | undefined)?.properties ?? {},
+      ).sort();
     expect([...active.keys()]).toEqual(['recall']);
     expect(params()).toEqual(['end', 'offset', 'start']);
     expect(preload).not.toHaveBeenCalled();

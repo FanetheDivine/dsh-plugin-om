@@ -537,7 +537,8 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
       configOverrides: { recallEnabled: true, semanticRecallEnabled: true },
       chunksFor: () => [],
     });
-    const properties = (app.tools.get('recall')?.parameters as { properties: object }).properties;
+    const parameters = app.tools.get('recall')?.parameters as { properties: object } | undefined;
+    const properties = parameters?.properties ?? {};
     expect(Object.keys(properties)).toContain('query');
     expect(app.tools.get('recall-semantic')).toBeUndefined();
     // 启用即后台预热（ensureModelReady 已打桩为就绪，不触发真实下载）
