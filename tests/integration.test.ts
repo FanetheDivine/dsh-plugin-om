@@ -45,7 +45,7 @@ import { PLUGIN_LABEL, PLUGIN_SOURCE_KIND } from '../src/constants.ts';
 // 命中 vi.mock 打桩后的模块（ensureModelReady 为 vi.fn，可断言预热调用）
 import * as embedding from '../src/embedding.ts';
 import { apply, name } from '../src/index.ts';
-import { findOmEvents } from '../src/om-event.ts';
+import { appendOmEvent, findOmEvents } from '../src/om-event.ts';
 
 /** mock LLM adapter：只实现 stream()，按注入的分块工厂回放响应并记录调用。 */
 class MockAdapter extends LlmAdapter {
@@ -370,9 +370,9 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     const callsAfter = adapter.calls.filter((c) => c.purpose === 'compaction').length;
     expect(callsAfter).toBeGreaterThanOrEqual(1);
     expect(session.snapshotEvents().map((e) => e.type)).toContain('compaction/end');
-    // console 外部输出 + om 警告事件（同会话去重）
+    // console 外部输出 + om 警告信封事件（同会话去重）
     expect(consoleText).toContain(`${PLUGIN_LABEL}: ${SYSTEM_PROMPT_MISSING}`);
-    const warnings = findOmEvents(session, 'plugin:dsh-plugin-om:warning');
+    const warnings = findOmEvents(session, 'om/warning');
     expect(warnings).toHaveLength(1);
     expect(warnings[0]?.data.problem).toBe('systemPrompt-missing');
 
@@ -385,7 +385,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
       consoleSpy2.mockRestore();
     }
     expect(consoleText).not.toContain(`${PLUGIN_LABEL}: ${SYSTEM_PROMPT_MISSING}`);
-    expect(findOmEvents(session, 'plugin:dsh-plugin-om:warning')).toHaveLength(1);
+    expect(findOmEvents(session, 'om/warning')).toHaveLength(1);
   }, 30000);
 
   it('systemPrompt 服务已挂载：组装成功计价、不产生 om 警告事件（回归：ctx.get 容错读取不抛错）', async () => {
@@ -401,7 +401,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(adapter.calls.filter((c) => c.purpose === 'compaction').length).toBeGreaterThanOrEqual(
       1,
     );
-    expect(findOmEvents(session, 'plugin:dsh-plugin-om:warning')).toHaveLength(0);
+    expect(findOmEvents(session, 'om/warning')).toHaveLength(0);
   }, 30000);
 
   it('观察→反思两级压缩全链路：单块观察 → 反思（空提交重建）→ 新消息观察，两块并存', async () => {
@@ -488,13 +488,18 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(error?.message).toContain('end 与 offset 至少提供一个');
   }, 30000);
 
-  it('宿主 format v4 准入：压缩产出事件通过行准入与写编码（会话可重载/导出）', async () => {
+  it('宿主 format v4 准入：压缩产出事件与 om 私有事件为宿主已知类型，通过行准入与写编码（会话可重载/导出）', async () => {
     const { app, session } = await stackHarness({
       withSystemPrompt: true,
       chunksFor: toolRoundChunks(),
     });
     seedUserMessages(session, 6);
     await runPreStep(app, session);
+    // 全部 om 私有事件类别一并验收：须落在宿主已知类型内，否则会话重载被拒
+    const pendingSeq = appendOmEvent(session, 'om/observe-pending', { triggerMessageIndex: 0 });
+    appendOmEvent(session, 'om/observe-invalidate', { pendingSeq });
+    appendOmEvent(session, 'om/warning', { problem: 'systemPrompt-missing', message: 'm' });
+    expect(findOmEvents(session)).toHaveLength(3);
 
     // 主会话与压缩记录子会话都含插件自产消息，逐一验收宿主持久化边界。
     // 行准入（assertV4RowAdmission）是读路径 scanner 与写路径 encodeEvent 共用的校验，
@@ -511,6 +516,14 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
         releasedV4SessionFormatCodec.encodeEvent(row);
       }
     }
+
+    // 持久化读路径拒绝宿主未知且无 ignorable 标记的事件类型（会话重载失败），
+    // live append 无法写入 ignorable，故插件写入的全部事件类型须为宿主已知类型
+    const unknownTypes = targets
+      .flatMap((target) => target.snapshotEvents())
+      .filter((event) => !KNOWN_SESSION_EVENT_TYPES.has(event.type) && event.ignorable !== true)
+      .map((event) => event.type);
+    expect(unknownTypes).toEqual([]);
 
     // 负向对照：retired 'plugin' source 包装必须被拒绝，证明上述行准入对本用例有效
     const legacyRow = rowsOf(session).find((row) => row.type === 'user/message');

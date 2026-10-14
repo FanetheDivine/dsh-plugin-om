@@ -65,6 +65,13 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 
 [机制说明与成本计算器](https://fanethedivine.github.io/dsh-plugin-om/)可估算不同配置的 token 成本。
 
+## 已知风险
+
+- 宿主会拒绝加载含未知事件类型的会话，插件也无法为事件标记 `ignorable`。
+- 因此观察待定标记和降级警告借用宿主已知的 `feedback/record` 事件写入会话日志。
+- 宿主把 `feedback/record` 视为用户反馈。遥测为默认的 `FEEDBACK_ONLY` 模式时，含这类记录的会话日志会上传到 DeepSeek 遥测服务。
+- 不希望上传时，设置环境变量 `DSH_TELEMETRY_MODE=DISABLED` 后启动 DSH。
+
 ## 开发
 
 运行 `pnpm dev` 自动构建，并在 `cordis.patch.yml` 中加载本地 bundle：
@@ -94,8 +101,8 @@ src/
 ├── system-reminder.ts           # 进度与完整消息定义提醒：system-reminder 消息的构造与缺失时补发
 ├── config.ts                    # 配置默认值与宽松合并，未知键忽略、非法值回退默认
 ├── constants.ts                 # 共享常量：插件标识、history 标签、完整消息定义、格式说明注释
-├── degrade.ts                   # 挂载失败降级上报：console 外部输出与 plugin:dsh-plugin-om:warning 会话事件
-├── om-event.ts                  # 自定义会话事件辅助：plugin:dsh-plugin-om:* 事件读写与过滤
+├── degrade.ts                   # 挂载失败降级上报：console 外部输出与 om/warning 会话事件
+├── om-event.ts                  # om 事件借用通道：feedback/record 信封的编解码与读写
 ├── types.ts                     # type-only：宿主类型再导出与领域类型
 ├── utils.ts                     # 零依赖工具函数：文本渲染、主会话判定、路由解析
 ├── json-schema.ts               # zod schema 到工具 wire 参数 JSON Schema 的转换
