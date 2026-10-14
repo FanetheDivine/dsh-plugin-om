@@ -370,9 +370,9 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     const callsAfter = adapter.calls.filter((c) => c.purpose === 'compaction').length;
     expect(callsAfter).toBeGreaterThanOrEqual(1);
     expect(session.snapshotEvents().map((e) => e.type)).toContain('compaction/end');
-    // console 外部输出 + om 警告信封事件（同会话去重）
+    // console 外部输出 + om 警告事件（同会话去重）
     expect(consoleText).toContain(`${PLUGIN_LABEL}: ${SYSTEM_PROMPT_MISSING}`);
-    const warnings = findOmEvents(session, 'om/warning');
+    const warnings = findOmEvents(session, 'plugin:dsh-plugin-om:warning');
     expect(warnings).toHaveLength(1);
     expect(warnings[0]?.data.problem).toBe('systemPrompt-missing');
 
@@ -385,7 +385,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
       consoleSpy2.mockRestore();
     }
     expect(consoleText).not.toContain(`${PLUGIN_LABEL}: ${SYSTEM_PROMPT_MISSING}`);
-    expect(findOmEvents(session, 'om/warning')).toHaveLength(1);
+    expect(findOmEvents(session, 'plugin:dsh-plugin-om:warning')).toHaveLength(1);
   }, 30000);
 
   it('systemPrompt 服务已挂载：组装成功计价、不产生 om 警告事件（回归：ctx.get 容错读取不抛错）', async () => {
@@ -401,7 +401,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(adapter.calls.filter((c) => c.purpose === 'compaction').length).toBeGreaterThanOrEqual(
       1,
     );
-    expect(findOmEvents(session, 'om/warning')).toHaveLength(0);
+    expect(findOmEvents(session, 'plugin:dsh-plugin-om:warning')).toHaveLength(0);
   }, 30000);
 
   it('观察→反思两级压缩全链路：单块观察 → 反思（空提交重建）→ 新消息观察，两块并存', async () => {
