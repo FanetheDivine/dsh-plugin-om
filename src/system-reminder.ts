@@ -1,7 +1,7 @@
 /**
  * system-reminder：以 <system-reminder> 用户消息向主会话注入插件提醒，不进系统提示词。
  * - 进度提醒：OM 启用时提示模型边做边简述计划与进展。
- * - 完整消息定义提醒：OM 或召回工具启用时说明 `<history>` 块与召回工具共用的完整消息 index。
+ * - 完整消息定义提醒：OM 或 recall 启用时说明 `<history>` 块与 recall 共用的完整消息 index。
  * 每个 step 检查表层，被压缩遮蔽或文本过期时补发，保证模型请求中每种恒有一条。
  * 导出 PROGRESS_REMINDER_SOURCE_KIND / DEFINITION_REMINDER_SOURCE_KIND / 对应 source 类型 /
  * SystemReminder / PROGRESS_REMINDER / DEFINITION_REMINDER / systemReminderMessage /
@@ -69,11 +69,11 @@ export function systemReminderMessage(reminder: SystemReminder): UserMessage {
 
 /** 按配置返回应注入的提醒，顺序固定：进度在前，定义在后。 */
 export function activeSystemReminders(
-  config: Pick<PluginConfig, 'omEnabled' | 'recallEnabled' | 'semanticRecallEnabled'>,
+  config: Pick<PluginConfig, 'omEnabled' | 'recallEnabled'>,
 ): SystemReminder[] {
   const reminders: SystemReminder[] = [];
   if (config.omEnabled) reminders.push(PROGRESS_REMINDER);
-  if (config.omEnabled || config.recallEnabled || config.semanticRecallEnabled) {
+  if (config.omEnabled || config.recallEnabled) {
     reminders.push(DEFINITION_REMINDER);
   }
   return reminders;

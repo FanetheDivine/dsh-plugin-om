@@ -27,7 +27,7 @@ export type PluginConfig = {
   debug: boolean;
   /** 是否注册 recall 工具。 */
   recallEnabled: boolean;
-  /** 是否注册 recall-semantic 工具（false 时不触发模型下载）。 */
+  /** 是否为 recall 启用语义增强（依赖 recallEnabled；false 时不触发模型下载）。 */
   semanticRecallEnabled: boolean;
   /** 语义召回嵌入模型目录。 */
   modelDir: string;
@@ -148,7 +148,9 @@ export function resolveConfig(raw?: unknown): Readonly<PluginConfig> {
   config.omEnabled = resolveBoolean(input.omEnabled, true);
   config.debug = resolveBoolean(input.debug, process.env.NODE_ENV !== 'production');
   config.recallEnabled = resolveBoolean(input.recallEnabled, true);
-  config.semanticRecallEnabled = resolveBoolean(input.semanticRecallEnabled, true);
+  // 语义增强依赖原文召回：recall 关闭时一并失效
+  config.semanticRecallEnabled =
+    config.recallEnabled && resolveBoolean(input.semanticRecallEnabled, true);
   const modelDir = input.modelDir;
   if (typeof modelDir === 'string' && modelDir.trim() !== '') {
     config.modelDir = modelDir;

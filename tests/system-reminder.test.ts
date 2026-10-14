@@ -77,7 +77,7 @@ describe('systemReminderMessage', () => {
 });
 
 describe('activeSystemReminders', () => {
-  const off = { omEnabled: false, recallEnabled: false, semanticRecallEnabled: false };
+  const off = { omEnabled: false, recallEnabled: false };
 
   it('OM 启用时两条都启用', () => {
     expect(activeSystemReminders({ ...off, omEnabled: true }).map((r) => r.kind)).toEqual([
@@ -86,14 +86,11 @@ describe('activeSystemReminders', () => {
     ]);
   });
 
-  it.each([{ recallEnabled: true }, { semanticRecallEnabled: true }])(
-    'OM 关闭但召回工具 %o 启用时只启用定义提醒',
-    (patch) => {
-      expect(activeSystemReminders({ ...off, ...patch }).map((r) => r.kind)).toEqual([
-        DEFINITION_REMINDER_SOURCE_KIND,
-      ]);
-    },
-  );
+  it('OM 关闭但召回启用时只启用定义提醒', () => {
+    expect(activeSystemReminders({ ...off, recallEnabled: true }).map((r) => r.kind)).toEqual([
+      DEFINITION_REMINDER_SOURCE_KIND,
+    ]);
+  });
 
   it('全部关闭时不启用任何提醒', () => {
     expect(activeSystemReminders(off)).toEqual([]);
