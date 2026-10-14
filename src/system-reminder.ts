@@ -1,8 +1,8 @@
 /**
  * system-reminder：以 <system-reminder> 用户消息向主会话注入插件提醒，不进系统提示词。
- * - 进度提醒：OM 启用时提示模型边做边简述计划与进展。
+ * - 进度提醒：表层缺少同 kind 消息时补发，或无记录活动累计至少 4 个已结束 step、超过 10 次工具调用时重发。
  * - 完整消息定义提醒：OM 或 recall 启用时说明 `<history>` 块与 recall 共用的完整消息 index。
- * 每个 step 检查表层，被压缩遮蔽或文本过期时补发，保证模型请求中每种恒有一条。
+ * 每个 step 检查表层；真实用户消息、非空模型 text 与进度提醒重置活动窗口，定义提醒缺失或文本过期时补发。
  * 导出 PROGRESS_REMINDER_SOURCE_KIND / DEFINITION_REMINDER_SOURCE_KIND / 对应 source 类型 /
  * SystemReminder / PROGRESS_REMINDER / DEFINITION_REMINDER / systemReminderMessage /
  * activeSystemReminders / ensureSystemReminders。
@@ -10,7 +10,7 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type { PluginConfig } from './config.ts';
 import { COMPLETE_MESSAGE_DEFINITION } from './constants.ts';
-import type { Session, UserMessage } from './types.ts';
+import type { Session, SessionEvent, UserMessage } from './types.ts';
 
 /** 进度提醒的 producer-owned source kind（区别于压缩日志消息的 plugin:dsh-plugin-om）。 */
 export const PROGRESS_REMINDER_SOURCE_KIND = 'plugin:dsh-plugin-om:progress';
@@ -45,11 +45,11 @@ function wrap(lines: readonly string[]): string {
 export const PROGRESS_REMINDER: SystemReminder = {
   kind: PROGRESS_REMINDER_SOURCE_KIND,
   text: wrap([
-    '在工作过程中同步输出文本，简洁记录关键结论与后续规划。思考内容不计入记录。',
-    '- 每个阶段性工作开始前记录一次，一个阶段通常是 1-5 个工具调用',
-    '- 禁止连续 10 个以上工具调用而无记录',
-    '- 记录后在同一回复中继续调用工具，不要停下等待',
-    '- 最终答案仅总结结果，不能替代这些记录',
+    '在工作过程中持续输出文本，记录最近几步的成果：',
+    '- 1-2句话即可，概括为主，不必覆盖所有细节',
+    '- 承上启下，突出要点，例如“读 f1，发现 L1 关联了 f2-L2，读 f2”，“m1 完成，按计划开始 m2”',
+    '- 记录后继续完成任务，不要等待确认',
+    '- 记录仅是中间产物，最终输出需要另行构建',
   ]),
 };
 
@@ -94,9 +94,55 @@ function isCurrent(
   );
 }
 
+/** 进度提醒在表层缺失，或静默窗口达到 4 个已结束 step 且超过 10 次调用时补发。 */
+function progressReminderTrigger(
+  surface: readonly SessionEvent[],
+  events: readonly SessionEvent[],
+  messages: readonly UserMessage[],
+): 'missing' | 'activity' | undefined {
+  if (messages.some((message) => message.source.kind === PROGRESS_REMINDER_SOURCE_KIND))
+    return undefined;
+  const present = surface.some(
+    (event) =>
+      event.type === 'user/message' && event.data.source.kind === PROGRESS_REMINDER_SOURCE_KIND,
+  );
+  if (!present) return 'missing';
+  if (messages.some((message) => message.source.kind === 'user')) return undefined;
+
+  const ended = new Set<string>();
+  for (const event of events) {
+    if (event.type === 'step/end') ended.add(`${event.data.turn}:${event.data.step}`);
+  }
+  const steps = new Set<string>();
+  let toolCalls = 0;
+  let textStep: string | undefined;
+  for (const event of surface) {
+    if (event.type === 'user/message') {
+      const kind = event.data.source.kind;
+      if (kind === 'user' || kind === PROGRESS_REMINDER_SOURCE_KIND) {
+        steps.clear();
+        toolCalls = 0;
+        textStep = undefined;
+      }
+    } else if (event.type === 'assistant/message') {
+      const { turn, step, message } = event.data;
+      const key = `${turn}:${step}`;
+      if (message.content.some((block) => block.type === 'text' && block.text.trim() !== '')) {
+        steps.clear();
+        toolCalls = 0;
+        textStep = key;
+      } else if (key !== textStep && ended.has(key)) {
+        steps.add(key);
+        toolCalls += message.content.filter((block) => block.type === 'tool-call').length;
+      }
+    }
+  }
+  return steps.size >= 4 && toolCalls > 10 ? 'activity' : undefined;
+}
+
 /**
- * 保证本 step 之后的消息列表中每种指定提醒各有一条当前文本：本 step 已带上或表层已有则跳过，
- * 否则按顺序追加到末尾。返回新数组，不修改入参。
+ * 按表层与待输入消息补发提醒，追加到末尾且不修改入参。
+ * 进度提醒按 kind 去重并检测活动窗口，活动达标时追加立刻记录要求；定义提醒缺失或文本过期时补发。
  */
 export function ensureSystemReminders(
   session: Session,
@@ -108,13 +154,33 @@ export function ensureSystemReminders(
   const events = session.snapshotEvents();
   const surface = session.surface.nodes.flatMap((seq) => {
     const event = events[seq];
-    return event?.type === 'user/message' ? [event.data] : [];
+    return event === undefined ? [] : [event];
   });
+  const surfaceMessages = surface.flatMap((event) =>
+    event.type === 'user/message' ? [event.data] : [],
+  );
   for (const reminder of reminders) {
-    const present = [...result, ...surface].some((message) =>
-      isCurrent(reminder, message.source, message.content),
-    );
-    if (!present) result.push(systemReminderMessage(reminder));
+    if (reminder.kind === PROGRESS_REMINDER_SOURCE_KIND) {
+      const trigger = progressReminderTrigger(surface, events, result);
+      if (trigger === undefined) continue;
+      const progress =
+        trigger === 'activity'
+          ? {
+              ...reminder,
+              text: reminder.text.replace(
+                '\n</system-reminder>',
+                '\n你应当*立刻*输出一条记录\n</system-reminder>',
+              ),
+            }
+          : reminder;
+      result.push(systemReminderMessage(progress));
+    } else if (
+      ![...result, ...surfaceMessages].some((message) =>
+        isCurrent(reminder, message.source, message.content),
+      )
+    ) {
+      result.push(systemReminderMessage(reminder));
+    }
   }
   return result;
 }
