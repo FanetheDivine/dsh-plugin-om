@@ -10,7 +10,7 @@
  * compaction-log.ts / recall.ts / semantic-recall.ts。
  */
 import type {} from '@deepseek-ai/cordis-plugin-loader';
-import { type CompressPassResult, maybeCompress } from './compress.ts';
+import { type CompressPassResult, hasHistoryBlock, maybeCompress } from './compress.ts';
 import { Config, currentConfig } from './config.ts';
 import { ensureModelReady, getEmbedder } from './embedding.ts';
 import { makeLogger } from './logger.ts';
@@ -112,7 +112,8 @@ export function apply(ctx: Context, config?: unknown): void {
     }
     const decision = await next();
     // 压缩之后检查表层：提醒被压缩遮蔽时补发，主会话请求中每种已启用提醒恒有一条。
-    const reminders = activeSystemReminders(currentConfig(config));
+    const hasHistory = hasHistoryBlock(agent.session);
+    const reminders = activeSystemReminders(currentConfig(config), hasHistory);
     if (
       decision.kind === 'enter' &&
       !signal.aborted &&
