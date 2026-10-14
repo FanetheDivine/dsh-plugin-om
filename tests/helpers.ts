@@ -646,7 +646,7 @@ export function twoCallFlow(): SessionEvent[] {
   ];
 }
 
-/** 取 recall / recall-semantic 输出值的文本部分（断言文本内容用；图片附件单独断言 images）。 */
+/** 取 recall 输出值的文本部分（断言文本内容用；图片附件单独断言 images）。 */
 export function textOf(value: unknown): string {
   return (value as { text: string }).text;
 }

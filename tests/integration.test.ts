@@ -3,7 +3,7 @@
 // 的完整接线：
 // - agent/pre-step 两级压缩（观察 → 反思），验证 触发 → 摘要 → compaction 生命周期
 //   → 表层替换 → 压力下降 的完整链路，以及 systemPrompt 服务未挂载时的降级；
-// - recall / recall-semantic 工具经真实 ToolRuntime 注册与 execute 管线调用。
+// - recall 工具（含语义增强）经真实 ToolRuntime 注册与 execute 管线调用。
 
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -447,7 +447,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
       configOverrides: { recallEnabled: true },
       chunksFor: toolRoundChunks(),
     });
-    // recallEnabled 注册、semanticRecallEnabled 未启用不注册
+    // 仅 recall 一个工具；语义增强由 semanticRecallEnabled 控制
     expect(app.tools.get('recall')).toBeDefined();
     expect(app.tools.get('recall-semantic')).toBeUndefined();
 
@@ -529,7 +529,24 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     ).toThrow('producer-owned source kind');
   }, 30000);
 
-  it('recall-semantic 启用：注册工具并后台预热模型（recall 未启用时不注册 recall）', async () => {
+  it('语义增强启用：recall 带 query 参数并后台预热模型', async () => {
+    const warmup = vi.mocked(embedding.ensureModelReady);
+    warmup.mockClear();
+    const { app } = await stackHarness({
+      withSystemPrompt: true,
+      configOverrides: { recallEnabled: true, semanticRecallEnabled: true },
+      chunksFor: () => [],
+    });
+    const properties = (app.tools.get('recall')?.parameters as { properties: object }).properties;
+    expect(Object.keys(properties)).toContain('query');
+    expect(app.tools.get('recall-semantic')).toBeUndefined();
+    // 启用即后台预热（ensureModelReady 已打桩为就绪，不触发真实下载）
+    await vi.waitFor(() => {
+      expect(warmup.mock.calls.length).toBeGreaterThanOrEqual(1);
+    });
+  }, 30000);
+
+  it('recall 未启用时语义增强无效：不注册工具、不预热模型', async () => {
     const warmup = vi.mocked(embedding.ensureModelReady);
     warmup.mockClear();
     const { app } = await stackHarness({
@@ -538,10 +555,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
       chunksFor: () => [],
     });
     expect(app.tools.get('recall')).toBeUndefined();
-    expect(app.tools.get('recall-semantic')).toBeDefined();
-    // 启用即后台预热（ensureModelReady 已打桩为就绪，不触发真实下载）
-    await vi.waitFor(() => {
-      expect(warmup.mock.calls.length).toBeGreaterThanOrEqual(1);
-    });
+    expect(app.tools.get('recall-semantic')).toBeUndefined();
+    expect(warmup).not.toHaveBeenCalled();
   }, 30000);
 });
