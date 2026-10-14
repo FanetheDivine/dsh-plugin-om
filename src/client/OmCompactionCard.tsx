@@ -2,12 +2,14 @@
  * 压缩卡片渲染器：与宿主「上下文注入」卡片同款的折叠行。
  * 复用平台原语 DisclosureRow；行内统计与展开体样式按宿主 ContextInjectionRow 的规则
  * 注入 <style>（宿主该卡片样式是编译期哈希的 CSS Module，插件 bundle 无法引用其类名）。
- * 卡片报告模型从何处起不再看到那段历史；summary 留在加载窗口外时行不可展开。
+ * 卡片报告模型从何处起不再看到那段历史；summary 留在加载窗口外且无操作按钮时行不可展开。
  * 压缩失败节点渲染为可展开的错误行：折叠行显示错误摘要，展开体显示完整报错。
- * 节点带诊断子会话 id 且宿主注入 openSession 时，行尾显示「查看」，跳转到该子会话页面。
+ * 展开体下方的操作栏（宿主 inspectButton 同款胶囊）：「轨迹」（宿主提供 inspectCall 时渲染）
+ * 暂以 display:none 隐藏；节点带诊断子会话 id 且宿主注入 openSession 时显示「诊断日志」，
+ * 跳转到该子会话页面。
  */
 
-import type { ChatNode } from '@deepseek-ai/dsh-client-ui-chat/client';
+import type { ChatNode, ToolCallId } from '@deepseek-ai/dsh-client-ui-chat/client';
 import {
   DisclosureRow,
   IconBrowseOutlineRegular,
@@ -26,8 +28,10 @@ export interface OmCompactionCardProps {
   readonly t: TranslateNS<'om-compaction'>;
   /** 当前（父）会话 id，作为诊断子会话地址的 parentSessionId。 */
   readonly sessionId?: SessionId;
-  /** 宿主注入的会话跳转；缺失时不显示「查看」。 */
+  /** 宿主注入的会话跳转；缺失时不显示「诊断日志」。 */
   readonly openSession?: (target: SubagentAddress) => void;
+  /** 宿主 owner 提供的轨迹视图跳转；缺失（轨迹视图不可用）时不显示「轨迹」。 */
+  readonly inspectCall?: ((callId: ToolCallId) => void) | undefined;
 }
 
 /** 卡片样式类名（与宿主 ContextInjectionRow.module.css 同款规则，增加水平滚动支持）。 */
@@ -38,7 +42,9 @@ const css = {
   summary: 'om-compaction-summary',
   scrollable: 'om-compaction-scrollable',
   body: 'om-compaction-body',
+  actions: 'om-compaction-actions',
   inspect: 'om-compaction-inspect',
+  trajectory: 'om-compaction-trajectory',
 } as const;
 
 /** 卡片样式规则：保留宿主外观，对折叠摘要与展开体增加水平滚动适配。 */
@@ -50,8 +56,10 @@ const cardCss = `
 .${css.summary}{min-width:0;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap;flex:auto;font-size:14px;line-height:24px;overflow:hidden}
 .${css.summary}.${css.scrollable}{overflow-x:auto;overflow-y:hidden;text-overflow:clip;scrollbar-width:none;-webkit-overflow-scrolling:touch}
 .${css.summary}.${css.scrollable}::-webkit-scrollbar{display:none}
-.${css.inspect}{color:inherit;font:inherit;font-size:12px;line-height:24px;cursor:pointer;white-space:nowrap;background:none;border:none;border-radius:4px;flex:none;align-items:center;gap:4px;margin-left:8px;padding:0 4px;display:inline-flex}
-.${css.inspect}:hover{background:var(--dsw-alias-bg-hover,transparent);color:var(--dsw-alias-label-secondary)}
+.${css.actions}{flex-wrap:wrap;align-items:center;gap:8px;margin:4px 0 2px 22px;display:flex}
+.${css.inspect}{border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:16px;cursor:pointer;white-space:nowrap;border-radius:999px;flex:none;align-items:center;gap:4px;margin:0;padding:2px 8px;display:inline-flex}
+.${css.inspect}:is(:hover,:focus-visible){background:var(--dsw-alias-interactive-bg-hover-solid);color:var(--dsw-alias-label-primary)}
+.${css.trajectory}{display:none}
 .${css.body}{box-sizing:border-box;background:var(--dsw-alias-markdown-code-block);width:calc(100% - 22px);max-height:141px;color:var(--dsw-alias-label-tertiary);font:400 11px/16px var(--ds-font-family-code);border:none;border-radius:8px;margin:4px 0 0 22px;padding:10px 16px 12px 12px;overflow-x:auto;overflow-y:auto;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
 `;
 
@@ -72,10 +80,11 @@ export const OmCompactionCard = memo(function OmCompactionCard({
   t,
   sessionId,
   openSession,
+  inspectCall,
 }: OmCompactionCardProps) {
   const [expanded, setExpanded] = useState(false);
   const { data } = node;
-  // 「查看」：仅当有诊断子会话 id、父会话 id 与宿主跳转能力时渲染；点击不触发行展开
+  // 「诊断日志」：仅当有诊断子会话 id、父会话 id 与宿主跳转能力时渲染；点击不触发行折叠
   const diagnosticSessionId = data.diagnosticSessionId;
   const inspect =
     diagnosticSessionId !== null && sessionId !== undefined && openSession !== undefined ? (
@@ -97,6 +106,32 @@ export const OmCompactionCard = memo(function OmCompactionCard({
         {t('card.inspect')}
       </button>
     ) : null;
+  // 「轨迹」：切到轨迹视图。轨迹按 callId 定位记录，压缩没有 callId，无法跳到具体条目，
+  // 只切视图对用户没有意义，故暂以 display:none 隐藏（样式见 css.trajectory）；
+  // 待宿主支持按压缩定位后移除该规则即可恢复
+  const trajectory =
+    inspectCall === undefined ? null : (
+      <button
+        type="button"
+        className={`${css.inspect} ${css.trajectory}`}
+        data-om-compaction-trajectory
+        onClick={(event: MouseEvent) => {
+          event.stopPropagation();
+          inspectCall(node.key as ToolCallId);
+        }}
+      >
+        <IconInspectOutlineRegular size={12} />
+        {t('card.trajectory')}
+      </button>
+    );
+  // 展开体下方的操作栏；「轨迹」被隐藏，不单独构成操作栏，避免展开出空栏
+  const actions =
+    inspect === null ? null : (
+      <div className={css.actions} data-om-compaction-actions>
+        {trajectory}
+        {inspect}
+      </div>
+    );
   // 压缩进行中：不可展开的「正在压缩上下文…」提示行（按 phase 区分文案）
   if (data.running) {
     const runningLabel =
@@ -140,7 +175,6 @@ export const OmCompactionCard = memo(function OmCompactionCard({
             <>
               <span className={css.sep} aria-hidden />
               <span className={`${css.summary} ${css.scrollable}`}>{errorSummary}</span>
-              {inspect}
             </>
           }
           keepContentWhenOpen
@@ -154,11 +188,13 @@ export const OmCompactionCard = memo(function OmCompactionCard({
           <div className={css.body} style={styles.body}>
             {data.error}
           </div>
+          {actions}
         </DisclosureRow>
       </div>
     );
   }
-  const expandable = data.summary !== null;
+  // summary 在加载窗口外时仍可展开：展开体只放操作栏
+  const expandable = data.summary !== null || actions !== null;
   const open = expandable && expanded;
   // 统计行：优先完整压缩前后统计，载荷字段不全时逐级回落
   const stats =
@@ -179,7 +215,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({
             items: formatCompactCount(data.shadowedItemCount),
             tokens: formatCompactCount(data.shadowedTokenCount),
           })
-        : expandable
+        : data.summary !== null
           ? t('compaction.expand')
           : t('compaction.unavailable');
   return (
@@ -195,7 +231,6 @@ export const OmCompactionCard = memo(function OmCompactionCard({
             <span className={`${css.summary} ${css.scrollable}`} data-om-compaction-summary>
               {stats}
             </span>
-            {inspect}
           </>
         }
         keepContentWhenOpen
@@ -211,6 +246,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({
             {data.summary}
           </div>
         )}
+        {actions}
       </DisclosureRow>
     </div>
   );
