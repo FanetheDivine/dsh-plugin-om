@@ -34,7 +34,9 @@ export const OmWarningCard = memo(function OmWarningCard({ node, t }: OmWarningC
           expandable ? (
             <>
               <span className="om-compaction-sep" aria-hidden />
-              <span className="om-compaction-summary">{messageSummary}</span>
+              <span className="om-compaction-summary om-compaction-scrollable">
+                {messageSummary}
+              </span>
             </>
           ) : undefined
         }
