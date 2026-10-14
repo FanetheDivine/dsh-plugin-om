@@ -1,8 +1,8 @@
-// compaction-log.ts 单元测试：压缩会话记录落盘 recordCompressionSession——header
-// 元数据（origin/parentSession/delegationDepth/cwd 继承）、subagent/descriptor 载荷
-// （version/mode/provider/label 成功与失败形态）、循环消息组原样结构与顺序、末尾
-// 统计消息（逐轮耗时与 usage、usage 合计）、flush 调用、落盘异常被吞（create/flush
-// 失败仅 warn 不抛错）。
+// compaction-log.ts 单元测试：压缩会话记录落盘 recordCompressionSession——以 seed 事件
+// 重建时间线（turn/step 边界与 assistant 完成时刻取自循环统计）、逐轮 usage 附加到
+// assistant/message、header 元数据（origin/parentSession/delegationDepth/cwd 继承）、
+// subagent/descriptor 载荷、循环消息组结构与顺序、TOOL_NOT_STARTED 补齐、flush 调用、
+// 落盘异常被吞（create/flush 失败仅 warn 不抛错）。
 
 import { Context } from '@deepseek-ai/cordis';
 import { SessionStore } from '@deepseek-ai/dsh-session';
@@ -12,17 +12,16 @@ import { describe, expect, it } from 'vitest';
 import {
   COMPACTION_LOG_PROVIDER,
   compressionRecordLabel,
-  formatCompressionStats,
   recordCompressionSession,
 } from '../src/compaction-log.ts';
 import type { CompressionStats } from '../src/compress-loop.ts';
 import { PLUGIN_SOURCE_KIND } from '../src/constants.ts';
-import type { Message, Session } from '../src/types.ts';
+import type { Message, Session, SessionEvent, SessionEventMap, TokenUsage } from '../src/types.ts';
 import { makeCtx, makeSession, textBlock, twoCallFlow } from './helpers.ts';
 
 const TARGET = { provider: 'test', model: 'test-model' };
 
-/** 构造循环统计：startedAt 固定，逐轮耗时与 usage 可指定。 */
+/** 构造循环统计：startedAt=1000、completedAt=6000，逐轮 startedAt 累加、耗时与 usage 可指定。 */
 function makeStats(
   rounds: Array<{ durationMs: number; usage?: { inputTokens: number; outputTokens: number } }>,
 ): CompressionStats {
@@ -45,7 +44,7 @@ function makeStats(
   };
 }
 
-/** 构造循环消息组：user 指令 + assistant（tool-call）+ tool 结果消息。 */
+/** 单轮循环消息组：user 指令 + assistant（tool-call c1）+ tool 结果消息。 */
 function loopMessages(): Message[] {
   return [
     {
@@ -74,13 +73,58 @@ function loopMessages(): Message[] {
   ];
 }
 
+/** 两轮循环消息组：assistant#1↔round1、assistant#2↔round2，用于时间线重建断言。 */
+function twoRoundMessages(): Message[] {
+  const user = {
+    id: 'm1' as never,
+    role: 'user',
+    content: [textBlock('压缩指令')],
+    source: { kind: PLUGIN_SOURCE_KIND },
+  } as unknown as Message;
+  const assistant = (id: string, text: string, callId: string, name: string): Message =>
+    ({
+      id: id as never,
+      role: 'assistant',
+      content: [
+        { type: 'text', text },
+        { type: 'tool-call', id: callId as never, name, arguments: '{}' },
+      ],
+      source: { kind: 'model', provider: 'test', model: 'test-model' },
+    }) as unknown as Message;
+  const tool = (id: string, callId: string, text: string): Message =>
+    ({
+      id: id as never,
+      role: 'tool',
+      content: [textBlock(text)],
+      toolCallId: callId as never,
+      isError: false,
+      source: { kind: 'tool', callId: callId as never },
+    }) as unknown as Message;
+  return [
+    user,
+    assistant('m2', '第一轮', 'c1', 'getHistory'),
+    tool('m3', 'c1', '历史条目'),
+    assistant('m4', '第二轮', 'c2', 'completeCompression'),
+    tool('m5', 'c2', '压缩完成'),
+  ];
+}
+
 /** 断言辅助：取子会话事件中的 user/assistant/tool 消息（descriptor 占 seq 0）。 */
-function messageEvents(child: Session): { user: unknown[]; assistant: unknown[]; tool: unknown[] } {
+function messageEvents(child: Session): {
+  user: SessionEvent[];
+  assistant: SessionEvent[];
+  tool: SessionEvent[];
+} {
   return {
     user: child.snapshotEvents().filter((e) => e.type === 'user/message'),
     assistant: child.snapshotEvents().filter((e) => e.type === 'assistant/message'),
     tool: child.snapshotEvents().filter((e) => e.type === 'tool/result'),
   };
+}
+
+/** 断言辅助：取子会话指定类型事件的 time 序列。 */
+function times(child: Session | undefined, type: string): number[] {
+  return (child?.snapshotEvents() ?? []).filter((e) => e.type === type).map((e) => e.time);
 }
 
 describe('recordCompressionSession：压缩会话记录落盘', () => {
@@ -132,7 +176,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     expect(write?.closes).toBe(1);
   });
 
-  it('成功：descriptor 载荷与循环消息组原样落盘', async () => {
+  it('成功：descriptor 载荷与循环消息组原样落盘，事件序列不含注入统计消息', async () => {
     const ctx = makeCtx();
     const parent = makeSession({ events: twoCallFlow() });
     const id = await recordCompressionSession(ctx, parent, {
@@ -159,12 +203,11 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     });
     expect(compressionRecordLabel('reflect', 2, true)).toContain('会话记录');
     expect(compressionRecordLabel('observe', 1, false)).toContain('失败日志');
-    // 消息组原样：user 指令 + assistant（含 tool-call 块）+ tool 结果消息，末尾再追加
-    // 一条统计消息（user 2 + assistant 1 + tool 1）
+    // 消息组原样：user 指令 + assistant（含 tool-call 块）+ tool 结果消息，无尾部统计消息
     const { user, assistant, tool } = child
       ? messageEvents(child)
       : { user: [], assistant: [], tool: [] };
-    expect(user).toHaveLength(2);
+    expect(user).toHaveLength(1);
     expect(assistant).toHaveLength(1);
     expect(tool).toHaveLength(1);
     expect(JSON.stringify(assistant)).toContain('getHistory');
@@ -186,9 +229,62 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       'tool/call',
       'tool/result',
       'step/end',
-      'user/message',
       'turn/end',
     ]);
+  });
+
+  it('时间线重建：turn/step 边界与 assistant 完成时刻取自循环统计，时间单调不减', async () => {
+    const ctx = makeCtx();
+    await recordCompressionSession(ctx, makeSession(), {
+      phase: 'observe',
+      target: TARGET,
+      messages: twoRoundMessages(),
+      stats: makeStats([
+        { durationMs: 100, usage: { inputTokens: 10, outputTokens: 5 } },
+        { durationMs: 200, usage: { inputTokens: 20, outputTokens: 8 } },
+      ]),
+      success: true,
+      debug: false,
+    });
+    const child = ctx._createdSessions[0]?.session;
+    // turn 边界取自循环起止（而非落盘时刻）
+    expect(times(child, 'turn/start')).toEqual([1_000]);
+    expect(times(child, 'turn/end')).toEqual([6_000]);
+    // 第 k 个 step/start = 第 k 轮 startedAt；assistant/message = startedAt + durationMs
+    expect(times(child, 'step/start')).toEqual([1_000, 1_100]);
+    expect(times(child, 'assistant/message')).toEqual([1_100, 1_300]);
+    // 工具调用与结果与其所属 assistant 同刻（内存工具瞬时执行）
+    expect(times(child, 'tool/call')).toEqual([1_100, 1_300]);
+    expect(times(child, 'tool/result')).toEqual([1_100, 1_300]);
+    // 任务指令与 turn/start 同刻
+    expect(times(child, 'user/message')).toEqual([1_000]);
+    // 全日志时间单调不减（宿主原生 UI 据此派生各处时长）
+    const all = (child?.snapshotEvents() ?? []).map((e) => e.time);
+    expect(all).toEqual([...all].sort((a, b) => a - b));
+  });
+
+  it('逐轮 usage 附加到对应 assistant/message；缺 usage 的轮次不写该字段', async () => {
+    const ctx = makeCtx();
+    await recordCompressionSession(ctx, makeSession(), {
+      phase: 'observe',
+      target: TARGET,
+      messages: twoRoundMessages(),
+      stats: makeStats([
+        { durationMs: 100, usage: { inputTokens: 10, outputTokens: 5 } },
+        { durationMs: 200 },
+      ]),
+      success: true,
+      debug: false,
+    });
+    const child = ctx._createdSessions[0]?.session;
+    const assistant = (child?.snapshotEvents() ?? []).filter((e) => e.type === 'assistant/message');
+    expect(assistant).toHaveLength(2);
+    const usageOf = (event: SessionEvent | undefined): TokenUsage | undefined =>
+      (event?.data as { usage?: TokenUsage } | undefined)?.usage;
+    expect(usageOf(assistant[0])).toEqual({ inputTokens: 10, outputTokens: 5 });
+    // 第二轮无 usage：字段缺省（不写 undefined，保持 seed 可无损序列化）
+    expect(usageOf(assistant[1])).toBeUndefined();
+    expect('usage' in ((assistant[1]?.data ?? {}) as Record<string, unknown>)).toBe(false);
   });
 
   it('未执行的工具调用补齐宿主可读取的 TOOL_NOT_STARTED 结果', async () => {
@@ -210,46 +306,6 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       },
     });
     expect(events.at(-1)?.type).toBe('turn/end');
-  });
-
-  it('末尾统计消息：插件来源，含起止时间、总耗时、逐轮明细与 usage 合计', async () => {
-    const ctx = makeCtx();
-    const parent = makeSession();
-    await recordCompressionSession(ctx, parent, {
-      phase: 'observe',
-      target: TARGET,
-      messages: loopMessages(),
-      stats: makeStats([
-        { durationMs: 100, usage: { inputTokens: 10, outputTokens: 5 } },
-        { durationMs: 200 },
-      ]),
-      success: true,
-      debug: false,
-    });
-    const child = ctx._createdSessions[0]?.session;
-    const userEvents = child?.snapshotEvents().filter((e) => e.type === 'user/message') ?? [];
-    const statsEvent = userEvents[userEvents.length - 1];
-    if (statsEvent === undefined) throw new Error('缺统计消息');
-    const statsData = statsEvent.data as {
-      content?: ReadonlyArray<{ text?: string }>;
-      source?: { kind?: string };
-    };
-    const text = (statsData.content ?? []).map((block) => block.text ?? '').join('');
-    expect(text).toContain('总耗时：5000 ms');
-    expect(text).toContain('请求轮数：2');
-    expect(text).toContain('第 1 轮：耗时 100 ms');
-    expect(text).toContain('input 10 / output 5');
-    expect(text).toContain('第 2 轮：耗时 200 ms');
-    expect(text).toContain('usage 合计：input 10 / output 5');
-    // 统计消息为插件自产来源（producer-owned kind），与压缩指令消息一致
-    expect(statsData.source?.kind).toBe(PLUGIN_SOURCE_KIND);
-  });
-
-  it('formatCompressionStats：全部轮次无 usage 时不输出 usage 合计行', () => {
-    const text = formatCompressionStats('observe', false, makeStats([{ durationMs: 100 }]));
-    expect(text).toContain('结果：失败');
-    expect(text).toContain('请求轮数：1');
-    expect(text).not.toContain('usage 合计');
   });
 
   it('失败：label 为失败日志，消息组同样原样落盘', async () => {
@@ -378,11 +434,11 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     },
   );
 
-  it('新宿主契约：assistant/message 携带 stream、tool/result 携带 tool 角色消息，真实 Session.append 接受载荷', async () => {
-    // assistant/message 载荷必填 stream（模型流的紧凑记录），tool/result 载荷的 message
-    // 为独立 tool 角色（顶层 toolCallId/isError）；诊断子会话不保留逐 chunk 流，落盘为
-    // 空数组。create 桥接到真实 SessionStore 会话，验证载荷满足真实宿主的追加校验
-    // （mock 会话不做载荷校验，测不出违约）。
+  it('新宿主契约：seed 被真实 SessionStore 接受，时间戳原样保留、assistant 携带 stream 与 usage', async () => {
+    // 子会话以 seed 事件构造（每个事件携带重建的 time），真实宿主在 seed 边界校验消息
+    // 形状与表层元数据，并原样保留 time（append 路径会强制改写为 Date.now()，测不出）。
+    // assistant/message 载荷必填 stream（诊断记录不保留逐 chunk 流，落盘为空数组）并附
+    // 逐轮 usage；tool/result 载荷的 message 为独立 tool 角色（顶层 toolCallId/isError）。
     const host = new Context();
     await host.plugin(SessionStore);
     const ctx = makeCtx();
@@ -402,20 +458,27 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       success: true,
       debug: false,
     });
+    // seed 若被宿主拒绝，create 抛错被吞、id 为 undefined：此断言即失败
+    expect(id).toBeDefined();
     expect(id).toBe(realChild?.id);
-    const assistant =
-      realChild?.snapshotEvents().filter((e) => e.type === 'assistant/message') ?? [];
+    const events = realChild?.snapshotEvents() ?? [];
+    const assistant = events.filter((e) => e.type === 'assistant/message');
     expect(assistant).toHaveLength(1);
-    // 诊断记录不保留逐 chunk 流：stream 恒为空数组
-    expect((assistant[0]?.data as { stream?: unknown } | undefined)?.stream).toEqual([]);
-    // 落盘未被宿主拒绝：user 指令与统计消息、tool 结果同样在真实会话中
-    expect(realChild?.snapshotEvents().filter((e) => e.type === 'user/message')).toHaveLength(2);
-    const tool = realChild?.snapshotEvents().filter((e) => e.type === 'tool/result') ?? [];
+    expect((assistant[0]?.data as { stream?: unknown })?.stream).toEqual([]);
+    expect((assistant[0]?.data as { usage?: TokenUsage })?.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 5,
+    });
+    // 任务指令落盘为 user/message（无注入统计消息）
+    expect(events.filter((e) => e.type === 'user/message')).toHaveLength(1);
+    const tool = events.filter((e) => e.type === 'tool/result');
     expect(tool).toHaveLength(1);
-    const toolMessage = (tool[0]?.data as { message?: Record<string, unknown> } | undefined)
-      ?.message;
+    const toolMessage = (tool[0]?.data as SessionEventMap['tool/result'] | undefined)?.message;
     expect(toolMessage?.role).toBe('tool');
     expect(toolMessage?.toolCallId).toBe('c1');
     expect(toolMessage?.isError).toBe(false);
+    // 真实宿主保留 seed 的重建时间戳：turn/start 取自循环统计而非落盘时刻
+    expect(events.find((e) => e.type === 'turn/start')?.time).toBe(1_000);
+    expect(events.find((e) => e.type === 'turn/end')?.time).toBe(6_000);
   });
 });

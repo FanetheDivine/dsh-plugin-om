@@ -334,11 +334,12 @@ export function makeCtx({
     };
   /** ctx.sessions.create 调用记录（诊断子会话落盘断言用：id/ meta / 返回的会话对象）。 */
   const createdSessions: Array<{ id: string; options: unknown; session: Session }> = [];
-  /** sessions 服务 mock：create 返回可 append 的极简会话并记录；flush 记录被 flush 的会话。 */
+  /** sessions 服务 mock：create 以 options.seed 重建会话日志（无 seed 则为空、可 append）并记录；flush 记录被 flush 的会话。 */
   const flushedSessions: Session[] = [];
   const sessions = {
     create: (id: unknown, options: unknown) => {
-      const session = makeSession();
+      const seed = (options as { seed?: readonly SessionEvent[] } | undefined)?.seed;
+      const session = makeSession({ events: seed === undefined ? [] : [...seed] });
       const created = { id: String(id), options, session };
       createdSessions.push(created);
       Object.defineProperty(session, 'id', { value: created.id });

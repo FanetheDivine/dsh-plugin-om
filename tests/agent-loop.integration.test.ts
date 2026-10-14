@@ -522,7 +522,9 @@ describe('真实 agent loop + mock AI', () => {
           }),
         );
         expect(JSON.stringify(parent.events)).toContain(ORIGINAL);
-        expect(JSON.stringify(child.events)).toContain('【压缩统计】');
+        // 不再注入统计文本；循环以 seed 重建时间线，turn 边界与任务指令仍在
+        expect(JSON.stringify(child.events)).not.toContain('【压缩统计】');
+        expect(child.events.some((event) => event.type === 'turn/end')).toBe(true);
         expect(child.events.some((event) => event.type === 'user/message')).toBe(true);
         if (mode === 'success') {
           expect(child.events.some((event) => event.type === 'tool/result')).toBe(true);
@@ -629,7 +631,8 @@ describe('真实 agent loop + mock AI', () => {
         expect(archivedParent.header.id).toBe(parentId);
         expect(archivedChild.header.parentSession).toBe(parentId);
         expect(JSON.stringify(archivedParent.events)).toContain(ORIGINAL);
-        expect(JSON.stringify(archivedChild.events)).toContain('【压缩统计】');
+        expect(JSON.stringify(archivedChild.events)).not.toContain('【压缩统计】');
+        expect(archivedChild.events.some((event) => event.type === 'turn/end')).toBe(true);
         if (mode === 'success') {
           expect(JSON.stringify(archivedChild.events)).toContain(ORIGINAL);
           expect(archivedChild.events.some((event) => event.type === 'tool/result')).toBe(true);
