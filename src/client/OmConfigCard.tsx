@@ -96,6 +96,22 @@ export function OmConfigCard(props: OmConfigCardProps): string | React.JSX.Eleme
         const label = t(`config.${name}`);
         const hint = t(`config.${name}.hint`);
         const disabled = !state.writable || state.saving;
+        const recallOn = state.fields.recallEnabled.text === 'true';
+        const semanticOn = state.fields.semanticRecallEnabled.text === 'true';
+        const isSemantic = name === 'semanticRecallEnabled';
+        // 语义增强依赖原文召回：展示值与服务端生效值一致，编辑与恢复默认时联动两项
+        const checked = isSemantic ? semanticOn && recallOn : field.text === 'true';
+        const onChange = (value: boolean) => {
+          props.edit(name, String(value));
+          if (isSemantic && value) props.edit('recallEnabled', 'true');
+          if (name === 'recallEnabled' && !value && semanticOn) {
+            props.edit('semanticRecallEnabled', 'false');
+          }
+        };
+        const onReset = () => {
+          props.resetField(name);
+          if (isSemantic && !recallOn) props.resetField('recallEnabled');
+        };
         return (
           <div key={name} data-om-field={name}>
             {kind === 'boolean' ? (
@@ -103,13 +119,13 @@ export function OmConfigCard(props: OmConfigCardProps): string | React.JSX.Eleme
                 id={`plugin-config-om-${name}`}
                 label={label}
                 hint={hint}
-                checked={field.text === 'true'}
+                checked={checked}
                 overridden={field.overridden}
                 overriddenLabel={t('config.overridden')}
                 resetLabel={t('config.reset')}
                 disabled={disabled}
-                onChange={(value) => props.edit(name, String(value))}
-                onReset={() => props.resetField(name)}
+                onChange={onChange}
+                onReset={onReset}
               />
             ) : (
               <SettingsValueField
