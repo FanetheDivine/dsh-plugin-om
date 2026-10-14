@@ -45,9 +45,9 @@ function wrap(lines: readonly string[]): string {
 export const PROGRESS_REMINDER: SystemReminder = {
   kind: PROGRESS_REMINDER_SOURCE_KIND,
   text: wrap([
-    '为优化上下文管理效果、提高任务完成质量，你应当在工作过程中持续输出文本，记录*中间结论*与*下一步规划*：',
-    '- 用1-2句话概括最近几步，不必覆盖所有细节',
-    '- 不要在没有记录的情况下，多次调用工具',
+    '在工作过程中持续输出文本，用1-2句话记录最近几步的成果：',
+    '- 概括为主，不必覆盖所有细节',
+    '- 记录要承上启下，例如“读 f1，发现关联了 f2、f3，读这两个文件”，“m1 完成，按计划开始 m2”',
     '- 记录后继续完成任务，不要等待确认',
     '- 记录仅是中间产物，最终输出需要另行构建',
   ]),
@@ -95,19 +95,19 @@ function isCurrent(
 }
 
 /** 进度提醒在表层缺失，或静默窗口达到 4 个已结束 step 且超过 10 次调用时补发。 */
-function progressReminderDue(
+function progressReminderTrigger(
   surface: readonly SessionEvent[],
   events: readonly SessionEvent[],
   messages: readonly UserMessage[],
-): boolean {
+): 'missing' | 'activity' | undefined {
   if (messages.some((message) => message.source.kind === PROGRESS_REMINDER_SOURCE_KIND))
-    return false;
+    return undefined;
   const present = surface.some(
     (event) =>
       event.type === 'user/message' && event.data.source.kind === PROGRESS_REMINDER_SOURCE_KIND,
   );
-  if (!present) return true;
-  if (messages.some((message) => message.source.kind === 'user')) return false;
+  if (!present) return 'missing';
+  if (messages.some((message) => message.source.kind === 'user')) return undefined;
 
   const ended = new Set<string>();
   for (const event of events) {
@@ -137,12 +137,12 @@ function progressReminderDue(
       }
     }
   }
-  return steps.size >= 4 && toolCalls > 10;
+  return steps.size >= 4 && toolCalls > 10 ? 'activity' : undefined;
 }
 
 /**
  * 按表层与待输入消息补发提醒，追加到末尾且不修改入参。
- * 进度提醒按 kind 去重并检测活动窗口；定义提醒缺失或文本过期时补发。
+ * 进度提醒按 kind 去重并检测活动窗口，活动达标时追加立刻记录要求；定义提醒缺失或文本过期时补发。
  */
 export function ensureSystemReminders(
   session: Session,
@@ -160,13 +160,27 @@ export function ensureSystemReminders(
     event.type === 'user/message' ? [event.data] : [],
   );
   for (const reminder of reminders) {
-    const due =
-      reminder.kind === PROGRESS_REMINDER_SOURCE_KIND
-        ? progressReminderDue(surface, events, result)
-        : ![...result, ...surfaceMessages].some((message) =>
-            isCurrent(reminder, message.source, message.content),
-          );
-    if (due) result.push(systemReminderMessage(reminder));
+    if (reminder.kind === PROGRESS_REMINDER_SOURCE_KIND) {
+      const trigger = progressReminderTrigger(surface, events, result);
+      if (trigger === undefined) continue;
+      const progress =
+        trigger === 'activity'
+          ? {
+              ...reminder,
+              text: reminder.text.replace(
+                '\n</system-reminder>',
+                '\n你应当*立刻*输出一条记录\n</system-reminder>',
+              ),
+            }
+          : reminder;
+      result.push(systemReminderMessage(progress));
+    } else if (
+      ![...result, ...surfaceMessages].some((message) =>
+        isCurrent(reminder, message.source, message.content),
+      )
+    ) {
+      result.push(systemReminderMessage(reminder));
+    }
   }
   return result;
 }

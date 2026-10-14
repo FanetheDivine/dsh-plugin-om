@@ -178,6 +178,15 @@ function requestSystem(request: GenerateOptions): string {
     .join('\n\n');
 }
 
+/** 条件 2 预期送达的提醒，保持同一个 source kind。 */
+const urgentReminder: SystemReminder = {
+  kind: PROGRESS_REMINDER.kind,
+  text: PROGRESS_REMINDER.text.replace(
+    '\n</system-reminder>',
+    '\n你应当*立刻*输出一条记录\n</system-reminder>',
+  ),
+};
+
 /** 请求中作为 user 消息出现的指定提醒数量（缺省为进度提醒）。 */
 function requestReminders(request: GenerateOptions, reminder = PROGRESS_REMINDER): number {
   return request.messages.filter(
@@ -503,9 +512,12 @@ describe('system-reminder 的真实宿主集成', () => {
       );
       await handle.agent.whenIdle();
       expectCompletedToolLoop(handle.agent, adapter, toolRuns, script.length, 24);
-      expect(adapter.calls.map((request) => requestReminders(request))).toEqual([
-        1, 1, 1, 1, 2, 2, 2, 2, 3,
+      expect(adapter.calls.map((request) => requestReminders(request, urgentReminder))).toEqual([
+        0, 0, 0, 0, 1, 1, 1, 1, 2,
       ]);
+      expect(adapter.calls.map((request) => requestReminders(request))).toEqual(
+        Array.from({ length: script.length }, () => 1),
+      );
       expect(
         adapter.calls.map((request) => requestReminders(request, DEFINITION_REMINDER)),
       ).toEqual(Array.from({ length: script.length }, () => 1));
@@ -531,7 +543,9 @@ describe('system-reminder 的真实宿主集成', () => {
       );
       await handle.agent.whenIdle();
       expectCompletedToolLoop(handle.agent, adapter, toolRuns, script.length, 11);
-      expect(adapter.calls.map((request) => requestReminders(request))).toEqual([1, 1, 1, 1, 1, 2]);
+      expect(adapter.calls.map((request) => requestReminders(request, urgentReminder))).toEqual([
+        0, 0, 0, 0, 0, 1,
+      ]);
       expect(bothLogged(handle.agent)).toEqual([2, 1]);
     } finally {
       await handle.dispose();
@@ -560,8 +574,8 @@ describe('system-reminder 的真实宿主集成', () => {
       );
       await handle.agent.whenIdle();
       expectCompletedToolLoop(handle.agent, adapter, toolRuns, script.length, 22);
-      expect(adapter.calls.map((request) => requestReminders(request))).toEqual([
-        1, 1, 1, 1, 1, 1, 1, 2,
+      expect(adapter.calls.map((request) => requestReminders(request, urgentReminder))).toEqual([
+        0, 0, 0, 0, 0, 0, 0, 1,
       ]);
       expect(bothLogged(handle.agent)).toEqual([2, 1]);
     } finally {

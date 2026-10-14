@@ -176,6 +176,27 @@ describe('activeSystemReminders', () => {
 });
 
 describe('进度提醒的表层活动窗口', () => {
+  it('只有条件 2 在正文底部追加立刻记录要求，同 kind 仍去重和重置计数', () => {
+    const first = progressReminders(makeSession())[0];
+    expect(first?.content).toEqual(systemReminderMessage(PROGRESS_REMINDER).content);
+    const hidden = makeSession({ events: [reminderEvent(PROGRESS_REMINDER)], surfaceNodes: [] });
+    expect(progressReminders(hidden)[0]?.content).toEqual(first?.content);
+
+    const session = activitySession([3, 3, 3, 2]);
+    const urgent = progressReminders(session)[0];
+    if (!urgent) throw new Error('条件 2 应注入进度提醒');
+    expect(urgent.source).toEqual(first?.source);
+    expect(textOf(urgent)).toBe(
+      PROGRESS_REMINDER.text.replace(
+        '\n</system-reminder>',
+        '\n你应当*立刻*输出一条记录\n</system-reminder>',
+      ),
+    );
+    expect(progressReminders(session, [urgent])).toEqual([urgent]);
+    appendStep(session, 5, 3, { input: urgent });
+    expect(progressReminders(session)).toHaveLength(0);
+  });
+
   it('表层同 kind 文本过期也不补发，待输入同 kind 同样去重', () => {
     const stale = createUserMessage({
       content: [textBlock('旧进度提醒')],
