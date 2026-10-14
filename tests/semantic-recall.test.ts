@@ -1,12 +1,11 @@
-// semantic-recall.ts 单元测试：参数解析 parseSemanticRecallArgs、语义区间 resolveSemanticRange、
-// 相似度匹配说明 matchExplanation、recall-semantic 工具行为与 wire 参数 schema。
+// semantic-recall.ts 单元测试：语义区间 resolveSemanticRange、相似度匹配说明 matchExplanation，
+// 以及经 recall 工具（语义增强）触发的语义检索行为。
 import { describe, expect, it } from 'vitest';
 import { COMPLETE_MESSAGE_DEFINITION } from '../src/constants.ts';
+import { buildRecallTool } from '../src/recall.ts';
 import type { RecallOutputValue } from '../src/recall-output.ts';
 import {
-  buildSemanticRecallTool,
   matchExplanation,
-  parseSemanticRecallArgs,
   resolveSemanticRange,
   SEMANTIC_MODEL_NOT_READY_MESSAGE,
 } from '../src/semantic-recall.ts';
@@ -19,41 +18,6 @@ import {
   textOf,
   toolCallBlock,
 } from './helpers.ts';
-
-describe('recall-semantic 参数解析（zod schema）', () => {
-  it('query 必填且非空，top_k 与区间参数可选', () => {
-    expect(parseSemanticRecallArgs({ query: '找缓存逻辑' })).toEqual({ query: '找缓存逻辑' });
-    expect(parseSemanticRecallArgs({ query: 'x', top_k: 5 })).toEqual({ query: 'x', top_k: 5 });
-    expect(parseSemanticRecallArgs({ query: 'x', start: 2, end: 5, offset: 1 })).toEqual({
-      query: 'x',
-      start: 2,
-      end: 5,
-      offset: 1,
-    });
-  });
-
-  it('空 query / 缺失 query 抛错', () => {
-    expect(() => parseSemanticRecallArgs({})).toThrow(/query/);
-    expect(() => parseSemanticRecallArgs({ query: '   ' })).toThrow(/query/);
-  });
-
-  it('top_k 越界或非整数抛错（1-10）', () => {
-    expect(() => parseSemanticRecallArgs({ query: 'x', top_k: 0 })).toThrow(/top_k/);
-    expect(() => parseSemanticRecallArgs({ query: 'x', top_k: 11 })).toThrow(/top_k/);
-    expect(() => parseSemanticRecallArgs({ query: 'x', top_k: 2.5 })).toThrow(/top_k/);
-    expect(() => parseSemanticRecallArgs({ query: 'x', top_k: '3' })).toThrow(/top_k/);
-  });
-
-  it('start/end/offset 必须为 number', () => {
-    expect(() => parseSemanticRecallArgs({ query: 'x', start: '2' })).toThrow(/start/);
-    expect(() => parseSemanticRecallArgs({ query: 'x', end: '5' })).toThrow(/end/);
-    expect(() => parseSemanticRecallArgs({ query: 'x', offset: '1' })).toThrow(/offset/);
-  });
-
-  it('未知键被剥离', () => {
-    expect(parseSemanticRecallArgs({ query: 'x', junk: 1 })).toEqual({ query: 'x' });
-  });
-});
 
 describe('语义区间解析 resolveSemanticRange', () => {
   it('start 缺省 → 全量检索（fallback=false）', () => {
@@ -150,7 +114,7 @@ describe('匹配说明 matchExplanation', () => {
   });
 });
 
-describe('recall-semantic 工具', () => {
+describe('recall 语义增强', () => {
   /** 构造纯 user/message 会话（每个 id 一条文本）。 */
   function textSession(texts: Array<[string, string]>, header?: { origin?: 'subagent' }) {
     const events = texts.map(
@@ -184,7 +148,7 @@ describe('recall-semantic 工具', () => {
       ['m-auth', '权限校验逻辑'],
       ['m-log', '日志输出格式'],
     ]);
-    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const tool = buildRecallTool({ semantic: { embedder: fakeEmbedder() } });
     const exec = { agent: { session } };
     const span = textOf(await tool.execute({ query: '数据库 缓存' }, exec as never));
     const out = String(span);
@@ -212,7 +176,7 @@ describe('recall-semantic 工具', () => {
       ['m-auth', '权限校验逻辑'],
       ['m-log', '日志输出格式'],
     ]);
-    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const tool = buildRecallTool({ semantic: { embedder: fakeEmbedder() } });
     const exec = { agent: { session } };
     const span = textOf(await tool.execute({ query: '数据库 缓存', top_k: 5 }, exec as never));
     const out = String(span);
@@ -240,7 +204,7 @@ describe('recall-semantic 工具', () => {
       },
     ] as unknown as SessionEvent[];
     const session = makeSession({ events, surfaceNodes: [2] }); // 0、1 被压缩遮蔽
-    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const tool = buildRecallTool({ semantic: { embedder: fakeEmbedder() } });
     const exec = { agent: { session } };
     const span = textOf(await tool.execute({ query: '数据库', top_k: 3 }, exec as never));
     const out = String(span);
@@ -254,7 +218,7 @@ describe('recall-semantic 工具', () => {
       ['m-cache', '缓存失效问题排查'],
       ['m-auth', '权限校验逻辑'],
     ]);
-    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const tool = buildRecallTool({ semantic: { embedder: fakeEmbedder() } });
     const exec = { agent: { session } };
     // 区间 [0..1]（m-db .. m-cache）：不含权限消息
     const span = textOf(
@@ -272,7 +236,7 @@ describe('recall-semantic 工具', () => {
       ['m-cache', '缓存失效问题排查'],
       ['m-auth', '权限校验逻辑'],
     ]);
-    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const tool = buildRecallTool({ semantic: { embedder: fakeEmbedder() } });
     const exec = { agent: { session } };
     const span = textOf(await tool.execute({ query: '权限', start: 99, offset: 2 }, exec as never));
     const out = String(span);
@@ -282,7 +246,7 @@ describe('recall-semantic 工具', () => {
 
   it('范围描述：无区间时标注检索全部消息', async () => {
     const session = textSession([['m-auth', '权限校验逻辑']]);
-    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const tool = buildRecallTool({ semantic: { embedder: fakeEmbedder() } });
     const exec = { agent: { session } };
     const span = textOf(await tool.execute({ query: '权限' }, exec as never));
     expect(String(span)).toContain('检索全部消息');
@@ -312,8 +276,8 @@ describe('recall-semantic 工具', () => {
     ] as unknown as SessionEvent[];
     const session = makeSession({ events });
     const prunedBlocks = [{ type: 'text', text: 'PRUNED-SEMANTIC' }];
-    const tool = buildSemanticRecallTool({
-      embedder: fakeEmbedder(),
+    const tool = buildRecallTool({
+      semantic: { embedder: fakeEmbedder() },
       getPruner: () => ({
         pruneContent: (blocks: unknown[]) => {
           const text = (
@@ -343,14 +307,14 @@ describe('recall-semantic 工具', () => {
 
   it('subagent 会话调用被拒绝', async () => {
     const session = textSession([['m-db', '数据库配置']], { origin: 'subagent' });
-    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const tool = buildRecallTool({ semantic: { embedder: fakeEmbedder() } });
     const result = textOf(await tool.execute({ query: '数据库' }, { agent: { session } } as never));
     expect(String(result)).toContain('仅主会话可用');
   });
 
   it('无可检索消息返回提示', async () => {
     const session = makeSession({ events: [] });
-    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const tool = buildRecallTool({ semantic: { embedder: fakeEmbedder() } });
     const exec = { agent: { session } };
     const span = textOf(await tool.execute({ query: '数据库' }, exec as never));
     expect(String(span)).toContain('没有可检索的消息');
@@ -359,12 +323,14 @@ describe('recall-semantic 工具', () => {
   it('模型未就绪：返回告知文案（不报错、不触发嵌入）', async () => {
     const session = textSession([['m-db', '数据库配置']]);
     let embedded = false;
-    const tool = buildSemanticRecallTool({
-      embedder: async (texts) => {
-        embedded = true;
-        return fakeEmbedder()(texts);
+    const tool = buildRecallTool({
+      semantic: {
+        embedder: async (texts) => {
+          embedded = true;
+          return fakeEmbedder()(texts);
+        },
+        modelStatus: async () => 'downloading' as const,
       },
-      modelStatus: async () => 'downloading' as const,
     });
     const result = textOf(await tool.execute({ query: '数据库' }, { agent: { session } } as never));
     const out = String(result);
@@ -374,17 +340,17 @@ describe('recall-semantic 工具', () => {
 
   it('模型就绪（ready）时正常执行检索', async () => {
     const session = textSession([['m-db', '数据库配置']]);
-    const tool = buildSemanticRecallTool({
-      embedder: fakeEmbedder(),
-      modelStatus: async () => 'ready' as const,
+    const tool = buildRecallTool({
+      semantic: { embedder: fakeEmbedder(), modelStatus: async () => 'ready' as const },
     });
     const out = textOf(await tool.execute({ query: '数据库' }, { agent: { session } } as never));
     expect(out).toContain('数据库配置');
     expect(out).toContain('<user_message index="0">'); // m-db 为完整消息 index 0
   });
   it('命中消息携带图片时随结果输出；描述注明只匹配文本', async () => {
-    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const tool = buildRecallTool({ semantic: { embedder: fakeEmbedder() } });
     expect(tool.description).toContain('只匹配文本');
+    expect(tool.parameters).toHaveProperty('properties.query');
     expect(tool.description).not.toContain(COMPLETE_MESSAGE_DEFINITION);
     const events = [
       {
@@ -417,7 +383,7 @@ describe('recall-semantic 工具', () => {
         data: {
           message: makeMessage({
             role: 'assistant',
-            content: [toolCallBlock('tc-self', 'recall-semantic', { query: '缓存' })],
+            content: [toolCallBlock('tc-self', 'recall', { query: '缓存' })],
             id: 'a-self',
           }),
         },
@@ -428,7 +394,7 @@ describe('recall-semantic 工具', () => {
       },
     ] as unknown as SessionEvent[];
     const session = makeSession({ events });
-    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const tool = buildRecallTool({ semantic: { embedder: fakeEmbedder() } });
     // exec.callId 与日志中的调用一致：该 toolcall 不进候选池、不占 top_k 名额
     const value = (await tool.execute({ query: '缓存' }, {
       agent: { session },
@@ -436,7 +402,7 @@ describe('recall-semantic 工具', () => {
     } as never)) as RecallOutputValue;
     expect(value.text).toContain('2 条可嵌入'); // 仅 m-cache 与 m-db，自身不占候选
     expect(value.text).toContain('缓存失效问题排查');
-    expect(value.text).not.toContain('tool-name="recall-semantic"');
+    expect(value.text).not.toContain('tool-name="recall"');
     expect(value.text).not.toContain('"query"');
     // exec.callId 指向其他调用时，该历史 toolcall 照常参与检索（只排除本次调用自身）
     const other = (await tool.execute({ query: '缓存' }, {
@@ -445,7 +411,7 @@ describe('recall-semantic 工具', () => {
     } as never)) as RecallOutputValue;
     expect(other.text).toContain('3 条可嵌入');
     expect(other.text).toContain(
-      '<assistant index="1" type="toolcall" tool-name="recall-semantic" callId="tc-self">',
+      '<assistant index="1" type="toolcall" tool-name="recall" callId="tc-self">',
     );
   });
 
@@ -461,7 +427,7 @@ describe('recall-semantic 工具', () => {
       } as unknown as SessionEvent,
     ];
     const session = makeSession({ events });
-    const tool = buildSemanticRecallTool({ embedder: fakeEmbedder() });
+    const tool = buildRecallTool({ semantic: { embedder: fakeEmbedder() } });
     const value = (await tool.execute({ query: '权限' }, {
       agent: { session },
     } as never)) as RecallOutputValue;
@@ -469,16 +435,5 @@ describe('recall-semantic 工具', () => {
     expect(value.text).toContain('1 条可嵌入');
     expect(value.text).toContain('权限校验逻辑');
     expect(value.images).toEqual([]);
-  });
-});
-
-describe('recall-semantic wire 参数 schema（由 zod 生成）', () => {
-  /** buildSemanticRecallTool().parameters：zod schema 经 toJSONSchema 生成的 wire JSON Schema。 */
-  const parameters = buildSemanticRecallTool().parameters;
-
-  it('根为 type:object 的标准 JSON Schema，无 $schema/additionalProperties（官方 API 严格校验兼容）', () => {
-    expect(parameters.type).toBe('object');
-    expect(parameters).not.toHaveProperty('$schema');
-    expect(parameters).not.toHaveProperty('additionalProperties');
   });
 });
