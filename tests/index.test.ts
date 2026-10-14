@@ -70,9 +70,9 @@ async function runPreStepWithDelay(
   await run(); // 第二步：新增完整消息数达到 tailMessageCount → 执行压缩
 }
 
-/** 构造 om/observe-pending 信封事件（seq 由 makeSession 按日志下标补齐）。 */
+/** 构造 plugin:dsh-plugin-om:observe-pending 事件（seq 由 makeSession 按日志下标补齐）。 */
 function pendingEvent(triggerMessageIndex: number): SessionEvent {
-  return makeOmEvent('om/observe-pending', { triggerMessageIndex });
+  return makeOmEvent('plugin:dsh-plugin-om:observe-pending', { triggerMessageIndex });
 }
 
 describe('apply 接线（OM 观察压缩）', () => {
@@ -637,8 +637,12 @@ describe('apply 接线（OM 观察压缩）', () => {
     // 第 1 轮纯文本 → 提醒；第 2 轮仍纯文本 → 判失败（共 2 次请求）
     expect(ctx._llmCalls).toHaveLength(2);
     // 压缩失败保留待定标记（无失效标记）：下个 pre-step 直接重试执行
-    expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-pending'))).toBe(true);
-    expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
+    expect(
+      session.snapshotEvents().some((e) => isOmKind(e, 'plugin:dsh-plugin-om:observe-pending')),
+    ).toBe(true);
+    expect(
+      session.snapshotEvents().some((e) => isOmKind(e, 'plugin:dsh-plugin-om:observe-invalidate')),
+    ).toBe(false);
     // 压缩失败：start 在循环前已开启（UI 压缩中提示），end(error) 关闭生命周期；
     // 无 summary、无部分替换
     expect(session.snapshotEvents().some((e) => e.type === 'compaction/start')).toBe(true);
@@ -772,7 +776,9 @@ describe('apply 接线（OM 观察压缩）', () => {
     failed = false;
     await run(); // 待定保留：直接重试执行 → 成功
     expect(session.snapshotEvents().some((e) => e.type === 'compaction/summary')).toBe(true);
-    expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(true);
+    expect(
+      session.snapshotEvents().some((e) => isOmKind(e, 'plugin:dsh-plugin-om:observe-invalidate')),
+    ).toBe(true);
     expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
   });
 
@@ -1543,10 +1549,9 @@ describe('apply 接线（recallEnabled / semanticRecallEnabled）', () => {
 });
 
 // apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行）：净压力首次达阈值时记录
-// om/observe-pending 待定标记（触发点 = 最后一条完整消息 index）本次不压缩；待定后
-// 新增完整消息数 ≥ tailMessageCount 时执行压缩（区间截至触发点）并写 om/observe-invalidate
-// 失效标记；摘要失败保留待定直接重试；标记以 om 信封事件（借用 feedback/record）
-// 持久化在会话日志中，重启后从日志恢复。
+// plugin:dsh-plugin-om:observe-pending 待定标记（触发点 = 最后一条完整消息 index）本次不压缩；待定后
+// 新增完整消息数 ≥ tailMessageCount 时执行压缩（区间截至触发点）并写 plugin:dsh-plugin-om:observe-invalidate
+// 失效标记；摘要失败保留待定直接重试；标记以自定义事件持久化在会话日志中，重启后从日志恢复。
 describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行）', () => {
   /** 运行一次 pre-step 监听器，返回 next 是否被调用。 */
   async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
@@ -1603,17 +1608,19 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     });
   }
 
-  it('触发即待定：达阈值记录 om/observe-pending（触发点 = 最后完整消息 index），本次不压缩', async () => {
+  it('触发即待定：达阈值记录 plugin:dsh-plugin-om:observe-pending（触发点 = 最后完整消息 index），本次不压缩', async () => {
     const session = singleFlowSession();
     const ctx = observeCtx();
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     const nextCalled = await runPreStep(ctx, session);
     expect(nextCalled).toBe(true); // 触发不中断，正常放行
     expect(ctx._llmCalls).toHaveLength(0); // 延迟执行：本次无压缩请求
-    const pendingEvents = findOmEvents(session, 'om/observe-pending');
+    const pendingEvents = findOmEvents(session, 'plugin:dsh-plugin-om:observe-pending');
     expect(pendingEvents).toHaveLength(1);
     expect(pendingEvents[0]?.data).toEqual({ triggerMessageIndex: 2 });
-    expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
+    expect(
+      session.snapshotEvents().some((e) => isOmKind(e, 'plugin:dsh-plugin-om:observe-invalidate')),
+    ).toBe(false);
     expect(session.surface.nodes.length).toBe(3); // 表层不变
   });
 
@@ -1623,7 +1630,7 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     apply(ctx, { tailMessageCount: 3, observeThresholdTokens: 1 });
     await runPreStep(ctx, session);
     await runPreStep(ctx, session); // 未满 K，等待中
-    expect(findOmEvents(session, 'om/observe-pending')).toHaveLength(1);
+    expect(findOmEvents(session, 'plugin:dsh-plugin-om:observe-pending')).toHaveLength(1);
     expect(ctx._llmCalls).toHaveLength(0);
   });
 
@@ -1664,8 +1671,8 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     expect(session.surface.nodes).toContain(waitingSeq);
     expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
     // 执行成功后写失效标记，指向待定标记事件 seq
-    const pendings = findOmEvents(session, 'om/observe-pending');
-    const invalidates = findOmEvents(session, 'om/observe-invalidate');
+    const pendings = findOmEvents(session, 'plugin:dsh-plugin-om:observe-pending');
+    const invalidates = findOmEvents(session, 'plugin:dsh-plugin-om:observe-invalidate');
     expect(pendings).toHaveLength(1);
     expect(invalidates).toHaveLength(1);
     expect(invalidates[0]?.data.pendingSeq).toBe(pendings[0]?.seq);
@@ -1677,8 +1684,12 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3);
-    expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-pending'))).toBe(false);
-    expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
+    expect(
+      session.snapshotEvents().some((e) => isOmKind(e, 'plugin:dsh-plugin-om:observe-pending')),
+    ).toBe(false);
+    expect(
+      session.snapshotEvents().some((e) => isOmKind(e, 'plugin:dsh-plugin-om:observe-invalidate')),
+    ).toBe(false);
     expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
   });
 
@@ -1708,12 +1719,16 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     appendWaitingMessage(session, 'wait-fail');
     await runPreStep(ctx, session); // 执行：2 轮纯文本判失败
     expect(ctx._llmCalls).toHaveLength(2);
-    expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
+    expect(
+      session.snapshotEvents().some((e) => isOmKind(e, 'plugin:dsh-plugin-om:observe-invalidate')),
+    ).toBe(false);
     appendWaitingMessage(session, 'wait-retry');
     failed = false;
     await runPreStep(ctx, session); // 待定仍在、到期条件仍满足 → 直接重试执行
     expect(ctx._llmCalls).toHaveLength(5); // 失败 2 轮 + 重试成功 3 轮
-    expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(true);
+    expect(
+      session.snapshotEvents().some((e) => isOmKind(e, 'plugin:dsh-plugin-om:observe-invalidate')),
+    ).toBe(true);
     expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
   });
 
@@ -1730,7 +1745,7 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
     const invalidateEvent = session
       .snapshotEvents()
-      .findLast((e) => isOmKind(e, 'om/observe-invalidate'));
+      .findLast((e) => isOmKind(e, 'plugin:dsh-plugin-om:observe-invalidate'));
     expect(invalidateEvent).toBeDefined();
   });
 
@@ -1762,11 +1777,13 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStep(ctx, session); // 过期 → 重新触发：新一轮 pending（seq 7，触发点仍为 index 2）
     expect(ctx._llmCalls).toHaveLength(0);
-    expect(findOmEvents(session, 'om/observe-pending')).toHaveLength(2);
+    expect(findOmEvents(session, 'plugin:dsh-plugin-om:observe-pending')).toHaveLength(2);
     appendWaitingMessage(session, 'wait-expired'); // 新增 1 ≥ 1
     await runPreStep(ctx, session); // 触发点内容已被压缩 → 无可行区间 → 清除标记视为完成
     expect(ctx._llmCalls).toHaveLength(0); // 不对已压缩内容发起压缩
-    expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(true); // 新标记已失效
+    expect(
+      session.snapshotEvents().some((e) => isOmKind(e, 'plugin:dsh-plugin-om:observe-invalidate')),
+    ).toBe(true); // 新标记已失效
     expect(latestHistoryText(session)).toContain('压缩后的块'); // 无新增替换
   });
 });
