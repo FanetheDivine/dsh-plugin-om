@@ -1,7 +1,7 @@
 /**
  * 两级自动压缩（观察/反思）与 compaction 生命周期提交。
  * 导出 estimateTextTokens / isPairBalancedAfter / computeCompressRange / historySection /
- * hasHistoryBlock / findObservePending / reflectPass / observePass / maybeCompress。
+ * hasHistoryBlock / historyTextOf / findObservePending / reflectPass / observePass / maybeCompress。
  *
  * - 摘要生成走工具驱动的压缩循环（compress-loop.ts runCompressionLoop）：首条 user
  *   消息仅含压缩指令与 start/end 区间，模型经 getHistory / compressHistory /
@@ -187,7 +187,7 @@ async function runPassLoop(
  * checkpoint 标记 'compact'）。仅当消息文本含 <history> 开标签时视为压缩日志，返回整段
  * 文本；其余返回 undefined。
  */
-function historyTextOf(event: SessionEvent | undefined): string | undefined {
+export function historyTextOf(event: SessionEvent | undefined): string | undefined {
   if (event?.type !== 'user/message') return undefined;
   if (!isPluginOwnedSource(event.data.source)) return undefined;
   const text = blocksToText(event.data.content);
