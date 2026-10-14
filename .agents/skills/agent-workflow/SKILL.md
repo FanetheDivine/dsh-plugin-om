@@ -56,10 +56,11 @@ gh pr create --fill   # 创建 PR 并回传链接
 
 确保pr的所有检查通过；如果与main冲突，将其merge到新分支并解决冲突；将输出链接让用户验收
 
-- 用户验收通过后，以**压缩（squash）**方式将 PR 合并到主分支：
+- 用户验收通过后，以**压缩（squash）**方式将 PR 合并到主分支，并在主工作区拉取最新代码：
 
 ```sh
 gh pr merge <分支名> --squash  # 压缩合并
+git -C <项目根> pull  # 主分支拉取最新
 ```
 
 - 如果用户放弃此功能，关闭 PR：
@@ -72,11 +73,10 @@ gh pr close <分支名>  # 关闭 PR
 
 无论第 4 步是合并 PR 还是放弃功能，都需要清理，因此独立为固定步骤：
 
-- 删除 worktree、远程分支、本地分支，并在主工作区执行 `git pull`：
+- 删除 worktree、远程分支、本地分支：
 
 ```sh
 git -C <项目根> push origin --delete <分支名>  # 删除远程分支
 git -C <项目根> worktree remove ../<分支名> --force  # 移除 worktree（先于删除本地分支）
 git -C <项目根> branch -D <分支名>  # 删除本地分支
-git -C <项目根> pull  # 主分支拉取最新
 ```
