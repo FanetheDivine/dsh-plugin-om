@@ -10,8 +10,9 @@ export const NS = 'om-compaction';
 export const zh = {
   compaction: '上下文已压缩',
   'compaction.completed': '已压缩 {items} 条历史记录（约 {tokens} tokens）',
-  'compaction.stats':
-    '{items} 条 · {beforeChars} 字符（{beforeTokens} tokens）→ {afterChars} 字符（{afterTokens} tokens）',
+  'compaction.stats': '字符 {beforeChars} → {afterChars}',
+  'compaction.stats.sep': '，',
+  'compaction.stats.effortDefault': '默认',
   'compaction.expand': '点击查看压缩摘要',
   'compaction.unavailable': '压缩摘要不可用',
   'compaction.running': '正在压缩上下文…',
@@ -90,8 +91,9 @@ export const zh = {
 export const en: Record<keyof typeof zh, string> = {
   compaction: 'Context compacted',
   'compaction.completed': 'Compacted {items} messages (~{tokens} tokens)',
-  'compaction.stats':
-    '{items} msgs · {beforeChars} chars ({beforeTokens} tokens) → {afterChars} chars ({afterTokens} tokens)',
+  'compaction.stats': 'chars {beforeChars} → {afterChars}',
+  'compaction.stats.sep': ', ',
+  'compaction.stats.effortDefault': 'default',
   'compaction.expand': 'Click to view summary',
   'compaction.unavailable': 'Summary unavailable',
   'compaction.running': 'Compressing context…',

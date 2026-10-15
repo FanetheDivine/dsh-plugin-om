@@ -1,6 +1,6 @@
 // 压缩卡片统计行数字单位化：k / w（万）/ M。
 import { describe, expect, it } from 'vitest';
-import { formatCompactCount } from '../src/format.ts';
+import { formatCompactCount, formatSeconds } from '../src/format.ts';
 
 describe('formatCompactCount', () => {
   it('小于 1000 原样输出', () => {
@@ -27,5 +27,13 @@ describe('formatCompactCount', () => {
     expect(formatCompactCount(1_000_000)).toBe('1M');
     expect(formatCompactCount(1_234_567)).toBe('1.2M');
     expect(formatCompactCount(12_345_678)).toBe('12.3M');
+  });
+});
+
+describe('formatSeconds', () => {
+  it('毫秒转一位小数秒', () => {
+    expect(formatSeconds(0)).toBe('0.0s');
+    expect(formatSeconds(63_140)).toBe('63.1s');
+    expect(formatSeconds(26_050)).toBe('26.1s');
   });
 });

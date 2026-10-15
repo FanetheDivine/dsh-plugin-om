@@ -1,5 +1,5 @@
 /**
- * 紧凑数字格式化（压缩卡片、重压缩记录与压缩日志共用）。零依赖，服务端与浏览器均可引用。导出 formatCompactCount。
+ * 紧凑数字格式化（压缩卡片、重压缩记录与压缩日志共用）。零依赖，服务端与浏览器均可引用。导出 formatCompactCount / formatSeconds。
  * <1k 原样；≥1k 用 k；≥1w（万）用 w；≥1M 用 M；保留 1 位小数并去掉末尾 .0。
  */
 export function formatCompactCount(value: number): string {
@@ -11,4 +11,9 @@ export function formatCompactCount(value: number): string {
   if (value >= 10_000) return `${trim(value / 10_000)}w`;
   if (value >= 1_000) return `${trim(value / 1_000)}k`;
   return String(value);
+}
+
+/** 毫秒耗时格式化为一位小数的秒数，如 63.1s。 */
+export function formatSeconds(durationMs: number): string {
+  return `${(durationMs / 1000).toFixed(1)}s`;
 }

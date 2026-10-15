@@ -54,6 +54,10 @@ describe('消息列表卡片水平滚动适配', () => {
         shadowedTokenCount: 200,
         summaryCharCount: 200,
         summaryTokenCount: 50,
+        provider: 'p',
+        model: 'm',
+        reasoningEffort: null,
+        durationMs: 63100,
         summary: 'Very long summary with multiple code blocks and wide lines\nLine 2',
       },
     };
@@ -137,6 +141,66 @@ describe('消息列表卡片水平滚动适配', () => {
     container.remove();
   });
 
+  describe('折叠行统计', () => {
+    function statsOf(data: Partial<ChatNode<'om-compaction'>['data']>): string {
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      const root = createRoot(container);
+      act(() => {
+        root.render(
+          <OmCompactionCard
+            node={{
+              key: 'k',
+              id: 'k',
+              kind: 'om-compaction',
+              target: 'chat',
+              anchorSeq: 1,
+              location: { kind: 'unresolved' },
+              visibility: 'visible',
+              data: {
+                compactionId: 'om:1',
+                running: false,
+                phase: null,
+                error: null,
+                diagnosticSessionId: null,
+                summaryEventSeq: 1,
+                shadowedItemCount: 33,
+                shadowedCharCount: 53_000,
+                shadowedTokenCount: 15_000,
+                summaryCharCount: 8_000,
+                summaryTokenCount: 2_000,
+                provider: 'bf',
+                model: 'DeepSeek-V4',
+                reasoningEffort: null,
+                durationMs: 63_100,
+                summary: '摘要',
+                ...data,
+              },
+            }}
+            t={mockTranslate}
+          />,
+        );
+      });
+      const text = container.querySelector('[data-om-compaction-summary]')?.textContent ?? '';
+      act(() => root.unmount());
+      container.remove();
+      return text;
+    }
+
+    it('显示字符数、耗时与 provider/模型(effort)，不含条数与 tokens', () => {
+      expect(statsOf({})).toBe('字符 5.3w → 8k，63.1s，bf/DeepSeek-V4(默认)');
+      expect(statsOf({ reasoningEffort: 'high' })).toBe(
+        '字符 5.3w → 8k，63.1s，bf/DeepSeek-V4(high)',
+      );
+    });
+
+    it('耗时或模型缺失时省略对应片段', () => {
+      expect(statsOf({ durationMs: null })).toBe('字符 5.3w → 8k，bf/DeepSeek-V4(默认)');
+      expect(statsOf({ provider: null, model: null })).toBe('字符 5.3w → 8k，63.1s');
+      expect(statsOf({ provider: null, model: 'only' })).toBe('字符 5.3w → 8k，63.1s，only(默认)');
+    });
+  });
+
   describe('展开体操作栏', () => {
     type CompactionData = ChatNode<'om-compaction'>['data'];
 
@@ -152,6 +216,10 @@ describe('消息列表卡片水平滚动适配', () => {
       shadowedTokenCount: 200,
       summaryCharCount: 200,
       summaryTokenCount: 50,
+      provider: 'p',
+      model: 'm',
+      reasoningEffort: null,
+      durationMs: 63100,
       summary: '摘要文本',
     };
 

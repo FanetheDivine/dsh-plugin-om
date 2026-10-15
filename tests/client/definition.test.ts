@@ -205,6 +205,10 @@ describe('omCompactionDefinition.buildViewNode', () => {
         shadowedSeqs: [2, 3, 4],
         shadowedTokenCount: 1234,
         shadowedCharCount: 5000,
+        provider: 'alt',
+        model: 'big-1',
+        reasoningEffort: 'high',
+        durationMs: 63100,
       }),
     );
     const state = { summary, checkpoint };
@@ -223,9 +227,35 @@ describe('omCompactionDefinition.buildViewNode', () => {
         shadowedCharCount: 5000,
         summaryCharCount: 16,
         summaryTokenCount: 4,
+        provider: 'alt',
+        model: 'big-1',
+        reasoningEffort: 'high',
+        durationMs: 63100,
         running: false,
         phase: null,
       },
+    });
+  });
+
+  it('模型与耗时缺失或非法时回落 null', () => {
+    const summary = matchOf(
+      lifecycle('compaction/summary', 6, {
+        compactionId: 'om-1',
+        summary: [{ type: 'text', text: '摘要' }],
+        shadowedSeqs: [2],
+        shadowedTokenCount: 10,
+        shadowedCharCount: 40,
+        provider: '',
+        model: 7,
+        reasoningEffort: null,
+        durationMs: -1,
+      }),
+    );
+    const node = omCompactionDefinition.buildViewNode?.(
+      contextOf([summary, checkpoint], { summary, checkpoint }),
+    );
+    expect(node).toMatchObject({
+      data: { provider: null, model: null, reasoningEffort: null, durationMs: null },
     });
   });
 
@@ -242,6 +272,10 @@ describe('omCompactionDefinition.buildViewNode', () => {
         shadowedCharCount: null,
         summaryCharCount: null,
         summaryTokenCount: null,
+        provider: null,
+        model: null,
+        reasoningEffort: null,
+        durationMs: null,
       },
     });
   });
