@@ -312,9 +312,14 @@ describe('/om-recompress 命令：apply 接线', () => {
 
     const ok = await call(` ${compactionId} alt vendor/big-1 high`);
     expect(ok?.kind).toBe('success');
-    expect(ok?.text).toContain('重压缩完成（观察 · alt/vendor/big-1）');
-    expect(ok?.text).toContain(ctx._createdSessions[0]?.id);
+    // 形如「重压缩完成 模型(等级)，原始消息 → 产物，耗时」，不再附子会话 id
+    expect(ok?.text).toMatch(
+      /^重压缩完成 alt\/vendor\/big-1\(high\)，\d+(\.\d)?k? → \d+(\.\d)?k?，\d+\.\ds$/,
+    );
     expect(ctx._llmCalls[0]?.options).toMatchObject({ provider: 'alt', reasoningEffort: 'high' });
+
+    const defaultEffort = await call(` ${compactionId} alt big-2`);
+    expect(defaultEffort?.text).toMatch(/^重压缩完成 alt\/big-2\(默认\)，/);
 
     const bad = await call('only-one-arg');
     expect(bad).toMatchObject({ kind: 'error' });

@@ -138,7 +138,10 @@ describe('尝试其他模型按钮', () => {
   });
 
   it('打开时加载目录，无思考等级的模型选中后直接提交', async () => {
-    const run = vi.fn().mockResolvedValue({ ok: true, text: '完成' });
+    const run = vi.fn().mockResolvedValue({
+      ok: true,
+      text: '重压缩完成 alt/plain(默认)，3.1k → 5.2k，26.1s',
+    });
     const source = stub({}, run);
     mount(source);
     click(q('[data-om-recompress]'));
@@ -148,8 +151,9 @@ describe('尝试其他模型按钮', () => {
     });
     expect(run).toHaveBeenCalledExactlyOnceWith('om:1', { provider: 'alt', model: 'plain' });
     expect(q('[data-om-recompress-model]')).toBeNull();
+    // 卡片结果行直接显示命令返回的对比文本
     expect(document.body.querySelector('[data-om-recompress-result]')?.textContent).toBe(
-      zh['recompress.done'],
+      '重压缩完成 alt/plain(默认)，3.1k → 5.2k，26.1s',
     );
   });
 

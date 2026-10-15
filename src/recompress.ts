@@ -18,11 +18,13 @@
 import type { CommandDefinition } from '@deepseek-ai/dsh-commands';
 
 import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm';
+import { formatKChars } from './compaction-log.ts';
 import { historyTextOf } from './compress.ts';
 import {
   buildCompressionTaskText,
   type CompressionLoopOptions,
   runCompressionLoop,
+  viewCharCount,
 } from './compress-loop.ts';
 import { buildObserveView, buildReflectView, type CompressionView } from './compress-view.ts';
 import { COMPACTION_ABORTED_ERROR } from './constants.ts';
@@ -36,7 +38,7 @@ import type {
   PluginConfig,
   Session,
 } from './types.ts';
-import { blocksToText, isMainSession } from './utils.ts';
+import { isMainSession } from './utils.ts';
 
 /** 重压缩请求：被重放的 compaction 与目标模型。 */
 export type RecompressRequest = {
@@ -57,8 +59,8 @@ export type RecompressResult =
       phase: 'observe' | 'reflect';
       /** 模型请求轮数。 */
       rounds: number;
-      /** 原摘要字符数。 */
-      previousChars: number;
+      /** 原始消息字符数（被压缩视图的文本、工具参数与结果之和）。 */
+      originalChars: number;
       /** 新摘要字符数。 */
       newChars: number;
       /** 循环总耗时（毫秒）。 */
@@ -218,7 +220,7 @@ export async function recompress(
       text: outcome.text,
       phase,
       rounds: outcome.rounds,
-      previousChars: blocksToText(summary.summary).length,
+      originalChars: viewCharCount(view),
       newChars: outcome.text.length,
       durationMs: outcome.stats.durationMs,
       ...(outcome.recordSessionId === undefined
@@ -238,14 +240,11 @@ function secondsText(durationMs: number): string {
   return `${(durationMs / 1000).toFixed(1)}s`;
 }
 
-/** 渲染命令结果文本：成功给出模型、轮数、新旧摘要字符数与子会话；失败给出原因。 */
+/** 渲染命令结果文本：成功为「模型(等级)，原始消息 → 产物，耗时」，失败给出原因。 */
 function describeResult(request: RecompressRequest, result: RecompressResult): string {
-  const label = `${request.provider}/${request.model}`;
-  const record =
-    result.recordSessionId === undefined ? '' : `，会话记录子会话 ${result.recordSessionId}`;
-  if (!result.ok) return `重压缩失败（${label}）：${result.error}${record}`;
-  const phase = result.phase === 'reflect' ? '反思' : '观察';
-  return `重压缩完成（${phase} · ${label}）：${result.rounds} 轮，摘要 ${result.previousChars} → ${result.newChars} 字符，耗时 ${secondsText(result.durationMs)}${record}`;
+  const label = `${request.provider}/${request.model}(${request.reasoningEffort ?? '默认'})`;
+  if (!result.ok) return `重压缩失败 ${label}：${result.error}`;
+  return `重压缩完成 ${label}，${formatKChars(result.originalChars)} → ${formatKChars(result.newChars)}，${secondsText(result.durationMs)}`;
 }
 
 /** 构造 /om-recompress 命令定义；配置按调用时刻读取。 */

@@ -190,7 +190,7 @@ export type CompressionFailure = {
 export type CompressionOutcome = CompressionSuccess | CompressionFailure;
 
 /** 视图原始消息字符数：非 reasoning 条目的文本与工具调用参数/结果之和。 */
-function viewCharCount(view: CompressionView): number {
+export function viewCharCount(view: CompressionView): number {
   return view.entries.reduce(
     (total, entry) =>
       entry.kind === 'reasoning'

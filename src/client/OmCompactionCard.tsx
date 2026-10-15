@@ -71,7 +71,7 @@ const cardCss = `
 .${css.inspect}{border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:16px;cursor:pointer;white-space:nowrap;border-radius:999px;flex:none;align-items:center;gap:4px;margin:0;padding:2px 8px;display:inline-flex}
 .${css.inspect}:is(:hover,:focus-visible){background:var(--dsw-alias-interactive-bg-hover-solid);color:var(--dsw-alias-label-primary)}
 .${css.trajectory}{display:none}
-.${css.result}{padding:2px 0 0 22px;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary)}
+.${css.result}{padding:2px 0 0 22px;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary);max-height:60px;overflow-y:auto;overflow-wrap:anywhere;overscroll-behavior:contain;scrollbar-width:thin}
 .${css.body}{box-sizing:border-box;background:var(--dsw-alias-markdown-code-block);width:calc(100% - 22px);max-height:141px;color:var(--dsw-alias-label-tertiary);font:400 11px/16px var(--ds-font-family-code);border:none;border-radius:8px;margin:4px 0 0 22px;padding:10px 16px 12px 12px;overflow-x:auto;overflow-y:auto;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
 `;
 
@@ -130,7 +130,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({
     void recompress.run(data.compactionId, choice).then((outcome) => {
       setRecompressState(
         outcome.ok
-          ? { status: 'done', text: t('recompress.done') }
+          ? { status: 'done', text: outcome.text || t('recompress.done') }
           : { status: 'failed', text: t('recompress.failed', { error: outcome.text }) },
       );
     });
