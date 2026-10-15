@@ -30,7 +30,7 @@ import {
   type ToolCallBlock,
   type UserMessage,
 } from '@deepseek-ai/dsh-llm';
-import { recordCompressionSession } from './compaction-log.ts';
+import { compressionInfoText, recordCompressionSession } from './compaction-log.ts';
 import {
   COMPRESSION_TOOL_SCHEMAS,
   CompressionState,
@@ -189,6 +189,20 @@ export type CompressionFailure = {
 /** 循环结果（成功/失败二选一）。 */
 export type CompressionOutcome = CompressionSuccess | CompressionFailure;
 
+/** 视图原始消息字符数：非 reasoning 条目的文本与工具调用参数/结果之和。 */
+function viewCharCount(view: CompressionView): number {
+  return view.entries.reduce(
+    (total, entry) =>
+      entry.kind === 'reasoning'
+        ? total
+        : total +
+          entry.text.length +
+          (entry.toolArgs?.length ?? 0) +
+          (entry.toolResult?.length ?? 0),
+    0,
+  );
+}
+
 /** 构造插件自产 user 消息（压缩指令/提醒；source 为插件自有 kind）。 */
 function makePluginUserMessage(text: string): UserMessage {
   return createUserMessage({
@@ -281,6 +295,7 @@ export async function runCompressionLoop(
   const recordSessionId = async (
     success: boolean,
     stats: CompressionStats,
+    resultChars?: number,
   ): Promise<string | undefined> =>
     recordCompressionSession(ctx, session, {
       phase: options.phase,
@@ -288,6 +303,14 @@ export async function runCompressionLoop(
       stats,
       success,
       debug: options.debug,
+      info: compressionInfoText({
+        target: options.target,
+        originalChars: viewCharCount(options.view),
+        ...(options.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: options.reasoningEffort }),
+        ...(resultChars === undefined ? {} : { resultChars }),
+      }),
       ...(options.retryTarget === undefined ? {} : { retryTarget: options.retryTarget }),
     });
   const failWith = async (error: string, aborted: boolean): Promise<CompressionFailure> => {
@@ -412,7 +435,7 @@ export async function runCompressionLoop(
         `压缩循环完成（${rounds} 轮，${state.replacementCount} 次压缩替换，${state.rewriteCount} 条提问重写，输出 ${text.length} 字符）`,
       );
       const stats = buildStats();
-      const id = await recordSessionId(true, stats);
+      const id = await recordSessionId(true, stats, text.length);
       return {
         ok: true,
         text,

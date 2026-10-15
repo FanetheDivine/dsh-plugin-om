@@ -156,6 +156,39 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     expect(descriptor?.data).toMatchObject({ label });
   });
 
+  it('info 文本作为首条 user/message 写在任务指令之前，缺省不写', async () => {
+    const withInfo = makeCtx();
+    await recordCompressionSession(withInfo, makeSession({ events: twoCallFlow() }), {
+      phase: 'observe',
+      messages: loopMessages(),
+      stats: makeStats([{ durationMs: 100 }]),
+      success: true,
+      debug: false,
+      info: '压缩使用模型 a/b（high）',
+    });
+    const events = withInfo._createdSessions[0]?.session.snapshotEvents() ?? [];
+    expect(events.map((e) => e.type).slice(0, 4)).toEqual([
+      'subagent/descriptor',
+      'turn/start',
+      'user/message',
+      'user/message',
+    ]);
+    const users = events.filter((e) => e.type === 'user/message');
+    expect(JSON.stringify(users[0]?.data)).toContain('压缩使用模型 a/b（high）');
+    expect(users[0]?.time).toBe(users[1]?.time);
+
+    const without = makeCtx();
+    await recordCompressionSession(without, makeSession({ events: twoCallFlow() }), {
+      phase: 'observe',
+      messages: loopMessages(),
+      stats: makeStats([{ durationMs: 100 }]),
+      success: true,
+      debug: false,
+    });
+    const plain = without._createdSessions[0]?.session.snapshotEvents() ?? [];
+    expect(plain.filter((e) => e.type === 'user/message')).toHaveLength(1);
+  });
+
   it('header 元数据：origin subagent + parentSession + delegationDepth = 父 + 1 + cwd 继承', async () => {
     const ctx = makeCtx();
     const parent = makeSession({
