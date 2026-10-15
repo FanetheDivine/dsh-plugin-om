@@ -10,7 +10,7 @@
  *   会话记录子会话及其在父会话的 subagent/catalog，标题带「重压缩 provider/model」
  * - 目标模型与思考等级由调用方显式指定，不做模型信息校验，也不受 compressProvider /
  *   compressModel 配置影响
- * - 仅主会话可用；同一会话同时仅允许一次重压缩
+ * - 仅主会话可用；同一会话允许多次重压缩并行，互不影响
  * - 命令 /om-recompress 是压缩卡片按钮到服务端的内部通道（宿主命令通道），结果文本
  *   由发起方 UI 渲染，命令事件 log-only 不进模型上下文
  */
@@ -101,9 +101,6 @@ export function parseRecompressInput(
   };
 }
 
-/** 正在重压缩的会话 id（同一会话同时仅一次）。 */
-const running = new Set<string>();
-
 /** 日志中某 compaction 的生命周期事件。 */
 type Lifecycle = {
   phase: CompactionStartPayload['phase'] | undefined;
@@ -180,60 +177,52 @@ export async function recompress(
     return { ok: false, error: `压缩 ${request.compactionId} 的原内容无可定位条目` };
   }
   if (signal?.aborted === true) return { ok: false, error: COMPACTION_ABORTED_ERROR };
-  if (running.has(session.id)) return { ok: false, error: '该会话已有重压缩进行中' };
 
   const target = { provider: request.provider, model: request.model };
   const logger = makeLogger(ctx, config.debug);
-  running.add(session.id);
-  try {
-    logger.step(
-      `重压缩：${request.compactionId}（${phase}）→ ${target.provider}/${target.model}${
-        request.reasoningEffort === undefined ? '' : ` · ${request.reasoningEffort}`
-      }`,
-    );
-    const originalChars =
-      summary.shadowedCharCount ??
-      (phase === 'observe' ? seqsCharCount(session, shadowedSeqs) : viewCharCount(view));
-    const outcome = await runCompressionLoop(ctx, session, {
-      view,
-      originalChars,
-      phase,
-      taskText: buildCompressionTaskText(phase, view.minIndex, view.maxIndex),
-      target,
-      maxTokens: config.compressMaxTokens,
-      rateLimitWaitMs: config.rateLimitWaitMs,
-      skipReasoning: config.compressSkipReasoning,
-      debug: config.debug,
-      retryTarget: target,
-      ...(request.reasoningEffort === undefined
-        ? {}
-        : { reasoningEffort: request.reasoningEffort as ReasoningEffortId }),
-      ...(signal === undefined ? {} : { signal }),
-    } satisfies CompressionLoopOptions);
-    if (!outcome.ok) {
-      return {
-        ok: false,
-        error: outcome.error,
-        ...(outcome.recordSessionId === undefined
-          ? {}
-          : { recordSessionId: outcome.recordSessionId }),
-      };
-    }
+  logger.step(
+    `重压缩：${request.compactionId}（${phase}）→ ${target.provider}/${target.model}${
+      request.reasoningEffort === undefined ? '' : ` · ${request.reasoningEffort}`
+    }`,
+  );
+  const originalChars =
+    summary.shadowedCharCount ??
+    (phase === 'observe' ? seqsCharCount(session, shadowedSeqs) : viewCharCount(view));
+  const outcome = await runCompressionLoop(ctx, session, {
+    view,
+    originalChars,
+    phase,
+    taskText: buildCompressionTaskText(phase, view.minIndex, view.maxIndex),
+    target,
+    maxTokens: config.compressMaxTokens,
+    rateLimitWaitMs: config.rateLimitWaitMs,
+    skipReasoning: config.compressSkipReasoning,
+    debug: config.debug,
+    retryTarget: target,
+    ...(request.reasoningEffort === undefined
+      ? {}
+      : { reasoningEffort: request.reasoningEffort as ReasoningEffortId }),
+    ...(signal === undefined ? {} : { signal }),
+  } satisfies CompressionLoopOptions);
+  if (!outcome.ok) {
     return {
-      ok: true,
-      text: outcome.text,
-      phase,
-      rounds: outcome.rounds,
-      originalChars,
-      newChars: outcome.text.length,
-      durationMs: outcome.stats.durationMs,
+      ok: false,
+      error: outcome.error,
       ...(outcome.recordSessionId === undefined
         ? {}
         : { recordSessionId: outcome.recordSessionId }),
     };
-  } finally {
-    running.delete(session.id);
   }
+  return {
+    ok: true,
+    text: outcome.text,
+    phase,
+    rounds: outcome.rounds,
+    originalChars,
+    newChars: outcome.text.length,
+    durationMs: outcome.stats.durationMs,
+    ...(outcome.recordSessionId === undefined ? {} : { recordSessionId: outcome.recordSessionId }),
+  };
 }
 
 /** 重压缩命令名（压缩卡片按钮经宿主命令通道调用）。 */

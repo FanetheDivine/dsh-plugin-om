@@ -1,7 +1,7 @@
 // recompress.ts 单元测试：重压缩命令行解析 parseRecompressInput、按 compactionId 定位
 // 已成功压缩（compaction/summary + 无错误的 compaction/end）、观察/反思视图重放、
 // 以指定模型与思考等级运行压缩循环、会话记录标题标记、原会话日志不被改动、
-// 并发拒绝、signal 中止、非主会话/未知 id/缺 shadowedSeqs/失败压缩的错误返回。
+// 同会话并行、signal 中止、非主会话/未知 id/缺 shadowedSeqs/失败压缩的错误返回。
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -248,7 +248,7 @@ describe('recompress：拒绝与互斥', () => {
     if (!result.ok) expect(result.error).toContain('主会话');
   });
 
-  it('同一会话并发调用被拒绝，首个完成后可再次调用', async () => {
+  it('同一会话可并行重压缩，各自独立完成并各写一份会话记录', async () => {
     const { session, compactionId } = await observedSession();
     let release: () => void = () => {};
     const gate = new Promise<void>((resolve) => {
@@ -262,17 +262,12 @@ describe('recompress：拒绝与互斥', () => {
         })(),
     });
     const first = run(ctx, session, compactionId);
-    const second = await run(ctx, session, compactionId);
-    expect(second.ok).toBe(false);
-    if (!second.ok) expect(second.error).toContain('进行中');
+    const second = run(ctx, session, compactionId);
     release();
-    expect((await first).ok).toBe(true);
-    const again = await run(
-      makeCtx({ llmStreamFactory: scriptedFactory({ 1: 'y' }) }),
-      session,
-      compactionId,
-    );
-    expect(again.ok).toBe(true);
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    if (a.ok && b.ok) expect(a.recordSessionId).not.toBe(b.recordSessionId);
   });
 
   it('signal 已中止：返回中止错误，不落盘失败日志', async () => {
