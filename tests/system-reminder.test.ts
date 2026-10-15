@@ -1,5 +1,5 @@
 // system-reminder 单元测试：验证提醒 source、构造、启用条件与表层去重，
-// 覆盖进度提醒的已结束 step/toolcall 门槛、计数起点、压缩遮蔽及定义提醒补发。
+// 覆盖进度提醒的已结束 step/toolcall 门槛、计数起点与压缩遮蔽。
 import {
   createAssistantMessage,
   createToolResultMessage,
@@ -7,12 +7,10 @@ import {
   ToolCallId,
 } from '@deepseek-ai/dsh-llm';
 import { describe, expect, it } from 'vitest';
-import { COMPLETE_MESSAGE_DEFINITION, isPluginOwnedSource } from '../src/constants.ts';
+import { isPluginOwnedSource } from '../src/constants.ts';
 import { indexCompleteMessages } from '../src/log-index.ts';
 import {
   activeSystemReminders,
-  DEFINITION_REMINDER,
-  DEFINITION_REMINDER_SOURCE_KIND,
   ensureSystemReminders,
   PROGRESS_REMINDER,
   PROGRESS_REMINDER_SOURCE_KIND,
@@ -39,12 +37,18 @@ function textOf(message: UserMessage): string {
   return message.content.map((block) => (block.type === 'text' ? block.text : '')).join('');
 }
 
+/** 非本插件产生的其他来源提醒消息。 */
+function foreignReminder(): UserMessage {
+  return createUserMessage({
+    content: [textBlock('其他提醒')],
+    source: { kind: 'plugin:other:reminder', form: 'instructions' } as never,
+  });
+}
+
 /** 提取消息列表中指定 kind 的提醒消息。 */
 function ofKind(messages: readonly UserMessage[], kind: string): UserMessage[] {
   return messages.filter((message) => message.source.kind === kind);
 }
-
-const BOTH = [PROGRESS_REMINDER, DEFINITION_REMINDER];
 
 /** 追加带模型消息的 step，默认闭合；表层和日志行为由共享 Session 模拟提供。 */
 function appendStep(
@@ -110,15 +114,18 @@ function progressReminders(session: Session, messages: readonly UserMessage[] = 
 }
 
 describe('systemReminderMessage', () => {
-  it.each(BOTH)('$kind 是带专属 source 的 user 消息，文本被 system-reminder 包裹', (reminder) => {
-    const message = systemReminderMessage(reminder);
-    const text = textOf(message);
-    expect(message.role).toBe('user');
-    expect(message.source.kind).toBe(reminder.kind);
-    expect(text.startsWith('<system-reminder>\n')).toBe(true);
-    expect(text.endsWith('\n</system-reminder>')).toBe(true);
-    expect(text).not.toMatch(/does not override/i);
-  });
+  it.each([PROGRESS_REMINDER])(
+    '$kind 是带专属 source 的 user 消息，文本被 system-reminder 包裹',
+    (reminder) => {
+      const message = systemReminderMessage(reminder);
+      const text = textOf(message);
+      expect(message.role).toBe('user');
+      expect(message.source.kind).toBe(reminder.kind);
+      expect(text.startsWith('<system-reminder>\n')).toBe(true);
+      expect(text.endsWith('\n</system-reminder>')).toBe(true);
+      expect(text).not.toMatch(/does not override/i);
+    },
+  );
 
   it('进度提醒首行声明为本会话对你的要求，活动重发版本保持同一首行', () => {
     const firstLine = '在本会话中，你应当持续输出文本，记录最近几步的成果：';
@@ -129,16 +136,7 @@ describe('systemReminderMessage', () => {
     expect(urgent).toHaveLength(1);
   });
 
-  it('定义提醒携带完整消息定义原文，进度提醒不携带', () => {
-    expect(textOf(systemReminderMessage(DEFINITION_REMINDER))).toContain(
-      COMPLETE_MESSAGE_DEFINITION,
-    );
-    expect(textOf(systemReminderMessage(PROGRESS_REMINDER))).not.toContain(
-      COMPLETE_MESSAGE_DEFINITION,
-    );
-  });
-
-  it.each(BOTH)(
+  it.each([PROGRESS_REMINDER])(
     '$kind 不被识别为插件自产压缩日志消息，作为系统消息不占完整消息 index',
     (reminder) => {
       expect(isPluginOwnedSource(systemReminderMessage(reminder).source)).toBe(false);
@@ -148,45 +146,16 @@ describe('systemReminderMessage', () => {
   );
 
   it('每次构造使用新的消息 id', () => {
-    expect(systemReminderMessage(DEFINITION_REMINDER).id).not.toBe(
-      systemReminderMessage(DEFINITION_REMINDER).id,
+    expect(systemReminderMessage(PROGRESS_REMINDER).id).not.toBe(
+      systemReminderMessage(PROGRESS_REMINDER).id,
     );
   });
 });
 
 describe('activeSystemReminders', () => {
-  const off = { omEnabled: false, recallEnabled: false };
-
-  it('recall 启用时无论是否有 history 块均启用定义提醒', () => {
-    expect(
-      activeSystemReminders({ ...off, recallEnabled: true }, false).map((r) => r.kind),
-    ).toEqual([DEFINITION_REMINDER_SOURCE_KIND]);
-    expect(activeSystemReminders({ ...off, recallEnabled: true }, true).map((r) => r.kind)).toEqual(
-      [DEFINITION_REMINDER_SOURCE_KIND],
-    );
-  });
-
-  it('recall 关闭时仅在表层有 history 块时启用定义提醒', () => {
-    expect(
-      activeSystemReminders({ ...off, omEnabled: true, recallEnabled: false }, false).map(
-        (r) => r.kind,
-      ),
-    ).toEqual([PROGRESS_REMINDER_SOURCE_KIND]);
-    expect(
-      activeSystemReminders({ ...off, omEnabled: true, recallEnabled: false }, true).map(
-        (r) => r.kind,
-      ),
-    ).toEqual([PROGRESS_REMINDER_SOURCE_KIND, DEFINITION_REMINDER_SOURCE_KIND]);
-  });
-
-  it('全部关闭且无 history 块时不启用任何提醒', () => {
-    expect(activeSystemReminders(off, false)).toEqual([]);
-  });
-
-  it('全部关闭但有 history 块时启用定义提醒', () => {
-    expect(activeSystemReminders(off, true).map((r) => r.kind)).toEqual([
-      DEFINITION_REMINDER_SOURCE_KIND,
-    ]);
+  it('只在 omEnabled 时启用进度提醒', () => {
+    expect(activeSystemReminders({ omEnabled: true })).toEqual([PROGRESS_REMINDER]);
+    expect(activeSystemReminders({ omEnabled: false })).toEqual([]);
   });
 });
 
@@ -265,9 +234,7 @@ describe('进度提醒的表层活动窗口', () => {
 
   it('空白 text、reasoning、工具结果和其他提醒都不重置', () => {
     const session = activitySession([3]);
-    session.append('user/message', systemReminderMessage(DEFINITION_REMINDER), {
-      surfaceOp: 'append',
-    });
+    session.append('user/message', foreignReminder(), { surfaceOp: 'append' });
     session.append(
       'tool/result',
       {
@@ -293,10 +260,9 @@ describe('进度提醒的表层活动窗口', () => {
     expect(progressReminders(makeSession(), [user])).toHaveLength(1);
   });
 
-  it('待输入的定义提醒不重置，进度提醒则去重', () => {
+  it('待输入的其他提醒不重置，进度提醒则去重', () => {
     const session = activitySession([3, 3, 3, 2]);
-    const definition = systemReminderMessage(DEFINITION_REMINDER);
-    expect(progressReminders(session, [definition])).toHaveLength(1);
+    expect(progressReminders(session, [foreignReminder()])).toHaveLength(1);
     const progress = systemReminderMessage(PROGRESS_REMINDER);
     expect(progressReminders(session, [progress])).toEqual([progress]);
   });
@@ -321,12 +287,9 @@ describe('进度提醒的表层活动窗口', () => {
     expect(progressReminders(session)).toHaveLength(1);
   });
 
-  it('每次重发从提醒接收 step 起重新累计，定义提醒不跟随重发', () => {
+  it('每次重发从提醒接收 step 起重新累计', () => {
     const session = activitySession([3, 3, 3, 2]);
-    session.append('user/message', systemReminderMessage(DEFINITION_REMINDER), {
-      surfaceOp: 'append',
-    });
-    const result = ensureSystemReminders(session, [], BOTH);
+    const result = ensureSystemReminders(session, [], [PROGRESS_REMINDER]);
     expect(result.map((message) => message.source.kind)).toEqual([PROGRESS_REMINDER.kind]);
     const reminder = result[0];
     if (!reminder) throw new Error('应重发进度提醒');
@@ -368,63 +331,27 @@ describe('进度提醒的表层活动窗口', () => {
 
 describe('ensureSystemReminders', () => {
   const claimed = makeMessage({ content: [textBlock('请做点事')] }) as unknown as UserMessage;
+  const only = [PROGRESS_REMINDER];
 
-  it('表层与本 step 都没有时按顺序追加到末尾，并保留原有消息顺序', () => {
+  it('表层与本 step 都没有时追加到末尾，并保留原有消息顺序', () => {
     const session = makeSession({ events: [] });
-    const result = ensureSystemReminders(session, [claimed], BOTH);
+    const result = ensureSystemReminders(session, [claimed], only);
     expect(result.map((message) => message.source.kind)).toEqual([
       claimed.source.kind,
       PROGRESS_REMINDER_SOURCE_KIND,
-      DEFINITION_REMINDER_SOURCE_KIND,
     ]);
     expect(result[0]).toBe(claimed);
   });
 
   it('本 step 已带上时不再追加', () => {
     const session = makeSession({ events: [] });
-    const once = ensureSystemReminders(session, [claimed], BOTH);
-    const twice = ensureSystemReminders(session, once, BOTH);
-    expect(twice).toEqual(once);
+    const once = ensureSystemReminders(session, [claimed], only);
+    expect(ensureSystemReminders(session, once, only)).toEqual(once);
   });
 
-  it('表层已有一条时只补另一条', () => {
+  it('表层已有进度提醒时不追加', () => {
     const session = makeSession({ events: [reminderEvent(PROGRESS_REMINDER)] });
-    const result = ensureSystemReminders(session, [claimed], BOTH);
-    expect(ofKind(result, PROGRESS_REMINDER_SOURCE_KIND)).toHaveLength(0);
-    expect(ofKind(result, DEFINITION_REMINDER_SOURCE_KIND)).toHaveLength(1);
-  });
-
-  it('表层两条都有时不追加', () => {
-    const session = makeSession({
-      events: [reminderEvent(PROGRESS_REMINDER), reminderEvent(DEFINITION_REMINDER)],
-    });
-    expect(ensureSystemReminders(session, [claimed], BOTH)).toEqual([claimed]);
-  });
-
-  it('提醒已被压缩遮蔽（在日志中但不在表层）时重新追加', () => {
-    const session = makeSession({ events: [reminderEvent(DEFINITION_REMINDER)], surfaceNodes: [] });
-    const result = ensureSystemReminders(session, [claimed], [DEFINITION_REMINDER]);
-    expect(ofKind(result, DEFINITION_REMINDER_SOURCE_KIND)).toHaveLength(1);
-  });
-
-  it('表层只有过期文本的提醒时补发当前文本', () => {
-    const session = makeSession({
-      events: [reminderEvent(DEFINITION_REMINDER, '<system-reminder>旧定义</system-reminder>')],
-    });
-    const added = ofKind(
-      ensureSystemReminders(session, [claimed], [DEFINITION_REMINDER]),
-      DEFINITION_REMINDER_SOURCE_KIND,
-    );
-    expect(added).toHaveLength(1);
-    expect(added[0]?.content).toEqual(systemReminderMessage(DEFINITION_REMINDER).content);
-  });
-
-  it('另一条提醒的 kind 带着相同文本也不算已存在', () => {
-    const session = makeSession({
-      events: [reminderEvent(PROGRESS_REMINDER, DEFINITION_REMINDER.text)],
-    });
-    const result = ensureSystemReminders(session, [claimed], [DEFINITION_REMINDER]);
-    expect(ofKind(result, DEFINITION_REMINDER_SOURCE_KIND)).toHaveLength(1);
+    expect(ensureSystemReminders(session, [claimed], only)).toEqual([claimed]);
   });
 
   it('未启用的提醒不追加', () => {
@@ -435,7 +362,7 @@ describe('ensureSystemReminders', () => {
   it('不修改传入的消息数组', () => {
     const session = makeSession({ events: [] });
     const input = [claimed];
-    ensureSystemReminders(session, input, BOTH);
+    ensureSystemReminders(session, input, only);
     expect(input).toEqual([claimed]);
   });
 });

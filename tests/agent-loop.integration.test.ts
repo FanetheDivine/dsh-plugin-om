@@ -33,7 +33,7 @@ import { unzipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import { PLUGIN_SOURCE_KIND } from '../src/constants.ts';
 import { apply, inject, name } from '../src/index.ts';
-import { DEFINITION_REMINDER, PROGRESS_REMINDER } from '../src/system-reminder.ts';
+import { PROGRESS_REMINDER } from '../src/system-reminder.ts';
 
 const ORIGINAL = `原始助手长文本标记：${'用于压缩的真实会话历史。'.repeat(600)}`;
 const SUMMARY = '助手摘要标记';
@@ -292,28 +292,27 @@ describe('真实 agent loop + mock AI', () => {
           .join('');
       const ordinaryCalls = adapter.calls.filter((call) => call.purpose !== 'compaction');
       expect(ordinaryCalls).toHaveLength(3);
-      for (const reminder of [PROGRESS_REMINDER, DEFINITION_REMINDER]) {
-        for (const call of ordinaryCalls) {
-          // 提醒是用户消息：每次普通请求每种恰有一条，系统提示词保持原文
-          const reminders = call.messages.filter(
-            (message) => message.role === 'user' && textOf(message) === reminder.text,
-          );
-          expect(reminders).toHaveLength(1);
-          for (const message of call.messages.filter((message) => message.role === 'system')) {
-            expect(textOf(message)).not.toContain('<system-reminder>');
-          }
+      const reminder = PROGRESS_REMINDER;
+      for (const call of ordinaryCalls) {
+        // 提醒是用户消息：每次普通请求恰有一条，系统提示词保持原文
+        const reminders = call.messages.filter(
+          (message) => message.role === 'user' && textOf(message) === reminder.text,
+        );
+        expect(reminders).toHaveLength(1);
+        for (const message of call.messages.filter((message) => message.role === 'system')) {
+          expect(textOf(message)).not.toContain('<system-reminder>');
         }
-        for (const call of adapter.calls.filter((call) => call.purpose === 'compaction')) {
-          expect(call.system).not.toContain(reminder.text);
-        }
-        // 压缩遮蔽旧提醒后会补发：日志可有多条，表层始终只有一条可见
-        const isReminder = (event: SessionEvent | undefined) =>
-          event?.type === 'user/message' && event.data.source.kind === reminder.kind;
-        expect(events.filter(isReminder).length).toBeGreaterThan(1);
-        expect(
-          session.surface.nodes.filter((seq) => isReminder(session.eventAt(seq))),
-        ).toHaveLength(1);
       }
+      for (const call of adapter.calls.filter((call) => call.purpose === 'compaction')) {
+        expect(call.system).not.toContain(reminder.text);
+      }
+      // 压缩遮蔽旧提醒后会补发：日志可有多条，表层始终只有一条可见
+      const isReminder = (event: SessionEvent | undefined) =>
+        event?.type === 'user/message' && event.data.source.kind === reminder.kind;
+      expect(events.filter(isReminder).length).toBeGreaterThan(1);
+      expect(session.surface.nodes.filter((seq) => isReminder(session.eventAt(seq)))).toHaveLength(
+        1,
+      );
       const secondCompactionRequest = adapter.calls.filter(
         (call) => call.purpose === 'compaction',
       )[4];
