@@ -144,5 +144,7 @@ web/                             # 机制说明与成本计算器站点
     ├── src/model.ts             # 成本模型
     └── src/components/          # 页面组件与 UI 原语
 .agents/skills/agent-workflow/SKILL.md # 仓库开发工作流
+.agents/skills/clear-branch/SKILL.md   # 手动清空除 main 外的分支与 worktree
+.agents/skills/release/SKILL.md        # 手动发布并跟踪 CI 与 npm
 .github/workflows/web-deploy.yml # GitHub Pages 部署工作流
 ```
