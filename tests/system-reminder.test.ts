@@ -14,6 +14,7 @@ import {
   ensureSystemReminders,
   PROGRESS_REMINDER,
   PROGRESS_REMINDER_SOURCE_KIND,
+  type ProgressIdleOptions,
   type SystemReminder,
   systemReminderMessage,
 } from '../src/system-reminder.ts';
@@ -105,10 +106,14 @@ function activitySession(counts: readonly number[]): Session {
   return session;
 }
 
-/** 只运行进度提醒检查，不默认传入新用户消息。 */
-function progressReminders(session: Session, messages: readonly UserMessage[] = []): UserMessage[] {
+/** 只运行进度提醒检查，不默认传入新用户消息；idle 缺省沿用默认判定。 */
+function progressReminders(
+  session: Session,
+  messages: readonly UserMessage[] = [],
+  idle?: ProgressIdleOptions,
+): UserMessage[] {
   return ofKind(
-    ensureSystemReminders(session, messages, [PROGRESS_REMINDER]),
+    ensureSystemReminders(session, messages, [PROGRESS_REMINDER], idle),
     PROGRESS_REMINDER.kind,
   );
 }
@@ -153,10 +158,17 @@ describe('systemReminderMessage', () => {
 });
 
 describe('activeSystemReminders', () => {
-  it('只在 omEnabled 时启用进度提醒', () => {
-    expect(activeSystemReminders({ omEnabled: true })).toEqual([PROGRESS_REMINDER]);
-    expect(activeSystemReminders({ omEnabled: false })).toEqual([]);
-  });
+  it.each([
+    { omEnabled: true, progressReminderEnabled: true, active: true },
+    { omEnabled: true, progressReminderEnabled: false, active: false },
+    { omEnabled: false, progressReminderEnabled: true, active: false },
+    { omEnabled: false, progressReminderEnabled: false, active: false },
+  ])(
+    'omEnabled=$omEnabled 且 progressReminderEnabled=$progressReminderEnabled 时启用=$active',
+    ({ active, ...config }) => {
+      expect(activeSystemReminders(config)).toEqual(active ? [PROGRESS_REMINDER] : []);
+    },
+  );
 });
 
 describe('进度提醒的表层活动窗口', () => {
@@ -364,5 +376,60 @@ describe('ensureSystemReminders', () => {
     const input = [claimed];
     ensureSystemReminders(session, input, only);
     expect(input).toEqual([claimed]);
+  });
+});
+
+describe('进度提醒的可配置活动重发', () => {
+  const idle = (steps: number, toolCalls: number, enabled = true): ProgressIdleOptions => ({
+    enabled,
+    steps,
+    toolCalls,
+  });
+
+  it('关闭活动重发后只保留缺失补发，且补发文本不带立刻记录要求', () => {
+    const session = activitySession([30, 30, 30, 30, 30]);
+    expect(progressReminders(session, [], idle(4, 10, false))).toHaveLength(0);
+    const first = progressReminders(makeSession(), [], idle(4, 10, false));
+    expect(first).toHaveLength(1);
+    expect(textOf(first[0] as UserMessage)).toBe(PROGRESS_REMINDER.text);
+    const hidden = makeSession({ events: [reminderEvent(PROGRESS_REMINDER)], surfaceNodes: [] });
+    expect(progressReminders(hidden, [], idle(4, 10, false))).toHaveLength(1);
+  });
+
+  it('省略选项时沿用 4 个 step 与 10 次调用', () => {
+    expect(progressReminders(activitySession([3, 3, 3, 2]))).toHaveLength(1);
+    expect(progressReminders(activitySession([3, 3, 2, 2]))).toHaveLength(0);
+    expect(progressReminders(activitySession([3, 3, 3, 2]), [], idle(4, 10))).toHaveLength(1);
+  });
+
+  it.each([
+    { counts: [1], steps: 2, toolCalls: 1, inject: false },
+    { counts: [1, 1], steps: 2, toolCalls: 1, inject: true },
+    { counts: [1, 1], steps: 2, toolCalls: 2, inject: false },
+    { counts: [2, 1], steps: 2, toolCalls: 2, inject: true },
+    { counts: [0, 0, 0], steps: 3, toolCalls: 0, inject: false },
+    { counts: [1, 0, 0], steps: 3, toolCalls: 0, inject: true },
+    { counts: [5], steps: 1, toolCalls: 4, inject: true },
+    { counts: [4], steps: 1, toolCalls: 4, inject: false },
+    { counts: [9, 9, 9, 9, 9], steps: 6, toolCalls: 0, inject: false },
+    { counts: [9, 9, 9, 9, 9, 1], steps: 6, toolCalls: 0, inject: true },
+    { counts: [3, 3, 3, 2], steps: 4, toolCalls: 20, inject: false },
+  ])(
+    '自定义阈值 steps≥$steps 且 toolCalls>$toolCalls：$counts → $inject',
+    ({ counts, steps, toolCalls, inject }) => {
+      const result = progressReminders(activitySession(counts), [], idle(steps, toolCalls));
+      expect(result).toHaveLength(inject ? 1 : 0);
+      if (inject) expect(textOf(result[0] as UserMessage)).toContain('你应当*立刻*输出一条记录');
+    },
+  );
+
+  it('自定义阈值下重发后仍从提醒接收 step 起重新累计', () => {
+    const session = activitySession([1, 1]);
+    const urgent = progressReminders(session, [], idle(2, 1))[0];
+    if (!urgent) throw new Error('应重发');
+    appendStep(session, 3, 1, { input: urgent });
+    expect(progressReminders(session, [], idle(2, 1))).toHaveLength(0);
+    appendStep(session, 4, 1);
+    expect(progressReminders(session, [], idle(2, 1))).toHaveLength(1);
   });
 });

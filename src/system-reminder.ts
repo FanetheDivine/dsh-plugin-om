@@ -1,9 +1,11 @@
 /**
  * system-reminder：以 <system-reminder> 用户消息向主会话注入进度提醒，不进系统提示词。
- * 进度提醒：表层缺少同 kind 消息时补发，或无记录活动累计至少 4 个已结束 step、超过 10 次工具调用时重发。
+ * 进度提醒：表层缺少同 kind 消息时补发；开启活动重发时，无记录活动累计至少 N 个已结束 step、
+ * 且工具调用超过 M 次时重发（N、M 与开关均来自配置，默认 4 与 10）。
  * 每个 step 检查表层；真实用户消息、非空模型 text 与进度提醒重置活动窗口。
  * 导出 PROGRESS_REMINDER_SOURCE_KIND / ProgressReminderSource / SystemReminder /
- * PROGRESS_REMINDER / systemReminderMessage / activeSystemReminders / ensureSystemReminders。
+ * PROGRESS_REMINDER / ProgressIdleOptions / DEFAULT_PROGRESS_IDLE / progressIdleOptions /
+ * systemReminderMessage / activeSystemReminders / ensureSystemReminders。
  */
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type { PluginConfig } from './config.ts';
@@ -49,16 +51,47 @@ export function systemReminderMessage(reminder: SystemReminder): UserMessage {
   });
 }
 
-/** 按配置返回应注入的提醒：omEnabled 时为进度提醒。 */
-export function activeSystemReminders(config: Pick<PluginConfig, 'omEnabled'>): SystemReminder[] {
-  return config.omEnabled ? [PROGRESS_REMINDER] : [];
+/** 按配置返回应注入的提醒：omEnabled 与 progressReminderEnabled 同时开启时为进度提醒。 */
+export function activeSystemReminders(
+  config: Pick<PluginConfig, 'omEnabled' | 'progressReminderEnabled'>,
+): SystemReminder[] {
+  return config.omEnabled && config.progressReminderEnabled ? [PROGRESS_REMINDER] : [];
 }
 
-/** 进度提醒在表层缺失，或静默窗口达到 4 个已结束 step 且超过 10 次调用时补发。 */
+/** 活动重发判定：开关、静默窗口内已结束 step 数下限、工具调用数须超过的值。 */
+export type ProgressIdleOptions = {
+  readonly enabled: boolean;
+  readonly steps: number;
+  readonly toolCalls: number;
+};
+
+/** 默认活动重发判定，与配置默认值一致。 */
+export const DEFAULT_PROGRESS_IDLE: ProgressIdleOptions = Object.freeze({
+  enabled: true,
+  steps: 4,
+  toolCalls: 10,
+});
+
+/** 由配置取出活动重发判定。 */
+export function progressIdleOptions(
+  config: Pick<
+    PluginConfig,
+    'progressReminderIdleEnabled' | 'progressReminderIdleSteps' | 'progressReminderIdleToolCalls'
+  >,
+): ProgressIdleOptions {
+  return {
+    enabled: config.progressReminderIdleEnabled,
+    steps: config.progressReminderIdleSteps,
+    toolCalls: config.progressReminderIdleToolCalls,
+  };
+}
+
+/** 进度提醒在表层缺失，或开启活动重发且静默窗口达到 idle 阈值时补发。 */
 function progressReminderTrigger(
   surface: readonly SessionEvent[],
   events: readonly SessionEvent[],
   messages: readonly UserMessage[],
+  idle: ProgressIdleOptions,
 ): 'missing' | 'activity' | undefined {
   if (messages.some((message) => message.source.kind === PROGRESS_REMINDER_SOURCE_KIND))
     return undefined;
@@ -67,6 +100,7 @@ function progressReminderTrigger(
       event.type === 'user/message' && event.data.source.kind === PROGRESS_REMINDER_SOURCE_KIND,
   );
   if (!present) return 'missing';
+  if (!idle.enabled) return undefined;
   if (messages.some((message) => message.source.kind === 'user')) return undefined;
 
   const ended = new Set<string>();
@@ -97,17 +131,18 @@ function progressReminderTrigger(
       }
     }
   }
-  return steps.size >= 4 && toolCalls > 10 ? 'activity' : undefined;
+  return steps.size >= idle.steps && toolCalls > idle.toolCalls ? 'activity' : undefined;
 }
 
 /**
  * 按表层与待输入消息补发提醒，追加到末尾且不修改入参。
- * 进度提醒按 kind 去重并检测活动窗口，活动达标时追加立刻记录要求。
+ * 进度提醒按 kind 去重并按 idle 检测活动窗口（缺省沿用默认阈值），活动达标时追加立刻记录要求。
  */
 export function ensureSystemReminders(
   session: Session,
   messages: readonly UserMessage[],
   reminders: readonly SystemReminder[],
+  idle: ProgressIdleOptions = DEFAULT_PROGRESS_IDLE,
 ): UserMessage[] {
   const result = [...messages];
   if (reminders.length === 0) return result;
@@ -117,7 +152,7 @@ export function ensureSystemReminders(
     return event === undefined ? [] : [event];
   });
   for (const reminder of reminders) {
-    const trigger = progressReminderTrigger(surface, events, result);
+    const trigger = progressReminderTrigger(surface, events, result, idle);
     if (trigger === undefined) continue;
     const progress =
       trigger === 'activity'
