@@ -12,7 +12,7 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
   };
 });
 
-import { buildCompressionPrompt } from '../src/compress-loop.ts';
+import { buildCompressionPrompt, REFLECT_COMPRESSION_PROMPT } from '../src/compress-loop.ts';
 import { historyFormatNote, isPluginOwnedSource, PLUGIN_SOURCE_KIND } from '../src/constants.ts';
 import { ensureModelReady } from '../src/embedding.ts';
 import { apply } from '../src/index.ts';
@@ -34,6 +34,9 @@ import {
   textBlock,
   toolCallBlock,
 } from './helpers.ts';
+
+/** 反思 pass 的 system：共享提示词追加反思合并约束。 */
+const REFLECT_SYSTEM = `${buildCompressionPrompt(true)}\n\n${REFLECT_COMPRESSION_PROMPT}`;
 
 /**
  * 构造一段成功完成压缩的工具轮脚本（供 llmStreamFactory 逐轮产出）：
@@ -918,7 +921,7 @@ describe('apply 接线（OM 反思压缩）', () => {
     apply(ctx, { reflectThresholdTokens: 1 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3);
-    expect(instructionText(ctx._llmCalls[0]?.options)).toBe(buildCompressionPrompt(true)); // 反思与观察共用同一套提示词
+    expect(instructionText(ctx._llmCalls[0]?.options)).toBe(REFLECT_SYSTEM); // 反思在共享提示词后追加反思合并约束
     // 压缩指令为反思表述（合并全部块），不含历史内容
     const taskText = inputText(ctx);
     expect(taskText).toContain('合并压缩');
@@ -963,7 +966,7 @@ describe('apply 接线（OM 反思压缩）', () => {
     apply(ctx, { reflectThresholdTokens: 1 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3);
-    expect(instructionText(ctx._llmCalls[0]?.options)).toBe(buildCompressionPrompt(true));
+    expect(instructionText(ctx._llmCalls[0]?.options)).toBe(REFLECT_SYSTEM);
     expect(session.surface.nodes.length).toBe(before - 1); // 两块合并为一条
     expect(latestHistoryText(session)).toContain('MERGED');
     expect(latestHistoryText(session)).not.toContain('X'.repeat(40)); // 全部旧块被替换
@@ -1108,8 +1111,8 @@ describe('apply 接线（OM 反思压缩）', () => {
     expect(ctx._llmCalls).toHaveLength(6);
     const firstText = instructionText(ctx._llmCalls[0]?.options);
     const secondText = instructionText(ctx._llmCalls[3]?.options);
-    // 两者共用同一套提示词；以压缩指令（数据源）区分反思/观察
-    expect(firstText).toBe(buildCompressionPrompt(true));
+    // 反思追加反思合并约束，观察只用共享提示词
+    expect(firstText).toBe(REFLECT_SYSTEM);
     expect(secondText).toBe(buildCompressionPrompt(true));
     const inputOf = (call: unknown) =>
       String(

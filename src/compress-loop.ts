@@ -2,10 +2,10 @@
  * 工具驱动的压缩循环：以新会话方式直连 ctx.llm.stream()，模型通过 getHistory /
  * compressHistory / completeCompression 完成压缩，存在原始合法提问时加入重写工具。
  * 导出 runCompressionLoop / buildCompressionPrompt / buildCompressionTaskText /
- * ASK_COMPRESSION_PROMPT / CompressionLoopOptions / CompressionOutcome / CompressionStats / COMPRESSION_NUDGE_TEXT。
+ * REFLECT_COMPRESSION_PROMPT / ASK_COMPRESSION_PROMPT / CompressionLoopOptions / CompressionOutcome / CompressionStats / COMPRESSION_NUDGE_TEXT。
  *
  * - 首条 user 消息仅含压缩指令与 start/end 区间（buildCompressionTaskText），不含
- *   历史消息内容；共享压缩提示词作为 system
+ *   历史消息内容；共享压缩提示词作为 system，反思 pass 追加反思合并约束
  * - 每轮请求携带压缩工具 schemas（purpose='compaction'，maxTokens 沿用配置）；流经
  *   BlockAssembler 组装为 assistant 消息，工具执行结果以 tool-result 消息回填
  * - completeCompression 校验通过后立即停止（同轮后续工具调用不再执行），最终 <history>
@@ -66,7 +66,11 @@ export function buildCompressionPrompt(skipReasoning: boolean): string {
     '- 将具有关联性的 assistant 消息按内在逻辑连贯性划分为连续模块，聚合为区间压缩（start..end）',
     '- 单条重要的完整消息以 index 单独压缩',
     '- 压缩后的 assistant 消息内，应当描述**行为逻辑**，强调关键的**结论、产出和任务**；涉及到的具体文件保留完整路径',
-    '- 摘要粒度越往后越细：靠近末尾（最近）的消息保留更多细节，开头（较早）的消息简写。',
+    '- 摘要粒度按后续用途分配，与消息位置无关：',
+    '  - 未完成的任务、当前状态、待办与未解决的问题保留细节；涉及的文件写明最新状态。',
+    '  - 已完成的子任务只保留结果、决策及理由、排除的方案及原因。',
+    '  - 不可再生的信息不论早晚都要保留：用户提出的约束与偏好、做出的决策、报错原文、外部返回的关键数据、验证过的结论。',
+    '  - 可以低成本重新获取的内容（文件内容、命令输出、搜索结果）只记来源与要点。',
     '- <history> 条目正文以 CDATA 包裹，CDATA 内为逐字原样内容。',
     '- 工具调用条目为 <assistant index="N" type="toolcall" tool-name="…" callId="…">，内含 <tool-args>（调用参数 JSON）与 <tool-result>（工具返回内容）两个 CDATA 子元素。',
     '- 加载的 skill 以 <skill_content name="…" index="N"> 条目呈现，内含 <skill_resources> 与 <skill_instructions> 两段，内文为加载的 skill 内容，属于关键信息。仅在你明确判断该 skill 与后续任务无关时，压缩它；如果该 skill 与后续任务相关，或者你无法判断，不要压缩，**保持原文**。',
@@ -90,6 +94,12 @@ export function buildCompressionTaskText(
   }
   return `压缩完整消息区间 [${start}..${end}]：用 getHistory 查看条目，用 compressHistory 分批压缩 assistant 条目，完成后调用 completeCompression。`;
 }
+
+/** 反思合并的额外约束，只在反思 pass 注入。 */
+export const REFLECT_COMPRESSION_PROMPT = [
+  '【反思合并】',
+  '- 重新压缩已有摘要条目时，保留其中的不可再生信息，不要逐轮缩减。',
+].join('\n');
 
 /** 原始合法 ask 的处理约束，只在视图含待处理原始提问时注入。 */
 export const ASK_COMPRESSION_PROMPT = [
@@ -275,6 +285,7 @@ export async function runCompressionLoop(
     : COMPRESSION_TOOL_SCHEMAS;
   const system = [
     buildCompressionPrompt(options.skipReasoning),
+    ...(options.phase === 'reflect' ? [REFLECT_COMPRESSION_PROMPT] : []),
     ...(state.hasPendingAsks ? [ASK_COMPRESSION_PROMPT] : []),
   ].join('\n\n');
   const messages: Message[] = [makePluginUserMessage(options.taskText)];
