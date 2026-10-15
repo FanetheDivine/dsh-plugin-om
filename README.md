@@ -59,6 +59,7 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 | `compressReasoningEffort` | 模型默认值 | 思考等级 |
 | `compressSkipReasoning` | `true` | 是否忽略 reasoning |
 | `rateLimitWaitMs` | `60000` | 429 后的等待毫秒数，`0` 表示不等待 |
+| `recompressConcurrency` | `2` | 重压缩同时运行的上限，至少为 `1`，超出的排队 |
 | `modelDir` | DSH 共享目录 | 嵌入模型目录 |
 | `omEnabled` | `true` | 是否启用自动压缩，关闭后进度提醒也不再注入 |
 | `progressReminderEnabled` | `true` | 是否注入进度提醒，需同时开启 `omEnabled` |
@@ -134,7 +135,7 @@ src/
 └── client/                      # 浏览器客户端 bundle：压缩卡片与插件行配置
     ├── index.ts                 # 注册卡片、渲染器与行配置槽
     ├── om-config-controller.ts  # 宿主配置表单、草稿和原子保存
-    ├── OmConfigCard.tsx         # 十四项双语配置控件
+    ├── OmConfigCard.tsx         # 十九项双语配置控件
     ├── definition.ts            # 压缩卡片定义：生命周期事件、检查点替换与警告事件
     ├── OmCompactionCard.tsx     # 压缩结果与错误卡片，可跳转轨迹与诊断子会话
     ├── OmRecompressMenu.tsx     # 重压缩模型选择菜单，复用宿主会话模型目录

@@ -1,4 +1,4 @@
-/** WebUI 行配置表单：严格整数/布尔解析与 18 项草稿的宿主原子提交。 */
+/** WebUI 行配置表单：严格整数/布尔解析与 19 项草稿的宿主原子提交。 */
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store';
 import {
   type SettingsFieldSpec,
@@ -25,6 +25,7 @@ export const OM_CONFIG_FIELDS = [
   { name: 'compressReasoningEffort', kind: 'text' },
   { name: 'compressSkipReasoning', kind: 'boolean' },
   { name: 'rateLimitWaitMs', kind: 'integer' },
+  { name: 'recompressConcurrency', kind: 'integer' },
   { name: 'modelDir', kind: 'text' },
   { name: 'omEnabled', kind: 'boolean' },
   { name: 'progressReminderEnabled', kind: 'boolean' },
