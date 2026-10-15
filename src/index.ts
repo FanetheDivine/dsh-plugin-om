@@ -2,7 +2,7 @@
  * dsh-plugin-om 入口（tsdown 打包入口）：导出 name / inject / Config / apply。
  * apply 维护 recall 工具（含语义增强），处理 Loader volatile 配置提交，
  * 并接线 agent/pre-step 自动压缩（先反思后观察，仅主会话生效）与提醒补发
- * （进度与完整消息定义的 system-reminder 用户消息，见 system-reminder.ts）。压缩走工具驱动的压缩循环（模型经 getHistory /
+ * （进度提醒的 system-reminder 用户消息，见 system-reminder.ts）。压缩走工具驱动的压缩循环（模型经 getHistory /
  * compressHistory / completeCompression 工具完成，见 compress-loop.ts）；最终失败
  * （连续无工具调用 / 请求级错误）时拒绝本 step 中断当前 turn（signal 中止除外），
  * 主会话日志记录失败原因与诊断子会话 sessionId（完整循环会话由 compaction-log.ts
@@ -10,7 +10,7 @@
  * compaction-log.ts / recall.ts / semantic-recall.ts。
  */
 import type {} from '@deepseek-ai/cordis-plugin-loader';
-import { type CompressPassResult, hasHistoryBlock, maybeCompress } from './compress.ts';
+import { type CompressPassResult, maybeCompress } from './compress.ts';
 import { Config, currentConfig } from './config.ts';
 import { ensureModelReady, getEmbedder } from './embedding.ts';
 import { makeLogger } from './logger.ts';
@@ -111,9 +111,8 @@ export function apply(ctx: Context, config?: unknown): void {
       return { kind: 'reject' };
     }
     const decision = await next();
-    // 压缩后按表层与待输入消息检查：进度提醒按活动窗口重发，定义提醒缺失或过期时补发。
-    const hasHistory = hasHistoryBlock(agent.session);
-    const reminders = activeSystemReminders(currentConfig(config), hasHistory);
+    // 压缩后按表层与待输入消息检查：进度提醒缺失或按活动窗口重发。
+    const reminders = activeSystemReminders(currentConfig(config));
     if (
       decision.kind === 'enter' &&
       !signal.aborted &&

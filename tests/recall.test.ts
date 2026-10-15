@@ -17,10 +17,10 @@ import {
 } from './helpers.ts';
 
 describe('recall 工具', () => {
-  it('描述说明 index 用法，完整消息定义交由主会话 system-reminder 提供', () => {
+  it('描述说明 index 用法并携带完整消息定义', () => {
     const { description } = buildRecallTool();
     expect(description).toContain('index');
-    expect(description).not.toContain(COMPLETE_MESSAGE_DEFINITION);
+    expect(description).toContain(COMPLETE_MESSAGE_DEFINITION);
   });
 
   it('start+end 返回区间内全部完整消息（含代码与结果），输出标 index/类型', async () => {

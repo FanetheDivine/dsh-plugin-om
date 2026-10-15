@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import { COMPLETE_MESSAGE_DEFINITION } from './constants.ts';
 import { parametersFromZod } from './json-schema.ts';
 import { indexCompleteMessages, type PrunerLike } from './log-index.ts';
 import {
@@ -99,12 +100,10 @@ export function parseRecallArgs(raw: unknown, semantic = false): RecallArgs {
 }
 
 /** 基础工具描述。 */
-const RECALL_DESCRIPTION =
-  '在你需要查看历史消息时调用。此工具按 index 区间精确返回区间内全部完整消息的内容。';
+const RECALL_DESCRIPTION = `在你需要查看历史消息时调用。${COMPLETE_MESSAGE_DEFINITION}此工具按 index 区间精确返回区间内全部完整消息的内容。`;
 
 /** 语义增强启用时的工具描述。 */
-const ENHANCED_RECALL_DESCRIPTION =
-  '在你需要查看历史消息时调用。两种用法：1) 给出 start 与 end 或 offset，按 index 区间精确返回区间内全部完整消息的内容；2) 给出 query，按自然语言含义检索最符合的完整消息，默认全量搜索，可用 start/end/offset 限定区间。注意：query 只匹配文本。';
+const ENHANCED_RECALL_DESCRIPTION = `在你需要查看历史消息时调用。${COMPLETE_MESSAGE_DEFINITION}两种用法：1) 给出 start 与 end 或 offset，按 index 区间精确返回区间内全部完整消息的内容；2) 给出 query，按自然语言含义检索最符合的完整消息，默认全量搜索，可用 start/end/offset 限定区间。注意：query 只匹配文本。`;
 
 /** recall 构建选项。 */
 export type RecallToolOptions = {
