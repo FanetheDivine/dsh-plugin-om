@@ -351,7 +351,7 @@ describe('recall 语义增强', () => {
     const tool = buildRecallTool({ semantic: { embedder: fakeEmbedder() } });
     expect(tool.description).toContain('只匹配文本');
     expect(tool.parameters).toHaveProperty('properties.query');
-    expect(tool.description).not.toContain(COMPLETE_MESSAGE_DEFINITION);
+    expect(tool.description).toContain(COMPLETE_MESSAGE_DEFINITION);
     const events = [
       {
         type: 'user/message',

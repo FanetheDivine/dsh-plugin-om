@@ -805,8 +805,8 @@ describe('buildFinalBlock', () => {
     expect(plainBlock).not.toContain('表示用户消息原文');
     expect(plainBlock).not.toContain('表示未压缩的原始 skill');
     expect(plainBlock).not.toContain('表示向用户提问');
-    // 完整消息定义由主会话的 system-reminder 提供，块顶注释不重复
-    expect(fullBlock).not.toContain(COMPLETE_MESSAGE_DEFINITION);
-    expect(plainBlock).not.toContain(COMPLETE_MESSAGE_DEFINITION);
+    // 完整消息定义始终位于块顶注释
+    expect(fullBlock).toContain(COMPLETE_MESSAGE_DEFINITION);
+    expect(plainBlock).toContain(COMPLETE_MESSAGE_DEFINITION);
   });
 });

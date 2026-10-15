@@ -1,4 +1,4 @@
-// 真实 Cordis、Loader 与 Agent 集成测试：验证进度提醒与完整消息定义提醒作为 system-reminder
+// 真实 Cordis、Loader 与 Agent 集成测试：验证进度提醒作为 system-reminder
 // 用户消息进入请求，且不修改系统提示词；覆盖开关、召回工具描述、子会话、热更新、重复请求、
 // 工具 step 自动重发、文本重置、压缩遮蔽与卸载行为。
 import { Context } from '@deepseek-ai/cordis';
@@ -28,11 +28,7 @@ import { describe, expect, it } from 'vitest';
 import type { PluginConfig } from '../src/config.ts';
 import { COMPLETE_MESSAGE_DEFINITION } from '../src/constants.ts';
 import { apply, Config, inject, name } from '../src/index.ts';
-import {
-  DEFINITION_REMINDER,
-  PROGRESS_REMINDER,
-  type SystemReminder,
-} from '../src/system-reminder.ts';
+import { PROGRESS_REMINDER, type SystemReminder } from '../src/system-reminder.ts';
 
 /** 回放指定顶层内容，工具调用由真实 ToolRuntime 接手。 */
 function modelReply(content: ContentBlock[]): StreamChunk[] {
@@ -196,22 +192,12 @@ function requestReminders(request: GenerateOptions, reminder = PROGRESS_REMINDER
   ).length;
 }
 
-/** 请求中进度提醒与定义提醒各自的数量。 */
-function bothReminders(request: GenerateOptions): [number, number] {
-  return [requestReminders(request), requestReminders(request, DEFINITION_REMINDER)];
-}
-
 /** 会话日志中指定提醒消息事件的数量（缺省为进度提醒）。 */
 function loggedReminders(agent: Agent, reminder: SystemReminder = PROGRESS_REMINDER): number {
   return agent.session
     .snapshotEvents()
     .filter((event) => event.type === 'user/message' && event.data.source.kind === reminder.kind)
     .length;
-}
-
-/** 会话日志中进度提醒与定义提醒各自的数量。 */
-function bothLogged(agent: Agent): [number, number] {
-  return [loggedReminders(agent), loggedReminders(agent, DEFINITION_REMINDER)];
 }
 
 /** 交给真实 inbox 运行一轮，并读取该 Agent 新产生的唯一模型请求。 */
@@ -276,8 +262,8 @@ describe('system-reminder 的真实宿主集成', () => {
       expectSystemUntouched(await assembledSystem(app, handle.agent));
       const request = await runTurn(adapter, handle.agent, '请完成一个简短任务。');
       expectSystemUntouched(requestSystem(request));
-      expect(bothReminders(request)).toEqual([1, 0]);
-      expect(bothLogged(handle.agent)).toEqual([1, 0]);
+      expect(requestReminders(request)).toBe(1);
+      expect(loggedReminders(handle.agent)).toBe(1);
     } finally {
       await handle.dispose();
       await app.fiber.dispose();
@@ -290,58 +276,24 @@ describe('system-reminder 的真实宿主集成', () => {
       expectSystemUntouched(await assembledSystem(app, handle.agent));
       const request = await runTurn(adapter, handle.agent, '请完成一个简短任务。');
       expectSystemUntouched(requestSystem(request));
-      expect(bothReminders(request)).toEqual([0, 0]);
-      expect(bothLogged(handle.agent)).toEqual([0, 0]);
+      expect(requestReminders(request)).toBe(0);
+      expect(loggedReminders(handle.agent)).toBe(0);
     } finally {
       await handle.dispose();
       await app.fiber.dispose();
     }
   });
 
-  it('recall 关闭但在压缩产生 history 块后，下一轮自动补发定义提醒', async () => {
-    const { app, adapter, handle } = await stackPromptHost(true, false);
-    try {
-      // 第一轮：无 history 块，仅注入进度提醒
-      const req1 = await runTurn(adapter, handle.agent, '第一轮任务。');
-      expect(bothReminders(req1)).toEqual([1, 0]);
-      expect(bothLogged(handle.agent)).toEqual([1, 0]);
-
-      // 模拟压缩：以替换检查点遮蔽包含第一轮消息的区间并写入 <history> 块
-      const session = handle.agent.session;
-      const nodes = [...session.surface.nodes];
-      const first = nodes[1];
-      const last = nodes[nodes.length - 1];
-      if (first === undefined || last === undefined) throw new Error('表层缺少可遮蔽区间');
-      session.append(
-        'user/message',
-        createUserMessage({
-          content: [{ type: 'text', text: '<history tip="历史摘要">第 0 条用户消息</history>' }],
-          source: { kind: 'plugin:dsh-plugin-om' },
-        }),
-        {
-          surfaceOp: { op: 'replace', startSeq: first, endSeq: last },
-          sourceEventSeqs: nodes.slice(1),
-        },
-      );
-
-      // 第二轮：表层已有 history 块，由于第一轮的进度提醒被遮蔽，本轮补发进度提醒和定义提醒
-      const req2 = await runTurn(adapter, handle.agent, '第二轮任务。');
-      expect(bothReminders(req2)).toEqual([1, 1]);
-      expect(bothLogged(handle.agent)).toEqual([2, 1]);
-    } finally {
-      await handle.dispose();
-      await app.fiber.dispose();
-    }
-  });
-
-  it('OM 关闭但 recall 启用时只注入定义提醒，工具描述不再重复定义', async () => {
+  it('OM 关闭但 recall 启用时不注入提醒，recall 描述携带完整消息定义', async () => {
     const { app, adapter, handle } = await stackPromptHost(false, true);
     try {
       const request = await runTurn(adapter, handle.agent, '回看之前的消息。');
-      expect(bothReminders(request)).toEqual([0, 1]);
+      expect(requestReminders(request)).toBe(0);
+      expect(loggedReminders(handle.agent)).toBe(0);
+      expect(JSON.stringify(request.messages)).not.toContain(COMPLETE_MESSAGE_DEFINITION);
       const recall = request.tools?.find((tool) => tool.name === 'recall');
       expect(recall?.description).toContain('index');
-      expect(JSON.stringify(request.tools)).not.toContain(COMPLETE_MESSAGE_DEFINITION);
+      expect(recall?.description).toContain(COMPLETE_MESSAGE_DEFINITION);
     } finally {
       await handle.dispose();
       await app.fiber.dispose();
@@ -363,9 +315,7 @@ describe('system-reminder 的真实宿主集成', () => {
         .map((seq) => session.eventAt(seq))
         .filter(
           (event) =>
-            event?.type === 'user/message' &&
-            (event.data.source.kind === PROGRESS_REMINDER.kind ||
-              event.data.source.kind === DEFINITION_REMINDER.kind),
+            event?.type === 'user/message' && event.data.source.kind === PROGRESS_REMINDER.kind,
         );
       expect(visible).toHaveLength(1);
     } finally {
@@ -374,7 +324,7 @@ describe('system-reminder 的真实宿主集成', () => {
     }
   });
 
-  it('启用 recall 时两条提醒均是持久化在会话表层中的用户消息，位于用户任务之后', async () => {
+  it('启用 recall 时进度提醒仍是持久化在会话表层中的用户消息，位于用户任务之后', async () => {
     const { app, adapter, handle } = await stackPromptHost(true, true);
     try {
       const request = await runTurn(adapter, handle.agent, '请完成一个简短任务。');
@@ -383,21 +333,15 @@ describe('system-reminder 的真实宿主集成', () => {
         .map((message) =>
           message.content.map((block) => (block.type === 'text' ? block.text : '')).join(''),
         );
-      expect(userTexts).toEqual([
-        '请完成一个简短任务。',
-        PROGRESS_REMINDER.text,
-        DEFINITION_REMINDER.text,
-      ]);
+      expect(userTexts).toEqual(['请完成一个简短任务。', PROGRESS_REMINDER.text]);
       const session = handle.agent.session;
       const visible = session.surface.nodes
         .map((seq) => session.eventAt(seq))
         .filter(
           (event) =>
-            event?.type === 'user/message' &&
-            (event.data.source.kind === PROGRESS_REMINDER.kind ||
-              event.data.source.kind === DEFINITION_REMINDER.kind),
+            event?.type === 'user/message' && event.data.source.kind === PROGRESS_REMINDER.kind,
         );
-      expect(visible).toHaveLength(2);
+      expect(visible).toHaveLength(1);
     } finally {
       await handle.dispose();
       await app.fiber.dispose();
@@ -416,7 +360,7 @@ describe('system-reminder 的真实宿主集成', () => {
       expect(await assembledSystem(app, handle.agent)).toBe('完整系统提示词预设');
       const request = await runTurn(adapter, handle.agent, '按完整预设执行任务。');
       expect(requestSystem(request)).toBe('完整系统提示词预设');
-      expect(bothReminders(request)).toEqual([1, 1]);
+      expect(requestReminders(request)).toBe(1);
     } finally {
       await handle.dispose();
       await app.fiber.dispose();
@@ -440,10 +384,10 @@ describe('system-reminder 的真实宿主集成', () => {
       expect(child.agent.session.header.origin).toBe('subagent');
       expect(child.agent.session.header.parentSession).toBe(handle.agent.session.id);
       const childRequest = await runTurn(adapter, child.agent, '执行委派任务。');
-      expect(bothReminders(childRequest)).toEqual([0, 0]);
-      expect(bothLogged(child.agent)).toEqual([0, 0]);
+      expect(requestReminders(childRequest)).toBe(0);
+      expect(loggedReminders(child.agent)).toBe(0);
       const mainRequest = await runTurn(adapter, handle.agent, '汇总主会话任务。');
-      expect(bothReminders(mainRequest)).toEqual([1, 1]);
+      expect(requestReminders(mainRequest)).toBe(1);
     } finally {
       await child?.dispose();
       await handle.dispose();
@@ -472,8 +416,8 @@ describe('system-reminder 的真实宿主集成', () => {
           const request = await runTurn(adapter, handle.agent, `第 ${index + 1} 轮任务。`);
           expectSystemUntouched(requestSystem(request));
           const count = everEnabled ? 1 : 0;
-          expect(bothReminders(request)).toEqual([count, 1]);
-          expect(bothLogged(handle.agent)).toEqual([count, 1]);
+          expect(requestReminders(request)).toBe(count);
+          expect(loggedReminders(handle.agent)).toBe(count);
         }
       } finally {
         await handle.dispose();
@@ -482,14 +426,14 @@ describe('system-reminder 的真实宿主集成', () => {
     },
   );
 
-  it('同一主会话多轮请求每种提醒只保留一条', async () => {
+  it('同一主会话多轮请求进度提醒只保留一条', async () => {
     const { app, adapter, handle } = await stackPromptHost(true, true);
     try {
       for (let index = 0; index < 3; index += 1) {
         const request = await runTurn(adapter, handle.agent, `重复任务 ${index}。`);
-        expect(bothReminders(request)).toEqual([1, 1]);
+        expect(requestReminders(request)).toBe(1);
       }
-      expect(bothLogged(handle.agent)).toEqual([1, 1]);
+      expect(loggedReminders(handle.agent)).toBe(1);
     } finally {
       await handle.dispose();
       await app.fiber.dispose();
@@ -518,10 +462,7 @@ describe('system-reminder 的真实宿主集成', () => {
       expect(adapter.calls.map((request) => requestReminders(request))).toEqual(
         Array.from({ length: script.length }, () => 1),
       );
-      expect(
-        adapter.calls.map((request) => requestReminders(request, DEFINITION_REMINDER)),
-      ).toEqual(Array.from({ length: script.length }, () => 1));
-      expect(bothLogged(handle.agent)).toEqual([3, 1]);
+      expect(loggedReminders(handle.agent)).toBe(3);
     } finally {
       await handle.dispose();
       await app.fiber.dispose();
@@ -546,7 +487,7 @@ describe('system-reminder 的真实宿主集成', () => {
       expect(adapter.calls.map((request) => requestReminders(request, urgentReminder))).toEqual([
         0, 0, 0, 0, 0, 1,
       ]);
-      expect(bothLogged(handle.agent)).toEqual([2, 1]);
+      expect(loggedReminders(handle.agent)).toBe(2);
     } finally {
       await handle.dispose();
       await app.fiber.dispose();
@@ -577,7 +518,7 @@ describe('system-reminder 的真实宿主集成', () => {
       expect(adapter.calls.map((request) => requestReminders(request, urgentReminder))).toEqual([
         0, 0, 0, 0, 0, 0, 0, 1,
       ]);
-      expect(bothLogged(handle.agent)).toEqual([2, 1]);
+      expect(loggedReminders(handle.agent)).toBe(2);
     } finally {
       await handle.dispose();
       await app.fiber.dispose();
@@ -612,8 +553,7 @@ describe('system-reminder 的真实宿主集成', () => {
         const request = await runTurn(adapter, handle.agent, `保留旧提醒的任务 ${index}。`);
         expectSystemUntouched(requestSystem(request));
         expect(requestReminders(request, previousReminder)).toBe(1);
-        expect(bothReminders(request)).toEqual([0, 1]);
-        expect(bothLogged(handle.agent)).toEqual([1, 1]);
+        expect(loggedReminders(handle.agent)).toBe(1);
       }
     } finally {
       await handle.dispose();
@@ -629,9 +569,7 @@ describe('system-reminder 的真实宿主集成', () => {
       const nodes = [...session.surface.nodes];
       const reminderSeq = nodes.find((seq) => {
         const event = session.eventAt(seq);
-        return (
-          event?.type === 'user/message' && event.data.source.kind === DEFINITION_REMINDER.kind
-        );
+        return event?.type === 'user/message' && event.data.source.kind === PROGRESS_REMINDER.kind;
       });
       if (reminderSeq === undefined) throw new Error('第一轮后表层缺少提醒');
       // 与 OM 压缩一致：以替换检查点遮蔽包含提醒的区间（节点 0 是系统提示词，不可替换）
@@ -649,8 +587,8 @@ describe('system-reminder 的真实宿主集成', () => {
         },
       );
       const request = await runTurn(adapter, handle.agent, '第二轮任务。');
-      expect(bothReminders(request)).toEqual([1, 1]);
-      expect(bothLogged(handle.agent)).toEqual([2, 2]);
+      expect(requestReminders(request)).toBe(1);
+      expect(loggedReminders(handle.agent)).toBe(2);
     } finally {
       await handle.dispose();
       await app.fiber.dispose();
@@ -661,14 +599,14 @@ describe('system-reminder 的真实宿主集成', () => {
     const { app, adapter, entry, handle } = await stackPromptHost(true, true);
     try {
       const before = await runTurn(adapter, handle.agent, '插件卸载前的任务。');
-      expect(bothReminders(before)).toEqual([1, 1]);
+      expect(requestReminders(before)).toBe(1);
       const fiber = entry.fiber;
       if (!fiber) throw new Error('缺少待卸载的 OM 插件 fiber');
       app.loader.remove(entry.id);
       await fiber.dispose();
       const after = await runTurn(adapter, handle.agent, '插件卸载后的任务。');
-      expect(bothReminders(after)).toEqual([1, 1]);
-      expect(bothLogged(handle.agent)).toEqual([1, 1]);
+      expect(requestReminders(after)).toBe(1);
+      expect(loggedReminders(handle.agent)).toBe(1);
     } finally {
       await handle.dispose();
       await app.fiber.dispose();
