@@ -1,7 +1,8 @@
 /**
  * 准备压缩质量评估数据：定位主会话的压缩日志，按区间分组，导出盲化变体、原文、后续轨迹与规则。
  *
- * 用法：node prepare.ts --session <主会话 id 或前缀> [--range A..B] [--out 目录] [--seed N] [--after-max N]
+ * 用法：node prepare.ts --session <主会话 id 或前缀> [--range A..B] [--phase observe|reflect]
+ *       [--out 目录] [--seed N] [--after-max N]
  * 产出：V*.xml、source.xml、after.md、rules.md、_blind_key.json、meta.json。
  */
 
@@ -28,7 +29,7 @@ interface Usage {
 interface EventData {
   label?: string;
   content?: Content[];
-  message?: { content: Content[]; toolCallId?: string };
+  message?: { content: Content[]; toolCallId?: string; isError?: boolean };
   usage?: Usage;
   callId?: string;
   name?: string;
@@ -52,15 +53,22 @@ interface HistoryArgs {
   end?: number;
 }
 
+/** 压缩阶段：观察、反思，或旧日志中的未知阶段。 */
+export type Phase = 'observe' | 'reflect' | 'unknown';
+
 /** 单个压缩日志的解析结果。 */
 export interface CompactionLog {
   id: string;
   parent: string | undefined;
   range: [number, number] | undefined;
+  phase: Phase;
+  failed: boolean;
   model: string;
   effort: string;
   recompress: boolean;
   wall_sec: number;
+  /** 逐轮模型请求耗时之和（秒），不含限流等待。 */
+  model_sec: number;
   requests: number;
   tokens_in: number;
   tokens_out: number;
@@ -72,7 +80,15 @@ export interface CompactionLog {
 /** 盲化映射中记录的变体信息。 */
 export type BlindEntry = Pick<
   CompactionLog,
-  'id' | 'model' | 'effort' | 'recompress' | 'wall_sec' | 'requests' | 'tokens_in' | 'tokens_out'
+  | 'id'
+  | 'model'
+  | 'effort'
+  | 'recompress'
+  | 'wall_sec'
+  | 'model_sec'
+  | 'requests'
+  | 'tokens_in'
+  | 'tokens_out'
 >;
 
 /** 位置分段名。 */
@@ -85,8 +101,8 @@ export type Buckets = Record<Position, [number, number]>;
 const SESSIONS = join(homedir(), '.dsh', 'sessions');
 /** 压缩指令中的区间。 */
 const RANGE_RE = /区间 \[(\d+)\.\.(\d+)\]/;
-/** 压缩日志尾部的模型说明。 */
-const MODEL_RE = /压缩使用模型 (\S+?)（(\w+)）/;
+/** 压缩日志尾部的模型说明；思考等级可为中文（如「默认思考等级」）。 */
+const MODEL_RE = /压缩使用模型 (\S+?)（([^）]+)）/;
 
 /** 读取会话日志：多帧 zstd 追加写入或已解压 jsonl。 */
 export function loadLog(path: string): SessionEvent[] {
@@ -107,13 +123,19 @@ function logFile(sessionDir: string): string {
   return join(sessionDir, name);
 }
 
+/** 会话 id 规范化：parentSession 带 session- 前缀，目录名与头 id 为裸 uuid。 */
+export function bareId(id: string): string {
+  return id.replace(/^session-/, '');
+}
+
 /** 在全部工作区中按 id 前缀定位主会话目录。 */
 function findMain(prefix: string): string {
+  const p = bareId(prefix);
   const hits = readdirSync(SESSIONS).flatMap((ws) => {
     const dir = join(SESSIONS, ws);
     if (!statSync(dir).isDirectory()) return [];
     return readdirSync(dir)
-      .filter((d) => d.includes(prefix) && !d.startsWith('om-compaction-log'))
+      .filter((d) => bareId(d).startsWith(p) && !d.startsWith('om-compaction-log'))
       .map((d) => join(dir, d))
       .filter((d) => statSync(d).isDirectory());
   });
@@ -139,7 +161,21 @@ function resultsByCall(events: SessionEvent[]): Map<string, EventData> {
   return out;
 }
 
-/** 解析单个压缩日志：区间、模型、耗时、token、产物与原文视图。 */
+/** 逐轮模型请求耗时之和：step/start 到该轮 assistant/message，限流等待不计入。 */
+function modelSeconds(body: SessionEvent[]): number {
+  let ms = 0;
+  let start: number | undefined;
+  for (const e of body) {
+    if (e.type === 'step/start') start = e.time;
+    else if (e.type === 'assistant/message' && start !== undefined && typeof e.time === 'number') {
+      ms += e.time - start;
+      start = undefined;
+    }
+  }
+  return Math.round(ms / 100) / 10;
+}
+
+/** 解析单个压缩日志：阶段、区间、模型、耗时、token、产物与原文视图。 */
 export function parseLog(events: SessionEvent[]): CompactionLog {
   const [head, ...body] = events;
   if (!head?.id) throw new Error('日志缺少会话头');
@@ -154,26 +190,34 @@ export function parseLog(events: SessionEvent[]): CompactionLog {
   const usage = assistants.flatMap((e) => (e.data?.usage ? [e.data.usage] : []));
   const times = body.flatMap((e) => (typeof e.time === 'number' ? [e.time] : []));
   const res = resultsByCall(body);
-  const lastResult = body.filter((e) => e.type === 'tool/result').at(-1);
+  // 产物取 completeCompression 调用的 result；同轮后续调用会被补「未执行」记录，不能取最后一个 result
+  const cc = body.find(
+    (e) => e.type === 'tool/call' && e.data?.name === 'completeCompression' && e.data.callId,
+  );
+  const ccRes = cc?.data?.callId ? res.get(cc.data.callId) : undefined;
+  const product = ccRes && !ccRes.message?.isError ? textOf(ccRes.message?.content) : '';
   const views: [HistoryArgs, string][] = [];
   for (const e of body) {
     if (e.type !== 'tool/call' || e.data?.name !== 'getHistory' || !e.data.callId) continue;
     const r = res.get(e.data.callId);
-    if (r)
+    if (r && !r.message?.isError)
       views.push([JSON.parse(e.data.arguments || '{}') as HistoryArgs, textOf(r.message?.content)]);
   }
   return {
     id: head.id,
     parent: head.parentSession,
     range: rng ? [Number(rng[1]), Number(rng[2])] : undefined,
+    phase: label.includes('观察') ? 'observe' : label.includes('反思') ? 'reflect' : 'unknown',
+    failed: label.includes('失败日志'),
     model: model?.[1] ?? 'unknown',
     effort: model?.[2] ?? 'unknown',
     recompress: label.includes('重压缩'),
     wall_sec: times.length ? Math.round((Math.max(...times) - Math.min(...times)) / 100) / 10 : 0,
+    model_sec: modelSeconds(body),
     requests: usage.length,
     tokens_in: usage.reduce((s, u) => s + (u.inputTokens ?? 0), 0),
     tokens_out: usage.reduce((s, u) => s + (u.outputTokens ?? 0), 0),
-    product: textOf(lastResult?.data?.message?.content),
+    product,
     views,
     created: head.createdAt ?? 0,
   };
@@ -209,10 +253,9 @@ export function buildAfter(
   limit: number,
 ): { text: string; start: number } {
   const lastCall = [...source.matchAll(/callId="([^"]+)"/g)].at(-1)?.[1];
-  const found = lastCall
-    ? main.findIndex((e) => e.type === 'tool/call' && e.data?.callId === lastCall)
-    : -1;
-  const start = Math.max(found, 0);
+  if (!lastCall) throw new Error('source.xml 中没有 callId，无法定位后续轨迹起点');
+  const start = main.findIndex((e) => e.type === 'tool/call' && e.data?.callId === lastCall);
+  if (start < 0) throw new Error(`主会话中找不到区间末尾的工具调用 ${lastCall}`);
   const res = resultsByCall(main);
   const out: string[] = [];
   let size = 0;
@@ -270,6 +313,69 @@ export function shuffle<T>(items: T[], seed: number): T[] {
   return out;
 }
 
+/** 按「阶段|区间」分组。 */
+export function groupLogs(logs: CompactionLog[]): Map<string, CompactionLog[]> {
+  const groups = new Map<string, CompactionLog[]>();
+  for (const x of logs) {
+    const k = `${x.phase}|${x.range?.join('..') ?? '?'}`;
+    groups.set(k, [...(groups.get(k) ?? []), x]);
+  }
+  return groups;
+}
+
+/** 选中的评估组。 */
+export interface SelectedGroup {
+  phase: Phase;
+  lo: number;
+  hi: number;
+  logs: CompactionLog[];
+}
+
+/** 规范化 --phase 取值，接受中英文。 */
+function normPhase(v: string | undefined): Phase | undefined {
+  if (v === undefined) return undefined;
+  if (v === 'observe' || v === '观察') return 'observe';
+  if (v === 'reflect' || v === '反思') return 'reflect';
+  throw new Error(`--phase 仅支持 observe/reflect：${v}`);
+}
+
+/**
+ * 按 --range/--phase 选择评估组；缺省选变体最多（并列取最新）的组。
+ * 同一区间同时存在观察与反思日志时必须指定 --phase：两者输入不同，不可同组比较。
+ */
+export function selectGroup(
+  logs: CompactionLog[],
+  range?: string,
+  phaseArg?: string,
+): SelectedGroup {
+  const phase = normPhase(phaseArg);
+  const match = [...groupLogs(logs)].filter(([k, g]) => {
+    const [p, r] = k.split('|');
+    return g.length > 0 && (!range || r === range) && (!phase || p === phase);
+  });
+  if (!match.length)
+    throw new Error(
+      `没有匹配的压缩日志${range ? `（区间 ${range}${phase ? `，阶段 ${phase}` : ''}）` : ''}`,
+    );
+  if (range && !phase) {
+    const phases = new Set(match.map(([k]) => k.split('|')[0]));
+    if (phases.size > 1)
+      throw new Error(
+        `区间 [${range}] 同时有 ${[...phases].join('、')} 阶段日志，请用 --phase 指定`,
+      );
+  }
+  const latest = (g: CompactionLog[]) => Math.max(...g.map((x) => x.created));
+  const [, group] = match.reduce((a, b) =>
+    b[1].length > a[1].length || (b[1].length === a[1].length && latest(b[1]) > latest(a[1]))
+      ? b
+      : a,
+  );
+  const first = group.at(0);
+  if (!first?.range) throw new Error('选中的组缺少区间信息');
+  const [lo, hi] = first.range;
+  return { phase: first.phase, lo, hi, logs: group };
+}
+
 /** 写 UTF-8 文本文件。 */
 function write(dir: string, name: string, text: string): void {
   writeFileSync(join(dir, name), text, 'utf8');
@@ -281,6 +387,7 @@ function main(): void {
     options: {
       session: { type: 'string' },
       range: { type: 'string' },
+      phase: { type: 'string' },
       out: { type: 'string' },
       seed: { type: 'string', default: '20261015' },
       'after-max': { type: 'string', default: '60000' },
@@ -293,37 +400,32 @@ function main(): void {
   const mainEv = loadLog(logFile(mainDir));
   const mainHead = mainEv[0];
   if (!mainHead?.id) throw new Error('主会话缺少会话头');
-  const mainId = mainHead.id;
+  const mainId = bareId(mainHead.id);
   const logs = readdirSync(wsDir)
     .filter((d) => d.startsWith('om-compaction-log-'))
     .map((d) => parseLog(loadLog(logFile(join(wsDir, d)))))
-    .filter((x) => x.parent === mainId && x.range);
-  const groups = new Map<string, CompactionLog[]>();
-  for (const x of logs) {
-    const k = x.range?.join('..') ?? '';
-    groups.set(k, [...(groups.get(k) ?? []), x]);
-  }
-  if (!groups.size) throw new Error('该会话没有压缩日志');
-  for (const [k, g] of groups) {
+    .filter((x) => !x.failed && bareId(x.parent ?? '') === mainId && x.range);
+  if (!logs.length) throw new Error('该会话没有可用的压缩日志');
+  for (const g of groupLogs(logs).values()) {
+    const head = g.at(0);
+    if (!head) continue;
     console.log(
-      `区间 [${k}]：${g.length} 个变体 ${g.map((x) => `${x.model}(${x.effort})`).join('、')}`,
+      `区间 [${head.range?.join('..')}] ${head.phase}：${g.length} 个变体 ${g.map((x) => `${x.model}(${x.effort})`).join('、')}`,
     );
   }
-  const latest = (g: CompactionLog[]) => Math.max(...g.map((x) => x.created));
-  const rangeKey =
-    values.range ??
-    [...groups].reduce((a, b) =>
-      b[1].length > a[1].length || (b[1].length === a[1].length && latest(b[1]) > latest(a[1]))
-        ? b
-        : a,
-    )[0];
-  const group = groups.get(rangeKey);
-  if (!group) throw new Error(`区间 [${rangeKey}] 无压缩日志`);
-  const [lo, hi] = rangeKey.split('..').map(Number) as [number, number];
+  const sel = selectGroup(logs, values.range, values.phase);
+  const { lo, hi, logs: group } = sel;
+  for (const x of group) {
+    if (!x.product) throw new Error(`变体 ${x.id} 缺少 completeCompression 产物`);
+  }
 
   const out =
     values.out ??
-    join(mainHead.cwd ?? '.', '.session-snapshots', `eval-${mainId.slice(8, 16)}-${lo}-${hi}`);
+    join(
+      mainHead.cwd ?? '.',
+      '.session-snapshots',
+      `eval-${mainId.slice(8, 16)}-${sel.phase}-${lo}-${hi}`,
+    );
   mkdirSync(out, { recursive: true });
   const source = pickSource(group, lo, hi);
   write(out, 'source.xml', source);
@@ -332,8 +434,19 @@ function main(): void {
   shuffle(group, Number(values.seed)).forEach((x, i) => {
     const v = `V${i + 1}`;
     write(out, `${v}.xml`, blindProduct(x.product));
-    const { id, model, effort, recompress, wall_sec, requests, tokens_in, tokens_out } = x;
-    key[v] = { id, model, effort, recompress, wall_sec, requests, tokens_in, tokens_out };
+    const { id, model, effort, recompress, wall_sec, model_sec, requests, tokens_in, tokens_out } =
+      x;
+    key[v] = {
+      id,
+      model,
+      effort,
+      recompress,
+      wall_sec,
+      model_sec,
+      requests,
+      tokens_in,
+      tokens_out,
+    };
   });
   write(out, '_blind_key.json', JSON.stringify(key, null, 1));
 
@@ -350,6 +463,7 @@ function main(): void {
   const fill: Record<string, string> = {
     lo: String(lo),
     hi: String(hi),
+    phase: sel.phase === 'reflect' ? '反思' : sel.phase === 'observe' ? '观察' : '压缩',
     task: task ?? '（见 source.xml）',
     head: bk.head.join('–'),
     mid: bk.mid.join('–'),
@@ -362,6 +476,7 @@ function main(): void {
   );
   const meta = {
     session: mainId,
+    phase: sel.phase,
     range: [lo, hi],
     buckets: bk,
     variants: Object.keys(key),

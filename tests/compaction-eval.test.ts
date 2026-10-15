@@ -1,5 +1,6 @@
-// compaction-eval skill 脚本单元测试：多帧 zstd 日志读取、压缩日志解析（区间、模型、耗时、
-// token、原文视图）、原文视图选择、盲化产物、后续轨迹截断、区间三等分、可复现洗牌，
+// compaction-eval skill 脚本单元测试：多帧 zstd 日志读取、压缩日志解析（阶段、区间、模型、
+// 失败标记、逐轮模型耗时、token、completeCompression 产物、原文视图）、分组选择、原文视图
+// 选择、盲化产物、后续轨迹定位与截断、区间三等分、可复现洗牌，
 // 以及 aggregate 按分类加权、位置分段、无关压缩、耗时归一与凭据泄漏的综合评分。
 
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -14,14 +15,17 @@ import {
   weightedRatio,
 } from '../.agents/skills/compaction-eval/scripts/aggregate.ts';
 import {
+  bareId,
   blindProduct,
   buckets,
   buildAfter,
   type CompactionLog,
   loadLog,
+  type Phase,
   parseLog,
   pickSource,
   type SessionEvent,
+  selectGroup,
   shuffle,
 } from '../.agents/skills/compaction-eval/scripts/prepare.ts';
 
@@ -40,14 +44,24 @@ afterEach(() => {
 });
 
 /** 文本 content。 */
-const txt = (text: string) => [{ type: 'text', text }];
+const txt = (text: string): { type: 'text'; text: string }[] => [{ type: 'text', text }];
 
-/** 构造一个两次 getHistory、两轮 usage 的压缩日志。 */
+/**
+ * 构造一个两次 getHistory、两轮 usage 的压缩日志。
+ * 两轮 step/start→assistant/message 分别为 1s 与 0.5s，中间 1s 视为限流等待；
+ * completeCompression 的 result 用 message.toolCallId 关联（真实日志形态），
+ * 其后还有一个被补「未执行」记录的调用，产物必须取自 completeCompression。
+ */
 function compactionEvents(): SessionEvent[] {
   return [
     { type: 'session', id: 'om-compaction-log-x', parentSession: 'session-main', createdAt: 5 },
-    { type: 'subagent/descriptor', time: 1000, data: { label: 'OM 压缩会话记录（重压缩）' } },
+    {
+      type: 'subagent/descriptor',
+      time: 1000,
+      data: { label: 'OM 压缩会话记录（反思 · 2 轮 · 重压缩 p/glm-5）' },
+    },
     { type: 'user/message', time: 1000, data: { content: txt('压缩 区间 [0..9] 的消息') } },
+    { type: 'step/start', time: 1000 },
     {
       type: 'tool/call',
       time: 1200,
@@ -65,10 +79,32 @@ function compactionEvents(): SessionEvent[] {
       time: 2000,
       data: { message: { content: txt('ok') }, usage: { inputTokens: 10, outputTokens: 2 } },
     },
+    { type: 'step/start', time: 3000 },
+    {
+      type: 'tool/call',
+      time: 3000,
+      data: { callId: 'c3', name: 'completeCompression', arguments: '{}' },
+    },
     {
       type: 'tool/result',
       time: 3000,
-      data: { callId: 'c3', message: { content: txt('<history>产物</history>') } },
+      data: { message: { content: txt('<history>产物</history>'), toolCallId: 'c3' } },
+    },
+    {
+      type: 'tool/call',
+      time: 3000,
+      data: { callId: 'c4', name: 'getHistory', arguments: '{}' },
+    },
+    {
+      type: 'tool/result',
+      time: 3000,
+      data: {
+        message: {
+          content: txt('压缩循环未执行此工具调用'),
+          toolCallId: 'c4',
+          isError: true,
+        },
+      },
     },
     {
       type: 'assistant/message',
@@ -92,22 +128,80 @@ describe('prepare', () => {
     expect(loadLog(f).map((e) => e.type)).toEqual(['a', 'b', 'c']);
   });
 
-  it('parseLog 提取区间、模型、耗时、token、产物与视图', () => {
+  it('parseLog 提取阶段、区间、模型、耗时、token、产物与视图', () => {
     const log = parseLog(compactionEvents());
     expect(log).toMatchObject({
       id: 'om-compaction-log-x',
       parent: 'session-main',
+      phase: 'reflect',
+      failed: false,
       range: [0, 9],
       model: 'p/glm-5',
       effort: 'max',
       recompress: true,
       wall_sec: 2.5,
+      model_sec: 1.5,
       requests: 2,
       tokens_in: 30,
       tokens_out: 5,
       product: '<history>产物</history>',
     });
     expect(log.views.map(([, v]) => v)).toEqual(['part', 'full']);
+  });
+
+  it('parseLog 识别默认思考等级、失败日志与缺失产物', () => {
+    const ev = compactionEvents();
+    ev[1] = {
+      type: 'subagent/descriptor',
+      time: 1000,
+      data: { label: 'OM 压缩失败日志（观察 · 1 轮）' },
+    };
+    const info = ev.findLast((e) => e.type === 'assistant/message');
+    if (info?.data?.message)
+      info.data.message.content = txt('压缩使用模型 p/glm-5（默认思考等级），原始消息 100 字符');
+    for (const e of ev) {
+      if (e.data?.message?.toolCallId === 'c3') e.data.message.isError = true;
+    }
+    expect(parseLog(ev)).toMatchObject({
+      phase: 'observe',
+      failed: true,
+      model: 'p/glm-5',
+      effort: '默认思考等级',
+      product: '',
+    });
+  });
+
+  it('bareId 去除 parentSession 的 session- 前缀', () => {
+    expect(bareId('session-b011-4c92')).toBe('b011-4c92');
+    expect(bareId('b011-4c92')).toBe('b011-4c92');
+  });
+
+  it('selectGroup 按阶段分组，同区间多阶段需显式指定', () => {
+    const base = parseLog(compactionEvents());
+    const mk = (phase: Phase, created: number, range: [number, number]): CompactionLog => ({
+      ...base,
+      phase,
+      created,
+      range,
+    });
+    const logs = [
+      mk('observe', 1, [0, 9]),
+      mk('reflect', 2, [0, 9]),
+      mk('observe', 3, [10, 20]),
+      mk('observe', 4, [10, 20]),
+    ];
+    expect(() => selectGroup(logs, '0..9')).toThrow(/--phase/);
+    expect(selectGroup(logs, '0..9', 'reflect')).toMatchObject({ phase: 'reflect', lo: 0, hi: 9 });
+    expect(selectGroup(logs, '0..9', '反思').logs).toHaveLength(1);
+    expect(selectGroup(logs)).toMatchObject({ phase: 'observe', lo: 10, hi: 20 });
+    expect(selectGroup(logs, undefined, 'observe')).toMatchObject({
+      phase: 'observe',
+      lo: 10,
+      hi: 20,
+    });
+    expect(selectGroup(logs, undefined, 'observe').logs).toHaveLength(2);
+    expect(() => selectGroup(logs, undefined, 'x')).toThrow(/observe\/reflect/);
+    expect(() => selectGroup(logs, '30..40')).toThrow(/没有匹配/);
   });
 
   it('pickSource 优先覆盖全区间的原始压缩视图', () => {
@@ -143,6 +237,12 @@ describe('prepare', () => {
     expect(text).toContain('[TOOL click]');
     expect(text).not.toContain('不应出现');
     expect(text).toContain('已截断');
+  });
+
+  it('buildAfter 定位不到区间末尾调用时报错', () => {
+    const main: SessionEvent[] = [{ type: 'session', id: 'm' }];
+    expect(() => buildAfter(main, '没有 callId', 60)).toThrow(/callId/);
+    expect(() => buildAfter(main, '<a callId="nope">', 60)).toThrow(/nope/);
   });
 
   it('buckets 三等分区间且首尾相接', () => {
