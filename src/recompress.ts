@@ -18,7 +18,6 @@
 import type { CommandDefinition } from '@deepseek-ai/dsh-commands';
 
 import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm';
-import { formatKChars } from './compaction-log.ts';
 import { historyTextOf } from './compress.ts';
 import {
   buildCompressionTaskText,
@@ -28,6 +27,7 @@ import {
 } from './compress-loop.ts';
 import { buildObserveView, buildReflectView, type CompressionView } from './compress-view.ts';
 import { COMPACTION_ABORTED_ERROR } from './constants.ts';
+import { formatCompactCount } from './format.ts';
 import { makeLogger } from './logger.ts';
 import type {
   Agent,
@@ -248,7 +248,7 @@ function secondsText(durationMs: number): string {
 function describeResult(request: RecompressRequest, result: RecompressResult): string {
   const label = `${request.provider}/${request.model}(${request.reasoningEffort ?? '默认'})`;
   if (!result.ok) return `重压缩失败 ${label}：${result.error}`;
-  return `重压缩完成 ${label}，${formatKChars(result.originalChars)} → ${formatKChars(result.newChars)}，${secondsText(result.durationMs)}`;
+  return `重压缩完成 ${label}，${formatCompactCount(result.originalChars)} → ${formatCompactCount(result.newChars)}，${secondsText(result.durationMs)}`;
 }
 
 /** 构造 /om-recompress 命令定义；配置按调用时刻读取。 */

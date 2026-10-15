@@ -21,7 +21,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types';
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client';
 import type { CSSProperties, MouseEvent, ReactNode } from 'react';
 import { memo, useState } from 'react';
-import { formatCompactCount } from './format.ts';
+import { formatCompactCount } from '../format.ts';
 import { OmRecompressMenu } from './OmRecompressMenu.tsx';
 import type { RecompressChoice, RecompressInjected } from './recompress-run.ts';
 

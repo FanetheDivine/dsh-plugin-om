@@ -1,5 +1,5 @@
 /**
- * 压缩卡片统计行的紧凑数字格式化。导出 formatCompactCount。
+ * 紧凑数字格式化（压缩卡片、重压缩记录与压缩日志共用）。零依赖，服务端与浏览器均可引用。导出 formatCompactCount。
  * <1k 原样；≥1k 用 k；≥1w（万）用 w；≥1M 用 M；保留 1 位小数并去掉末尾 .0。
  */
 export function formatCompactCount(value: number): string {

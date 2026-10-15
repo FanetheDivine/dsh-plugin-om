@@ -2,7 +2,6 @@
 // 失败、429 限流重试、流终态错误、signal 中止、usage 汇总与会话记录落盘。
 import type { GenerateOptions, ReasoningEffortId } from '@deepseek-ai/dsh-llm';
 import { describe, expect, it } from 'vitest';
-import { formatKChars } from '../src/compaction-log.ts';
 import {
   buildCompressionPrompt,
   buildCompressionTaskText,
@@ -16,6 +15,7 @@ import {
   COMPLETE_MESSAGE_DEFINITION,
   HISTORY_TAG,
 } from '../src/constants.ts';
+import { formatCompactCount } from '../src/format.ts';
 import { resetRateLimitGate } from '../src/rate-limit.ts';
 import { makeCtx, makeSession, roundChunks, throwingStream } from './helpers.ts';
 
@@ -402,7 +402,7 @@ describe('runCompressionLoop', () => {
     // 原始消息 = 视图条目文本 4 + 3 + 3 = 10；产物 = 最终 <history> 块长度
     expect(tail.text).toContain('压缩使用模型 test/test-model（high）');
     expect(tail.text).toContain('原始消息 10 字符');
-    expect(tail.text).toContain(`压缩产物 ${formatKChars(ok.text.length)} 字符`);
+    expect(tail.text).toContain(`压缩产物 ${formatCompactCount(ok.text.length)} 字符`);
     // 模型来源（非插件来源），时间线尾部为 step/start → assistant/message → step/end → turn/end
     expect(tail.source).toEqual({ kind: 'model', provider: 'test', model: 'test-model' });
     expect(

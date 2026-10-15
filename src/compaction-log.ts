@@ -27,6 +27,7 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-session-persistence';
 import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent';
 import type { CompressionStats } from './compress-loop.ts';
+import { formatCompactCount } from './format.ts';
 import { makeLogger } from './logger.ts';
 import type { Context, Session, SessionEvent, SessionEventMap } from './types.ts';
 import { type RoutedTarget, uuid } from './utils.ts';
@@ -56,13 +57,6 @@ export function compressionRecordLabel(
   return `OM 压缩${success ? '会话记录' : '失败日志'}（${phaseLabel(phase)} · ${rounds} 轮${retry}）`;
 }
 
-/** 字符数的 k 单位文本：不足 1000 原样，其余按 k 保留一位小数并去掉末尾 .0。 */
-export function formatKChars(value: number): string {
-  if (value < 1000) return String(value);
-  const text = String(Math.round((value / 1000) * 10) / 10);
-  return `${text.endsWith('.0') ? text.slice(0, -2) : text}k`;
-}
-
 /** 日志尾部的模型信息：展示文本与归因的 provider/model。 */
 export type CompressionInfo = {
   text: string;
@@ -82,9 +76,11 @@ export function compressionInfo(info: {
 }): CompressionInfo {
   const effort = info.reasoningEffort ?? '默认思考等级';
   const result =
-    info.resultChars === undefined ? '无（压缩失败）' : `${formatKChars(info.resultChars)} 字符`;
+    info.resultChars === undefined
+      ? '无（压缩失败）'
+      : `${formatCompactCount(info.resultChars)} 字符`;
   return {
-    text: `压缩使用模型 ${info.target.provider}/${info.target.model}（${effort}），原始消息 ${formatKChars(info.originalChars)} 字符，压缩产物 ${result}`,
+    text: `压缩使用模型 ${info.target.provider}/${info.target.model}（${effort}），原始消息 ${formatCompactCount(info.originalChars)} 字符，压缩产物 ${result}`,
     provider: info.target.provider,
     model: info.target.model,
   };
