@@ -9,7 +9,7 @@
 - 自动压缩主会话历史，并在摘要过大时再次合并
 - OM 启用时以 system-reminder 消息要求模型在本会话中用 1-2 句话记录中间结论与下一步规划，记录后继续任务，最终输出另行构建
 - 表层缺少同 kind 进度提醒时补发，不比较文本内容
-- 最近真实用户消息、非空模型文本或进度提醒之后，表层活动累计至少 4 个已结束模型 step 且超过 10 次工具调用时重发，并要求立刻输出记录
+- 最近真实用户消息、非空模型文本或进度提醒之后，开启 `progressReminderIdleEnabled` 且表层活动累计至少 `progressReminderIdleSteps`（默认 4）个已结束模型 step、工具调用超过 `progressReminderIdleToolCalls`（默认 10）次时重发，并要求立刻输出记录
 - 完整消息定义写在 history 块顶注释和 recall 工具描述中
 - 通过工具循环生成摘要，保留用户消息和未压缩内容；系统消息不占完整消息 index
 - 保留工具加载的 skill 原文，并在压缩前再次确认
@@ -60,7 +60,11 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 | `compressSkipReasoning` | `true` | 是否忽略 reasoning |
 | `rateLimitWaitMs` | `60000` | 429 后的等待毫秒数，`0` 表示不等待 |
 | `modelDir` | DSH 共享目录 | 嵌入模型目录 |
-| `omEnabled` | `true` | 是否启用自动压缩和进度提醒 |
+| `omEnabled` | `true` | 是否启用自动压缩，关闭后进度提醒也不再注入 |
+| `progressReminderEnabled` | `true` | 是否注入进度提醒，需同时开启 `omEnabled` |
+| `progressReminderIdleEnabled` | `true` | 长期无记录时是否重发进度提醒，关闭后仅在提醒缺失时补发 |
+| `progressReminderIdleSteps` | `4` | 无记录的已结束 step 数达到该值才重发，至少为 `1` |
+| `progressReminderIdleToolCalls` | `10` | 无记录期间工具调用数超过该值才重发，至少为 `0` |
 | `recallEnabled` | `true` | 是否启用原文召回 |
 | `semanticRecallEnabled` | `true` | 是否为 `recall` 启用语义增强，依赖 `recallEnabled` |
 | `debug` | 开发环境启用 | 是否输出步骤日志 |
