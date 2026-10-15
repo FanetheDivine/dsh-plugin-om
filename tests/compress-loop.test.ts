@@ -7,6 +7,7 @@ import {
   buildCompressionTaskText,
   COMPRESSION_NUDGE_TEXT,
   type CompressionLoopOptions,
+  REFLECT_COMPRESSION_PROMPT,
   runCompressionLoop,
 } from '../src/compress-loop.ts';
 import { buildReflectView, type CompressionView, type ViewEntry } from '../src/compress-view.ts';
@@ -308,6 +309,13 @@ describe('buildCompressionPrompt / buildCompressionTaskText', () => {
     expect(prompt).not.toContain('<askuserquestion');
   });
 
+  it('摘要粒度按后续用途分配：不按消息位置区分详略', () => {
+    const prompt = buildCompressionPrompt(true);
+    expect(prompt).not.toMatch(/越往后|靠近末尾|开头.*简写/);
+    expect(prompt).toContain('与消息位置无关');
+    expect(prompt).not.toContain(REFLECT_COMPRESSION_PROMPT); // 反思约束不进共享提示词
+  });
+
   it('压缩子会话看不到主会话提醒：提示词自带完整消息定义', () => {
     expect(buildCompressionPrompt(true)).toContain(COMPLETE_MESSAGE_DEFINITION);
   });
@@ -484,6 +492,20 @@ describe('runCompressionLoop', () => {
     expect(options.purpose).toBe('compaction');
     expect(options.maxTokens).toBe(123);
     expect(options.messages?.[0]?.content?.[0]?.text).toBe('压缩完整消息区间 [0..2]');
+  });
+
+  it('反思 pass 在 system 追加反思合并约束，观察 pass 不追加', async () => {
+    const systemOf = async (phase: 'observe' | 'reflect') => {
+      const ctx = makeCtx({
+        llmStreamFactory: () => roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] }),
+      });
+      await runCompressionLoop(ctx, makeSession(), loopOptions({ phase }));
+      return (ctx._llmCalls[0]?.options as { system?: string } | undefined)?.system;
+    };
+    expect(await systemOf('reflect')).toBe(
+      `${buildCompressionPrompt(true)}\n\n${REFLECT_COMPRESSION_PROMPT}`,
+    );
+    expect(await systemOf('observe')).toBe(buildCompressionPrompt(true));
   });
 
   it('requestOptions 条件携带 reasoningEffort：配置时透传，未配置时不带该键', async () => {
