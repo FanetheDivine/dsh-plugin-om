@@ -38,7 +38,7 @@ import type {
   PluginConfig,
   Session,
 } from './types.ts';
-import { isMainSession } from './utils.ts';
+import { isMainSession, seqsCharCount } from './utils.ts';
 
 /** 重压缩请求：被重放的 compaction 与目标模型。 */
 export type RecompressRequest = {
@@ -191,8 +191,12 @@ export async function recompress(
         request.reasoningEffort === undefined ? '' : ` · ${request.reasoningEffort}`
       }`,
     );
+    const originalChars =
+      summary.shadowedCharCount ??
+      (phase === 'observe' ? seqsCharCount(session, shadowedSeqs) : viewCharCount(view));
     const outcome = await runCompressionLoop(ctx, session, {
       view,
+      originalChars,
       phase,
       taskText: buildCompressionTaskText(phase, view.minIndex, view.maxIndex),
       target,
@@ -220,7 +224,7 @@ export async function recompress(
       text: outcome.text,
       phase,
       rounds: outcome.rounds,
-      originalChars: viewCharCount(view),
+      originalChars,
       newChars: outcome.text.length,
       durationMs: outcome.stats.durationMs,
       ...(outcome.recordSessionId === undefined

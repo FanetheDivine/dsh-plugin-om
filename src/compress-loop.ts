@@ -152,6 +152,8 @@ export type CompressionLoopOptions = {
   debug: boolean;
   /** 压缩请求的思考等级（已按目标模型校验）；undefined 用模型默认。 */
   reasoningEffort?: ReasoningEffortId;
+  /** 原始消息字符数（与 OM 卡片口径一致）；缺省按视图条目估算。 */
+  originalChars?: number;
   /** 换模型重压缩的目标模型（仅标记会话记录标题）；常规压缩缺省。 */
   retryTarget?: RoutedTarget;
   /** 取消信号。 */
@@ -189,16 +191,10 @@ export type CompressionFailure = {
 /** 循环结果（成功/失败二选一）。 */
 export type CompressionOutcome = CompressionSuccess | CompressionFailure;
 
-/** 视图原始消息字符数：非 reasoning 条目的文本与工具调用参数/结果之和。 */
+/** 视图原始消息字符数估算：非 reasoning 条目之和；工具调用条目的 text 已含参数与结果，不重复计入。 */
 export function viewCharCount(view: CompressionView): number {
   return view.entries.reduce(
-    (total, entry) =>
-      entry.kind === 'reasoning'
-        ? total
-        : total +
-          entry.text.length +
-          (entry.toolArgs?.length ?? 0) +
-          (entry.toolResult?.length ?? 0),
+    (total, entry) => (entry.kind === 'reasoning' ? total : total + entry.text.length),
     0,
   );
 }
@@ -305,7 +301,7 @@ export async function runCompressionLoop(
       debug: options.debug,
       info: compressionInfo({
         target: options.target,
-        originalChars: viewCharCount(options.view),
+        originalChars: options.originalChars ?? viewCharCount(options.view),
         ...(options.reasoningEffort === undefined
           ? {}
           : { reasoningEffort: options.reasoningEffort }),

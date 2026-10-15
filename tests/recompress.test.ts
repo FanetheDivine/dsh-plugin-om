@@ -122,6 +122,11 @@ describe('recompress：观察压缩重放', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.text).toContain('另一个模型的摘要');
+    // 原始字符数与 OM 卡片（compaction/summary.shadowedCharCount）同一口径
+    const summaryData = session.snapshotEvents().find((e) => e.type === 'compaction/summary')
+      ?.data as { shadowedCharCount?: number } | undefined;
+    expect(summaryData?.shadowedCharCount).toBeGreaterThan(0);
+    expect(result.originalChars).toBe(summaryData?.shadowedCharCount);
     expect(result.recordSessionId).toBe(ctx._createdSessions[0]?.id);
     expect(ctx._llmCalls[0]?.options).toMatchObject({
       provider: ALT.provider,
