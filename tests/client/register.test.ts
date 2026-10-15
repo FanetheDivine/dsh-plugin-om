@@ -43,7 +43,7 @@ function setup(extra: Record<string, unknown> = {}) {
   const ctx = new Proxy(base as Record<string, unknown>, {
     get: (target, prop) => {
       if (prop === 'get') return (name: string) => extra[name];
-      if (prop === 'modelDirectories' || prop === 'remote') {
+      if (prop === 'modelDirectories' || prop === 'remote' || prop === 'remote.commands') {
         throw new Error(`cannot get property "${prop}" without inject`);
       }
       return Reflect.get(target, prop);
@@ -86,7 +86,7 @@ describe('client apply', () => {
     });
     const { registrations } = setup({
       modelDirectories: { directoryFor },
-      remote: { commands: { execute } },
+      'remote.commands': { execute },
     });
     const entry = registrations.find((item) => item.key === 'om-compaction');
     const recompress = entry?.inject?.('s-1').recompress;

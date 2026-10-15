@@ -26,10 +26,10 @@ export function recompressFor(
     run: (compactionId, choice) =>
       submitRecompress(
         async (id, line) => {
-          // remote 同样未声明 inject：点击时才经 ctx.get 读取
-          const remote = ctx.get('remote');
-          if (remote === undefined) throw new Error('remote unavailable');
-          return remote.commands.execute(id as SessionId, line, []);
+          // remote.commands 同样未声明 inject：点击时才经 ctx.get 读取
+          const commands = ctx.get('remote.commands');
+          if (commands === undefined) throw new Error('remote.commands unavailable');
+          return commands.execute(id as SessionId, line, []);
         },
         sessionId,
         compactionId,
