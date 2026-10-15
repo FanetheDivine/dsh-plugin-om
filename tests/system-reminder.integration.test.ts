@@ -452,7 +452,9 @@ describe('system-reminder 的真实宿主集成', () => {
       ...counts.map((count, index) => toolStep(index + 1, count, ' \n\t ')),
       modelReply([{ type: 'text', text: '已完成所有工具检查。' }]),
     ];
-    const { app, adapter, handle, toolRuns } = await stackPromptHost(true, true, script);
+    const { app, adapter, handle, toolRuns } = await stackPromptHost(true, true, script, {
+      progressReminderIdleEnabled: true,
+    });
     try {
       handle.agent.followup(
         createUserMessage({
@@ -495,6 +497,7 @@ describe('system-reminder 的真实宿主集成', () => {
       modelReply([{ type: 'text', text: '已完成自定义阈值检查。' }]),
     ];
     const { app, adapter, handle, toolRuns } = await stackPromptHost(true, true, script, {
+      progressReminderIdleEnabled: true,
       progressReminderIdleSteps: 2,
       progressReminderIdleToolCalls: 1,
     });
@@ -576,6 +579,7 @@ describe('system-reminder 的真实宿主集成', () => {
       expect(await run('关闭重发时执行十二次检查。')).toEqual([0, 0, 0, 0, 0]);
       await entry.update({
         config: pluginConfig(true, true, {
+          progressReminderIdleEnabled: true,
           progressReminderIdleSteps: 2,
           progressReminderIdleToolCalls: 1,
         }),
@@ -593,7 +597,9 @@ describe('system-reminder 的真实宿主集成', () => {
       ...[3, 3, 3, 1, 1].map((count, index) => toolStep(index + 1, count)),
       modelReply([{ type: 'text', text: '已完成边界检查。' }]),
     ];
-    const { app, adapter, handle, toolRuns } = await stackPromptHost(true, true, script);
+    const { app, adapter, handle, toolRuns } = await stackPromptHost(true, true, script, {
+      progressReminderIdleEnabled: true,
+    });
     try {
       handle.agent.followup(
         createUserMessage({
@@ -624,7 +630,9 @@ describe('system-reminder 的真实宿主集成', () => {
       toolStep(7, 2),
       modelReply([{ type: 'text', text: '检查已全部完成。' }]),
     ];
-    const { app, adapter, handle, toolRuns } = await stackPromptHost(true, true, script);
+    const { app, adapter, handle, toolRuns } = await stackPromptHost(true, true, script, {
+      progressReminderIdleEnabled: true,
+    });
     try {
       handle.agent.followup(
         createUserMessage({

@@ -57,10 +57,10 @@ describe('宿主 Config 校验与 volatile 值', () => {
 });
 
 describe('进度提醒配置', () => {
-  it('默认值与既有行为一致', () => {
+  it('默认值：长期无记录时不重发', () => {
     const c = resolveConfig({});
     expect(c.progressReminderEnabled).toBe(true);
-    expect(c.progressReminderIdleEnabled).toBe(true);
+    expect(c.progressReminderIdleEnabled).toBe(false);
     expect(c.progressReminderIdleSteps).toBe(4);
     expect(c.progressReminderIdleToolCalls).toBe(10);
   });
