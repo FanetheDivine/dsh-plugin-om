@@ -57,7 +57,7 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   compressSkipReasoning: true,
   omEnabled: true,
   progressReminderEnabled: true,
-  progressReminderIdleEnabled: true,
+  progressReminderIdleEnabled: false,
   progressReminderIdleSteps: 4,
   progressReminderIdleToolCalls: 10,
   debug: false,
@@ -180,7 +180,10 @@ export function resolveConfig(raw?: unknown): Readonly<PluginConfig> {
   config.compressSkipReasoning = resolveBoolean(input.compressSkipReasoning, true);
   config.omEnabled = resolveBoolean(input.omEnabled, true);
   config.progressReminderEnabled = resolveBoolean(input.progressReminderEnabled, true);
-  config.progressReminderIdleEnabled = resolveBoolean(input.progressReminderIdleEnabled, true);
+  config.progressReminderIdleEnabled = resolveBoolean(
+    input.progressReminderIdleEnabled,
+    DEFAULT_CONFIG.progressReminderIdleEnabled,
+  );
   config.debug = resolveBoolean(input.debug, process.env.NODE_ENV !== 'production');
   config.recallEnabled = resolveBoolean(input.recallEnabled, true);
   // 语义增强依赖原文召回：recall 关闭时一并失效

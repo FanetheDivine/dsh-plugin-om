@@ -19,12 +19,19 @@ type Op =
   | { op: 'set'; path: readonly string[]; value: unknown }
   | { op: 'unset'; path: readonly string[] };
 
+/** 依赖项默认全部开启，使所有字段可见。 */
+const ENABLED = {
+  recallEnabled: true,
+  semanticRecallEnabled: true,
+  progressReminderIdleEnabled: true,
+};
+
 /** 仿真宿主 revision 栅栏及原子更新，仅在接受时广播。 */
 class HostForm {
   state: ConfigFormSnapshot<Section> = {
     status: 'ready',
-    value: { observeThresholdTokens: 35000, compressSkipReasoning: true },
-    base: { observeThresholdTokens: 35000, compressSkipReasoning: true },
+    value: { ...ENABLED, observeThresholdTokens: 35000, compressSkipReasoning: true },
+    base: { ...ENABLED, observeThresholdTokens: 35000, compressSkipReasoning: true },
     user: {},
     revision: 4,
     writable: true,
@@ -165,6 +172,8 @@ const control = (container: HTMLElement, name: string) => {
   if (!input) throw new Error(`missing control ${name}`);
   return input;
 };
+const field = (container: HTMLElement, name: string) =>
+  container.querySelector(`[data-om-field="${name}"]`);
 const type = (input: HTMLInputElement, text: string) => {
   act(() => {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -226,15 +235,14 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       'progressReminderIdleToolCalls',
     ];
     const textFields = ['compressProvider', 'compressModel', 'compressReasoningEffort', 'modelDir'];
+    // 依赖开关放在最后切换：先暂存被隐藏项的草稿，再关闭其上游
     const booleanFields = [
       'compressSkipReasoning',
       'omEnabled',
       'progressReminderEnabled',
       'progressReminderIdleEnabled',
-      'progressReminderIdleSteps',
-      'progressReminderIdleToolCalls',
-      'recallEnabled',
       'semanticRecallEnabled',
+      'recallEnabled',
       'debug',
     ];
     for (const key of numberFields) type(control(container, key), '42');
@@ -253,6 +261,17 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     expect(host.calls).toHaveLength(1);
     expect(host.calls[0]?.revision).toBe(4);
     expect(host.calls[0]?.ops).toHaveLength(18);
+    // 被隐藏的字段草稿仍随保存提交
+    expect(host.calls[0]?.ops).toContainEqual({
+      op: 'set',
+      path: ['progressReminderIdleSteps'],
+      value: 42,
+    });
+    expect(host.calls[0]?.ops).toContainEqual({
+      op: 'set',
+      path: ['modelDir'],
+      value: 'configured-modelDir',
+    });
     expect(host.calls[0]?.ops).toContainEqual({
       op: 'set',
       path: ['compressSkipReasoning'],
@@ -359,34 +378,20 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       return [fields.recallEnabled.text, fields.semanticRecallEnabled.text];
     };
 
-    it('勾选语义增强时一并勾选原文召回，并原子保存两项', async () => {
+    it('取消原文召回时一并取消语义增强，并原子保存两项', async () => {
       const { host, container, face } = mount({
-        value: { recallEnabled: false, semanticRecallEnabled: false },
-        user: { recallEnabled: false, semanticRecallEnabled: false },
-      });
-      expect(control(container, 'recallEnabled').checked).toBe(false);
-      act(() => control(container, 'semanticRecallEnabled').click());
-      expect(texts(face)).toEqual(['true', 'true']);
-      expect(control(container, 'recallEnabled').checked).toBe(true);
-      expect(control(container, 'semanticRecallEnabled').checked).toBe(true);
-      await act(async () => face.save());
-      expect(host.calls).toHaveLength(1);
-      expect(host.calls[0]?.ops).toEqual(
-        expect.arrayContaining([
-          { op: 'set', path: ['recallEnabled'], value: true },
-          { op: 'set', path: ['semanticRecallEnabled'], value: true },
-        ]),
-      );
-    });
-
-    it('取消原文召回时一并取消语义增强', () => {
-      const { container, face } = mount({
         value: { recallEnabled: true, semanticRecallEnabled: true },
         user: {},
       });
       act(() => control(container, 'recallEnabled').click());
       expect(texts(face)).toEqual(['false', 'false']);
-      expect(control(container, 'semanticRecallEnabled').checked).toBe(false);
+      await act(async () => face.save());
+      expect(host.calls[0]?.ops).toEqual(
+        expect.arrayContaining([
+          { op: 'set', path: ['recallEnabled'], value: false },
+          { op: 'set', path: ['semanticRecallEnabled'], value: false },
+        ]),
+      );
     });
 
     it('取消语义增强不影响原文召回', () => {
@@ -399,34 +404,72 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       expect(control(container, 'recallEnabled').checked).toBe(true);
     });
 
-    it('原文召回关闭时语义增强显示为未勾选（与服务端生效值一致）', () => {
+    it('原文召回重新开启后语义增强重新出现，并保留此前的取消', () => {
+      const { container, face } = mount({
+        value: { recallEnabled: true, semanticRecallEnabled: true },
+        user: {},
+      });
+      act(() => control(container, 'recallEnabled').click());
+      expect(field(container, 'semanticRecallEnabled')).toBeNull();
+      act(() => control(container, 'recallEnabled').click());
+      expect(texts(face)).toEqual(['true', 'false']);
+      expect(control(container, 'semanticRecallEnabled').checked).toBe(false);
+    });
+  });
+
+  describe('依赖项为关闭时隐藏关联配置', () => {
+    const hidden = (container: HTMLElement, names: readonly string[]) =>
+      names.map((name) => field(container, name) === null);
+
+    it('原文召回关闭时隐藏语义增强和嵌入模型目录', () => {
       const { container } = mount({
         value: { recallEnabled: false, semanticRecallEnabled: true },
         user: {},
       });
-      expect(control(container, 'semanticRecallEnabled').checked).toBe(false);
+      expect(hidden(container, ['semanticRecallEnabled', 'modelDir'])).toEqual([true, true]);
+      expect(field(container, 'recallEnabled')).not.toBeNull();
     });
 
-    it('恢复语义增强默认时一并恢复被关闭的原文召回', async () => {
-      const { host, container, face } = mount({
-        base: { recallEnabled: true, semanticRecallEnabled: true },
-        value: { recallEnabled: false, semanticRecallEnabled: false },
-        user: { recallEnabled: false, semanticRecallEnabled: false },
+    it('语义增强关闭时只隐藏嵌入模型目录', () => {
+      const { container } = mount({
+        value: { recallEnabled: true, semanticRecallEnabled: false },
+        user: {},
       });
-      const reset = [
-        ...(container
-          .querySelector('[data-om-field="semanticRecallEnabled"]')
-          ?.querySelectorAll('button') ?? []),
-      ].find((button) => button.textContent === 'config.reset');
-      act(() => reset?.click());
-      expect(texts(face)).toEqual(['true', 'true']);
-      await act(async () => face.save());
-      expect(host.calls[0]?.ops).toEqual(
-        expect.arrayContaining([
-          { op: 'unset', path: ['recallEnabled'] },
-          { op: 'unset', path: ['semanticRecallEnabled'] },
-        ]),
-      );
+      expect(hidden(container, ['semanticRecallEnabled', 'modelDir'])).toEqual([false, true]);
+    });
+
+    it('语义增强开启时显示嵌入模型目录，开关切换即时联动', () => {
+      const { container } = mount({
+        value: { recallEnabled: true, semanticRecallEnabled: true },
+        user: {},
+      });
+      expect(hidden(container, ['modelDir'])).toEqual([false]);
+      act(() => control(container, 'semanticRecallEnabled').click());
+      expect(hidden(container, ['modelDir'])).toEqual([true]);
+      act(() => control(container, 'semanticRecallEnabled').click());
+      expect(hidden(container, ['modelDir'])).toEqual([false]);
+    });
+
+    it('长期无记录时重发关闭时隐藏重发步数和工具调用数', () => {
+      const { container } = mount({ value: { progressReminderIdleEnabled: false }, user: {} });
+      const names = ['progressReminderIdleSteps', 'progressReminderIdleToolCalls'];
+      expect(hidden(container, names)).toEqual([true, true]);
+      expect(field(container, 'progressReminderIdleEnabled')).not.toBeNull();
+      act(() => control(container, 'progressReminderIdleEnabled').click());
+      expect(hidden(container, names)).toEqual([false, false]);
+      act(() => control(container, 'progressReminderIdleEnabled').click());
+      expect(hidden(container, names)).toEqual([true, true]);
+    });
+
+    it('隐藏期间的草稿重新显示后保留', () => {
+      const { container } = mount({
+        value: { progressReminderIdleEnabled: true, progressReminderIdleSteps: 4 },
+        user: {},
+      });
+      type(control(container, 'progressReminderIdleSteps'), '9');
+      act(() => control(container, 'progressReminderIdleEnabled').click());
+      act(() => control(container, 'progressReminderIdleEnabled').click());
+      expect(control(container, 'progressReminderIdleSteps').value).toBe('9');
     });
   });
 
