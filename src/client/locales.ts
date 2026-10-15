@@ -67,7 +67,17 @@ export const zh = {
   'config.modelDir': '嵌入模型目录',
   'config.modelDir.hint': '本地语义增强使用的嵌入模型目录。',
   'config.omEnabled': '自动压缩',
-  'config.omEnabled.hint': '启用观察压缩和摘要反思合并。',
+  'config.omEnabled.hint': '启用观察压缩和摘要反思合并；关闭后进度提醒也不再注入。',
+  'config.progressReminderEnabled': '进度提醒',
+  'config.progressReminderEnabled.hint':
+    '向主会话注入进度提醒，要求模型持续输出记录；需同时开启自动压缩。',
+  'config.progressReminderIdleEnabled': '长期无记录时重发',
+  'config.progressReminderIdleEnabled.hint':
+    '模型长期只调用工具不输出记录时重发提醒；关闭后仅在提醒缺失时补发。',
+  'config.progressReminderIdleSteps': '重发步数',
+  'config.progressReminderIdleSteps.hint': '无记录的已结束步骤数达到此值才重发，至少为 1。',
+  'config.progressReminderIdleToolCalls': '重发工具调用数',
+  'config.progressReminderIdleToolCalls.hint': '无记录期间工具调用数超过此值才重发，至少为 0。',
   'config.recallEnabled': '原文召回',
   'config.recallEnabled.hint': '注册召回工具，按消息序号回看原文。',
   'config.semanticRecallEnabled': '语义增强',
@@ -139,7 +149,20 @@ export const en: Record<keyof typeof zh, string> = {
   'config.modelDir': 'Embedding model directory',
   'config.modelDir.hint': 'Directory containing the local semantic-enhancement embedding model.',
   'config.omEnabled': 'Automatic compaction',
-  'config.omEnabled.hint': 'Enable observation and reflection of summaries.',
+  'config.omEnabled.hint':
+    'Enable observation and reflection of summaries. Turning it off also stops progress reminders.',
+  'config.progressReminderEnabled': 'Progress reminder',
+  'config.progressReminderEnabled.hint':
+    'Inject a progress reminder asking the model to keep writing notes. Requires automatic compaction.',
+  'config.progressReminderIdleEnabled': 'Resend when silent',
+  'config.progressReminderIdleEnabled.hint':
+    'Resend the reminder when the model only calls tools without notes; off resends only when it is missing.',
+  'config.progressReminderIdleSteps': 'Resend step count',
+  'config.progressReminderIdleSteps.hint':
+    'Resend once this many finished steps have passed without notes; at least 1.',
+  'config.progressReminderIdleToolCalls': 'Resend tool-call count',
+  'config.progressReminderIdleToolCalls.hint':
+    'Resend only when tool calls without notes exceed this value; at least 0.',
   'config.recallEnabled': 'Original-text recall',
   'config.recallEnabled.hint': 'Register the recall tool to review original messages by index.',
   'config.semanticRecallEnabled': 'Semantic enhancement',
