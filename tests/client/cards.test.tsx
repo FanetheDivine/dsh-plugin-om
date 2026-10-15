@@ -43,6 +43,7 @@ describe('消息列表卡片水平滚动适配', () => {
       location: { kind: 'unresolved' },
       visibility: 'visible',
       data: {
+        compactionId: 'om:1',
         running: false,
         phase: null,
         error: null,
@@ -140,6 +141,7 @@ describe('消息列表卡片水平滚动适配', () => {
     type CompactionData = ChatNode<'om-compaction'>['data'];
 
     const baseData: CompactionData = {
+      compactionId: 'om:1',
       running: false,
       phase: null,
       error: null,

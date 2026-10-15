@@ -3,10 +3,14 @@
  * 配置页只在宿主提供 dsh-plugin-om 命名空间时挂载，并随客户端释放订阅。
  */
 import type { Context } from '@deepseek-ai/cordis';
+// Type-only: 宿主远程调用（ctx.remote）的 Context 合并。
+import type {} from '@deepseek-ai/dsh-api-remotes/client';
 // Type-only: 拉取 locale 插件的 Context 合并（ctx.locale）。
 import type {} from '@deepseek-ai/dsh-client-locale/client';
 // Type-only: 拉取 uiConversation 服务与 ChatNodeDataMap 的类型合并。
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
+// Type-only: 会话模型目录服务（ctx.modelDirectories）的 Context 合并。
+import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client';
 // Type-only: 插件管理器的 keyed 行配置槽契约。
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client';
 // Type-only: 拉取 slots 服务的 Context 合并（ctx.slots）。
@@ -22,6 +26,7 @@ import { OmCompactionCard } from './OmCompactionCard.tsx';
 import { OmConfigCard } from './OmConfigCard.tsx';
 import { OmWarningCard } from './OmWarningCard.tsx';
 import { CONFIG_NS, OmConfigController } from './om-config-controller.ts';
+import { recompressFor } from './recompress-inject.ts';
 
 /** 必需服务：聊天节点槽、会话定义、双语 locale、宿主配置表单与会话跳转。 */
 export const inject = ['slots', 'uiConversation', 'locale', 'configForms', 'uiWorkspace'];
@@ -47,10 +52,14 @@ export function apply(ctx: Context): void {
         key: 'om-compaction',
         locale: NS,
         // 「查看」跳转：诊断子会话是父会话的 one-shot 子智能体
-        inject: () => ({
+        // 换模型重压缩：复用宿主会话模型目录；宿主无该服务时不提供
+        inject: (sessionId) => ({
           openSession: (target: SubagentAddress) => {
             ctx.uiWorkspace.openSession(target);
           },
+          ...(ctx.modelDirectories === undefined
+            ? {}
+            : { recompress: recompressFor(ctx, sessionId) }),
         }),
       },
       OmCompactionCard,

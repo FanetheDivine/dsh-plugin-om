@@ -4,18 +4,23 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client';
 import { describe, expect, it, vi } from 'vitest';
 import { apply, inject } from '../../src/client/index.ts';
+import type { RecompressInjected } from '../../src/client/recompress-run.ts';
 
 interface Registration {
   name: string;
   key: string;
-  inject?: () => { openSession?: (target: SubagentAddress) => void };
+  inject?: (sessionId: string) => {
+    openSession?: (target: SubagentAddress) => void;
+    recompress?: RecompressInjected;
+  };
 }
 
 /** 构造只实现入口实际读取服务的宿主桩，并收集所有槽注册。 */
-function setup() {
+function setup(extra: Record<string, unknown> = {}) {
   const registrations: Registration[] = [];
   const openSession = vi.fn();
   const ctx = {
+    ...extra,
     effect: (factory: () => (() => void) | undefined) => factory(),
     locale: { register: () => () => {} },
     uiConversation: { events: { register: () => () => {} } },
@@ -52,7 +57,41 @@ describe('client apply', () => {
       childSessionId: 'diag-1',
       mode: 'one-shot',
     } as unknown as SubagentAddress;
-    entry?.inject?.().openSession?.(target);
+    entry?.inject?.('s-1').openSession?.(target);
     expect(openSession).toHaveBeenCalledExactlyOnceWith(target);
+  });
+
+  it('宿主无模型目录服务时不注入重压缩能力', () => {
+    const { registrations } = setup();
+    const entry = registrations.find((item) => item.key === 'om-compaction');
+    expect(entry?.inject?.('s-1').recompress).toBeUndefined();
+  });
+
+  it('有模型目录服务时注入：共用会话目录，提交走 command.execute', async () => {
+    const store = { subscribe: () => () => {}, getSnapshot: () => ({}) };
+    const load = vi.fn().mockResolvedValue(undefined);
+    const directoryFor = vi.fn().mockReturnValue({ store, load });
+    const execute = vi.fn().mockResolvedValue({
+      ok: true,
+      value: { result: { kind: 'success', text: 'ok' } },
+    });
+    const { registrations } = setup({
+      modelDirectories: { directoryFor },
+      remote: { commands: { execute } },
+    });
+    const entry = registrations.find((item) => item.key === 'om-compaction');
+    const recompress = entry?.inject?.('s-1').recompress;
+    expect(directoryFor).toHaveBeenCalledWith('s-1');
+    expect(recompress?.directory).toBe(store);
+    recompress?.load();
+    expect(load).toHaveBeenCalledOnce();
+    await expect(
+      recompress?.run('om:1', { provider: 'alt', model: 'big-1', reasoningEffort: 'high' }),
+    ).resolves.toEqual({ ok: true, text: 'ok' });
+    expect(execute).toHaveBeenCalledExactlyOnceWith(
+      's-1',
+      '/om-recompress om:1 alt big-1 high',
+      [],
+    );
   });
 });

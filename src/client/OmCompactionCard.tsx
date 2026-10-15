@@ -19,6 +19,8 @@ import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client';
 import type { CSSProperties, MouseEvent } from 'react';
 import { memo, useState } from 'react';
 import { formatCompactCount } from './format.ts';
+import { OmRecompressMenu } from './OmRecompressMenu.tsx';
+import type { RecompressChoice, RecompressInjected } from './recompress-run.ts';
 
 /** Keyed renderer props: 装配好的卡片节点 + 绑定 `om-compaction` 命名空间的 locale 座。 */
 export interface OmCompactionCardProps {
@@ -28,7 +30,14 @@ export interface OmCompactionCardProps {
   readonly sessionId?: SessionId;
   /** 宿主注入的会话跳转；缺失时不显示「查看」。 */
   readonly openSession?: (target: SubagentAddress) => void;
+  /** 换模型重压缩能力；缺失时（宿主无模型目录）不显示按钮。 */
+  readonly recompress?: RecompressInjected;
 }
+
+/** 重压缩提交状态：空闲、进行中或带提示文案的结果。 */
+type RecompressState =
+  | { readonly status: 'idle' | 'running' }
+  | { readonly status: 'done' | 'failed'; readonly text: string };
 
 /** 卡片样式类名（与宿主 ContextInjectionRow.module.css 同款规则，增加水平滚动支持）。 */
 const css = {
@@ -39,6 +48,7 @@ const css = {
   scrollable: 'om-compaction-scrollable',
   body: 'om-compaction-body',
   inspect: 'om-compaction-inspect',
+  result: 'om-compaction-recompress-result',
 } as const;
 
 /** 卡片样式规则：保留宿主外观，对折叠摘要与展开体增加水平滚动适配。 */
@@ -52,6 +62,7 @@ const cardCss = `
 .${css.summary}.${css.scrollable}::-webkit-scrollbar{display:none}
 .${css.inspect}{color:inherit;font:inherit;font-size:12px;line-height:24px;cursor:pointer;white-space:nowrap;background:none;border:none;border-radius:4px;flex:none;align-items:center;gap:4px;margin-left:8px;padding:0 4px;display:inline-flex}
 .${css.inspect}:hover{background:var(--dsw-alias-bg-hover,transparent);color:var(--dsw-alias-label-secondary)}
+.${css.result}{padding:2px 0 0 22px;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary)}
 .${css.body}{box-sizing:border-box;background:var(--dsw-alias-markdown-code-block);width:calc(100% - 22px);max-height:141px;color:var(--dsw-alias-label-tertiary);font:400 11px/16px var(--ds-font-family-code);border:none;border-radius:8px;margin:4px 0 0 22px;padding:10px 16px 12px 12px;overflow-x:auto;overflow-y:auto;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
 `;
 
@@ -72,8 +83,10 @@ export const OmCompactionCard = memo(function OmCompactionCard({
   t,
   sessionId,
   openSession,
+  recompress,
 }: OmCompactionCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const [recompressState, setRecompressState] = useState<RecompressState>({ status: 'idle' });
   const { data } = node;
   // 「查看」：仅当有诊断子会话 id、父会话 id 与宿主跳转能力时渲染；点击不触发行展开
   const diagnosticSessionId = data.diagnosticSessionId;
@@ -96,6 +109,33 @@ export const OmCompactionCard = memo(function OmCompactionCard({
         <IconInspectOutlineRegular size={12} />
         {t('card.inspect')}
       </button>
+    ) : null;
+  // 换模型重压缩：仅成功卡片提供；结果只作提示，重压缩记录在日志子会话中
+  const pickRecompress = (choice: RecompressChoice) => {
+    if (recompress === undefined) return;
+    setRecompressState({ status: 'running' });
+    void recompress.run(data.compactionId, choice).then((outcome) => {
+      setRecompressState(
+        outcome.ok
+          ? { status: 'done', text: t('recompress.done') }
+          : { status: 'failed', text: t('recompress.failed', { error: outcome.text }) },
+      );
+    });
+  };
+  const recompressButton =
+    recompress === undefined ? null : (
+      <OmRecompressMenu
+        source={recompress}
+        t={t}
+        disabled={recompressState.status === 'running'}
+        onPick={pickRecompress}
+      />
+    );
+  const recompressResult =
+    recompressState.status === 'done' || recompressState.status === 'failed' ? (
+      <div className={css.result} data-om-recompress-result>
+        {recompressState.text}
+      </div>
     ) : null;
   // 压缩进行中：不可展开的「正在压缩上下文…」提示行（按 phase 区分文案）
   if (data.running) {
@@ -196,6 +236,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({
               {stats}
             </span>
             {inspect}
+            {recompressButton}
           </>
         }
         keepContentWhenOpen
@@ -212,6 +253,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({
           </div>
         )}
       </DisclosureRow>
+      {recompressResult}
     </div>
   );
 });
