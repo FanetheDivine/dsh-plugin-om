@@ -173,7 +173,7 @@ describe('尝试其他模型按钮', () => {
     expect(zh['recompress.started']).toContain('子智能体');
     // 提示经 body portal 渲染，提交仍在进行时就已出现
     expect(document.body.textContent).toContain(zh['recompress.started']);
-    expect((q('[data-om-recompress]') as HTMLButtonElement).disabled).toBe(true);
+    expect((q('[data-om-recompress]') as HTMLButtonElement).disabled).toBe(false);
     await act(async () => {
       finish({ ok: true, text: '' });
     });
@@ -201,20 +201,59 @@ describe('尝试其他模型按钮', () => {
     expect(run).toHaveBeenLastCalledWith('om:1', { provider: 'alt', model: 'big-1' });
   });
 
-  it('提交期间按钮禁用并显示进行中，失败后展示原因', async () => {
+  it('提交期间按钮保持可用，进行中行显示模型名，失败后替换为原因', async () => {
     let finish: (value: RecompressOutcome) => void = () => {};
     const run = vi.fn().mockReturnValue(new Promise<RecompressOutcome>((r) => (finish = r)));
     mount(stub({}, run));
     click(q('[data-om-recompress]'));
     click(q('[data-om-recompress-model="alt/plain"]'));
     const button = q('[data-om-recompress]') as HTMLButtonElement;
-    expect(button.disabled).toBe(true);
-    expect(button.textContent).toContain(zh['recompress.running']);
+    expect(button.disabled).toBe(false);
+    expect(button.textContent).toBe(zh['recompress.action']);
+    const running = document.body.querySelectorAll('[data-om-recompress-running]');
+    expect(running).toHaveLength(1);
+    expect(running[0]?.textContent).toBe('重压缩中：alt/plain(默认)…');
     await act(async () => {
       finish({ ok: false, text: '找不到压缩' });
     });
-    expect((q('[data-om-recompress]') as HTMLButtonElement).disabled).toBe(false);
+    expect(q('[data-om-recompress-running]')).toBeNull();
     expect(q('[data-om-recompress-result]')?.textContent).toBe('重压缩失败：找不到压缩');
+  });
+
+  it('进行中可再次提交并行重压缩，各自显示模型名与思考等级，结束一个不影响另一个', async () => {
+    const finishers: Array<(value: RecompressOutcome) => void> = [];
+    const run = vi
+      .fn()
+      .mockImplementation(
+        () => new Promise<RecompressOutcome>((resolve) => finishers.push(resolve)),
+      );
+    mount(stub({}, run));
+    click(q('[data-om-recompress]'));
+    click(q('[data-om-recompress-model="alt/plain"]'));
+    click(q('[data-om-recompress]'));
+    click(q('[data-om-recompress-model="alt/big-1"]'));
+    await act(async () => {
+      click(q('[data-om-recompress-effort="high"]'));
+    });
+    expect(run).toHaveBeenCalledTimes(2);
+    const labels = () =>
+      Array.from(document.body.querySelectorAll('[data-om-recompress-running]')).map(
+        (row) => row.textContent,
+      );
+    expect(labels()).toEqual(['重压缩中：alt/plain(默认)…', '重压缩中：alt/big-1(high)…']);
+    await act(async () => {
+      finishers[0]?.({ ok: true, text: '完成 A' });
+    });
+    expect(labels()).toEqual(['重压缩中：alt/big-1(high)…']);
+    expect(q('[data-om-recompress-result]')?.textContent).toBe('完成 A');
+    // 新一轮提交清掉已结束的旧结果
+    click(q('[data-om-recompress]'));
+    click(q('[data-om-recompress-model="alt/plain"]'));
+    expect(q('[data-om-recompress-result]')).toBeNull();
+    expect(labels()).toHaveLength(2);
+    await act(async () => {
+      for (const finish of finishers) finish({ ok: true, text: '' });
+    });
   });
 
   it('目录加载失败显示重试，加载中与空目录显示提示', () => {
