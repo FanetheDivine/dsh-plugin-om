@@ -9,6 +9,7 @@ description: 仓库内的任何变更，包括需求、缺陷、重构、测试�
 
 ## 1. 创建 worktree
 
+- fetch 最新的`origin/main`
 - 基于`origin/main` ，在 `.dsh/worktrees/` 下创建 git worktree，分支名用 <feat,fix,etc.>/<kebab-case>。
 - 以 --no-track 方式创建新分支
 - 原工作区保持干净；后续的探索、确认、编码全部在 worktree 内进行。
