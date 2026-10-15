@@ -144,7 +144,7 @@ describe('尝试其他模型按钮', () => {
   it('打开时加载目录，无思考等级的模型选中后直接提交', async () => {
     const run = vi.fn().mockResolvedValue({
       ok: true,
-      text: '重压缩完成 alt/plain(默认)，3.1k → 5.2k，26.1s',
+      text: '重压缩完成 字符 3.1k → 5.2k，26.1s，alt/plain(默认)',
     });
     const source = stub({}, run);
     mount(source);
@@ -157,7 +157,7 @@ describe('尝试其他模型按钮', () => {
     expect(q('[data-om-recompress-model]')).toBeNull();
     // 卡片结果行直接显示命令返回的对比文本
     expect(document.body.querySelector('[data-om-recompress-result]')?.textContent).toBe(
-      '重压缩完成 alt/plain(默认)，3.1k → 5.2k，26.1s',
+      '重压缩完成 字符 3.1k → 5.2k，26.1s，alt/plain(默认)',
     );
   });
 

@@ -312,14 +312,14 @@ describe('/om-recompress 命令：apply 接线', () => {
 
     const ok = await call(` ${compactionId} alt vendor/big-1 high`);
     expect(ok?.kind).toBe('success');
-    // 形如「重压缩完成 模型(等级)，原始消息 → 产物，耗时」，不再附子会话 id
+    // 形如「重压缩完成 字符 原始消息 → 产物，耗时，模型(等级)」，不再附子会话 id
     expect(ok?.text).toMatch(
-      /^重压缩完成 alt\/vendor\/big-1\(high\)，[\d.]+[kwM]? → [\d.]+[kwM]?，\d+\.\ds$/,
+      /^重压缩完成 字符 [\d.]+[kwM]? → [\d.]+[kwM]?，\d+\.\ds，alt\/vendor\/big-1\(high\)$/,
     );
     expect(ctx._llmCalls[0]?.options).toMatchObject({ provider: 'alt', reasoningEffort: 'high' });
 
     const defaultEffort = await call(` ${compactionId} alt big-2`);
-    expect(defaultEffort?.text).toMatch(/^重压缩完成 alt\/big-2\(默认\)，/);
+    expect(defaultEffort?.text).toMatch(/，alt\/big-2\(默认\)$/);
 
     const bad = await call('only-one-arg');
     expect(bad).toMatchObject({ kind: 'error' });

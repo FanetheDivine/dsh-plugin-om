@@ -27,7 +27,7 @@ import {
 } from './compress-loop.ts';
 import { buildObserveView, buildReflectView, type CompressionView } from './compress-view.ts';
 import { COMPACTION_ABORTED_ERROR } from './constants.ts';
-import { formatCompactCount } from './format.ts';
+import { formatCompactCount, formatSeconds } from './format.ts';
 import { makeLogger } from './logger.ts';
 import type {
   Agent,
@@ -228,16 +228,11 @@ export async function recompress(
 /** 重压缩命令名（压缩卡片按钮经宿主命令通道调用）。 */
 export const RECOMPRESS_COMMAND_NAME = 'om-recompress';
 
-/** 毫秒耗时的简短文本。 */
-function secondsText(durationMs: number): string {
-  return `${(durationMs / 1000).toFixed(1)}s`;
-}
-
-/** 渲染命令结果文本：成功为「模型(等级)，原始消息 → 产物，耗时」，失败给出原因。 */
+/** 渲染命令结果文本：成功为「字符 原始消息 → 产物，耗时，模型(等级)」，失败给出原因。 */
 function describeResult(request: RecompressRequest, result: RecompressResult): string {
   const label = `${request.provider}/${request.model}(${request.reasoningEffort ?? '默认'})`;
   if (!result.ok) return `重压缩失败 ${label}：${result.error}`;
-  return `重压缩完成 ${label}，${formatCompactCount(result.originalChars)} → ${formatCompactCount(result.newChars)}，${secondsText(result.durationMs)}`;
+  return `重压缩完成 字符 ${formatCompactCount(result.originalChars)} → ${formatCompactCount(result.newChars)}，${formatSeconds(result.durationMs)}，${label}`;
 }
 
 /** 构造 /om-recompress 命令定义；配置按调用时刻读取。 */
