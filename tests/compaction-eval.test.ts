@@ -1,15 +1,16 @@
 // compaction-eval skill 脚本单元测试：多帧 zstd 日志读取、压缩日志解析（阶段、区间、模型、
 // 失败标记、逐轮模型耗时、token、completeCompression 产物、原文视图）、分组选择、原文视图
 // 选择、盲化产物、后续轨迹定位与截断、区间三等分、可复现洗牌，
-// 以及 aggregate 按分类加权、位置分段、无关压缩、耗时归一与凭据泄漏的综合评分。
+// 以及 aggregate 的双评审均值、保留/精简/无关/耗时四维评分、评审校验报错与按模型汇总。
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  modelSummary,
   positionChars,
   scoreAll,
   weightedRatio,
@@ -281,58 +282,133 @@ describe('aggregate', () => {
     expect(positionChars(xml, bk, new Set([1, 5]))).toEqual({ head: 3, mid: 0, tail: 6 });
   });
 
-  it('scoreAll 计算各维度、耗时归一与凭据泄漏', () => {
+  it('scoreAll 双评审取均值，计算保留、精简、无关、耗时与凭据泄漏', () => {
     const d = tmp();
-    const w = (n: string, v: object | string) =>
-      writeFileSync(join(d, n), typeof v === 'string' ? v : JSON.stringify(v));
-    const bk = buckets(0, 2);
-    w('meta.json', { session: 's', range: [0, 2], buckets: bk });
-    const entry = { model: 'm', effort: 'max', recompress: true, requests: 1 };
-    w('_blind_key.json', {
-      V1: { ...entry, id: 'a', wall_sec: 10, tokens_in: 1, tokens_out: 1 },
-      V2: { ...entry, id: 'b', wall_sec: 20, tokens_in: 1, tokens_out: 1 },
-    });
-    w('facts.json', {
-      facts: [
-        { id: 'F1', fact: 'a', category: 'A', position: 'head' },
-        { id: 'F2', fact: 'b', category: 'C', position: 'tail' },
-      ],
-      irrelevant: [{ id: 'D1', is_credential: true }],
-    });
-    w('source.xml', '<assistant index="0"><![CDATA[s]]></assistant>');
-    w('V1.xml', '<assistant index="2"><![CDATA[tail]]></assistant>');
-    w('V2.xml', '');
-    w('judge-V1.json', {
-      facts: [
-        { id: 'F1', verdict: '保留' },
-        { id: 'F2', verdict: '保留' },
-      ],
-      irrelevant: [{ id: 'D1', verdict: '已省略' }],
-      tail_detail: { score: 5 },
-    });
-    w('judge-V2.json', {
-      facts: [{ id: 'F2', verdict: '部分' }],
-      irrelevant: [{ id: 'D1', verdict: '详细保留' }],
-      tail_detail: { score: 1 },
-    });
-    const { variants } = scoreAll(d);
+    writeEvalDir(d);
+    const { variants, disagreements } = scoreAll(d);
     expect(variants.V1).toMatchObject({
       retention: 100,
       irrelevant: 100,
-      tail: 100,
+      conciseness: 100,
       time: 100,
       composite: 100,
       credential_leak: false,
       chars: { head: 0, mid: 0, tail: 4 },
+      product_chars: 4,
+      compression: { head: 0, mid: null, tail: null },
     });
     expect(variants.V2).toMatchObject({
-      retention: 12.5,
+      retention: -75,
       A_failed: ['F1'],
       irrelevant: 0,
-      tail: 35,
+      conciseness: 50,
       time: 50,
+      composite: -20,
       credential_leak: true,
+      unsupported_claims: 1,
     });
-    expect(variants.V2?.composite).toBe(20.8);
+    expect(disagreements).toEqual([{ variant: 'V2', id: 'F1', verdicts: ['丢失', '歪曲'] }]);
+  });
+
+  it('modelSummary 输出同模型多变体的综合分均值与标准差', () => {
+    const d = tmp();
+    writeEvalDir(d);
+    const { variants } = scoreAll(d);
+    expect(modelSummary(variants)).toEqual([{ model: 'm max', n: 2, mean: 40, std: 84.9 }]);
+    const single = Object.fromEntries(Object.entries(variants).slice(0, 1));
+    expect(modelSummary(single)).toEqual([]);
+  });
+
+  it('评审文件缺失、覆盖不全或判定词非法时报错', () => {
+    const d = tmp();
+    writeEvalDir(d);
+    rmSync(join(d, 'judge-V1-2.json'));
+    expect(() => scoreAll(d)).toThrow(/缺少评审文件 judge-V1-2\.json/);
+
+    writeEvalDir(d);
+    const j = JSON.parse(readFileSync(join(d, 'judge-V1-1.json'), 'utf8'));
+    j.facts = j.facts.filter((x: { id: string }) => x.id !== 'F2');
+    writeFileSync(join(d, 'judge-V1-1.json'), JSON.stringify(j));
+    expect(() => scoreAll(d)).toThrow(/未覆盖事实 F2/);
+
+    writeEvalDir(d);
+    const j2 = JSON.parse(readFileSync(join(d, 'judge-V1-1.json'), 'utf8'));
+    j2.facts[0].verdict = '也许';
+    writeFileSync(join(d, 'judge-V1-1.json'), JSON.stringify(j2));
+    expect(() => scoreAll(d)).toThrow(/事实 F1 判定词非法/);
+
+    writeEvalDir(d);
+    const j3 = JSON.parse(readFileSync(join(d, 'judge-V1-1.json'), 'utf8'));
+    j3.irrelevant = [];
+    writeFileSync(join(d, 'judge-V1-1.json'), JSON.stringify(j3));
+    expect(() => scoreAll(d)).toThrow(/未覆盖无关信息 D1/);
   });
 });
+
+/** 写入一套固定的评估目录夹具：两变体、双评审、V2 有分歧与凭据泄漏。 */
+function writeEvalDir(d: string): void {
+  const w = (n: string, v: object | string) =>
+    writeFileSync(join(d, n), typeof v === 'string' ? v : JSON.stringify(v));
+  w('meta.json', { session: 's', phase: 'observe', range: [0, 2], buckets: buckets(0, 2) });
+  const entry = { model: 'm', effort: 'max', recompress: true, requests: 1 };
+  w('_blind_key.json', {
+    V1: { ...entry, id: 'a', wall_sec: 10, model_sec: 10, tokens_in: 1, tokens_out: 1 },
+    V2: { ...entry, id: 'b', wall_sec: 20, model_sec: 20, tokens_in: 1, tokens_out: 1 },
+  });
+  w('facts.json', {
+    facts: [
+      { id: 'F1', fact: 'a', category: 'A', position: 'head' },
+      { id: 'F2', fact: 'b', category: 'C', position: 'tail' },
+    ],
+    irrelevant: [{ id: 'D1', is_credential: true }],
+  });
+  w('source.xml', '<assistant index="0"><![CDATA[s]]></assistant>');
+  w('V1.xml', '<assistant index="2"><![CDATA[tail]]></assistant>');
+  w('V2.xml', '<assistant index="2"><![CDATA[tailtail]]></assistant>');
+  const judge = (facts: object[], irrelevant: object[], extra?: object) => ({
+    facts,
+    irrelevant,
+    ...extra,
+  });
+  w(
+    'judge-V1-1.json',
+    judge(
+      [
+        { id: 'F1', verdict: '保留' },
+        { id: 'F2', verdict: '保留' },
+      ],
+      [{ id: 'D1', verdict: '已省略' }],
+    ),
+  );
+  w(
+    'judge-V1-2.json',
+    judge(
+      [
+        { id: 'F1', verdict: '保留' },
+        { id: 'F2', verdict: '保留' },
+      ],
+      [{ id: 'D1', verdict: '已省略' }],
+    ),
+  );
+  w(
+    'judge-V2-1.json',
+    judge(
+      [
+        { id: 'F1', verdict: '丢失' },
+        { id: 'F2', verdict: '部分' },
+      ],
+      [{ id: 'D1', verdict: '详细保留' }],
+      { unsupported_claims: [{ quote: 'q1' }, { quote: 'q2' }] },
+    ),
+  );
+  w(
+    'judge-V2-2.json',
+    judge(
+      [
+        { id: 'F1', verdict: '歪曲' },
+        { id: 'F2', verdict: '部分' },
+      ],
+      [{ id: 'D1', verdict: '详细保留' }],
+    ),
+  );
+}
