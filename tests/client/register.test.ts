@@ -19,8 +19,7 @@ interface Registration {
 function setup(extra: Record<string, unknown> = {}) {
   const registrations: Registration[] = [];
   const openSession = vi.fn();
-  const ctx = {
-    ...extra,
+  const base = {
     effect: (factory: () => (() => void) | undefined) => factory(),
     locale: { register: () => () => {} },
     uiConversation: { events: { register: () => () => {} } },
@@ -40,6 +39,16 @@ function setup(extra: Record<string, unknown> = {}) {
       },
     },
   };
+  // 与 Cordis 一致：未声明 inject 的可选服务只能经 ctx.get 读取，直接访问会抛错
+  const ctx = new Proxy(base as Record<string, unknown>, {
+    get: (target, prop) => {
+      if (prop === 'get') return (name: string) => extra[name];
+      if (prop === 'modelDirectories' || prop === 'remote') {
+        throw new Error(`cannot get property "${prop}" without inject`);
+      }
+      return Reflect.get(target, prop);
+    },
+  });
   apply(ctx as unknown as Context);
   return { registrations, openSession };
 }

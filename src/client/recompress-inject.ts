@@ -12,8 +12,12 @@ import type { RecompressInjected } from './recompress-run.ts';
 import { submitRecompress } from './recompress-run.ts';
 
 /** 构造某会话的重压缩能力：目录与 /model 弹窗共用，提交走 command.execute。 */
-export function recompressFor(ctx: Context, sessionId: string): RecompressInjected {
-  const directory = ctx.modelDirectories.directoryFor(sessionId as SessionId);
+export function recompressFor(
+  ctx: Context,
+  directories: NonNullable<Context['modelDirectories']>,
+  sessionId: string,
+): RecompressInjected {
+  const directory = directories.directoryFor(sessionId as SessionId);
   return {
     directory: directory.store,
     load: () => {
@@ -21,7 +25,12 @@ export function recompressFor(ctx: Context, sessionId: string): RecompressInject
     },
     run: (compactionId, choice) =>
       submitRecompress(
-        (id, line) => ctx.remote.commands.execute(id as SessionId, line, []),
+        async (id, line) => {
+          // remote 同样未声明 inject：点击时才经 ctx.get 读取
+          const remote = ctx.get('remote');
+          if (remote === undefined) throw new Error('remote unavailable');
+          return remote.commands.execute(id as SessionId, line, []);
+        },
         sessionId,
         compactionId,
         choice,

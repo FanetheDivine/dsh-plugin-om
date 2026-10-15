@@ -53,14 +53,18 @@ export function apply(ctx: Context): void {
         locale: NS,
         // 「查看」跳转：诊断子会话是父会话的 one-shot 子智能体
         // 换模型重压缩：复用宿主会话模型目录；宿主无该服务时不提供
-        inject: (sessionId) => ({
-          openSession: (target: SubagentAddress) => {
-            ctx.uiWorkspace.openSession(target);
-          },
-          ...(ctx.modelDirectories === undefined
-            ? {}
-            : { recompress: recompressFor(ctx, sessionId) }),
-        }),
+        // modelDirectories 是未声明 inject 的可选服务，只能经 ctx.get 读取
+        inject: (sessionId) => {
+          const directories = ctx.get('modelDirectories');
+          return {
+            openSession: (target: SubagentAddress) => {
+              ctx.uiWorkspace.openSession(target);
+            },
+            ...(directories === undefined
+              ? {}
+              : { recompress: recompressFor(ctx, directories, sessionId) }),
+          };
+        },
       },
       OmCompactionCard,
     ),
