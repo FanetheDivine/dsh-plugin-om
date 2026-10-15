@@ -1,6 +1,6 @@
 ---
 name: agent-workflow
-description: 仓库内的任何变更，包括需求、缺陷、重构、测试、文档、配置等，都遵循此工作流。
+description: 当用户希望对仓库内容做变更，包括需求、缺陷、重构、测试、文档、配置等，都遵循此工作流。
 ---
 
 # agent-workflow
