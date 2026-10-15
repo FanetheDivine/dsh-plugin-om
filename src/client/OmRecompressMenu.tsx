@@ -43,8 +43,8 @@ const css = {
 } as const;
 
 const menuCss = `
-.${css.button}{color:inherit;font:inherit;font-size:12px;line-height:24px;cursor:pointer;white-space:nowrap;background:none;border:none;border-radius:4px;flex:none;align-items:center;gap:4px;margin-left:4px;padding:0 4px;display:inline-flex}
-.${css.button}:hover:not(:disabled){background:var(--dsw-alias-bg-hover,transparent);color:var(--dsw-alias-label-secondary)}
+.${css.button}{border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:16px;cursor:pointer;white-space:nowrap;border-radius:999px;flex:none;align-items:center;gap:4px;margin:0;padding:2px 8px;display:inline-flex}
+.${css.button}:is(:hover,:focus-visible):not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid);color:var(--dsw-alias-label-primary)}
 .${css.button}:disabled{cursor:default;opacity:.6}
 .${css.panel}{position:fixed;z-index:1000;box-sizing:border-box;width:260px;max-height:320px;display:flex;flex-direction:column;overflow:hidden}
 .${css.search}{box-sizing:border-box;width:100%;margin:0;padding:8px 12px;font:inherit;font-size:13px;color:inherit;background:none;border:none;border-bottom:1px solid var(--dsw-alias-label-caption);outline:none}

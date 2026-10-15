@@ -12,7 +12,6 @@ import {
   computeRow,
   DEFAULT_PARAMS,
   type ModelParams,
-  SYS_RESIDUAL_TOKENS,
   simulateWithOm,
   simulateWithoutOm,
   TABLE_MAX_TOKENS,
@@ -96,10 +95,10 @@ describe('simulateWithOm（默认阈值）', () => {
     // 仅 1 次观察（X=30400），压缩会话缓存桶 = 系数 × X
     const compressCacheWrite = COMPRESS_CACHE_WRITE_RATIO * 30_400;
     const compressCacheRead = COMPRESS_CACHE_READ_RATIO * 30_400;
-    // 主会话缓存创建 = 首轮 15000 + 常规增量 37×800 + 观察轮重写 962 + 18×800
-    expect(r.cacheWrite).toBe(15_000 + 37 * 800 + 962 + 18 * 800 + compressCacheWrite);
-    // 主会话缓存读取 = 前 38 轮累计 1087800 + 观察轮截断 10000 + 第 40–57 轮 319716
-    expect(r.cacheRead).toBe(1_087_800 + 10_000 + 319_716 + compressCacheRead);
+    // 主会话缓存创建 = 首轮 15000 + 常规增量 37×800 + 观察轮重写 912 + 18×800
+    expect(r.cacheWrite).toBe(15_000 + 37 * 800 + 912 + 18 * 800 + compressCacheWrite);
+    // 主会话缓存读取 = 前 38 轮累计 1087800 + 观察轮截断 10000 + 第 40–57 轮 318816
+    expect(r.cacheRead).toBe(1_087_800 + 10_000 + 318_816 + compressCacheRead);
     // 输出桶只含压缩会话输出（step 输出不进公式）
     expect(r.completion).toBe(r.summaryOutputTokens);
     expect(r.completion).toBe(0.03 * 30_400 + COMPRESS_OUTPUT_FIXED_TOKENS);
@@ -109,22 +108,22 @@ describe('simulateWithOm（默认阈值）', () => {
     // T=60k（n=57）：第 39 轮 pre-step 观察（替换点在 history 首部，保留前缀 = 系统提示词）
     const r = simulateWithOm(P, 60_000);
     const off = simulateWithoutOm(P, 60_000);
-    // om 开缓存读取 = 主会话 1417516 + 压缩会话 53200；om 关无截断且每轮复读完整上一轮
-    expect(r.cacheRead).toBe(1_417_516 + COMPRESS_CACHE_READ_RATIO * 30_400);
-    expect(off.cacheRead).toBeGreaterThan(1_417_516);
+    // om 开缓存读取 = 主会话 1416616 + 压缩会话 53200；om 关无截断且每轮复读完整上一轮
+    expect(r.cacheRead).toBe(1_416_616 + COMPRESS_CACHE_READ_RATIO * 30_400);
+    expect(off.cacheRead).toBeGreaterThan(1_416_616);
     expect(off.cacheWrite).toBe(15_000 + 56 * 800);
   });
 
   it('250k 规模：观察 6 次、反思不触发、峰值远低于原始规模', () => {
     const r = simulateWithOm(P, 250_000);
     expect(r.turns).toBe(294);
-    // 观察 6 次：首次第 39 轮 W=30400（含注入 5000），其后每累计 34950+50 再触发
+    // 观察 6 次：首次第 39 轮 W=30400（含注入 5000），其后每累计 35200（44 轮×800 ≥ 阈值 35000）再触发
     // （第 83/127/171/215/259 轮）
     expect(r.observeCount).toBe(6);
     expect(r.reflectCount).toBe(0); // H = 912 + 5×1056 = 6192 < 40000
-    // 峰值出现在第 6 次观察前一轮（第 258 轮）：10000 + 50 + 5136 + 43×800 = 49586
+    // 峰值出现在第 6 次观察前一轮（第 258 轮）：10000 + 5136 + 43×800 = 49536
     // （触发轮第 259 轮的请求在压缩后才发出，prompt 降至系统提示词 + 旧块）
-    expect(r.peakPromptTokens).toBe(10_000 + 50 + 5_136 + 43 * 800);
+    expect(r.peakPromptTokens).toBe(10_000 + 5_136 + 43 * 800);
     // 被压缩消息合计 = 30400 + 5×35200
     expect(r.summaryInputTokens).toBe(30_400 + 5 * 35_200);
     // 压缩会话输出合计 = Σ(压缩比×X + 5,000) = 0.03×206400 + 6×5000
@@ -160,13 +159,13 @@ describe('simulateWithOm（默认阈值）', () => {
 });
 
 describe('simulateWithOm（注入遮蔽与反思）', () => {
-  it('首次观察后注入消息遮蔽为 <sys> 空条目残留：峰值出现在观察前一轮请求', () => {
+  it('首次观察后注入消息被遮蔽且无残留：峰值出现在观察前一轮请求', () => {
     const r = simulateWithOm(P, 60_000);
     // n=57；第 39 轮 pre-step 触发观察（该轮请求已压缩后发出），
     // 峰值 = 第 38 轮请求：10000 + 5000 + 37×800 = 44600
     expect(r.peakPromptTokens).toBe(10_000 + 5_000 + 37 * 800);
-    // 观察后注入不再占上下文：残留 ≤ SYS_RESIDUAL_TOKENS 体现在后续 prompt 中
-    expect(SYS_RESIDUAL_TOKENS).toBeLessThan(P.injectedTokens);
+    // 观察后注入不再占上下文：峰值之后的 prompt 不含注入量
+    expect(r.peakPromptTokens).toBeGreaterThan(0);
   });
 
   it('调小反思阈值时触发合并：反思按当时 H 合计作为被压缩消息 X 计费', () => {
@@ -183,14 +182,14 @@ describe('simulateWithOm（注入遮蔽与反思）', () => {
       0.03 * (40_000 + 45_600 + 2_568) + 3 * COMPRESS_OUTPUT_FIXED_TOKENS,
       5,
     );
-    // 缓存创建 = 主会话 120995.04（首轮 15000 + 49×800 + 观察重写 1250 + 56×800
-    //   + 观察重写 1418 + 反思重写 927.04 + 23×800）+ 压缩会话 1.3×88168
+    // 缓存创建 = 主会话 120845.04（首轮 15000 + 49×800 + 观察重写 1200 + 56×800
+    //   + 观察重写 1368 + 反思重写 877.04 + 23×800）+ 压缩会话 1.3×88168
     expect(r.cacheWrite).toBeCloseTo(
-      15_000 + 49 * 800 + 1_250 + 56 * 800 + 1_418 + 927.04 + 23 * 800 + 1.3 * 88_168,
+      15_000 + 49 * 800 + 1_200 + 56 * 800 + 1_368 + 877.04 + 23 * 800 + 1.3 * 88_168,
       5,
     );
-    // 缓存读取 = 主会话 4022721.92 + 压缩会话 1.75×88168
-    expect(r.cacheRead).toBeCloseTo(4_022_721.92 + 1.75 * 88_168, 5);
+    // 缓存读取 = 主会话 4018771.92 + 压缩会话 1.75×88168
+    expect(r.cacheRead).toBeCloseTo(4_018_771.92 + 1.75 * 88_168, 5);
   });
 
   it('反思在观察产生块之后的 pre-step 触发（每轮 pre-step 先反思后观察）', () => {

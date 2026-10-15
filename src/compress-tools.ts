@@ -275,7 +275,7 @@ export class CompressionState {
         isError: true,
       };
     }
-    // 条目校验：相交条目不可为 user / sys；assistant 条目必须被完整包含；区间内须有可压缩条目
+    // 条目校验：相交条目不可为 user；assistant 条目必须被完整包含；区间内须有可压缩条目
     let insideCount = 0;
     for (const entry of this.view.entries) {
       if (entry.lo === undefined || entry.hi === undefined) continue;
@@ -283,12 +283,6 @@ export class CompressionState {
       if (entry.kind === 'user') {
         return {
           text: `${CompressionState.spanLabel(lo, hi)} 覆盖用户消息（index ${entry.lo}），用户消息不可压缩`,
-          isError: true,
-        };
-      }
-      if (entry.kind === 'sys') {
-        return {
-          text: `${CompressionState.spanLabel(lo, hi)} 覆盖系统消息（index ${entry.lo}），系统消息不可压缩`,
           isError: true,
         };
       }
@@ -457,7 +451,7 @@ export class CompressionState {
     );
   }
 
-  /** completeCompression：所有原始合法 ask 已压缩或重写后标记完成。 */
+  /** completeCompression：所有原始合法 ask 已压缩或重写后标记完成；result 为最终 <history> 块。 */
   complete(): ToolCallResult {
     const pending = this.unprocessedAskIndices();
     if (pending.length > 0) {
@@ -467,11 +461,12 @@ export class CompressionState {
       };
     }
     this._completed = true;
-    return { text: '压缩完成', isError: false };
+    // 返回与压缩日志一致的 <history> 块，会话记录里才能直接看到压缩产物
+    return { text: this.buildFinalBlock(), isError: false };
   }
 
   /**
-   * 构建最终 <history> 块：按 index 顺序合并视图条目与替换记录——user / sys 条目
+   * 构建最终 <history> 块：按 index 顺序合并视图条目与替换记录——user 条目
    * 原样、被替换区间生成 <assistant index|start end> 摘要条目（content 以 CDATA 包裹嵌入）、
    * 未替换普通与历史条目原样保留，原始 ask 使用重写后的 q/a；reasoning 不进产物。
    * 块首按最终条目动态生成格式说明注释，开标签携带 tip 属性。
@@ -529,7 +524,6 @@ export class CompressionState {
     // 条目已变为摘要条目，不再触发对应说明
     const note = historyFormatNote({
       user: this.view.entries.some((e) => e.kind === 'user'),
-      sys: this.view.entries.some((e) => e.kind === 'sys'),
       skill: this.view.entries.some(
         (e) => e.kind === 'assistant' && e.toolName === SKILL_TOOL_NAME && !coveredBy(e),
       ),
@@ -594,7 +588,7 @@ export const COMPRESSION_TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'compressHistory',
     description:
-      '把 index 单条或 start..end 连续区间的 assistant 类条目（模型输出文本、工具调用）替换为 content 摘要。index 与 start/end 二选一，start 与 end 成对提供且 start==end 等同 index。区间不得覆盖用户消息或系统消息，不得与已有替换区间部分重叠（完全包含则覆盖）。用户消息与系统消息保持原样，无需处理。',
+      '把 index 单条或 start..end 连续区间的 assistant 类条目（模型输出文本、工具调用）替换为 content 摘要。index 与 start/end 二选一，start 与 end 成对提供且 start==end 等同 index。区间不得覆盖用户消息，不得与已有替换区间部分重叠（完全包含则覆盖）。用户消息保持原样，无需处理。',
     parameters: {
       type: 'object',
       properties: {

@@ -109,6 +109,11 @@ function mount(recompress: RecompressInjected | undefined, data = {}) {
       />,
     );
   });
+  act(() => {
+    container
+      .querySelector('[data-disclosure-row]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
   mounted.push(() => {
     act(() => root.unmount());
     container.remove();

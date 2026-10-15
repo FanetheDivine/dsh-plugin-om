@@ -80,7 +80,7 @@ describe('完整消息索引 indexCompleteMessages', () => {
     expect(cms[5]?.seqs).toEqual([5, 7]); // assistant-c2 + result-c2（tool/call 为日志事件不入索引）
   });
 
-  it('本插件自产消息与宿主压缩 checkpoint 不占位；其他插件/宿主注入的 user_message 为系统消息（sys）占位', () => {
+  it('本插件自产消息与宿主压缩 checkpoint 不占位；其他插件/宿主注入的系统消息同样不占位', () => {
     const session = makeSession({
       events: [
         historyMessage('旧任务'), // 本插件压缩日志（source.kind=plugin:dsh-plugin-om）不占位
@@ -104,15 +104,13 @@ describe('完整消息索引 indexCompleteMessages', () => {
       ],
     });
     const cms = indexCompleteMessages(session);
-    // 两条流程 6 条 + 其他插件快照 1 条（系统消息）；<history> 块与宿主 checkpoint 不占位
-    expect(cms).toHaveLength(7);
+    // 仅两条流程 6 条；<history> 块、宿主 checkpoint 与其他插件快照（系统消息）均不占位
+    expect(cms).toHaveLength(6);
     expect(cms[0]?.type).toBe('user');
-    expect(cms[6]?.type).toBe('sys');
-    expect(cms[6]?.kind).toBe('runtime-context'); // sys.kind = source.kind（区分 kind:user 与其余）
-    expect(cms[6]?.seqs).toEqual([10]); // 快照事件 seq（history@0 + checkpoint@1 + 流程 2..9 + 快照@10）
+    expect(cms.flatMap((c) => c.seqs)).not.toContain(10); // 快照事件 seq（history@0 + checkpoint@1 + 流程 2..9 + 快照@10）
   });
 
-  it('kind:user 归为用户消息；其余 kind 归为系统消息（sys 记录 kind）', () => {
+  it('kind:user 归为用户消息；其余 kind 为系统消息，不占 index', () => {
     const session = makeSession({
       events: [
         {
@@ -138,12 +136,7 @@ describe('完整消息索引 indexCompleteMessages', () => {
       ],
     });
     const cms = indexCompleteMessages(session);
-    expect(cms.map((c) => [c.type, c.kind])).toEqual([
-      ['sys', 'agent-instructions'],
-      ['user', undefined],
-      ['sys', 'skill-catalog'],
-    ]);
-    expect(cms.map((c) => c.index)).toEqual([0, 1, 2]); // 系统消息也占 index
+    expect(cms.map((c) => [c.index, c.type, c.seqs])).toEqual([[0, 'user', [1]]]);
   });
 
   it('未匹配的 result 独立成条（防御；旧版日志形态兼容）', () => {
@@ -306,23 +299,18 @@ describe('完整消息渲染 renderCompleteMessage', () => {
     expect(ghostCm && renderToolResultText(session, ghostCm)).toBe('');
   });
 
-  it('sys=消息原文（recall 呈现系统消息原始内容）', () => {
+  it('user=消息原文', () => {
     const session = makeSession({
       events: [
         {
           type: 'user/message',
-          data: makeMessage({
-            content: [textBlock('宿主注入的指令原文')],
-            source: { kind: 'agent-instructions' },
-            id: 'sys-1',
-          }),
+          data: makeMessage({ content: [textBlock('用户原文')], id: 'u-1' }),
         } as unknown as SessionEvent,
       ],
     });
-    const cms = indexCompleteMessages(session);
-    const cm = cms[0];
+    const cm = indexCompleteMessages(session)[0];
     if (!cm) throw new Error('缺少完整消息 0');
-    expect(cm.type).toBe('sys');
-    expect(renderCompleteMessage(session, cm)).toBe('宿主注入的指令原文');
+    expect(cm.type).toBe('user');
+    expect(renderCompleteMessage(session, cm)).toBe('用户原文');
   });
 });

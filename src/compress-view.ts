@@ -36,27 +36,25 @@ export type AskUserQuestionView = {
 
 /**
  * 视图条目：压缩区间内一条可定位的内容单位。
- * - user / sys 条目不可压缩（compressHistory 覆盖时报错），构建最终块时原样保留
+ * - user 条目不可压缩（compressHistory 覆盖时报错），构建最终块时原样保留
  * - assistant 条目可压缩（观察视图为模型文本或工具调用原文，反思视图为块内摘要）
  * - reasoning 条目仅作参考，不进最终产物
  * - lo/hi 缺失的 assistant 条目为不可定位的历史遗留块（整块无法解析时降级保留）
  */
 export type ViewEntry = {
   /** 条目类别。 */
-  kind: 'user' | 'sys' | 'assistant' | 'reasoning';
+  kind: 'user' | 'assistant' | 'reasoning';
   /** 覆盖区间下界（完整消息 index；reasoning 与历史遗留条目无）。 */
   lo?: number;
   /** 覆盖区间上界（单条 = lo；reasoning 与历史遗留条目无）。 */
   hi?: number;
-  /** 条目文本（sys 为空串；user 为文本块原文；assistant 为原文或摘要）。 */
+  /** 条目文本（user 为文本块原文；assistant 为原文或摘要）。 */
   text: string;
   /** user 条目的非文本块注释（图片附件元信息等，渲染为 XML 注释）。 */
   notes?: string[];
-  /** sys 条目的 source.kind。 */
-  sysKind?: string;
   /** skill 条目的工具名（skill 判定用）或普通 toolcall 的工具名。 */
   toolName?: string;
-  /** skill 条目的名称（工具参数或手动加载的消息来源提供；反思视图取自 name 属性）。 */
+  /** skill 条目的名称（工具参数提供；反思视图取自 name 属性）。 */
   skillName?: string;
   /** toolcall 条目的调用 id（结构化渲染为 callId 属性）。 */
   callId?: string;
@@ -279,7 +277,7 @@ export type BuildViewOptions = {
 
 /**
  * 观察视图：被压缩区间（表层 seq 集合）内的完整消息投影为条目——
- * user → 原文（图片等非文本块为注释）、sys → 空条目（手动加载的 skill 为 skill 条目）、
+ * user → 原文（图片等非文本块为注释）、
  * assistant/toolcall → 原文渲染，reasoning 作为参考条目置于其所属 assistant 条目之前（每条 assistant 消息输出一次；
  * skipReasoning 时省略）。
  * 要求区间为区间内完整消息的首尾 index。
@@ -306,40 +304,6 @@ export function buildObserveView(
   const emittedReasoning = new Set<number>();
   for (const cm of indexCompleteMessages(session)) {
     if (!cm.seqs.every((seq) => shadowed.has(seq))) continue;
-    if (cm.type === 'sys') {
-      const seq = cm.seqs[0];
-      const event = seq === undefined ? undefined : session.snapshotEvents()[seq];
-      const source =
-        event?.type === 'user/message'
-          ? (event.data.source as { kind: string; name?: string })
-          : undefined;
-      if (
-        cm.kind === 'skill-invocation' &&
-        source?.kind === 'skill-invocation' &&
-        typeof source.name === 'string'
-      ) {
-        const text = renderCompleteMessage(session, cm);
-        if (text.trim() !== '') {
-          entries.push({
-            kind: 'assistant',
-            lo: cm.index,
-            hi: cm.index,
-            text,
-            toolName: SKILL_TOOL_NAME,
-            skillName: source.name,
-          });
-          continue;
-        }
-      }
-      entries.push({
-        kind: 'sys',
-        lo: cm.index,
-        hi: cm.index,
-        text: '',
-        ...(cm.kind === undefined ? {} : { sysKind: cm.kind }),
-      });
-      continue;
-    }
     if (cm.type === 'user') {
       const parts = userEntryParts(session, cm);
       if (parts === null) continue;
@@ -517,9 +481,9 @@ function askUserQuestionSections(
 export { appendCdataText } from './utils.ts';
 
 /**
- * 解析一个已有 <history> 块的内条目（反思视图）：user_message / sys / assistant
+ * 解析一个已有 <history> 块的内条目（反思视图）：user_message / assistant
  * （index 单条或 start/end 区间）/ skill_content（name 属性 + index 定位）/
- * ask-user-question（index 定位）/ reasoning。
+ * ask-user-question（index 定位）/ reasoning；其余标签（含旧版 sys）一律忽略。
  * 整块无法解析或根非 <history> 时降级为单条不可定位的历史遗留条目（text 为块内文原文，
  * 构建最终块时原样保留）。
  */
@@ -545,18 +509,6 @@ function parseBlockEntries(blockText: string, blockSeq: number): ViewEntry[] {
       const index = intAttr(el, 'index');
       if (index === undefined) continue;
       entries.push({ kind: 'user', lo: index, hi: index, text, blockSeq });
-    } else if (el.nodeName === 'sys') {
-      const index = intAttr(el, 'index');
-      if (index === undefined) continue;
-      const type = el.getAttribute('type');
-      entries.push({
-        kind: 'sys',
-        lo: index,
-        hi: index,
-        text: '',
-        ...(type === null ? {} : { sysKind: type }),
-        blockSeq,
-      });
     } else if (el.nodeName === 'assistant') {
       const index = intAttr(el, 'index');
       if (index !== undefined) {
@@ -679,7 +631,7 @@ export function buildReflectView(
 
 /**
  * 把一个视图条目构建为 XML 元素（正文统一以 CDATA 包裹，逐字原样；user 条目的注释
- * 输出为 XML 注释节点；sys 条目为无正文的空元素，自闭合输出）。getHistory 输出与
+ * 输出为 XML 注释节点）。getHistory 输出与
  * 最终 <history> 块共用。
  */
 export function entryToElement(doc: Document, entry: ViewEntry): Element {
@@ -688,12 +640,6 @@ export function entryToElement(doc: Document, entry: ViewEntry): Element {
     if (entry.lo !== undefined) el.setAttribute('index', String(entry.lo));
     appendCdataText(doc, el, entry.text);
     for (const note of entry.notes ?? []) el.appendChild(doc.createComment(note));
-    return el;
-  }
-  if (entry.kind === 'sys') {
-    const el = doc.createElement('sys');
-    el.setAttribute('type', entry.sysKind ?? '');
-    if (entry.lo !== undefined) el.setAttribute('index', String(entry.lo));
     return el;
   }
   if (entry.kind === 'reasoning') {

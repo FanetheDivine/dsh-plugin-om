@@ -26,11 +26,11 @@ function viewOf(entries: ViewEntry[]): CompressionView {
   };
 }
 
-/** 观察风格视图：0 用户 / 1 系统 / 2-4 assistant / 5 用户 / 6-7 assistant。 */
+/** 观察风格视图：0 用户 / 1-4 assistant / 5 用户 / 6-7 assistant。 */
 function observeView(overrides: ViewEntry[] = []): CompressionView {
   const base: ViewEntry[] = [
     { kind: 'user', lo: 0, hi: 0, text: '用户消息A' },
-    { kind: 'sys', lo: 1, hi: 1, text: '', sysKind: 'system' },
+    { kind: 'assistant', lo: 1, hi: 1, text: '助手A2' },
     { kind: 'assistant', lo: 2, hi: 2, text: '助手B' },
     { kind: 'assistant', lo: 3, hi: 3, text: '助手C', toolName: 'run_code' },
     { kind: 'assistant', lo: 4, hi: 4, text: '助手D' },
@@ -422,14 +422,11 @@ describe('compressHistory 参数校验', () => {
     expect(state.compressHistory({ start: 0, end: 9, content: 'x' }).isError).toBe(true);
   });
 
-  it('覆盖用户消息或系统消息报错', () => {
+  it('覆盖用户消息报错', () => {
     const state = new CompressionState(observeView());
     const userHit = state.compressHistory({ start: 0, end: 2, content: 'x' });
     expect(userHit.isError).toBe(true);
     expect(userHit.text).toContain('用户消息');
-    const sysHit = state.compressHistory({ index: 1, content: 'x' });
-    expect(sysHit.isError).toBe(true);
-    expect(sysHit.text).toContain('系统消息');
   });
 
   it('与 assistant 区间条目部分重叠报错，完整包含成功', () => {
@@ -532,13 +529,32 @@ describe('executeCall 与 complete', () => {
     expect(state.completed).toBe(true);
     expect(state.replacementCount).toBe(0);
   });
+
+  it('complete 成功时 result 是最终 <history> 块，与 buildFinalBlock 一致', () => {
+    const state = new CompressionState(observeView());
+    state.getHistory({});
+    state.markHistoryDelivered();
+    expect(state.compressHistory({ index: 2, content: '摘要B' }).isError).toBe(false);
+    const result = state.complete();
+    expect(result.isError).toBe(false);
+    expect(result.text).toBe(state.buildFinalBlock());
+    expect(result.text).toContain(`<${HISTORY_TAG} tip=`);
+    expect(result.text).toContain('<assistant index="2"><![CDATA[摘要B]]></assistant>');
+    expect(result.text).not.toBe('压缩完成');
+  });
+
+  it('complete 被门禁拒绝时 result 不含 <history> 块', () => {
+    const state = new CompressionState(viewOf([originalAsk(1)]));
+    const result = state.complete();
+    expect(result.isError).toBe(true);
+    expect(result.text).not.toContain(`<${HISTORY_TAG}`);
+  });
 });
 
 describe('buildFinalBlock', () => {
-  it('合并替换与原样条目：user/sys 原样、替换生成摘要条目、未替换 assistant 保留、reasoning 不进产物', () => {
+  it('合并替换与原样条目：user 原样、替换生成摘要条目、未替换 assistant 保留、reasoning 不进产物', () => {
     const view = viewOf([
       { kind: 'user', lo: 0, hi: 0, text: '用户消息A' },
-      { kind: 'sys', lo: 1, hi: 1, text: '', sysKind: 'system' },
       { kind: 'reasoning', lo: 2, hi: 2, text: '思考' },
       { kind: 'assistant', lo: 2, hi: 2, text: '助手B' },
       { kind: 'assistant', lo: 3, hi: 3, text: '助手C' },
@@ -552,11 +568,11 @@ describe('buildFinalBlock', () => {
     const block = state.buildFinalBlock();
     expect(
       block.startsWith(
-        `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${historyFormatNote({ user: true, sys: true })}\n`,
+        `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${historyFormatNote({ user: true })}\n`,
       ),
     ).toBe(true);
     expect(block).toContain('<user_message index="0"><![CDATA[用户消息A]]></user_message>');
-    expect(block).toContain('<sys type="system" index="1"/>');
+    expect(block).not.toContain('<sys');
     expect(block).toContain('<assistant index="2"><![CDATA[B的摘要]]></assistant>');
     expect(block).toContain('<assistant start="3" end="4"><![CDATA[C和D的摘要]]></assistant>');
     expect(block).toContain('<user_message index="5"><![CDATA[用户消息E]]></user_message>');
@@ -757,7 +773,6 @@ describe('buildFinalBlock', () => {
   it('块顶注释按最终条目动态生成：四类特殊条目齐备时说明完整，仅 assistant 条目时不含条目说明', () => {
     const full = viewOf([
       { kind: 'user', lo: 0, hi: 0, text: '用户消息A' },
-      { kind: 'sys', lo: 1, hi: 1, text: '', sysKind: 'system' },
       {
         kind: 'assistant',
         lo: 2,
@@ -777,18 +792,17 @@ describe('buildFinalBlock', () => {
     const fullBlock = new CompressionState(full).buildFinalBlock();
     expect(
       fullBlock.startsWith(
-        `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${historyFormatNote({ user: true, sys: true, skill: true, askUserQuestion: true })}\n`,
+        `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${historyFormatNote({ user: true, skill: true, askUserQuestion: true })}\n`,
       ),
     ).toBe(true);
 
     const plain = viewOf([{ kind: 'assistant', lo: 0, hi: 0, text: '助手A' }]);
     const plainBlock = new CompressionState(plain).buildFinalBlock();
-    // 无 user / sys / skill / ask_user_question 条目时，块顶注释仅含通用说明
+    // 无 user / skill / ask_user_question 条目时，块顶注释仅含通用说明
     expect(
       plainBlock.startsWith(`<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${historyFormatNote({})}\n`),
     ).toBe(true);
     expect(plainBlock).not.toContain('表示用户消息原文');
-    expect(plainBlock).not.toContain('表示被压缩的系统消息');
     expect(plainBlock).not.toContain('表示未压缩的原始 skill');
     expect(plainBlock).not.toContain('表示向用户提问');
     // 完整消息定义由主会话的 system-reminder 提供，块顶注释不重复

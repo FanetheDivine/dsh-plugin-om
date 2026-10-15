@@ -3,7 +3,7 @@
  * 导出 TokenPrices / UsageBuckets / ScenarioResult / ModelParams / DEFAULT_PARAMS /
  * OPUS_PRICES / STEP_INPUT_TOKENS / STEP_OUTPUT_TOKENS /
  * COMPRESS_CACHE_WRITE_RATIO / COMPRESS_CACHE_READ_RATIO / COMPRESS_OUTPUT_FIXED_TOKENS /
- * SYS_RESIDUAL_TOKENS / TABLE_MIN_TOKENS / TABLE_MAX_TOKENS /
+ * TABLE_MIN_TOKENS / TABLE_MAX_TOKENS /
  * turnCount / simulateWithoutOm / simulateWithOm / computeRow / buildTable。
  *
  * 模型口径（与页面成本表下方的「假设」同步展示）：
@@ -17,7 +17,7 @@
  *   n = (T − S − D) / STEP_INPUT_TOKENS 轮后原始会话达到 T
  * - om 开启：pre-step 先反思后观察；净压力 ≈ 未压缩 step 输入量 + 未遮蔽注入量，
  *   ≥ 观察阈值触发观察压缩（被压缩消息 = 未压缩 step 输入，旧块保留、未压缩量清零）；
- *   首次观察把 dsh 注入消息遮蔽为 <sys> 空条目（内容不再占上下文、不进摘要输入）；
+ *   首次观察把 dsh 注入消息遮蔽（内容不再占上下文、不进摘要输入，无占位残留）；
  *   history 块合计 ≥ 反思阈值触发合并（全部块压缩为一条）；thinking 始终不压缩
  * - 压缩会话（观察/反思）为独立新会话，按经验公式计费（X = 本次被压缩消息 tokens）：
  *   缓存创建 ≈ 1.3X、缓存读 ≈ 1.75X、输出 ≈ 压缩比 × X + 5,000；
@@ -69,7 +69,7 @@ export type ScenarioResult = UsageBuckets & {
 export type ModelParams = {
   /** 系统提示词 tokens（S）：每轮重复发送的固定前缀之一。 */
   systemPromptTokens: number;
-  /** dsh 注入消息 tokens（D）：AGENTS.md / skill 定义等系统消息，首次观察压缩后遮蔽为空条目。 */
+  /** dsh 注入消息 tokens（D）：AGENTS.md / skill 定义等系统消息，首次观察压缩后被遮蔽。 */
   injectedTokens: number;
   /** 观察阈值（tokens）：净压力 ≥ 该值触发观察压缩。 */
   observeThresholdTokens: number;
@@ -104,9 +104,6 @@ export const COMPRESS_CACHE_READ_RATIO = 1.75;
 
 /** 压缩会话每次调用的固定输出开销 tokens（输出桶，含指令与多轮工具循环开销）。 */
 export const COMPRESS_OUTPUT_FIXED_TOKENS = 5000;
-
-/** dsh 注入消息被遮蔽后的 <sys> 空条目残留 tokens（近似常数）。 */
-export const SYS_RESIDUAL_TOKENS = 50;
 
 /** 对比表原始会话规模下限（tokens）。 */
 export const TABLE_MIN_TOKENS = 20_000;
@@ -235,7 +232,7 @@ export function simulateWithOm(
       billCompression(compressed);
       history += compressed * ratio;
       uncompressed = 0;
-      injectedActive = Math.min(injectedActive, SYS_RESIDUAL_TOKENS);
+      injectedActive = 0;
       observeCount += 1;
       cacheRead = params.systemPromptTokens + preservedBlocks;
     }

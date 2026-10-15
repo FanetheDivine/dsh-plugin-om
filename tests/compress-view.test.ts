@@ -58,7 +58,7 @@ function resultEvent(callId: string, resultText: string, isError = false) {
 }
 
 describe('buildObserveView', () => {
-  it('完整消息投影为条目：user 原文 / sys 空条目 / assistant 原文 / toolcall 带工具名 / reasoning 参考', () => {
+  it('完整消息投影为条目：user 原文 / 系统消息不入视图 / assistant 原文 / toolcall 带工具名 / reasoning 参考', () => {
     const session = makeSession({
       events: [
         userEvent([textBlock('用户请求')]),
@@ -70,22 +70,20 @@ describe('buildObserveView', () => {
     });
     const view = buildObserveView(session, [0, 1, 2, 3, 4]);
     expect(view.minIndex).toBe(0);
-    expect(view.maxIndex).toBe(3);
+    expect(view.maxIndex).toBe(2);
     expect(view.entries.map((e) => e.kind)).toEqual([
       'user',
-      'sys',
       'reasoning',
       'assistant',
       'assistant',
     ]);
-    const [user, sys, reasoning, text, toolcall] = view.entries;
+    const [user, reasoning, text, toolcall] = view.entries;
     expect(user).toMatchObject({ lo: 0, hi: 0, text: '用户请求' });
-    expect(sys).toMatchObject({ lo: 1, hi: 1, text: '', sysKind: 'system' });
-    expect(reasoning).toMatchObject({ lo: 2, hi: 2, text: '先思考' });
-    expect(text).toMatchObject({ lo: 2, hi: 2, text: '模型回复' });
+    expect(reasoning).toMatchObject({ lo: 1, hi: 1, text: '先思考' });
+    expect(text).toMatchObject({ lo: 1, hi: 1, text: '模型回复' });
     expect(toolcall).toMatchObject({
-      lo: 3,
-      hi: 3,
+      lo: 2,
+      hi: 2,
       toolName: 'run_code',
       callId: 'c1',
       toolArgs: '{"code":"x"}',
@@ -94,9 +92,11 @@ describe('buildObserveView', () => {
     // toolcall 条目渲染为结构化形态（与 recall 一致），不再输出 [tool-call] 纯文本
     const xml = renderEntriesXml(view.entries);
     expect(xml).toContain(
-      '<assistant index="3" type="toolcall" tool-name="run_code" callId="c1"><tool-args><![CDATA[{"code":"x"}]]></tool-args><tool-result><![CDATA[执行结果]]></tool-result></assistant>',
+      '<assistant index="2" type="toolcall" tool-name="run_code" callId="c1"><tool-args><![CDATA[{"code":"x"}]]></tool-args><tool-result><![CDATA[执行结果]]></tool-result></assistant>',
     );
     expect(xml).not.toContain('[tool-call');
+    expect(xml).not.toContain('系统通知');
+    expect(xml).not.toContain('<sys');
   });
 
   it('toolcall 调用参数仅一层转义：参数 JSON 内的换行与引号逐字保留', () => {
@@ -184,54 +184,7 @@ describe('buildObserveView', () => {
     expect(skill?.text).not.toContain('[tool-call');
   });
 
-  it('手动加载的 skill 与工具加载一致：不渲染 sys、保留指令、二次确认且反思后仍可识别', () => {
-    const content =
-      '<skill_content name="manual-skill">\n<skill_resources>\n资源位置\n</skill_resources>\n\n<skill_instructions>\n操作步骤\n</skill_instructions>\n</skill_content>';
-    const session = makeSession({
-      events: [
-        userEvent([textBlock(content)], {
-          kind: 'skill-invocation',
-          name: 'manual-skill',
-          form: 'instructions',
-        }),
-      ],
-    });
-    const view = buildObserveView(session, [0]);
-    expect(view.entries).toEqual([
-      {
-        kind: 'assistant',
-        lo: 0,
-        hi: 0,
-        toolName: 'skill',
-        skillName: 'manual-skill',
-        text: content,
-      },
-    ]);
-    const xml =
-      '<skill_content name="manual-skill" index="0"><skill_resources><![CDATA[\n资源位置\n]]></skill_resources><skill_instructions><![CDATA[\n操作步骤\n]]></skill_instructions></skill_content>';
-    expect(renderEntriesXml(view.entries)).toBe(xml);
-    expect(renderEntriesXml(view.entries)).not.toContain('<sys');
-
-    const state = new CompressionState(view);
-    expect(state.getHistory({}).text).toContain(xml);
-    expect(state.compressHistory({ index: 0, content: '摘要' }).isError).toBe(true);
-    expect(state.buildFinalBlock()).toContain(xml);
-    const reflected = buildReflectView([{ text: state.buildFinalBlock(), seq: 4 }]);
-    expect(reflected.entries[0]).toMatchObject({
-      kind: 'assistant',
-      lo: 0,
-      hi: 0,
-      toolName: 'skill',
-      skillName: 'manual-skill',
-    });
-    expect(
-      new CompressionState(reflected).compressHistory({ index: 0, content: '摘要' }).isError,
-    ).toBe(true);
-    expect(state.compressHistory({ index: 0, content: '摘要' }).isError).toBe(false);
-    expect(state.buildFinalBlock()).toContain('<assistant index="0"><![CDATA[摘要]]></assistant>');
-  });
-
-  it('工具名识别无需 skill 来源标记；普通系统消息保持不可压缩且索引稳定', () => {
+  it('系统消息（含手动加载的 skill）不占 index；工具加载的 skill 保持不可直接压缩', () => {
     const session = makeSession({
       events: [
         userEvent([textBlock('用户输入')]),
@@ -261,20 +214,15 @@ describe('buildObserveView', () => {
       view.entries.map(({ kind, lo, toolName, skillName }) => ({ kind, lo, toolName, skillName })),
     ).toEqual([
       { kind: 'user', lo: 0, toolName: undefined, skillName: undefined },
-      { kind: 'sys', lo: 1, toolName: undefined, skillName: undefined },
-      { kind: 'assistant', lo: 2, toolName: 'skill', skillName: 'manual' },
-      { kind: 'assistant', lo: 3, toolName: 'skill', skillName: 'tool-loaded' },
-      { kind: 'sys', lo: 4, toolName: undefined, skillName: undefined },
+      { kind: 'assistant', lo: 1, toolName: 'skill', skillName: 'tool-loaded' },
     ]);
     const xml = renderEntriesXml(view.entries);
-    expect(xml).toContain('<sys type="skill-catalog" index="1"/>');
-    expect(xml).toContain('<skill_content name="manual" index="2">');
-    expect(xml).toContain('<skill_content name="tool-loaded" index="3">');
-    expect(xml).toContain('<sys type="runtime-context" index="4"/>');
+    expect(xml).toContain('<skill_content name="tool-loaded" index="1">');
+    expect(xml).not.toContain('manual');
+    expect(xml).not.toContain('<sys');
     const state = new CompressionState(view);
     expect(state.compressHistory({ index: 1, content: '摘要' }).isError).toBe(true);
-    expect(state.compressHistory({ index: 4, content: '摘要' }).isError).toBe(true);
-    expect(state.compressHistory({ index: 3, content: '摘要' }).isError).toBe(true);
+    expect(state.compressHistory({ index: 1, content: '摘要' }).isError).toBe(false);
   });
 
   it('skillNameOf：非 skill 工具为 undefined，skill 参数缺失或非法为空串', () => {
@@ -298,13 +246,13 @@ describe('buildObserveView', () => {
 });
 
 describe('buildReflectView', () => {
-  it('块内条目投影：user / sys / assistant 单条与区间（CDATA 正文经 textContent 还原）', () => {
+  it('块内条目投影：user / assistant 单条与区间，旧 sys 与未知标签被忽略（CDATA 正文经 textContent 还原）', () => {
     const block =
-      '<history tip="x">\n<user_message index="0"><![CDATA[用户原文]]></user_message>\n<sys type="system" index="1"/>\n<assistant index="2"><![CDATA[单条摘要]]></assistant>\n<assistant start="3" end="5"><![CDATA[区间摘要]]></assistant>\n</history>';
+      '<history tip="x">\n<user_message index="0"><![CDATA[用户原文]]></user_message>\n<sys type="system" index="1"/>\n<unknown index="9"><![CDATA[未知]]></unknown>\n<assistant index="2"><![CDATA[单条摘要]]></assistant>\n<assistant start="3" end="5"><![CDATA[区间摘要]]></assistant>\n</history>';
     const view = buildReflectView([{ text: block, seq: 7 }]);
     expect(view.minIndex).toBe(0);
     expect(view.maxIndex).toBe(5);
-    expect(view.entries).toHaveLength(4);
+    expect(view.entries).toHaveLength(3);
     expect(view.entries[0]).toMatchObject({
       kind: 'user',
       lo: 0,
@@ -312,9 +260,8 @@ describe('buildReflectView', () => {
       text: '用户原文',
       blockSeq: 7,
     });
-    expect(view.entries[1]).toMatchObject({ kind: 'sys', lo: 1, hi: 1, sysKind: 'system' });
-    expect(view.entries[2]).toMatchObject({ kind: 'assistant', lo: 2, hi: 2, text: '单条摘要' });
-    expect(view.entries[3]).toMatchObject({ kind: 'assistant', lo: 3, hi: 5, text: '区间摘要' });
+    expect(view.entries[1]).toMatchObject({ kind: 'assistant', lo: 2, hi: 2, text: '单条摘要' });
+    expect(view.entries[2]).toMatchObject({ kind: 'assistant', lo: 3, hi: 5, text: '区间摘要' });
   });
 
   it('多块按序拼接，块间空隙不产生条目', () => {
@@ -822,7 +769,6 @@ describe('renderEntriesXml', () => {
   it('条目正文以 CDATA 包裹，user 注释输出为 XML 注释，无 history 包裹', () => {
     const xml = renderEntriesXml([
       { kind: 'user', lo: 0, hi: 0, text: 'a<b>&"c', notes: [' 图片附件 '] },
-      { kind: 'sys', lo: 1, hi: 1, text: '', sysKind: 'system' },
       { kind: 'assistant', lo: 2, hi: 2, text: '摘要' },
       { kind: 'assistant', lo: 3, hi: 5, text: '区间摘要' },
     ]);
@@ -830,7 +776,6 @@ describe('renderEntriesXml', () => {
     expect(xml).toContain(
       '<user_message index="0"><![CDATA[a<b>&"c]]><!-- 图片附件 --></user_message>',
     );
-    expect(xml).toContain('<sys type="system" index="1"/>');
     expect(xml).toContain('<assistant index="2"><![CDATA[摘要]]></assistant>');
     expect(xml).toContain('<assistant start="3" end="5"><![CDATA[区间摘要]]></assistant>');
   });
