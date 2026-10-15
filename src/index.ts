@@ -18,7 +18,11 @@ import { ensureModelReady, getEmbedder } from './embedding.ts';
 import { makeLogger } from './logger.ts';
 import { buildRecallTool } from './recall.ts';
 import { buildRecompressCommand } from './recompress.ts';
-import { activeSystemReminders, ensureSystemReminders } from './system-reminder.ts';
+import {
+  activeSystemReminders,
+  ensureSystemReminders,
+  progressIdleOptions,
+} from './system-reminder.ts';
 import type { Context } from './types.ts';
 import { isMainSession } from './utils.ts';
 
@@ -124,7 +128,8 @@ export function apply(ctx: Context, config?: unknown): void {
     }
     const decision = await next();
     // 压缩后按表层与待输入消息检查：进度提醒缺失或按活动窗口重发。
-    const reminders = activeSystemReminders(currentConfig(config));
+    const latest = currentConfig(config);
+    const reminders = activeSystemReminders(latest);
     if (
       decision.kind === 'enter' &&
       !signal.aborted &&
@@ -133,7 +138,12 @@ export function apply(ctx: Context, config?: unknown): void {
     ) {
       return {
         ...decision,
-        messages: ensureSystemReminders(agent.session, decision.messages, reminders),
+        messages: ensureSystemReminders(
+          agent.session,
+          decision.messages,
+          reminders,
+          progressIdleOptions(latest),
+        ),
       };
     }
     return decision;

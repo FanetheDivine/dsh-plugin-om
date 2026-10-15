@@ -23,6 +23,14 @@ export type PluginConfig = {
   compressSkipReasoning: boolean;
   /** 是否启用自动压缩（观察/反思）。 */
   omEnabled: boolean;
+  /** 是否注入进度提醒（与 omEnabled 同时开启才注入）。 */
+  progressReminderEnabled: boolean;
+  /** 无记录活动达标时是否重发进度提醒（false 时仅在表层缺失时补发）。 */
+  progressReminderIdleEnabled: boolean;
+  /** 重发判定：静默窗口内已结束模型 step 数下限（≥ 1）。 */
+  progressReminderIdleSteps: number;
+  /** 重发判定：静默窗口内工具调用数须超过该值（≥ 0）。 */
+  progressReminderIdleToolCalls: number;
   /** 步骤级日志开关（缺省按 NODE_ENV !== 'production' 判定）。 */
   debug: boolean;
   /** 是否注册 recall 工具。 */
@@ -48,6 +56,10 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   tailMessageCount: 20,
   compressSkipReasoning: true,
   omEnabled: true,
+  progressReminderEnabled: true,
+  progressReminderIdleEnabled: true,
+  progressReminderIdleSteps: 4,
+  progressReminderIdleToolCalls: 10,
   debug: false,
   recallEnabled: true,
   semanticRecallEnabled: true,
@@ -72,6 +84,22 @@ export const Config = Schema.object({
   tailMessageCount: Schema.number().step(1).default(DEFAULT_CONFIG.tailMessageCount).volatile(),
   compressSkipReasoning: Schema.boolean().default(DEFAULT_CONFIG.compressSkipReasoning).volatile(),
   omEnabled: Schema.boolean().default(DEFAULT_CONFIG.omEnabled).volatile(),
+  progressReminderEnabled: Schema.boolean()
+    .default(DEFAULT_CONFIG.progressReminderEnabled)
+    .volatile(),
+  progressReminderIdleEnabled: Schema.boolean()
+    .default(DEFAULT_CONFIG.progressReminderIdleEnabled)
+    .volatile(),
+  progressReminderIdleSteps: Schema.number()
+    .step(1)
+    .min(1)
+    .default(DEFAULT_CONFIG.progressReminderIdleSteps)
+    .volatile(),
+  progressReminderIdleToolCalls: Schema.number()
+    .step(1)
+    .min(0)
+    .default(DEFAULT_CONFIG.progressReminderIdleToolCalls)
+    .volatile(),
   debug: Schema.boolean()
     .default(process.env.NODE_ENV !== 'production')
     .volatile(),
@@ -99,15 +127,19 @@ type NumberKey =
   | 'reflectThresholdTokens'
   | 'compressMaxTokens'
   | 'rateLimitWaitMs'
-  | 'tailMessageCount';
+  | 'tailMessageCount'
+  | 'progressReminderIdleSteps'
+  | 'progressReminderIdleToolCalls';
 
-/** 数值键校验参数表：键名 + [是否必须为整数]。 */
-const NUMBER_KEYS: Array<[NumberKey, boolean]> = [
+/** 数值键校验参数表：键名 + [是否必须为整数, 下限（含）]。 */
+const NUMBER_KEYS: Array<[NumberKey, boolean, number?]> = [
   ['observeThresholdTokens', true],
   ['reflectThresholdTokens', true],
   ['compressMaxTokens', true],
   ['rateLimitWaitMs', true],
   ['tailMessageCount', true],
+  ['progressReminderIdleSteps', true, 1],
+  ['progressReminderIdleToolCalls', true, 0],
 ];
 
 /** 归一化原始配置输入：缺省 / null / 空串 / 非对象视为空对象。 */
@@ -136,16 +168,19 @@ function resolveOptionalString(raw: unknown): string | undefined {
 export function resolveConfig(raw?: unknown): Readonly<PluginConfig> {
   const input = normalizeConfigInput(raw);
   const config: PluginConfig = { ...DEFAULT_CONFIG };
-  for (const [key, integer] of NUMBER_KEYS) {
+  for (const [key, integer, min] of NUMBER_KEYS) {
     const value = input[key];
     if (value === undefined || value === null) continue;
     if (typeof value === 'string' && value.trim() === '') continue;
     if (typeof value !== 'number' || !Number.isFinite(value)) continue;
     if (integer && !Number.isInteger(value)) continue;
+    if (min !== undefined && value < min) continue;
     config[key] = value as number;
   }
   config.compressSkipReasoning = resolveBoolean(input.compressSkipReasoning, true);
   config.omEnabled = resolveBoolean(input.omEnabled, true);
+  config.progressReminderEnabled = resolveBoolean(input.progressReminderEnabled, true);
+  config.progressReminderIdleEnabled = resolveBoolean(input.progressReminderIdleEnabled, true);
   config.debug = resolveBoolean(input.debug, process.env.NODE_ENV !== 'production');
   config.recallEnabled = resolveBoolean(input.recallEnabled, true);
   // 语义增强依赖原文召回：recall 关闭时一并失效

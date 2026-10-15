@@ -81,7 +81,11 @@ class RecordingAdapter extends LlmAdapter {
 }
 
 /** 保持历史低于压缩阈值，禁用需要下载模型的语义增强。 */
-function pluginConfig(omEnabled: boolean, recallEnabled = false): Partial<PluginConfig> {
+function pluginConfig(
+  omEnabled: boolean,
+  recallEnabled = false,
+  extra: Partial<PluginConfig> = {},
+): Partial<PluginConfig> {
   return {
     omEnabled,
     observeThresholdTokens: 1000000,
@@ -89,6 +93,7 @@ function pluginConfig(omEnabled: boolean, recallEnabled = false): Partial<Plugin
     recallEnabled,
     semanticRecallEnabled: false,
     debug: false,
+    ...extra,
   };
 }
 
@@ -97,6 +102,7 @@ async function stackPromptHost(
   omEnabled: boolean,
   recallEnabled = false,
   script: readonly (readonly StreamChunk[])[] = [],
+  extra: Partial<PluginConfig> = {},
 ) {
   const app = new Context();
   let handle: AgentHandle | undefined;
@@ -140,7 +146,7 @@ async function stackPromptHost(
     app.loader.builtins[name] = { name, inject, Config, apply };
     const entryId = await app.loader.create({
       name: `cordis:${name}`,
-      config: pluginConfig(omEnabled, recallEnabled),
+      config: pluginConfig(omEnabled, recallEnabled, extra),
     });
     await app.loader.await();
     const entry = app.loader.resolve(entryId);
@@ -463,6 +469,119 @@ describe('system-reminder 的真实宿主集成', () => {
         Array.from({ length: script.length }, () => 1),
       );
       expect(loggedReminders(handle.agent)).toBe(3);
+    } finally {
+      await handle.dispose();
+      await app.fiber.dispose();
+    }
+  });
+
+  it('progressReminderEnabled=false 时 OM 仍开启也不注入进度提醒', async () => {
+    const { app, adapter, handle } = await stackPromptHost(true, false, [], {
+      progressReminderEnabled: false,
+    });
+    try {
+      const request = await runTurn(adapter, handle.agent, '不需要提醒的任务。');
+      expect(requestReminders(request)).toBe(0);
+      expect(loggedReminders(handle.agent)).toBe(0);
+    } finally {
+      await handle.dispose();
+      await app.fiber.dispose();
+    }
+  });
+
+  it('自定义阈值 steps≥2 且 toolCalls>1 时更早重发，并从重发 step 重计', async () => {
+    const script = [
+      ...[1, 1, 1, 1].map((count, index) => toolStep(index + 1, count)),
+      modelReply([{ type: 'text', text: '已完成自定义阈值检查。' }]),
+    ];
+    const { app, adapter, handle, toolRuns } = await stackPromptHost(true, true, script, {
+      progressReminderIdleSteps: 2,
+      progressReminderIdleToolCalls: 1,
+    });
+    try {
+      handle.agent.followup(
+        createUserMessage({
+          content: [{ type: 'text', text: '连续执行四次工具检查。' }],
+          source: { kind: 'user' },
+        }),
+      );
+      await handle.agent.whenIdle();
+      expectCompletedToolLoop(handle.agent, adapter, toolRuns, script.length, 4);
+      expect(adapter.calls.map((request) => requestReminders(request, urgentReminder))).toEqual([
+        0, 0, 1, 1, 2,
+      ]);
+      expect(loggedReminders(handle.agent)).toBe(3);
+    } finally {
+      await handle.dispose();
+      await app.fiber.dispose();
+    }
+  });
+
+  it('progressReminderIdleEnabled=false 时静默活动不重发，只保留一条提醒', async () => {
+    const script = [
+      ...Array.from({ length: 6 }, (_, index) => toolStep(index + 1, 3)),
+      modelReply([{ type: 'text', text: '已完成静默检查。' }]),
+    ];
+    const { app, adapter, handle, toolRuns } = await stackPromptHost(true, true, script, {
+      progressReminderIdleEnabled: false,
+    });
+    try {
+      handle.agent.followup(
+        createUserMessage({
+          content: [{ type: 'text', text: '静默执行十八次工具检查。' }],
+          source: { kind: 'user' },
+        }),
+      );
+      await handle.agent.whenIdle();
+      expectCompletedToolLoop(handle.agent, adapter, toolRuns, script.length, 18);
+      expect(adapter.calls.map((request) => requestReminders(request, urgentReminder))).toEqual(
+        Array.from({ length: script.length }, () => 0),
+      );
+      expect(adapter.calls.map((request) => requestReminders(request))).toEqual(
+        Array.from({ length: script.length }, () => 1),
+      );
+      expect(loggedReminders(handle.agent)).toBe(1);
+    } finally {
+      await handle.dispose();
+      await app.fiber.dispose();
+    }
+  });
+
+  it('Loader volatile 热更新：运行中开启活动重发并调低阈值，下一个请求即生效', async () => {
+    const first = [
+      ...[1, 2, 3, 4].map((step) => toolStep(step, 3)),
+      modelReply([{ type: 'text', text: '第一轮完成。' }]),
+    ];
+    const second = [
+      ...[11, 12].map((step) => toolStep(step, 1)),
+      modelReply([{ type: 'text', text: '第二轮完成。' }]),
+    ];
+    const { app, adapter, entry, handle } = await stackPromptHost(
+      true,
+      true,
+      [...first, ...second],
+      { progressReminderIdleEnabled: false },
+    );
+    try {
+      const run = async (text: string) => {
+        const before = adapter.calls.length;
+        handle.agent.followup(
+          createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
+        );
+        await handle.agent.whenIdle();
+        return adapter.calls
+          .slice(before)
+          .map((request) => requestReminders(request, urgentReminder));
+      };
+      expect(await run('关闭重发时执行十二次检查。')).toEqual([0, 0, 0, 0, 0]);
+      await entry.update({
+        config: pluginConfig(true, true, {
+          progressReminderIdleSteps: 2,
+          progressReminderIdleToolCalls: 1,
+        }),
+      });
+      await app.loader.await();
+      expect(await run('开启重发并降低阈值后执行两次检查。')).toEqual([0, 0, 1]);
     } finally {
       await handle.dispose();
       await app.fiber.dispose();

@@ -14,6 +14,10 @@ describe('宿主 Config 校验与 volatile 值', () => {
       tailMessageCount: 2,
       compressSkipReasoning: false,
       omEnabled: false,
+      progressReminderEnabled: false,
+      progressReminderIdleEnabled: false,
+      progressReminderIdleSteps: 2,
+      progressReminderIdleToolCalls: 0,
       debug: true,
       recallEnabled: false,
       semanticRecallEnabled: false,
@@ -24,7 +28,7 @@ describe('宿主 Config 校验与 volatile 值', () => {
     };
     const parsed = Config(yaml);
     const values = Object.fromEntries(Object.entries(parsed).map(([key, ref]) => [key, ref.get()]));
-    expect(Object.keys(values)).toHaveLength(14);
+    expect(Object.keys(values)).toHaveLength(18);
     expect(resolveConfig(values)).toEqual(resolveConfig(yaml));
     expect(Config({}).observeThresholdTokens.get()).toBe(resolveConfig({}).observeThresholdTokens);
     expect(Config({}).compressMaxTokens.get()).toBeUndefined();
@@ -49,6 +53,53 @@ describe('宿主 Config 校验与 volatile 值', () => {
     expect(() => Config({ recallEnabled: 'false' } as never)).toThrow(/expected/);
     expect(() => Config({ modelDir: 42 } as never)).toThrow(/expected/);
     expect(resolveConfig({ recallEnabled: 'false', modelDir: 42 })).toEqual(resolveConfig({}));
+  });
+});
+
+describe('进度提醒配置', () => {
+  it('默认值与既有行为一致', () => {
+    const c = resolveConfig({});
+    expect(c.progressReminderEnabled).toBe(true);
+    expect(c.progressReminderIdleEnabled).toBe(true);
+    expect(c.progressReminderIdleSteps).toBe(4);
+    expect(c.progressReminderIdleToolCalls).toBe(10);
+  });
+
+  it('合法值覆盖，经宿主 Config 解析后一致', () => {
+    const yaml = {
+      progressReminderEnabled: false,
+      progressReminderIdleEnabled: false,
+      progressReminderIdleSteps: 1,
+      progressReminderIdleToolCalls: 0,
+    };
+    const c = resolveConfig(yaml);
+    expect(c).toMatchObject(yaml);
+    const parsed = Config(yaml);
+    expect(parsed.progressReminderIdleSteps.get()).toBe(1);
+    expect(parsed.progressReminderIdleToolCalls.get()).toBe(0);
+  });
+
+  it('非法值回退默认：小数、越界、错误类型、空串', () => {
+    for (const [key, bad] of [
+      ['progressReminderIdleSteps', 0],
+      ['progressReminderIdleSteps', -3],
+      ['progressReminderIdleSteps', 2.5],
+      ['progressReminderIdleSteps', '3'],
+      ['progressReminderIdleToolCalls', -1],
+      ['progressReminderIdleToolCalls', 1.5],
+      ['progressReminderIdleToolCalls', ''],
+      ['progressReminderEnabled', 'false'],
+      ['progressReminderIdleEnabled', 0],
+    ] as const) {
+      expect(resolveConfig({ [key]: bad }), `${key}=${String(bad)}`).toEqual(resolveConfig({}));
+    }
+  });
+
+  it('宿主保存时拒绝越界与小数', () => {
+    expect(() => Config({ progressReminderIdleSteps: 0 })).toThrow();
+    expect(() => Config({ progressReminderIdleSteps: 1.5 })).toThrow();
+    expect(() => Config({ progressReminderIdleToolCalls: -1 })).toThrow();
+    expect(() => Config({ progressReminderEnabled: 'true' } as never)).toThrow(/expected/);
   });
 });
 
