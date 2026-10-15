@@ -20,7 +20,7 @@ import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots';
 import type { SessionId } from '@deepseek-ai/dsh-session/types';
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client';
 import type { CSSProperties, MouseEvent, ReactNode } from 'react';
-import { memo, useState } from 'react';
+import { memo, useRef, useState } from 'react';
 import { formatCompactCount, formatSeconds } from '../format.ts';
 import { OmRecompressMenu } from './OmRecompressMenu.tsx';
 import type { RecompressChoice, RecompressInjected } from './recompress-run.ts';
@@ -39,10 +39,10 @@ export interface OmCompactionCardProps {
   readonly inspectCall?: ((callId: ToolCallId) => void) | undefined;
 }
 
-/** 重压缩提交状态：空闲、进行中或带提示文案的结果。 */
-type RecompressState =
-  | { readonly status: 'idle' | 'running' }
-  | { readonly status: 'done' | 'failed'; readonly text: string };
+/** 一次重压缩提交：进行中带模型名，结束后带提示文案。同一卡片允许多条并行。 */
+type RecompressEntry =
+  | { readonly id: number; readonly status: 'running'; readonly model: string }
+  | { readonly id: number; readonly status: 'done' | 'failed'; readonly text: string };
 
 /** 卡片样式类名（与宿主 ContextInjectionRow.module.css 同款规则，增加水平滚动支持）。 */
 const css = {
@@ -96,7 +96,9 @@ export const OmCompactionCard = memo(function OmCompactionCard({
   inspectCall,
 }: OmCompactionCardProps) {
   const [expanded, setExpanded] = useState(false);
-  const [recompressState, setRecompressState] = useState<RecompressState>({ status: 'idle' });
+  const [recompressEntries, setRecompressEntries] = useState<readonly RecompressEntry[]>([]);
+  // 提交序号：并行时用来定位各自的条目
+  const nextEntryId = useRef(0);
   // 重压缩开始提示：每次提交递增 seq，作为 Toast 的 key 重新开始一轮显示
   const [startedToast, setStartedToast] = useState(0);
   const { data } = node;
@@ -122,34 +124,45 @@ export const OmCompactionCard = memo(function OmCompactionCard({
         {t('card.inspect')}
       </button>
     ) : null;
-  // 换模型重压缩：仅成功卡片提供；结果只作提示，重压缩记录在日志子会话中
+  // 换模型重压缩：仅成功卡片提供；结果只作提示，重压缩记录在日志子会话中。
+  // 提交不阻塞按钮，可并行多条；新提交会清掉已结束的旧结果，保留仍在进行的条目
   const pickRecompress = (choice: RecompressChoice) => {
     if (recompress === undefined) return;
-    setRecompressState({ status: 'running' });
+    const id = nextEntryId.current++;
+    const model = `${choice.provider}/${choice.model}(${
+      choice.reasoningEffort ?? t('compaction.stats.effortDefault')
+    })`;
+    setRecompressEntries((entries) => [
+      ...entries.filter((entry) => entry.status === 'running'),
+      { id, status: 'running', model },
+    ]);
     setStartedToast((seq) => seq + 1);
     void recompress.run(data.compactionId, choice).then((outcome) => {
-      setRecompressState(
-        outcome.ok
-          ? { status: 'done', text: outcome.text || t('recompress.done') }
-          : { status: 'failed', text: t('recompress.failed', { error: outcome.text }) },
+      const text = outcome.ok
+        ? outcome.text || t('recompress.done')
+        : t('recompress.failed', { error: outcome.text });
+      setRecompressEntries((entries) =>
+        entries.map((entry) =>
+          entry.id === id ? { id, status: outcome.ok ? 'done' : 'failed', text } : entry,
+        ),
       );
     });
   };
   const recompressButton =
     recompress === undefined ? null : (
-      <OmRecompressMenu
-        source={recompress}
-        t={t}
-        disabled={recompressState.status === 'running'}
-        onPick={pickRecompress}
-      />
+      <OmRecompressMenu source={recompress} t={t} onPick={pickRecompress} />
     );
-  const recompressResult =
-    recompressState.status === 'done' || recompressState.status === 'failed' ? (
-      <div className={css.result} data-om-recompress-result>
-        {recompressState.text}
+  const recompressResult = recompressEntries.map((entry) =>
+    entry.status === 'running' ? (
+      <div key={entry.id} className={css.result} data-om-recompress-running>
+        {t('recompress.running', { model: entry.model })}
       </div>
-    ) : null;
+    ) : (
+      <div key={entry.id} className={css.result} data-om-recompress-result>
+        {entry.text}
+      </div>
+    ),
+  );
   // 「轨迹」：切到轨迹视图。轨迹按 callId 定位记录，压缩没有 callId，无法跳到具体条目，
   // 只切视图对用户没有意义，故暂以 display:none 隐藏（样式见 css.trajectory）；
   // 待宿主支持按压缩定位后移除该规则即可恢复

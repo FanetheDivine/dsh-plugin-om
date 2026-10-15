@@ -21,12 +21,10 @@ import {
 import { createPortal } from 'react-dom';
 import type { DirectoryModel, RecompressChoice, RecompressInjected } from './recompress-run.ts';
 
-/** 菜单属性：重压缩能力（目录与加载）、文案座、禁用态与选中回调。 */
+/** 菜单属性：重压缩能力（目录与加载）、文案座与选中回调；提交期间按钮保持可用以支持并行。 */
 export interface OmRecompressMenuProps {
   readonly source: Pick<RecompressInjected, 'directory' | 'load'>;
   readonly t: TranslateNS<'om-compaction'>;
-  /** 提交进行中：按钮禁用。 */
-  readonly disabled: boolean;
   readonly onPick: (choice: RecompressChoice) => void;
 }
 
@@ -45,7 +43,6 @@ const css = {
 const menuCss = `
 .${css.button}{border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:16px;cursor:pointer;white-space:nowrap;border-radius:999px;flex:none;align-items:center;gap:4px;margin:0;padding:2px 8px;display:inline-flex}
 .${css.button}:is(:hover,:focus-visible):not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid);color:var(--dsw-alias-label-primary)}
-.${css.button}:disabled{cursor:default;opacity:.6}
 .${css.panel}{position:fixed;z-index:1000;box-sizing:border-box;width:260px;max-height:320px;display:flex;flex-direction:column;overflow:hidden}
 .${css.search}{box-sizing:border-box;width:100%;margin:0;padding:8px 12px;font:inherit;font-size:13px;color:inherit;background:none;border:none;border-bottom:1px solid var(--dsw-alias-label-caption);outline:none}
 .${css.list}{min-height:0;overflow-y:auto;padding:4px}
@@ -72,7 +69,7 @@ interface PickedModel {
 }
 
 /** 触发按钮与模型选择浮层。 */
-export function OmRecompressMenu({ source, t, disabled, onPick }: OmRecompressMenuProps) {
+export function OmRecompressMenu({ source, t, onPick }: OmRecompressMenuProps) {
   const state = useSyncExternalStore(
     (listener) => source.directory.subscribe(listener),
     () => source.directory.getSnapshot(),
@@ -266,7 +263,6 @@ export function OmRecompressMenu({ source, t, disabled, onPick }: OmRecompressMe
         type="button"
         className={css.button}
         data-om-recompress
-        disabled={disabled}
         onClick={(event: MouseEvent) => {
           event.stopPropagation();
           if (open) {
@@ -277,7 +273,7 @@ export function OmRecompressMenu({ source, t, disabled, onPick }: OmRecompressMe
           setOpen(true);
         }}
       >
-        {disabled ? t('recompress.running') : t('recompress.action')}
+        {t('recompress.action')}
       </button>
       {open &&
         createPortal(
