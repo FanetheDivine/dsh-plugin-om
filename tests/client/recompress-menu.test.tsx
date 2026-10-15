@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * 压缩卡片的换模型重压缩：按钮可见性、模型目录菜单、思考等级选择与结果提示。
+ * 压缩卡片的「尝试其他模型」：按钮可见性、模型目录菜单、思考等级选择与结果提示。
  */
 
 import type { ChatNode } from '@deepseek-ai/dsh-client-ui-chat/client';
@@ -127,7 +127,7 @@ const click = (el: Element | null) =>
   });
 const q = (selector: string) => document.body.querySelector(selector);
 
-describe('换模型重压缩按钮', () => {
+describe('尝试其他模型按钮', () => {
   it('缺少注入时不显示；失败行与进行中行也不显示', () => {
     mount(undefined);
     expect(q('[data-om-recompress]')).toBeNull();
