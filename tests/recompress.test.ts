@@ -319,7 +319,7 @@ describe('/om-recompress 命令：apply 接线', () => {
     expect(ok?.kind).toBe('success');
     // 形如「重压缩完成 模型(等级)，原始消息 → 产物，耗时」，不再附子会话 id
     expect(ok?.text).toMatch(
-      /^重压缩完成 alt\/vendor\/big-1\(high\)，\d+(\.\d)?k? → \d+(\.\d)?k?，\d+\.\ds$/,
+      /^重压缩完成 alt\/vendor\/big-1\(high\)，[\d.]+[kwM]? → [\d.]+[kwM]?，\d+\.\ds$/,
     );
     expect(ctx._llmCalls[0]?.options).toMatchObject({ provider: 'alt', reasoningEffort: 'high' });
 
