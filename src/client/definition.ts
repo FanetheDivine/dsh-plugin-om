@@ -58,6 +58,14 @@ export interface OmCompactionChatData {
   readonly summaryCharCount: number | null;
   /** 压缩后的估算 token 数（4 字符 ≈ 1 token），summary 不可用或非法时为 null。 */
   readonly summaryTokenCount: number | null;
+  /** 压缩所用 provider；载荷缺失或非法时为 null。 */
+  readonly provider: string | null;
+  /** 压缩所用模型；载荷缺失或非法时为 null。 */
+  readonly model: string | null;
+  /** 压缩所用思考等级；未配置或载荷缺失时为 null（卡片显示为默认）。 */
+  readonly reasoningEffort: string | null;
+  /** 压缩循环耗时（毫秒）；载荷缺失或非法时为 null。 */
+  readonly durationMs: number | null;
   /** 压缩失败的错误文案（来自 compaction/end 载荷 error）；非失败节点为 null。 */
   readonly error: string | null;
   /** 压缩循环落盘的诊断子会话 id（summary 优先、end 回落）；缺失时为 null，卡片不显示「查看」。 */
@@ -107,6 +115,11 @@ function diagnosticSessionIdOf(...matches: (ConversationMatch | undefined)[]): s
   return null;
 }
 
+/** 非空字符串原样返回，其余为 null。 */
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
 /** 从 compaction/summary 载荷提取摘要文本与遮蔽统计（载荷非法时各字段回落 null）。 */
 function compactSummaryData(
   compactionId: string,
@@ -117,6 +130,10 @@ function compactSummaryData(
   let shadowedItemCount: number | null = null;
   let shadowedTokenCount: number | null = null;
   let shadowedCharCount: number | null = null;
+  let provider: string | null = null;
+  let model: string | null = null;
+  let reasoningEffort: string | null = null;
+  let durationMs: number | null = null;
   if (summaryMatch?.event.type === 'compaction/summary') {
     // 宿主载荷类型是 union 且不含插件扩展字段，读取处收窄为插件扩展类型
     const data = summaryMatch.event.data as CompactionSummaryPayload;
@@ -139,6 +156,15 @@ function compactSummaryData(
       data.shadowedCharCount >= 0
         ? data.shadowedCharCount
         : null;
+    provider = nonEmptyString(data.provider);
+    model = nonEmptyString(data.model);
+    reasoningEffort = nonEmptyString(data.reasoningEffort);
+    durationMs =
+      typeof data.durationMs === 'number' &&
+      Number.isFinite(data.durationMs) &&
+      data.durationMs >= 0
+        ? data.durationMs
+        : null;
   }
   return {
     compactionId,
@@ -152,6 +178,10 @@ function compactSummaryData(
     shadowedCharCount,
     summaryCharCount: summary === null ? null : summary.length,
     summaryTokenCount: summary === null ? null : Math.ceil(summary.length / 4),
+    provider,
+    model,
+    reasoningEffort,
+    durationMs,
     diagnosticSessionId: diagnosticSessionIdOf(summaryMatch, endMatch),
   };
 }
@@ -179,6 +209,10 @@ function runningData(
     shadowedCharCount: null,
     summaryCharCount: null,
     summaryTokenCount: null,
+    provider: null,
+    model: null,
+    reasoningEffort: null,
+    durationMs: null,
     diagnosticSessionId: null,
   };
 }
@@ -206,6 +240,10 @@ function failureData(
     shadowedCharCount: null,
     summaryCharCount: null,
     summaryTokenCount: null,
+    provider: null,
+    model: null,
+    reasoningEffort: null,
+    durationMs: null,
     diagnosticSessionId: diagnosticSessionIdOf(end),
   };
 }

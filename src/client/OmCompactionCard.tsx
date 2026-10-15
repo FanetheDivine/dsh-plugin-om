@@ -21,7 +21,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types';
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client';
 import type { CSSProperties, MouseEvent, ReactNode } from 'react';
 import { memo, useState } from 'react';
-import { formatCompactCount } from '../format.ts';
+import { formatCompactCount, formatSeconds } from '../format.ts';
 import { OmRecompressMenu } from './OmRecompressMenu.tsx';
 import type { RecompressChoice, RecompressInjected } from './recompress-run.ts';
 
@@ -246,18 +246,21 @@ export const OmCompactionCard = memo(function OmCompactionCard({
   const open = expandable && expanded;
   // 统计行：优先完整压缩前后统计，载荷字段不全时逐级回落
   const stats =
-    data.shadowedItemCount !== null &&
-    data.shadowedCharCount !== null &&
-    data.shadowedTokenCount !== null &&
-    data.summaryCharCount !== null &&
-    data.summaryTokenCount !== null
-      ? t('compaction.stats', {
-          items: formatCompactCount(data.shadowedItemCount),
-          beforeChars: formatCompactCount(data.shadowedCharCount),
-          beforeTokens: formatCompactCount(data.shadowedTokenCount),
-          afterChars: formatCompactCount(data.summaryCharCount),
-          afterTokens: formatCompactCount(data.summaryTokenCount),
-        })
+    data.shadowedCharCount !== null && data.summaryCharCount !== null
+      ? [
+          t('compaction.stats', {
+            beforeChars: formatCompactCount(data.shadowedCharCount),
+            afterChars: formatCompactCount(data.summaryCharCount),
+          }),
+          ...(data.durationMs === null ? [] : [formatSeconds(data.durationMs)]),
+          ...(data.model === null
+            ? []
+            : [
+                `${data.provider === null ? '' : `${data.provider}/`}${data.model}(${
+                  data.reasoningEffort ?? t('compaction.stats.effortDefault')
+                })`,
+              ]),
+        ].join(t('compaction.stats.sep'))
       : data.shadowedItemCount !== null && data.shadowedTokenCount !== null
         ? t('compaction.completed', {
             items: formatCompactCount(data.shadowedItemCount),
