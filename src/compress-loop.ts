@@ -30,7 +30,7 @@ import {
   type ToolCallBlock,
   type UserMessage,
 } from '@deepseek-ai/dsh-llm';
-import { compressionInfoText, recordCompressionSession } from './compaction-log.ts';
+import { compressionInfo, recordCompressionSession } from './compaction-log.ts';
 import {
   COMPRESSION_TOOL_SCHEMAS,
   CompressionState,
@@ -303,7 +303,7 @@ export async function runCompressionLoop(
       stats,
       success,
       debug: options.debug,
-      info: compressionInfoText({
+      info: compressionInfo({
         target: options.target,
         originalChars: viewCharCount(options.view),
         ...(options.reasoningEffort === undefined

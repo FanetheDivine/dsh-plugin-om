@@ -325,13 +325,15 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
         provider: 'om-compaction-log',
         label: 'OM 压缩失败日志（观察 · 0 轮）', // 首轮请求即 error：无完成的模型轮
       });
-      // 子会话内容零加工：模型信息 + 指令 + assistant（含模型原始输出）
-      const userEvents = child?.snapshotEvents().filter((event) => event.type === 'user/message');
-      expect(JSON.stringify(userEvents?.[0]?.data)).toContain(
+      // 子会话内容零加工：指令 + assistant（含模型原始输出）+ 尾部模型信息
+      const assistantEvents = child
+        ?.snapshotEvents()
+        .filter((event) => event.type === 'assistant/message');
+      expect(JSON.stringify(assistantEvents?.at(-1)?.data)).toContain(
         '压缩使用模型 mock/mock-model（默认思考等级），原始消息',
       );
-      expect(JSON.stringify(userEvents?.[0]?.data)).toContain('压缩产物 无（压缩失败）');
-      const promptEvent = userEvents?.[1];
+      expect(JSON.stringify(assistantEvents?.at(-1)?.data)).toContain('压缩产物 无（压缩失败）');
+      const promptEvent = child?.snapshotEvents().find((event) => event.type === 'user/message');
       const promptText =
         promptEvent?.type === 'user/message'
           ? promptEvent.data.content

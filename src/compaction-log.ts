@@ -22,12 +22,11 @@ import type {
   ToolResultMessage,
   UserMessage,
 } from '@deepseek-ai/dsh-llm';
-import { createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm';
+import { createAssistantMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-session-persistence';
 import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent';
 import type { CompressionStats } from './compress-loop.ts';
-import { omSource } from './constants.ts';
 import { makeLogger } from './logger.ts';
 import type { Context, Session, SessionEvent, SessionEventMap } from './types.ts';
 import { type RoutedTarget, uuid } from './utils.ts';
@@ -57,8 +56,22 @@ export function compressionRecordLabel(
   return `OM 压缩${success ? '会话记录' : '失败日志'}（${phaseLabel(phase)} · ${rounds} 轮${retry}）`;
 }
 
-/** 模型信息文本的压缩产物字段：失败时无产物。 */
-export function compressionInfoText(info: {
+/** 字符数的 k 单位文本：不足 1000 原样，其余按 k 保留一位小数并去掉末尾 .0。 */
+export function formatKChars(value: number): string {
+  if (value < 1000) return String(value);
+  const text = String(Math.round((value / 1000) * 10) / 10);
+  return `${text.endsWith('.0') ? text.slice(0, -2) : text}k`;
+}
+
+/** 日志尾部的模型信息：展示文本与归因的 provider/model。 */
+export type CompressionInfo = {
+  text: string;
+  provider: string;
+  model: string;
+};
+
+/** 生成模型信息：压缩模型、思考等级、原始消息与压缩产物的字符数（k 单位）。 */
+export function compressionInfo(info: {
   target: RoutedTarget;
   /** 思考等级；缺省为模型默认。 */
   reasoningEffort?: string;
@@ -66,10 +79,15 @@ export function compressionInfoText(info: {
   originalChars: number;
   /** 压缩产物字符数；失败时缺省。 */
   resultChars?: number;
-}): string {
+}): CompressionInfo {
   const effort = info.reasoningEffort ?? '默认思考等级';
-  const result = info.resultChars === undefined ? '无（压缩失败）' : `${info.resultChars} 字符`;
-  return `压缩使用模型 ${info.target.provider}/${info.target.model}（${effort}），原始消息 ${info.originalChars} 字符，压缩产物 ${result}`;
+  const result =
+    info.resultChars === undefined ? '无（压缩失败）' : `${formatKChars(info.resultChars)} 字符`;
+  return {
+    text: `压缩使用模型 ${info.target.provider}/${info.target.model}（${effort}），原始消息 ${formatKChars(info.originalChars)} 字符，压缩产物 ${result}`,
+    provider: info.target.provider,
+    model: info.target.model,
+  };
 }
 
 /**
@@ -106,7 +124,7 @@ function buildCompressionSeed(
   messages: readonly Message[],
   stats: CompressionStats,
   label: string,
-  info?: string,
+  info?: CompressionInfo,
 ): SessionEvent[] {
   const seed: SessionEvent[] = [];
   const push = <K extends keyof SessionEventMap>(
@@ -137,15 +155,6 @@ function buildCompressionSeed(
     label,
   });
   push('turn/start', at(stats.startedAt), { turn: 1 });
-  if (info !== undefined) {
-    // 模型信息：位于任务指令之前，同刻落盘
-    push(
-      'user/message',
-      at(stats.startedAt),
-      createUserMessage({ content: [{ type: 'text', text: info }], source: omSource() }),
-      'append',
-    );
-  }
 
   let step = 0;
   let assistantIndex = 0;
@@ -236,6 +245,26 @@ function buildCompressionSeed(
     }
   }
   closeStep();
+  if (info !== undefined) {
+    // 模型信息：以模型来源的 assistant 文本追加在时间线尾部（插件来源的消息宿主不展示）
+    step += 1;
+    push('step/start', at(stats.completedAt), { turn: 1, step });
+    push(
+      'assistant/message',
+      at(stats.completedAt),
+      {
+        turn: 1,
+        step,
+        message: createAssistantMessage({
+          content: [{ type: 'text', text: info.text }],
+          source: { provider: info.provider, model: info.model },
+        }),
+        stream: [],
+      },
+      'append',
+    );
+    push('step/end', at(stats.completedAt), { turn: 1, step });
+  }
   push('turn/end', at(stats.completedAt), { turn: 1, reason: { kind: 'completed' } });
   return seed;
 }
@@ -244,7 +273,7 @@ function buildCompressionSeed(
  * 把一次压缩工具循环的完整会话消息组落盘为子会话：以重建时间线的 seed 事件经
  * ctx.sessions.create 构造子会话（header origin 'subagent'、parentSession 指向主会话、
  * delegationDepth = 父 + 1、cwd 继承主会话；首事件 one-shot descriptor，provider
- * om-compaction-log，label 含压缩阶段与轮数；info 存在时首条 user/message 为模型信息），flush 持久化，在父会话登记
+ * om-compaction-log，label 含压缩阶段与轮数；info 存在时尾部追加一条模型文本），flush 持久化，在父会话登记
  * subagent/catalog，返回子会话 id。成功与失败均调用；落盘自身绝不抛错，任何失败仅
  * logger.warn 并返回 undefined。
  */
@@ -264,8 +293,8 @@ export async function recordCompressionSession(
     debug: boolean;
     /** 换模型重压缩的目标模型（label 区分用）；常规压缩缺省。 */
     retryTarget?: RoutedTarget;
-    /** 模型信息文本（compressionInfoText），写为首条 user/message；缺省不写。 */
-    info?: string;
+    /** 模型信息（compressionInfo），追加为尾部模型文本；缺省不写。 */
+    info?: CompressionInfo;
   },
 ): Promise<string | undefined> {
   const logger = makeLogger(ctx, options.debug);

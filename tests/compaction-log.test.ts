@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import {
   COMPACTION_LOG_PROVIDER,
   compressionRecordLabel,
+  formatKChars,
   recordCompressionSession,
 } from '../src/compaction-log.ts';
 import type { CompressionStats } from '../src/compress-loop.ts';
@@ -156,7 +157,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     expect(descriptor?.data).toMatchObject({ label });
   });
 
-  it('info 文本作为首条 user/message 写在任务指令之前，缺省不写', async () => {
+  it('info 作为尾部模型文本：step/start → assistant/message → step/end，缺省不写', async () => {
     const withInfo = makeCtx();
     await recordCompressionSession(withInfo, makeSession({ events: twoCallFlow() }), {
       phase: 'observe',
@@ -164,18 +165,30 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       stats: makeStats([{ durationMs: 100 }]),
       success: true,
       debug: false,
-      info: '压缩使用模型 a/b（high）',
+      info: { text: '压缩使用模型 a/b（high）', provider: 'a', model: 'b' },
     });
     const events = withInfo._createdSessions[0]?.session.snapshotEvents() ?? [];
-    expect(events.map((e) => e.type).slice(0, 4)).toEqual([
-      'subagent/descriptor',
-      'turn/start',
-      'user/message',
-      'user/message',
+    expect(events.map((e) => e.type).slice(-4)).toEqual([
+      'step/start',
+      'assistant/message',
+      'step/end',
+      'turn/end',
     ]);
-    const users = events.filter((e) => e.type === 'user/message');
-    expect(JSON.stringify(users[0]?.data)).toContain('压缩使用模型 a/b（high）');
-    expect(users[0]?.time).toBe(users[1]?.time);
+    // 指令仍是唯一 user/message；模型文本带模型来源，宿主会展示
+    expect(events.filter((e) => e.type === 'user/message')).toHaveLength(1);
+    const infoEvent = events.filter((e) => e.type === 'assistant/message').at(-1);
+    const data = infoEvent?.data as {
+      step?: number;
+      message?: { source?: unknown; content?: unknown };
+    };
+    expect(data.message?.source).toEqual({ kind: 'model', provider: 'a', model: 'b' });
+    expect(JSON.stringify(data.message?.content)).toContain('压缩使用模型 a/b（high）');
+    // step 序号紧接最后一个模型轮
+    const steps = events
+      .filter((e) => e.type === 'step/start')
+      .map((e) => (e.data as { step: number }).step);
+    expect(steps).toEqual(steps.map((_, i) => i + 1));
+    expect(data.step).toBe(steps.at(-1));
 
     const without = makeCtx();
     await recordCompressionSession(without, makeSession({ events: twoCallFlow() }), {
@@ -186,7 +199,16 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       debug: false,
     });
     const plain = without._createdSessions[0]?.session.snapshotEvents() ?? [];
-    expect(plain.filter((e) => e.type === 'user/message')).toHaveLength(1);
+    expect(plain.filter((e) => e.type === 'assistant/message')).toHaveLength(1);
+  });
+
+  it('formatKChars：不足 1000 原样，其余以 k 为单位保留一位小数', () => {
+    expect(formatKChars(0)).toBe('0');
+    expect(formatKChars(999)).toBe('999');
+    expect(formatKChars(1000)).toBe('1k');
+    expect(formatKChars(3600)).toBe('3.6k');
+    expect(formatKChars(12_040)).toBe('12k');
+    expect(formatKChars(125_000)).toBe('125k');
   });
 
   it('header 元数据：origin subagent + parentSession + delegationDepth = 父 + 1 + cwd 继承', async () => {
