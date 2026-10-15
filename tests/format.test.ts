@@ -1,6 +1,6 @@
 // 压缩卡片统计行数字单位化：k / w（万）/ M。
 import { describe, expect, it } from 'vitest';
-import { formatCompactCount } from '../../src/client/format.ts';
+import { formatCompactCount } from '../src/format.ts';
 
 describe('formatCompactCount', () => {
   it('小于 1000 原样输出', () => {

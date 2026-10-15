@@ -516,6 +516,25 @@ describe('omCompactionDefinition 诊断子会话 id', () => {
   });
 });
 
+describe('omCompactionDefinition 压缩 id', () => {
+  it('成功、失败与进行中节点都携带 context.id 作为 compactionId', () => {
+    const checkpoint = matchOf(
+      checkpointEvent(8, { kind: PLUGIN_SOURCE_KIND, compactionId: 'om:1' }),
+    );
+    const start = matchOf(
+      lifecycle('compaction/start', 5, { compactionId: 'om:1', turn: 1, phase: 'observe' }),
+      'start',
+    );
+    const end = matchOf(lifecycle('compaction/end', 9, { compactionId: 'om:1', error: 'LLM 429' }));
+    const success = omCompactionDefinition.buildViewNode?.(contextOf([checkpoint], { checkpoint }));
+    const failed = omCompactionDefinition.buildViewNode?.(contextOf([start, end], { end }));
+    const running = omCompactionDefinition.buildViewNode?.(contextOf([start]));
+    for (const node of [success, failed, running]) {
+      expect(node?.data).toMatchObject({ compactionId: 'om:1' });
+    }
+  });
+});
+
 describe('omWarningDefinition（om/warning 信封事件的功能降级警告行）', () => {
   /** 构造 om/warning 信封事件（借用 feedback/record，text 为 om:1: 前缀 JSON）。 */
   function warningEvent(seq: number, data: unknown): SessionEvent {

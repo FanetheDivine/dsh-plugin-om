@@ -272,6 +272,16 @@ export function makeMeter(opts: { totalTokens?: number | undefined } = {}) {
   };
 }
 
+/** ctx 模拟登记的命令定义（仅测试用到的字段）。 */
+interface RegisteredCommand {
+  name: string;
+  handler: (invocation: {
+    agent: unknown;
+    rawInput: string;
+    signal: AbortSignal;
+  }) => Promise<{ kind: 'success' | 'error'; text?: string }>;
+}
+
 interface MockCtxOptions {
   /** 摘要流 chunk（text-delta / usage / finish；缺省单条 text-delta）。 */
   llmStream?: Iterable<unknown> | AsyncIterable<unknown>;
@@ -294,6 +304,8 @@ interface MockCtxOptions {
   systemPromptMounted?: boolean;
   /** meter.measure 抛错（模拟 tokenMeter 服务异常）。 */
   meterThrows?: Error;
+  /** commands 服务是否挂载（缺省 false；true 时 ctx.inject 运行回调并记录注册的命令）。 */
+  commandsMounted?: boolean;
 }
 
 /** 可编程 ctx 模拟（回调由测试注入）。 */
@@ -306,6 +318,7 @@ export function makeCtx({
   systemPromptAssemble,
   systemPromptMounted = true,
   meterThrows,
+  commandsMounted = false,
 }: MockCtxOptions = {}) {
   const onCallbacks = new Map<string, ((...args: unknown[]) => unknown)[]>();
   const registeredTools: unknown[] = [];
@@ -391,8 +404,27 @@ export function makeCtx({
   // systemPrompt 服务是否挂载：提供了 assemble 桩且未显式声明未挂载时视为挂载；
   // 缺省模拟未提供 systemPrompt 服务的旧宿主（get 返回 undefined、属性访问抛错）
   const systemPromptMountedNow = systemPromptMounted && systemPromptAssemble !== undefined;
+  /** commands.register 登记的命令定义（注销后移除）。 */
+  const registeredCommands: RegisteredCommand[] = [];
   const ctx = {
     logger,
+    commands: {
+      register: (definition: RegisteredCommand) => {
+        registeredCommands.push(definition);
+        return () => {
+          const index = registeredCommands.indexOf(definition);
+          if (index !== -1) registeredCommands.splice(index, 1);
+        };
+      },
+    },
+    /** 依赖服务可用时才运行回调（仅模拟 commands 服务）。 */
+    inject(_deps: unknown, callback: (inner: unknown) => void) {
+      if (commandsMounted) callback(ctx);
+    },
+    /** 立即运行副作用并忽略其返回的注销函数（测试不卸载）。 */
+    effect(run: () => unknown) {
+      run();
+    },
     tools: {
       register: (def: unknown) => {
         registeredTools.push(def);
@@ -444,6 +476,7 @@ export function makeCtx({
     },
     _onCallbacks: onCallbacks,
     _registeredTools: registeredTools,
+    _registeredCommands: registeredCommands,
     _sections: sections,
     _assembleCalls: assembleCalls,
     _llmCalls: llmCalls,
@@ -467,6 +500,7 @@ export function makeCtx({
     _mockSessionPersistence: typeof sessionPersistence;
     _onCallbacks: Map<string, ((...args: unknown[]) => unknown)[]>;
     _registeredTools: Array<{ name?: string }>;
+    _registeredCommands: RegisteredCommand[];
     _sections: Array<{ name?: string }>;
     _assembleCalls: unknown[];
     _llmCalls: Array<{ options: unknown }>;

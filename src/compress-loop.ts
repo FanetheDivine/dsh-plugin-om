@@ -30,7 +30,7 @@ import {
   type ToolCallBlock,
   type UserMessage,
 } from '@deepseek-ai/dsh-llm';
-import { recordCompressionSession } from './compaction-log.ts';
+import { compressionInfo, recordCompressionSession } from './compaction-log.ts';
 import {
   COMPRESSION_TOOL_SCHEMAS,
   CompressionState,
@@ -152,6 +152,10 @@ export type CompressionLoopOptions = {
   debug: boolean;
   /** 压缩请求的思考等级（已按目标模型校验）；undefined 用模型默认。 */
   reasoningEffort?: ReasoningEffortId;
+  /** 原始消息字符数（与 OM 卡片口径一致）；缺省按视图条目估算。 */
+  originalChars?: number;
+  /** 换模型重压缩的目标模型（仅标记会话记录标题）；常规压缩缺省。 */
+  retryTarget?: RoutedTarget;
   /** 取消信号。 */
   signal?: AbortSignal;
 };
@@ -186,6 +190,14 @@ export type CompressionFailure = {
 
 /** 循环结果（成功/失败二选一）。 */
 export type CompressionOutcome = CompressionSuccess | CompressionFailure;
+
+/** 视图原始消息字符数估算：非 reasoning 条目之和；工具调用条目的 text 已含参数与结果，不重复计入。 */
+export function viewCharCount(view: CompressionView): number {
+  return view.entries.reduce(
+    (total, entry) => (entry.kind === 'reasoning' ? total : total + entry.text.length),
+    0,
+  );
+}
 
 /** 构造插件自产 user 消息（压缩指令/提醒；source 为插件自有 kind）。 */
 function makePluginUserMessage(text: string): UserMessage {
@@ -279,6 +291,7 @@ export async function runCompressionLoop(
   const recordSessionId = async (
     success: boolean,
     stats: CompressionStats,
+    resultChars?: number,
   ): Promise<string | undefined> =>
     recordCompressionSession(ctx, session, {
       phase: options.phase,
@@ -286,6 +299,15 @@ export async function runCompressionLoop(
       stats,
       success,
       debug: options.debug,
+      info: compressionInfo({
+        target: options.target,
+        originalChars: options.originalChars ?? viewCharCount(options.view),
+        ...(options.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: options.reasoningEffort }),
+        ...(resultChars === undefined ? {} : { resultChars }),
+      }),
+      ...(options.retryTarget === undefined ? {} : { retryTarget: options.retryTarget }),
     });
   const failWith = async (error: string, aborted: boolean): Promise<CompressionFailure> => {
     const stats = buildStats();
@@ -409,7 +431,7 @@ export async function runCompressionLoop(
         `压缩循环完成（${rounds} 轮，${state.replacementCount} 次压缩替换，${state.rewriteCount} 条提问重写，输出 ${text.length} 字符）`,
       );
       const stats = buildStats();
-      const id = await recordSessionId(true, stats);
+      const id = await recordSessionId(true, stats, text.length);
       return {
         ok: true,
         text,

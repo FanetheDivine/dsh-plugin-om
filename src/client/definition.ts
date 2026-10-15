@@ -38,6 +38,8 @@ declare module '@deepseek-ai/dsh-client-ui-chat/client' {
 
 /** 压缩卡片载荷：摘要文本与遮蔽统计。 */
 export interface OmCompactionChatData {
+  /** 压缩 id（compaction/* 事件载荷的 compactionId），换模型重压缩据此定位那次压缩。 */
+  readonly compactionId: string;
   /** 压缩进行中（start 已到、checkpoint/end 未到）：渲染为「正在压缩上下文…」提示行。 */
   readonly running: boolean;
   /** 压缩 pass（观察/反思；来自 start 事件载荷扩展，缺失或非运行态为 null）。 */
@@ -107,6 +109,7 @@ function diagnosticSessionIdOf(...matches: (ConversationMatch | undefined)[]): s
 
 /** 从 compaction/summary 载荷提取摘要文本与遮蔽统计（载荷非法时各字段回落 null）。 */
 function compactSummaryData(
+  compactionId: string,
   summaryMatch: ConversationMatch | undefined,
   endMatch: ConversationMatch | undefined,
 ): OmCompactionChatData {
@@ -138,6 +141,7 @@ function compactSummaryData(
         : null;
   }
   return {
+    compactionId,
     running: false,
     phase: null,
     error: null,
@@ -159,8 +163,12 @@ function startPhase(start: ConversationMatch | undefined): 'observe' | 'reflect'
 }
 
 /** 压缩进行中提示行的载荷（统计未就绪，全部为 null）。 */
-function runningData(start: ConversationMatch | undefined): OmCompactionChatData {
+function runningData(
+  compactionId: string,
+  start: ConversationMatch | undefined,
+): OmCompactionChatData {
   return {
+    compactionId,
     running: true,
     phase: startPhase(start),
     error: null,
@@ -181,11 +189,13 @@ function runningData(start: ConversationMatch | undefined): OmCompactionChatData
  * 摘要与统计字段全部为 null。
  */
 function failureData(
+  compactionId: string,
   start: ConversationMatch | undefined,
   end: ConversationMatch,
 ): OmCompactionChatData {
   const data = end.event.data as { error?: unknown } | undefined;
   return {
+    compactionId,
     running: false,
     phase: startPhase(start),
     error: typeof data?.error === 'string' && data.error !== '' ? data.error : null,
@@ -270,7 +280,7 @@ export const omCompactionDefinition: ConversationNodeDefinition<OmCompactionStat
     const state = context.state ?? fallbackState(context);
     // 替换检查点已到达 → 压缩完成，渲染摘要卡片
     if (state.checkpoint !== undefined) {
-      const data = compactSummaryData(state.summary, state.end);
+      const data = compactSummaryData(context.id, state.summary, state.end);
       return chatNode(context, COMPACTION_CARD_KIND, state.checkpoint.event.seq, data);
     }
     // end 已到达但无检查点：error 为非中止的实际报错时渲染可见失败行；
@@ -288,14 +298,14 @@ export const omCompactionDefinition: ConversationNodeDefinition<OmCompactionStat
           context,
           COMPACTION_CARD_KIND,
           anchorSeq,
-          failureData(context.start, state.end),
+          failureData(context.id, context.start, state.end),
         );
       }
       return chatNode(
         context,
         COMPACTION_CARD_KIND,
         anchorSeq,
-        runningData(context.start),
+        runningData(context.id, context.start),
         'hidden',
       );
     }
@@ -305,7 +315,7 @@ export const omCompactionDefinition: ConversationNodeDefinition<OmCompactionStat
         context,
         COMPACTION_CARD_KIND,
         context.start.event.seq,
-        runningData(context.start),
+        runningData(context.id, context.start),
       );
     }
     return null;

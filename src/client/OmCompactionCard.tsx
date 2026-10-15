@@ -14,13 +14,16 @@ import {
   DisclosureRow,
   IconBrowseOutlineRegular,
   IconInspectOutlineRegular,
+  Toast,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots';
 import type { SessionId } from '@deepseek-ai/dsh-session/types';
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client';
-import type { CSSProperties, MouseEvent } from 'react';
+import type { CSSProperties, MouseEvent, ReactNode } from 'react';
 import { memo, useState } from 'react';
-import { formatCompactCount } from './format.ts';
+import { formatCompactCount } from '../format.ts';
+import { OmRecompressMenu } from './OmRecompressMenu.tsx';
+import type { RecompressChoice, RecompressInjected } from './recompress-run.ts';
 
 /** Keyed renderer props: 装配好的卡片节点 + 绑定 `om-compaction` 命名空间的 locale 座。 */
 export interface OmCompactionCardProps {
@@ -30,9 +33,16 @@ export interface OmCompactionCardProps {
   readonly sessionId?: SessionId;
   /** 宿主注入的会话跳转；缺失时不显示「诊断日志」。 */
   readonly openSession?: (target: SubagentAddress) => void;
+  /** 换模型重压缩能力；缺失时（宿主无模型目录）不显示按钮。 */
+  readonly recompress?: RecompressInjected;
   /** 宿主 owner 提供的轨迹视图跳转；缺失（轨迹视图不可用）时不显示「轨迹」。 */
   readonly inspectCall?: ((callId: ToolCallId) => void) | undefined;
 }
+
+/** 重压缩提交状态：空闲、进行中或带提示文案的结果。 */
+type RecompressState =
+  | { readonly status: 'idle' | 'running' }
+  | { readonly status: 'done' | 'failed'; readonly text: string };
 
 /** 卡片样式类名（与宿主 ContextInjectionRow.module.css 同款规则，增加水平滚动支持）。 */
 const css = {
@@ -44,6 +54,7 @@ const css = {
   body: 'om-compaction-body',
   actions: 'om-compaction-actions',
   inspect: 'om-compaction-inspect',
+  result: 'om-compaction-recompress-result',
   trajectory: 'om-compaction-trajectory',
 } as const;
 
@@ -60,6 +71,7 @@ const cardCss = `
 .${css.inspect}{border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:16px;cursor:pointer;white-space:nowrap;border-radius:999px;flex:none;align-items:center;gap:4px;margin:0;padding:2px 8px;display:inline-flex}
 .${css.inspect}:is(:hover,:focus-visible){background:var(--dsw-alias-interactive-bg-hover-solid);color:var(--dsw-alias-label-primary)}
 .${css.trajectory}{display:none}
+.${css.result}{padding:2px 0 0 22px;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary);max-height:60px;overflow-y:auto;overflow-wrap:anywhere;overscroll-behavior:contain;scrollbar-width:thin}
 .${css.body}{box-sizing:border-box;background:var(--dsw-alias-markdown-code-block);width:calc(100% - 22px);max-height:141px;color:var(--dsw-alias-label-tertiary);font:400 11px/16px var(--ds-font-family-code);border:none;border-radius:8px;margin:4px 0 0 22px;padding:10px 16px 12px 12px;overflow-x:auto;overflow-y:auto;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
 `;
 
@@ -80,9 +92,13 @@ export const OmCompactionCard = memo(function OmCompactionCard({
   t,
   sessionId,
   openSession,
+  recompress,
   inspectCall,
 }: OmCompactionCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const [recompressState, setRecompressState] = useState<RecompressState>({ status: 'idle' });
+  // 重压缩开始提示：每次提交递增 seq，作为 Toast 的 key 重新开始一轮显示
+  const [startedToast, setStartedToast] = useState(0);
   const { data } = node;
   // 「诊断日志」：仅当有诊断子会话 id、父会话 id 与宿主跳转能力时渲染；点击不触发行折叠
   const diagnosticSessionId = data.diagnosticSessionId;
@@ -106,6 +122,34 @@ export const OmCompactionCard = memo(function OmCompactionCard({
         {t('card.inspect')}
       </button>
     ) : null;
+  // 换模型重压缩：仅成功卡片提供；结果只作提示，重压缩记录在日志子会话中
+  const pickRecompress = (choice: RecompressChoice) => {
+    if (recompress === undefined) return;
+    setRecompressState({ status: 'running' });
+    setStartedToast((seq) => seq + 1);
+    void recompress.run(data.compactionId, choice).then((outcome) => {
+      setRecompressState(
+        outcome.ok
+          ? { status: 'done', text: outcome.text || t('recompress.done') }
+          : { status: 'failed', text: t('recompress.failed', { error: outcome.text }) },
+      );
+    });
+  };
+  const recompressButton =
+    recompress === undefined ? null : (
+      <OmRecompressMenu
+        source={recompress}
+        t={t}
+        disabled={recompressState.status === 'running'}
+        onPick={pickRecompress}
+      />
+    );
+  const recompressResult =
+    recompressState.status === 'done' || recompressState.status === 'failed' ? (
+      <div className={css.result} data-om-recompress-result>
+        {recompressState.text}
+      </div>
+    ) : null;
   // 「轨迹」：切到轨迹视图。轨迹按 callId 定位记录，压缩没有 callId，无法跳到具体条目，
   // 只切视图对用户没有意义，故暂以 display:none 隐藏（样式见 css.trajectory）；
   // 待宿主支持按压缩定位后移除该规则即可恢复
@@ -125,13 +169,17 @@ export const OmCompactionCard = memo(function OmCompactionCard({
       </button>
     );
   // 展开体下方的操作栏；「轨迹」被隐藏，不单独构成操作栏，避免展开出空栏
-  const actions =
-    inspect === null ? null : (
+  const actionBar = (extra: ReactNode) =>
+    inspect === null && extra === null ? null : (
       <div className={css.actions} data-om-compaction-actions>
         {trajectory}
         {inspect}
+        {extra}
       </div>
     );
+  // 失败行没有可重放的摘要，不提供重压缩
+  const failureActions = actionBar(null);
+  const actions = actionBar(recompressButton);
   // 压缩进行中：不可展开的「正在压缩上下文…」提示行（按 phase 区分文案）
   if (data.running) {
     const runningLabel =
@@ -188,7 +236,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({
           <div className={css.body} style={styles.body}>
             {data.error}
           </div>
-          {actions}
+          {failureActions}
         </DisclosureRow>
       </div>
     );
@@ -248,6 +296,18 @@ export const OmCompactionCard = memo(function OmCompactionCard({
         )}
         {actions}
       </DisclosureRow>
+      {recompressResult}
+      {startedToast > 0 && (
+        <Toast
+          key={startedToast}
+          tone="success"
+          text={t('recompress.started')}
+          holdMs={4000}
+          onDone={() => {
+            setStartedToast(0);
+          }}
+        />
+      )}
     </div>
   );
 });

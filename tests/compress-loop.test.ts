@@ -15,6 +15,7 @@ import {
   COMPLETE_MESSAGE_DEFINITION,
   HISTORY_TAG,
 } from '../src/constants.ts';
+import { formatCompactCount } from '../src/format.ts';
 import { resetRateLimitGate } from '../src/rate-limit.ts';
 import { makeCtx, makeSession, roundChunks, throwingStream } from './helpers.ts';
 
@@ -355,9 +356,10 @@ describe('runCompressionLoop', () => {
     expect((descriptor?.data as { label?: string })?.label).toContain('会话记录');
     expect((descriptor?.data as { label?: string })?.label).toContain('3 轮');
     // 消息组：user 指令为唯一 user/message，工具结果（getHistory、
-    // 两次 compressHistory、completeCompression 共 4 条）为 tool/result
+    // 两次 compressHistory、completeCompression 共 4 条）为 tool/result；
+    // assistant/message 为 3 轮模型输出 + 尾部 1 条模型信息
     expect(events.filter((e) => e.type === 'user/message')).toHaveLength(1);
-    expect(events.filter((e) => e.type === 'assistant/message')).toHaveLength(3);
+    expect(events.filter((e) => e.type === 'assistant/message')).toHaveLength(4);
     expect(events.filter((e) => e.type === 'tool/result')).toHaveLength(4);
     // 助手消息归因：source 精确为模型产出标识（provider/model 与 target 一致，无多余字段）
     for (const e of events.filter((e) => e.type === 'assistant/message')) {
@@ -375,6 +377,89 @@ describe('runCompressionLoop', () => {
     expect(persisted).not.toContain('压缩完成');
     expect(ctx._flushedSessions).toHaveLength(1);
     expect(result.recordSessionId).toBe(record?.id);
+  });
+
+  it('会话记录尾部追加模型文本：压缩模型、思考等级、原始与产物字符数（k 单位）', async () => {
+    /** 取子会话最后一条 assistant/message（模型信息）的文本与来源。 */
+    const tailOf = (ctx: ReturnType<typeof makeCtx>) => {
+      const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
+      const last = events.findLast((e) => e.type === 'assistant/message');
+      if (last?.type !== 'assistant/message') throw new Error('缺 assistant/message 事件');
+      return { text: JSON.stringify(last.data.message.content), source: last.data.message.source };
+    };
+
+    const okCtx = makeCtx({
+      llmStreamFactory: () => roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] }),
+    });
+    const ok = await runCompressionLoop(
+      okCtx,
+      makeSession(),
+      loopOptions({ reasoningEffort: 'high' as ReasoningEffortId }),
+    );
+    expect(ok.ok).toBe(true);
+    if (!ok.ok) return;
+    const tail = tailOf(okCtx);
+    // 原始消息 = 视图条目文本 4 + 3 + 3 = 10；产物 = 最终 <history> 块长度
+    expect(tail.text).toContain('压缩使用模型 test/test-model（high）');
+    expect(tail.text).toContain('原始消息 10 字符');
+    expect(tail.text).toContain(`压缩产物 ${formatCompactCount(ok.text.length)} 字符`);
+    // 模型来源（非插件来源），时间线尾部为 step/start → assistant/message → step/end → turn/end
+    expect(tail.source).toEqual({ kind: 'model', provider: 'test', model: 'test-model' });
+    expect(
+      (okCtx._createdSessions[0]?.session.snapshotEvents() ?? []).map((e) => e.type).slice(-4),
+    ).toEqual(['step/start', 'assistant/message', 'step/end', 'turn/end']);
+    // 指令仍是唯一的 user/message
+    expect(
+      (okCtx._createdSessions[0]?.session.snapshotEvents() ?? []).filter(
+        (e) => e.type === 'user/message',
+      ),
+    ).toHaveLength(1);
+
+    const defaultCtx = makeCtx({
+      llmStreamFactory: () => roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] }),
+    });
+    await runCompressionLoop(defaultCtx, makeSession(), loopOptions());
+    expect(tailOf(defaultCtx).text).toContain('压缩使用模型 test/test-model（默认思考等级）');
+
+    const failCtx = makeCtx({ llmStreamFactory: () => roundChunks({ text: '纯文本' }) });
+    const failed = await runCompressionLoop(failCtx, makeSession(), loopOptions());
+    expect(failed.ok).toBe(false);
+    expect(tailOf(failCtx).text).toContain('原始消息 10 字符');
+    expect(tailOf(failCtx).text).toContain('压缩产物 无（压缩失败）');
+  });
+
+  it('retryTarget 透传到会话记录标题：成功与失败日志均带重压缩标记', async () => {
+    const retryTarget = { provider: 'alt', model: 'big-1' };
+    /** 读取首个落盘子会话的 descriptor label。 */
+    const labelOf = (ctx: ReturnType<typeof makeCtx>): string | undefined => {
+      const data = ctx._createdSessions[0]?.session
+        .snapshotEvents()
+        .find((e) => e.type === 'subagent/descriptor')?.data;
+      return (data as { label?: string } | undefined)?.label;
+    };
+    const completing = () =>
+      makeCtx({
+        llmStreamFactory: () => roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] }),
+      });
+
+    const okCtx = completing();
+    const ok = await runCompressionLoop(okCtx, makeSession(), { ...loopOptions(), retryTarget });
+    expect(ok.ok).toBe(true);
+    expect(labelOf(okCtx)).toContain('会话记录');
+    expect(labelOf(okCtx)).toContain('重压缩 alt/big-1');
+
+    const failCtx = makeCtx({ llmStreamFactory: () => roundChunks({ text: '纯文本' }) });
+    const failed = await runCompressionLoop(failCtx, makeSession(), {
+      ...loopOptions(),
+      retryTarget,
+    });
+    expect(failed.ok).toBe(false);
+    expect(labelOf(failCtx)).toContain('失败日志');
+    expect(labelOf(failCtx)).toContain('重压缩 alt/big-1');
+
+    const plainCtx = completing();
+    await runCompressionLoop(plainCtx, makeSession(), loopOptions());
+    expect(labelOf(plainCtx)).not.toContain('重压缩');
   });
 
   it('请求选项：system 为共享提示词、携带压缩工具、purpose=compaction、首条消息为任务文本', async () => {
@@ -438,9 +523,9 @@ describe('runCompressionLoop', () => {
     // 只发起一轮请求；getHistory（t2）未执行，无对应 tool/result（assistant 消息原样保留其调用块）
     expect(ctx._llmCalls).toHaveLength(1);
     const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
-    // 指令为唯一 user/message；completeCompression 结果为 tool/result
+    // 指令为唯一 user/message；assistant/message 为 1 轮模型输出 + 尾部模型信息
     expect(events.filter((e) => e.type === 'user/message')).toHaveLength(1);
-    expect(events.filter((e) => e.type === 'assistant/message')).toHaveLength(1);
+    expect(events.filter((e) => e.type === 'assistant/message')).toHaveLength(2);
     // 压缩只执行 completeCompression，未执行的 t2 被补为可冷读取的失败结果。
     expect(events.filter((e) => e.type === 'tool/result')).toHaveLength(2);
     expect(
@@ -537,8 +622,10 @@ describe('runCompressionLoop', () => {
     // 会话记录：指令 + assistant（部分输出原样）
     const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
     const assistantEvents = events.filter((e) => e.type === 'assistant/message');
-    expect(assistantEvents).toHaveLength(1);
-    expect(JSON.stringify(assistantEvents)).toContain('部分输出');
+    // 部分输出原样 + 尾部模型信息
+    expect(assistantEvents).toHaveLength(2);
+    expect(JSON.stringify(assistantEvents[0])).toContain('部分输出');
+    expect(JSON.stringify(assistantEvents[1])).toContain('压缩使用模型');
   });
 
   it('流以 error 终态结束但无 failure 详情：以兜底描述失败，不抛错', async () => {

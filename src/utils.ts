@@ -1,6 +1,6 @@
 /**
  * 零依赖工具函数：文本呈现、主会话判定、路由解析等通用辅助（不 import 运行时包）。
- * 导出 isRecord / uuid / blocksToText / textCharCount / renderMessageText / toolArgsJson /
+ * 导出 isRecord / uuid / blocksToText / textCharCount / seqsCharCount / renderMessageText / toolArgsJson /
  * safeJson / appendCdataText / isMainSession / routedTarget。
  */
 import type { Message } from '@deepseek-ai/dsh-llm';
@@ -42,6 +42,15 @@ export function textCharCount(message: Message | null | undefined): number {
     }
   }
   return total;
+}
+
+/** 一组表层事件 seq 派生消息的字符数之和（OM 卡片「原始字符」口径）。 */
+export function seqsCharCount(session: Session, seqs: readonly number[]): number {
+  const events = session.snapshotEvents();
+  return seqs.reduce((total, seq) => {
+    const event = events[seq];
+    return total + textCharCount(event ? session.deriveEventMessage(event) : null);
+  }, 0);
 }
 
 /** 面向 recall 的完整消息呈现：text 原样；tool-call 展开（参数=代码）；tool-result 取文本。 */

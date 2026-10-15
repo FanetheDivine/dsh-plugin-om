@@ -1,7 +1,7 @@
 /**
  * 两级自动压缩（观察/反思）与 compaction 生命周期提交。
  * 导出 estimateTextTokens / isPairBalancedAfter / computeCompressRange / historySection /
- * findObservePending / reflectPass / observePass / maybeCompress。
+ * historyTextOf / findObservePending / reflectPass / observePass / maybeCompress。
  *
  * - 摘要生成走工具驱动的压缩循环（compress-loop.ts runCompressionLoop）：首条 user
  *   消息仅含压缩指令与 start/end 区间，模型经 getHistory / compressHistory /
@@ -67,7 +67,7 @@ import type {
   SessionEvent,
   TokenUsage,
 } from './types.ts';
-import { blocksToText, type RoutedTarget, routedTarget, textCharCount, uuid } from './utils.ts';
+import { blocksToText, type RoutedTarget, routedTarget, seqsCharCount, uuid } from './utils.ts';
 
 /**
  * 压缩 pass 结果：failed=false 表示无需中断（成功、跳过或非最终的局部失败）；
@@ -187,7 +187,7 @@ async function runPassLoop(
  * checkpoint 标记 'compact'）。仅当消息文本含 <history> 开标签时视为压缩日志，返回整段
  * 文本；其余返回 undefined。
  */
-function historyTextOf(event: SessionEvent | undefined): string | undefined {
+export function historyTextOf(event: SessionEvent | undefined): string | undefined {
   if (event?.type !== 'user/message') return undefined;
   if (!isPluginOwnedSource(event.data.source)) return undefined;
   const text = blocksToText(event.data.content);
@@ -529,6 +529,7 @@ export async function reflectPass(
     lifecycle,
     {
       view,
+      originalChars: shadowedCharCount,
       phase: 'reflect',
       taskText: buildCompressionTaskText('reflect', view.minIndex, view.maxIndex),
       target,
@@ -792,6 +793,7 @@ export async function observePass(
     clearPending();
     return { failed: false };
   }
+  const shadowedCharCount = seqsCharCount(session, replaceSeqs);
   const view = buildObserveView(session, replaceSeqs, {
     skipReasoning: config.compressSkipReasoning,
   });
@@ -821,6 +823,7 @@ export async function observePass(
     lifecycle,
     {
       view,
+      originalChars: shadowedCharCount,
       phase: 'observe',
       taskText: buildCompressionTaskText('observe', view.minIndex, view.maxIndex),
       target,
@@ -860,11 +863,6 @@ export async function observePass(
       }
     }
     return total + tokens;
-  }, 0);
-  const shadowedCharCount = replaceSeqs.reduce((total, seq) => {
-    const event = session.snapshotEvents()[seq];
-    const message = event ? session.deriveEventMessage(event) : null;
-    return total + (message ? textCharCount(message) : 0);
   }, 0);
   try {
     logger.step('观察提交：追加 compaction/summary（影子价格认领）');

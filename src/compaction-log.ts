@@ -2,7 +2,7 @@
  * 压缩会话记录落盘：把工具压缩循环的完整会话消息组以 seed 事件重建为一个 one-shot
  * 诊断子会话（header origin 'subagent' + 首事件 subagent/descriptor），在父会话登记
  * subagent/catalog，使其出现在宿主子智能体列表并随父会话日志导出。成功与失败均落盘
- * （label 区分）。导出 recordCompressionSession / compressionRecordLabel /
+ * （label 区分，换模型重压缩另带目标模型标记）。导出 recordCompressionSession / compressionRecordLabel /
  * COMPACTION_LOG_PROVIDER。
  *
  * - 子会话经 ctx.sessions.create(seed) 构造：每个事件携带从循环统计重建的 time
@@ -22,14 +22,15 @@ import type {
   ToolResultMessage,
   UserMessage,
 } from '@deepseek-ai/dsh-llm';
-import { createToolResultMessage } from '@deepseek-ai/dsh-llm';
+import { createAssistantMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-session-persistence';
 import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent';
 import type { CompressionStats } from './compress-loop.ts';
+import { formatCompactCount } from './format.ts';
 import { makeLogger } from './logger.ts';
 import type { Context, Session, SessionEvent, SessionEventMap } from './types.ts';
-import { uuid } from './utils.ts';
+import { type RoutedTarget, uuid } from './utils.ts';
 
 /** 诊断子会话的 descriptor provider（宿主子代理列表识别用）。 */
 export const COMPACTION_LOG_PROVIDER = 'om-compaction-log';
@@ -41,13 +42,48 @@ function phaseLabel(phase: 'observe' | 'reflect' | undefined): string {
   return '压缩';
 }
 
-/** 压缩会话记录 label：成功为会话记录、失败为失败日志，均含压缩阶段与轮数。 */
+/**
+ * 压缩会话记录 label：成功为会话记录、失败为失败日志，均含压缩阶段与轮数；
+ * 换模型重压缩传入 retryTarget，label 末尾追加「重压缩 provider/model」以区分。
+ */
 export function compressionRecordLabel(
   phase: 'observe' | 'reflect' | undefined,
   rounds: number,
   success: boolean,
+  retryTarget?: RoutedTarget,
 ): string {
-  return `OM 压缩${success ? '会话记录' : '失败日志'}（${phaseLabel(phase)} · ${rounds} 轮）`;
+  const retry =
+    retryTarget === undefined ? '' : ` · 重压缩 ${retryTarget.provider}/${retryTarget.model}`;
+  return `OM 压缩${success ? '会话记录' : '失败日志'}（${phaseLabel(phase)} · ${rounds} 轮${retry}）`;
+}
+
+/** 日志尾部的模型信息：展示文本与归因的 provider/model。 */
+export type CompressionInfo = {
+  text: string;
+  provider: string;
+  model: string;
+};
+
+/** 生成模型信息：压缩模型、思考等级、原始消息与压缩产物的字符数（k 单位）。 */
+export function compressionInfo(info: {
+  target: RoutedTarget;
+  /** 思考等级；缺省为模型默认。 */
+  reasoningEffort?: string;
+  /** 原始消息字符数。 */
+  originalChars: number;
+  /** 压缩产物字符数；失败时缺省。 */
+  resultChars?: number;
+}): CompressionInfo {
+  const effort = info.reasoningEffort ?? '默认思考等级';
+  const result =
+    info.resultChars === undefined
+      ? '无（压缩失败）'
+      : `${formatCompactCount(info.resultChars)} 字符`;
+  return {
+    text: `压缩使用模型 ${info.target.provider}/${info.target.model}（${effort}），原始消息 ${formatCompactCount(info.originalChars)} 字符，压缩产物 ${result}`,
+    provider: info.target.provider,
+    model: info.target.model,
+  };
 }
 
 /**
@@ -84,6 +120,7 @@ function buildCompressionSeed(
   messages: readonly Message[],
   stats: CompressionStats,
   label: string,
+  info?: CompressionInfo,
 ): SessionEvent[] {
   const seed: SessionEvent[] = [];
   const push = <K extends keyof SessionEventMap>(
@@ -204,6 +241,26 @@ function buildCompressionSeed(
     }
   }
   closeStep();
+  if (info !== undefined) {
+    // 模型信息：以模型来源的 assistant 文本追加在时间线尾部（插件来源的消息宿主不展示）
+    step += 1;
+    push('step/start', at(stats.completedAt), { turn: 1, step });
+    push(
+      'assistant/message',
+      at(stats.completedAt),
+      {
+        turn: 1,
+        step,
+        message: createAssistantMessage({
+          content: [{ type: 'text', text: info.text }],
+          source: { provider: info.provider, model: info.model },
+        }),
+        stream: [],
+      },
+      'append',
+    );
+    push('step/end', at(stats.completedAt), { turn: 1, step });
+  }
   push('turn/end', at(stats.completedAt), { turn: 1, reason: { kind: 'completed' } });
   return seed;
 }
@@ -212,7 +269,7 @@ function buildCompressionSeed(
  * 把一次压缩工具循环的完整会话消息组落盘为子会话：以重建时间线的 seed 事件经
  * ctx.sessions.create 构造子会话（header origin 'subagent'、parentSession 指向主会话、
  * delegationDepth = 父 + 1、cwd 继承主会话；首事件 one-shot descriptor，provider
- * om-compaction-log，label 含压缩阶段与轮数），flush 持久化，在父会话登记
+ * om-compaction-log，label 含压缩阶段与轮数；info 存在时尾部追加一条模型文本），flush 持久化，在父会话登记
  * subagent/catalog，返回子会话 id。成功与失败均调用；落盘自身绝不抛错，任何失败仅
  * logger.warn 并返回 undefined。
  */
@@ -230,6 +287,10 @@ export async function recordCompressionSession(
     success: boolean;
     /** 插件 debug 开关（落盘失败的 warn 是否带步骤细节）。 */
     debug: boolean;
+    /** 换模型重压缩的目标模型（label 区分用）；常规压缩缺省。 */
+    retryTarget?: RoutedTarget;
+    /** 模型信息（compressionInfo），追加为尾部模型文本；缺省不写。 */
+    info?: CompressionInfo;
   },
 ): Promise<string | undefined> {
   const logger = makeLogger(ctx, options.debug);
@@ -239,8 +300,9 @@ export async function recordCompressionSession(
       options.phase,
       options.stats.rounds.length,
       options.success,
+      options.retryTarget,
     );
-    const seed = buildCompressionSeed(options.messages, options.stats, label);
+    const seed = buildCompressionSeed(options.messages, options.stats, label, options.info);
     const child = ctx.sessions.create(SessionId(`om-compaction-log-${uuid()}`), {
       seed,
       meta: {
