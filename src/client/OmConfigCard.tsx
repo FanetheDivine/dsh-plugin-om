@@ -67,12 +67,39 @@ function BooleanField({
   );
 }
 
+/** 控制关联配置可见性的依赖开关草稿值。 */
+interface DependencyFlags {
+  readonly recallOn: boolean;
+  readonly semanticOn: boolean;
+  readonly idleOn: boolean;
+}
+
+/** 字段是否显示：语义增强随原文召回，模型目录随语义增强，重发阈值随长期无记录重发。 */
+function isVisible(name: string, { recallOn, semanticOn, idleOn }: DependencyFlags): boolean {
+  switch (name) {
+    case 'semanticRecallEnabled':
+      return recallOn;
+    case 'modelDir':
+      return recallOn && semanticOn;
+    case 'progressReminderIdleSteps':
+    case 'progressReminderIdleToolCalls':
+      return idleOn;
+    default:
+      return true;
+  }
+}
+
 /** 配置行内容：说明、草稿值及规范的继承/覆盖呈现。 */
 export function OmConfigCard(props: OmConfigCardProps): string | React.JSX.Element {
   const { t } = props;
   const state = props.useOmConfigCard((snapshot) => snapshot);
   if (props.view === 'summary') return t('config.description');
   if (state.status === 'loading') return <p role="status">{t('config.loading')}</p>;
+  const flags: DependencyFlags = {
+    recallOn: state.fields.recallEnabled.text === 'true',
+    semanticOn: state.fields.semanticRecallEnabled.text === 'true',
+    idleOn: state.fields.progressReminderIdleEnabled.text === 'true',
+  };
   return (
     <SettingsForm
       labels={{
@@ -96,22 +123,17 @@ export function OmConfigCard(props: OmConfigCardProps): string | React.JSX.Eleme
         const label = t(`config.${name}`);
         const hint = t(`config.${name}.hint`);
         const disabled = !state.writable || state.saving;
-        const recallOn = state.fields.recallEnabled.text === 'true';
-        const semanticOn = state.fields.semanticRecallEnabled.text === 'true';
-        const isSemantic = name === 'semanticRecallEnabled';
-        // 语义增强依赖原文召回：展示值与服务端生效值一致，编辑与恢复默认时联动两项
-        const checked = isSemantic ? semanticOn && recallOn : field.text === 'true';
+        // 依赖项关闭时隐藏关联配置，草稿保留并仍随保存提交
+        if (!isVisible(name, flags)) return null;
+        const checked = field.text === 'true';
         const onChange = (value: boolean) => {
           props.edit(name, String(value));
-          if (isSemantic && value) props.edit('recallEnabled', 'true');
-          if (name === 'recallEnabled' && !value && semanticOn) {
+          // 语义增强依赖原文召回：关闭召回时一并关闭语义增强
+          if (name === 'recallEnabled' && !value && flags.semanticOn) {
             props.edit('semanticRecallEnabled', 'false');
           }
         };
-        const onReset = () => {
-          props.resetField(name);
-          if (isSemantic && !recallOn) props.resetField('recallEnabled');
-        };
+        const onReset = () => props.resetField(name);
         return (
           <div key={name} data-om-field={name}>
             {kind === 'boolean' ? (
