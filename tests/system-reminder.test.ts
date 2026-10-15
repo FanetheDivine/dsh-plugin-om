@@ -266,6 +266,21 @@ describe('进度提醒的表层活动窗口', () => {
     expect(progressReminders(session)).toHaveLength(1);
   });
 
+  it('ask_user_question 调用与非空 text 一样重置窗口，且本 step 不计数', () => {
+    const asked = activitySession([3, 3, 3]);
+    appendStep(asked, 4, 4, { callName: 'ask_user_question' });
+    appendStep(asked, 5, 3);
+    appendStep(asked, 6, 3);
+    appendStep(asked, 7, 3);
+    expect(progressReminders(asked)).toHaveLength(0);
+    appendStep(asked, 8, 3);
+    expect(progressReminders(asked)).toHaveLength(1);
+
+    const other = activitySession([3, 3, 3]);
+    appendStep(other, 4, 4, { callName: 'inspect' });
+    expect(progressReminders(other)).toHaveLength(1);
+  });
+
   it('待输入真实用户消息立即重置，但首次提醒缺失时仍注入', () => {
     const user = createUserMessage({ content: [textBlock('新任务')], source: { kind: 'user' } });
     expect(progressReminders(activitySession([3, 3, 3, 2]), [user])).toHaveLength(0);

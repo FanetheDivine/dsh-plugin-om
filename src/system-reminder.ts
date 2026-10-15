@@ -2,13 +2,14 @@
  * system-reminder：以 <system-reminder> 用户消息向主会话注入进度提醒，不进系统提示词。
  * 进度提醒：表层缺少同 kind 消息时补发；开启活动重发时，无记录活动累计至少 N 个已结束 step、
  * 且工具调用超过 M 次时重发（N、M 与开关均来自配置，默认 4 与 10）。
- * 每个 step 检查表层；真实用户消息、非空模型 text 与进度提醒重置活动窗口。
+ * 每个 step 检查表层；真实用户消息、非空模型 text、ask_user_question 调用与进度提醒重置活动窗口。
  * 导出 PROGRESS_REMINDER_SOURCE_KIND / ProgressReminderSource / SystemReminder /
  * PROGRESS_REMINDER / ProgressIdleOptions / DEFAULT_PROGRESS_IDLE / progressIdleOptions /
  * systemReminderMessage / activeSystemReminders / ensureSystemReminders。
  */
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type { PluginConfig } from './config.ts';
+import { ASK_USER_QUESTION_TOOL_NAME } from './constants.ts';
 import type { Session, SessionEvent, UserMessage } from './types.ts';
 
 /** 进度提醒的 producer-owned source kind（区别于压缩日志消息的 plugin:dsh-plugin-om）。 */
@@ -121,7 +122,12 @@ function progressReminderTrigger(
     } else if (event.type === 'assistant/message') {
       const { turn, step, message } = event.data;
       const key = `${turn}:${step}`;
-      if (message.content.some((block) => block.type === 'text' && block.text.trim() !== '')) {
+      const speaks = message.content.some(
+        (block) =>
+          (block.type === 'text' && block.text.trim() !== '') ||
+          (block.type === 'tool-call' && block.name === ASK_USER_QUESTION_TOOL_NAME),
+      );
+      if (speaks) {
         steps.clear();
         toolCalls = 0;
         textStep = key;
