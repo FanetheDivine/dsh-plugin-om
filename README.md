@@ -9,7 +9,7 @@
 - 自动压缩主会话历史，并在摘要过大时再次合并
 - OM 启用时以 system-reminder 消息要求模型在本会话中用 1-2 句话记录中间结论与下一步规划，记录后继续任务，最终输出另行构建
 - 表层缺少同 kind 进度提醒时补发，不比较文本内容
-- 最近真实用户消息、非空模型文本或进度提醒之后，开启 `progressReminderIdleEnabled` 且表层活动累计至少 `progressReminderIdleSteps`（默认 4）个已结束模型 step、工具调用超过 `progressReminderIdleToolCalls`（默认 10）次时重发，并要求立刻输出记录
+- 最近真实用户消息、非空模型文本、`ask_user_question` 调用或进度提醒之后，开启 `progressReminderIdleEnabled` 且表层活动累计至少 `progressReminderIdleSteps`（默认 4）个已结束模型 step、工具调用超过 `progressReminderIdleToolCalls`（默认 10）次时重发，并要求立刻输出记录
 - 完整消息定义写在 history 块顶注释和 recall 工具描述中
 - 通过工具循环生成摘要，保留用户消息和未压缩内容；系统消息不占完整消息 index
 - 保留工具加载的 skill 原文，并在压缩前再次确认
