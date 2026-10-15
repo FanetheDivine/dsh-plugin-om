@@ -120,6 +120,15 @@ describe('systemReminderMessage', () => {
     expect(text).not.toMatch(/does not override/i);
   });
 
+  it('进度提醒首行声明为本会话对你的要求，活动重发版本保持同一首行', () => {
+    const firstLine = '在本会话中，你应当持续输出文本，记录最近几步的成果：';
+    const urgent = ensureSystemReminders(activitySession([3, 3, 3, 2]), [], [PROGRESS_REMINDER]);
+    for (const message of [systemReminderMessage(PROGRESS_REMINDER), ...urgent]) {
+      expect(textOf(message).split('\n')[1]).toBe(firstLine);
+    }
+    expect(urgent).toHaveLength(1);
+  });
+
   it('定义提醒携带完整消息定义原文，进度提醒不携带', () => {
     expect(textOf(systemReminderMessage(DEFINITION_REMINDER))).toContain(
       COMPLETE_MESSAGE_DEFINITION,

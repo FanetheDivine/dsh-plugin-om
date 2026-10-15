@@ -45,7 +45,7 @@ function wrap(lines: readonly string[]): string {
 export const PROGRESS_REMINDER: SystemReminder = {
   kind: PROGRESS_REMINDER_SOURCE_KIND,
   text: wrap([
-    '在工作过程中持续输出文本，记录最近几步的成果：',
+    '在本会话中，你应当持续输出文本，记录最近几步的成果：',
     '- 1-2句话即可，概括为主，不必覆盖所有细节',
     '- 承上启下，突出要点，例如“读 f1，发现 L1 关联了 f2-L2，读 f2”，“m1 完成，按计划开始 m2”',
     '- 记录后继续完成任务，不要等待确认',
