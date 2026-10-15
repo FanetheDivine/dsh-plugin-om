@@ -153,6 +153,24 @@ describe('尝试其他模型按钮', () => {
     );
   });
 
+  it('选中模型提交时弹出全局提示：压缩开始，完成后会添加至「子智能体」', async () => {
+    let finish: (value: RecompressOutcome) => void = () => {};
+    const run = vi.fn().mockReturnValue(new Promise<RecompressOutcome>((r) => (finish = r)));
+    mount(stub({}, run));
+    expect(document.body.textContent).not.toContain(zh['recompress.started']);
+    click(q('[data-om-recompress]'));
+    await act(async () => {
+      click(q('[data-om-recompress-model="alt/plain"]'));
+    });
+    expect(zh['recompress.started']).toContain('子智能体');
+    // 提示经 body portal 渲染，提交仍在进行时就已出现
+    expect(document.body.textContent).toContain(zh['recompress.started']);
+    expect((q('[data-om-recompress]') as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => {
+      finish({ ok: true, text: '' });
+    });
+  });
+
   it('带思考等级的模型先选等级，「模型默认」不带 effort', async () => {
     const run = vi.fn().mockResolvedValue({ ok: true, text: '' });
     mount(stub({}, run));

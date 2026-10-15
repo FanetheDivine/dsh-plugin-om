@@ -14,6 +14,7 @@ import {
   DisclosureRow,
   IconBrowseOutlineRegular,
   IconInspectOutlineRegular,
+  Toast,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots';
 import type { SessionId } from '@deepseek-ai/dsh-session/types';
@@ -96,6 +97,8 @@ export const OmCompactionCard = memo(function OmCompactionCard({
 }: OmCompactionCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [recompressState, setRecompressState] = useState<RecompressState>({ status: 'idle' });
+  // 重压缩开始提示：每次提交递增 seq，作为 Toast 的 key 重新开始一轮显示
+  const [startedToast, setStartedToast] = useState(0);
   const { data } = node;
   // 「诊断日志」：仅当有诊断子会话 id、父会话 id 与宿主跳转能力时渲染；点击不触发行折叠
   const diagnosticSessionId = data.diagnosticSessionId;
@@ -123,6 +126,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({
   const pickRecompress = (choice: RecompressChoice) => {
     if (recompress === undefined) return;
     setRecompressState({ status: 'running' });
+    setStartedToast((seq) => seq + 1);
     void recompress.run(data.compactionId, choice).then((outcome) => {
       setRecompressState(
         outcome.ok
@@ -293,6 +297,17 @@ export const OmCompactionCard = memo(function OmCompactionCard({
         {actions}
       </DisclosureRow>
       {recompressResult}
+      {startedToast > 0 && (
+        <Toast
+          key={startedToast}
+          tone="success"
+          text={t('recompress.started')}
+          holdMs={4000}
+          onDone={() => {
+            setStartedToast(0);
+          }}
+        />
+      )}
     </div>
   );
 });
