@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
- * 压缩卡片的「尝试其他模型」：按钮可见性、模型目录菜单、思考等级选择与结果提示。
+ * 压缩卡片的「尝试其他模型」：按钮可见性、模型目录菜单多选、思考等级勾选、
+ * 开始按钮批量提交与结果提示。
  */
 
 import type { ChatNode } from '@deepseek-ai/dsh-client-ui-chat/client';
@@ -43,6 +44,16 @@ const groups: DirectoryGroup[] = [
           efforts: [
             { id: 'low', name: 'Low' },
             { id: 'high', name: 'High' },
+          ],
+        },
+      },
+      {
+        id: 'big-2',
+        name: 'Big Two',
+        reasoning: {
+          efforts: [
+            { id: 'high', name: 'High' },
+            { id: 'max', name: 'Max' },
           ],
         },
       },
@@ -130,6 +141,10 @@ const click = (el: Element | null) =>
     el?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   });
 const q = (selector: string) => document.body.querySelector(selector);
+const startButton = () => q('[data-om-recompress-start]') as HTMLButtonElement | null;
+const startText = () => startButton()?.textContent ?? '';
+/** run 收到的组合列表（按提交顺序）。 */
+const runChoices = (run: Mock) => run.mock.calls.map((call) => call[1]);
 
 describe('尝试其他模型按钮', () => {
   it('缺少注入时不显示；失败行与进行中行也不显示', () => {
@@ -141,7 +156,14 @@ describe('尝试其他模型按钮', () => {
     expect(q('[data-om-recompress]')).toBeNull();
   });
 
-  it('打开时加载目录，无思考等级的模型选中后直接提交', async () => {
+  it('未选模型时开始按钮禁用且计数为 0', () => {
+    mount(stub({}, vi.fn()));
+    click(q('[data-om-recompress]'));
+    expect(startButton()?.disabled).toBe(true);
+    expect(startText()).toBe('开始(0)');
+  });
+
+  it('打开时加载目录，勾选无等级模型后点开始提交并关闭浮层', async () => {
     const run = vi.fn().mockResolvedValue({
       ok: true,
       text: '重压缩完成 字符 3.1k → 5.2k，26.1s，alt/plain(默认)',
@@ -150,8 +172,13 @@ describe('尝试其他模型按钮', () => {
     mount(source);
     click(q('[data-om-recompress]'));
     expect(source.load).toHaveBeenCalledOnce();
+    const row = q('[data-om-recompress-model="alt/plain"]');
+    expect(row?.getAttribute('aria-checked')).toBe('false');
+    click(row);
+    expect(row?.getAttribute('aria-checked')).toBe('true');
+    expect(startText()).toBe('开始(1)');
     await act(async () => {
-      click(q('[data-om-recompress-model="alt/plain"]'));
+      click(startButton());
     });
     expect(run).toHaveBeenCalledExactlyOnceWith('om:1', { provider: 'alt', model: 'plain' });
     expect(q('[data-om-recompress-model]')).toBeNull();
@@ -161,14 +188,104 @@ describe('尝试其他模型按钮', () => {
     );
   });
 
-  it('选中模型提交时弹出全局提示：压缩开始，完成后会添加至「子智能体」', async () => {
+  it('带等级模型默认勾「模型默认」，再勾等级后按顺序展开组合', async () => {
+    const run = vi.fn().mockResolvedValue({ ok: true, text: '' });
+    mount(stub({}, run));
+    click(q('[data-om-recompress]'));
+    click(q('[data-om-recompress-model="alt/big-1"]'));
+    // 勾选区出现并集：模型默认已勾选，Low/High 未勾选
+    expect(q('[data-om-recompress-effort=""]')?.getAttribute('aria-checked')).toBe('true');
+    expect(q('[data-om-recompress-effort="low"]')?.getAttribute('aria-checked')).toBe('false');
+    expect(startText()).toBe('开始(1)');
+    click(q('[data-om-recompress-effort="high"]'));
+    expect(startText()).toBe('开始(2)');
+    await act(async () => {
+      click(startButton());
+    });
+    expect(runChoices(run)).toEqual([
+      { provider: 'alt', model: 'big-1' },
+      { provider: 'alt', model: 'big-1', reasoningEffort: 'high' },
+    ]);
+  });
+
+  it('全局等级为并集，模型不支持的勾选被跳过', async () => {
+    const run = vi.fn().mockResolvedValue({ ok: true, text: '' });
+    mount(stub({}, run));
+    click(q('[data-om-recompress]'));
+    click(q('[data-om-recompress-model="alt/big-1"]'));
+    click(q('[data-om-recompress-model="alt/big-2"]'));
+    // 并集：low、high、max
+    expect(
+      Array.from(document.body.querySelectorAll('[data-om-recompress-effort]')).map((el) =>
+        el.getAttribute('data-om-recompress-effort'),
+      ),
+    ).toEqual(['', 'low', 'high', 'max']);
+    click(q('[data-om-recompress-effort=""]')); // 取消「模型默认」
+    click(q('[data-om-recompress-effort="low"]'));
+    click(q('[data-om-recompress-effort="max"]'));
+    expect(startText()).toBe('开始(2)');
+    await act(async () => {
+      click(startButton());
+    });
+    expect(runChoices(run)).toEqual([
+      { provider: 'alt', model: 'big-1', reasoningEffort: 'low' },
+      { provider: 'alt', model: 'big-2', reasoningEffort: 'max' },
+    ]);
+  });
+
+  it('无等级模型不受等级勾选影响，固定只生成一个组合', async () => {
+    const run = vi.fn().mockResolvedValue({ ok: true, text: '' });
+    mount(stub({}, run));
+    click(q('[data-om-recompress]'));
+    click(q('[data-om-recompress-model="alt/plain"]'));
+    expect(q('[data-om-recompress-effort]')).toBeNull();
+    expect(startText()).toBe('开始(1)');
+    await act(async () => {
+      click(startButton());
+    });
+    expect(runChoices(run)).toEqual([{ provider: 'alt', model: 'plain' }]);
+  });
+
+  it('再次点击已勾选模型取消勾选，计数回落', async () => {
+    const run = vi.fn().mockResolvedValue({ ok: true, text: '' });
+    mount(stub({}, run));
+    click(q('[data-om-recompress]'));
+    click(q('[data-om-recompress-model="alt/plain"]'));
+    expect(startText()).toBe('开始(1)');
+    click(q('[data-om-recompress-model="alt/plain"]'));
+    expect(startText()).toBe('开始(0)');
+    expect(startButton()?.disabled).toBe(true);
+  });
+
+  it('Esc 或点击浮层外关闭不提交，重开后选择已清空', async () => {
+    const run = vi.fn();
+    mount(stub({}, run));
+    click(q('[data-om-recompress]'));
+    click(q('[data-om-recompress-model="alt/plain"]'));
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    });
+    expect(q('[data-om-recompress-model]')).toBeNull();
+    expect(run).not.toHaveBeenCalled();
+    click(q('[data-om-recompress]'));
+    expect(startText()).toBe('开始(0)');
+    click(q('[data-om-recompress-model="alt/plain"]'));
+    act(() => {
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    });
+    expect(q('[data-om-recompress-model]')).toBeNull();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('点开始时弹出全局提示：压缩开始，完成后会添加至「子智能体」', async () => {
     let finish: (value: RecompressOutcome) => void = () => {};
     const run = vi.fn().mockReturnValue(new Promise<RecompressOutcome>((r) => (finish = r)));
     mount(stub({}, run));
     expect(document.body.textContent).not.toContain(zh['recompress.started']);
     click(q('[data-om-recompress]'));
+    click(q('[data-om-recompress-model="alt/plain"]'));
     await act(async () => {
-      click(q('[data-om-recompress-model="alt/plain"]'));
+      click(startButton());
     });
     expect(zh['recompress.started']).toContain('子智能体');
     // 提示经 body portal 渲染，提交仍在进行时就已出现
@@ -179,34 +296,15 @@ describe('尝试其他模型按钮', () => {
     });
   });
 
-  it('带思考等级的模型先选等级，「模型默认」不带 effort', async () => {
-    const run = vi.fn().mockResolvedValue({ ok: true, text: '' });
-    mount(stub({}, run));
-    click(q('[data-om-recompress]'));
-    click(q('[data-om-recompress-model="alt/big-1"]'));
-    expect(run).not.toHaveBeenCalled();
-    await act(async () => {
-      click(q('[data-om-recompress-effort="high"]'));
-    });
-    expect(run).toHaveBeenLastCalledWith('om:1', {
-      provider: 'alt',
-      model: 'big-1',
-      reasoningEffort: 'high',
-    });
-    click(q('[data-om-recompress]'));
-    click(q('[data-om-recompress-model="alt/big-1"]'));
-    await act(async () => {
-      click(q('[data-om-recompress-effort=""]'));
-    });
-    expect(run).toHaveBeenLastCalledWith('om:1', { provider: 'alt', model: 'big-1' });
-  });
-
   it('提交期间按钮保持可用，进行中行显示模型名，失败后替换为原因', async () => {
     let finish: (value: RecompressOutcome) => void = () => {};
     const run = vi.fn().mockReturnValue(new Promise<RecompressOutcome>((r) => (finish = r)));
     mount(stub({}, run));
     click(q('[data-om-recompress]'));
     click(q('[data-om-recompress-model="alt/plain"]'));
+    await act(async () => {
+      click(startButton());
+    });
     const button = q('[data-om-recompress]') as HTMLButtonElement;
     expect(button.disabled).toBe(false);
     expect(button.textContent).toBe(zh['recompress.action']);
@@ -230,10 +328,15 @@ describe('尝试其他模型按钮', () => {
     mount(stub({}, run));
     click(q('[data-om-recompress]'));
     click(q('[data-om-recompress-model="alt/plain"]'));
+    await act(async () => {
+      click(startButton());
+    });
     click(q('[data-om-recompress]'));
     click(q('[data-om-recompress-model="alt/big-1"]'));
+    click(q('[data-om-recompress-effort=""]')); // 取消默认
+    click(q('[data-om-recompress-effort="high"]'));
     await act(async () => {
-      click(q('[data-om-recompress-effort="high"]'));
+      click(startButton());
     });
     expect(run).toHaveBeenCalledTimes(2);
     const labels = () =>
@@ -249,6 +352,9 @@ describe('尝试其他模型按钮', () => {
     // 新一轮提交清掉已结束的旧结果
     click(q('[data-om-recompress]'));
     click(q('[data-om-recompress-model="alt/plain"]'));
+    await act(async () => {
+      click(startButton());
+    });
     expect(q('[data-om-recompress-result]')).toBeNull();
     expect(labels()).toHaveLength(2);
     await act(async () => {
@@ -265,7 +371,7 @@ describe('尝试其他模型按钮', () => {
     expect(document.body.textContent).toContain('net');
   });
 
-  it('模型较多时出现搜索框并按名称过滤', () => {
+  it('模型较多时出现搜索框并按名称过滤，勾选在过滤后保留', () => {
     const many: DirectoryGroup[] = [
       {
         id: 'p',
@@ -277,14 +383,22 @@ describe('尝试其他模型按钮', () => {
     click(q('[data-om-recompress]'));
     const input = q('[data-om-recompress-search]') as HTMLInputElement;
     expect(input).not.toBeNull();
-    act(() => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-      setter?.call(input, 'ome');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    const search = (text: string) =>
+      act(() => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+        setter?.call(input, text);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    search('alp');
+    click(q('[data-om-recompress-model="p/alpha"]'));
+    search('ome');
     const rows = document.body.querySelectorAll('[data-om-recompress-model]');
     expect(Array.from(rows).map((row) => row.getAttribute('data-om-recompress-model'))).toEqual([
       'p/omega',
     ]);
+    // alpha 不在过滤结果里，勾选仍然保留并计数
+    expect(startText()).toBe('开始(1)');
+    search('alp');
+    expect(q('[data-om-recompress-model="p/alpha"]')?.getAttribute('aria-checked')).toBe('true');
   });
 });

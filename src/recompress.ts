@@ -10,7 +10,8 @@
  *   会话记录子会话及其在父会话的 subagent/catalog，标题带「重压缩 provider/model」
  * - 目标模型与思考等级由调用方显式指定，不做模型信息校验，也不受 compressProvider /
  *   compressModel 配置影响
- * - 仅主会话可用；同一会话允许多次重压缩并行，互不影响
+ * - 仅主会话可用；同一会话允许多次重压缩并行，互不影响；命令并发数受
+ *   recompressConcurrency 配置限制，超出的先进先出排队，排队中中止返回中止错误
  * - 命令 /om-recompress 是压缩卡片按钮到服务端的内部通道（宿主命令通道），结果文本
  *   由发起方 UI 渲染，命令事件 log-only 不进模型上下文
  */
@@ -29,6 +30,7 @@ import { buildObserveView, buildReflectView, type CompressionView } from './comp
 import { COMPACTION_ABORTED_ERROR } from './constants.ts';
 import { formatCompactCount, formatSeconds } from './format.ts';
 import { makeLogger } from './logger.ts';
+import { acquireRecompressSlot } from './recompress-gate.ts';
 import type {
   Agent,
   CompactionEndPayload,
@@ -247,9 +249,23 @@ export function buildRecompressCommand(
     handler: async ({ agent, rawInput, signal }) => {
       const parsed = parseRecompressInput(rawInput);
       if (!parsed.ok) return { kind: 'error', text: parsed.error };
-      const result = await recompress(ctx, agent, getConfig(), parsed.request, signal);
-      const text = describeResult(parsed.request, result);
-      return result.ok ? { kind: 'success', text } : { kind: 'error', text };
+      // 并发上限内立即执行，超出的排队等待；排队中 signal 中止返回中止错误
+      let release: (() => void) | undefined;
+      try {
+        release = await acquireRecompressSlot(() => getConfig().recompressConcurrency, signal);
+      } catch {
+        return {
+          kind: 'error',
+          text: describeResult(parsed.request, { ok: false, error: COMPACTION_ABORTED_ERROR }),
+        };
+      }
+      try {
+        const result = await recompress(ctx, agent, getConfig(), parsed.request, signal);
+        const text = describeResult(parsed.request, result);
+        return result.ok ? { kind: 'success', text } : { kind: 'error', text };
+      } finally {
+        release();
+      }
     },
   };
 }

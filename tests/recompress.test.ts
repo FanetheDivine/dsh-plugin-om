@@ -9,6 +9,7 @@ import { clearCompressionModelInfoCache, observePass, reflectPass } from '../src
 import { resolveConfig } from '../src/config.ts';
 import { apply } from '../src/index.ts';
 import { parseRecompressInput, recompress } from '../src/recompress.ts';
+import { resetRecompressGate } from '../src/recompress-gate.ts';
 import type { Context, Session } from '../src/types.ts';
 import {
   historyMessage,
@@ -87,7 +88,19 @@ function run(
 
 beforeEach(() => {
   clearCompressionModelInfoCache();
+  resetRecompressGate();
 });
+
+/** 轮询等待条件成立，超时抛错。 */
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error('waitFor 超时');
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+}
 
 describe('parseRecompressInput：命令行解析', () => {
   it('compactionId provider model [effort]，effort 可省略，model 可含斜杠', () => {
@@ -328,5 +341,54 @@ describe('/om-recompress 命令：apply 接线', () => {
     const missing = await call('nope alt big-1');
     expect(missing).toMatchObject({ kind: 'error' });
     expect(missing?.text).toContain('nope');
+  });
+
+  it('命令并发受 recompressConcurrency 限制：超出的排队，排队中中止不占许可', async () => {
+    const { session, compactionId } = await observedSession();
+    let started = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ctx = makeCtx({
+      commandsMounted: true,
+      llmStreamFactory: (index) =>
+        (async function* () {
+          started++;
+          await gate;
+          yield* scriptedFactory({ 1: 'y' })(index);
+        })(),
+    });
+    apply(ctx, { ...quietConfig, recompressConcurrency: 2 });
+    const command = ctx._registeredCommands[0];
+    const call = (model: string, controller: AbortController) =>
+      command?.handler({
+        agent: { session },
+        rawInput: ` ${compactionId} alt ${model}`,
+        signal: controller.signal,
+      });
+
+    const first = call('m1', new AbortController());
+    const second = call('m2', new AbortController());
+    const queuedController = new AbortController();
+    const queued = call('m3', queuedController);
+    // 上限 2：前两个进入压缩，第三个排队未触发模型请求
+    await waitFor(() => started === 2);
+    await settle();
+    expect(started).toBe(2);
+
+    queuedController.abort();
+    const queuedResult = await queued;
+    expect(queuedResult).toMatchObject({ kind: 'error' });
+    expect(queuedResult?.text).toContain('压缩已中止');
+
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    expect(a?.kind).toBe('success');
+    expect(b?.kind).toBe('success');
+    expect(started).toBeGreaterThan(2);
+    // 排队被中止的 m3 从未请求模型
+    const models = ctx._llmCalls.map((c) => (c.options as { model?: string }).model);
+    expect(models).not.toContain('m3');
   });
 });

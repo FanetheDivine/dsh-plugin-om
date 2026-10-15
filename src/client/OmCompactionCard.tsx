@@ -125,28 +125,34 @@ export const OmCompactionCard = memo(function OmCompactionCard({
       </button>
     ) : null;
   // 换模型重压缩：仅成功卡片提供；结果只作提示，重压缩记录在日志子会话中。
-  // 提交不阻塞按钮，可并行多条；新提交会清掉已结束的旧结果，保留仍在进行的条目
-  const pickRecompress = (choice: RecompressChoice) => {
+  // 一次提交为一批组合，每组合一条进行中条目；提交不阻塞按钮，可多批并行；
+  // 新提交会清掉已结束的旧结果，保留仍在进行的条目
+  const pickRecompress = (choices: readonly RecompressChoice[]) => {
     if (recompress === undefined) return;
-    const id = nextEntryId.current++;
-    const model = `${choice.provider}/${choice.model}(${
-      choice.reasoningEffort ?? t('compaction.stats.effortDefault')
-    })`;
+    const batch = choices.map((choice) => ({
+      id: nextEntryId.current++,
+      choice,
+      model: `${choice.provider}/${choice.model}(${
+        choice.reasoningEffort ?? t('compaction.stats.effortDefault')
+      })`,
+    }));
     setRecompressEntries((entries) => [
       ...entries.filter((entry) => entry.status === 'running'),
-      { id, status: 'running', model },
+      ...batch.map(({ id, model }) => ({ id, status: 'running' as const, model })),
     ]);
     setStartedToast((seq) => seq + 1);
-    void recompress.run(data.compactionId, choice).then((outcome) => {
-      const text = outcome.ok
-        ? outcome.text || t('recompress.done')
-        : t('recompress.failed', { error: outcome.text });
-      setRecompressEntries((entries) =>
-        entries.map((entry) =>
-          entry.id === id ? { id, status: outcome.ok ? 'done' : 'failed', text } : entry,
-        ),
-      );
-    });
+    for (const { id, choice } of batch) {
+      void recompress.run(data.compactionId, choice).then((outcome) => {
+        const text = outcome.ok
+          ? outcome.text || t('recompress.done')
+          : t('recompress.failed', { error: outcome.text });
+        setRecompressEntries((entries) =>
+          entries.map((entry) =>
+            entry.id === id ? { id, status: outcome.ok ? 'done' : 'failed', text } : entry,
+          ),
+        );
+      });
+    }
   };
   const recompressButton =
     recompress === undefined ? null : (

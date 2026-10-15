@@ -11,6 +11,7 @@ describe('宿主 Config 校验与 volatile 值', () => {
       reflectThresholdTokens: 0,
       compressMaxTokens: 4096,
       rateLimitWaitMs: 0,
+      recompressConcurrency: 5,
       tailMessageCount: 2,
       compressSkipReasoning: false,
       omEnabled: false,
@@ -28,7 +29,7 @@ describe('宿主 Config 校验与 volatile 值', () => {
     };
     const parsed = Config(yaml);
     const values = Object.fromEntries(Object.entries(parsed).map(([key, ref]) => [key, ref.get()]));
-    expect(Object.keys(values)).toHaveLength(18);
+    expect(Object.keys(values)).toHaveLength(19);
     expect(resolveConfig(values)).toEqual(resolveConfig(yaml));
     expect(Config({}).observeThresholdTokens.get()).toBe(resolveConfig({}).observeThresholdTokens);
     expect(Config({}).compressMaxTokens.get()).toBeUndefined();
@@ -124,6 +125,15 @@ describe('配置校验 resolveConfig', () => {
     expect(resolveConfig({ rateLimitWaitMs: 2.5 }).rateLimitWaitMs).toBe(60000); // 非整数回退默认
     expect(resolveConfig({ rateLimitWaitMs: '1s' }).rateLimitWaitMs).toBe(60000); // 非数值回退默认
     expect(resolveConfig({ rateLimitWaitMs: '' }).rateLimitWaitMs).toBe(60000); // 留空回退默认
+  });
+
+  it('recompressConcurrency：默认 2，正整数可覆盖，小于 1、非整数和非数值回退默认', () => {
+    expect(resolveConfig({}).recompressConcurrency).toBe(2);
+    expect(resolveConfig({ recompressConcurrency: 5 }).recompressConcurrency).toBe(5);
+    for (const bad of [0, -1, 1.5, '3', '']) {
+      expect(resolveConfig({ recompressConcurrency: bad }).recompressConcurrency).toBe(2);
+    }
+    expect(() => Config({ recompressConcurrency: 0 })).toThrow();
   });
 
   it('整份配置留空（undefined/null/空串/空白串）时全部用默认值', () => {

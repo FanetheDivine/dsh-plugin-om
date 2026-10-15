@@ -1,9 +1,10 @@
 /**
- * 换模型重压缩的模型选择菜单：触发按钮 + 浮层。
+ * 换模型重压缩的模型选择菜单：触发按钮 + 浮层，支持多选批量提交。
  * 数据来自宿主会话共享的模型目录（与 /model 弹窗同一份：按供应商分组、模型的思考等级
  * 元数据），搜索排序复用宿主 rankByName，浮层材质复用 MenuSurface / MenuGroup。
- * 选中模型后若该模型带思考等级则进入等级列表（含「模型默认」），再提交；
- * 选择只触发 onPick，不改变会话自身所选模型。
+ * 模型为复选框多选；勾选后出现全局思考等级区（「模型默认」+ 所选模型等级并集）；
+ * 底部「开始(N)」一次性展开为模型×等级组合并提交 onPick，N 为 0 时禁用；
+ * 点浮层外或 Esc 关闭不提交。选择只触发 onPick，不改变会话自身所选模型。
  * 导出 OmRecompressMenu。
  */
 import { MenuGroup, MenuSurface, rankByName } from '@deepseek-ai/dsh-client-ui-primitives';
@@ -19,13 +20,19 @@ import {
   useSyncExternalStore,
 } from 'react';
 import { createPortal } from 'react-dom';
-import type { DirectoryModel, RecompressChoice, RecompressInjected } from './recompress-run.ts';
+import type {
+  DirectoryModel,
+  RecompressChoice,
+  RecompressInjected,
+  SelectedModel,
+} from './recompress-run.ts';
+import { effortUnion, expandRecompressChoices } from './recompress-run.ts';
 
-/** 菜单属性：重压缩能力（目录与加载）、文案座与选中回调；提交期间按钮保持可用以支持并行。 */
+/** 菜单属性：重压缩能力（目录与加载）、文案座与批量选中回调；提交期间按钮保持可用以支持并行。 */
 export interface OmRecompressMenuProps {
   readonly source: Pick<RecompressInjected, 'directory' | 'load'>;
   readonly t: TranslateNS<'om-compaction'>;
-  readonly onPick: (choice: RecompressChoice) => void;
+  readonly onPick: (choices: readonly RecompressChoice[]) => void;
 }
 
 /** 超过该模型数才显示搜索框。 */
@@ -37,6 +44,10 @@ const css = {
   search: 'om-recompress-search',
   list: 'om-recompress-list',
   row: 'om-recompress-row',
+  mark: 'om-recompress-mark',
+  section: 'om-recompress-section',
+  footer: 'om-recompress-footer',
+  start: 'om-recompress-start',
   note: 'om-recompress-note',
 } as const;
 
@@ -46,8 +57,13 @@ const menuCss = `
 .${css.panel}{position:fixed;z-index:1000;box-sizing:border-box;width:260px;max-height:320px;display:flex;flex-direction:column;overflow:hidden}
 .${css.search}{box-sizing:border-box;width:100%;margin:0;padding:8px 12px;font:inherit;font-size:13px;color:inherit;background:none;border:none;border-bottom:1px solid var(--dsw-alias-label-caption);outline:none}
 .${css.list}{min-height:0;overflow-y:auto;padding:4px}
-.${css.row}{box-sizing:border-box;width:100%;display:block;text-align:left;font:inherit;font-size:13px;line-height:20px;color:inherit;background:none;border:none;border-radius:6px;padding:4px 8px;cursor:pointer}
+.${css.row}{box-sizing:border-box;width:100%;display:flex;align-items:center;gap:6px;text-align:left;font:inherit;font-size:13px;line-height:20px;color:inherit;background:none;border:none;border-radius:6px;padding:4px 8px;cursor:pointer}
 .${css.row}:hover,.${css.row}:focus-visible{background:var(--dsw-alias-bg-hover,transparent);outline:none}
+.${css.mark}{flex:none;color:var(--dsw-alias-label-secondary)}
+.${css.section}{padding:6px 8px 2px;font-size:11px;color:var(--dsw-alias-label-tertiary)}
+.${css.footer}{flex:none;display:flex;padding:8px;border-top:1px solid var(--dsw-alias-label-caption)}
+.${css.start}{flex:1;box-sizing:border-box;font:inherit;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover-solid);border:none;border-radius:6px;padding:4px 8px;cursor:pointer}
+.${css.start}:disabled{opacity:.45;cursor:default}
 .${css.note}{padding:8px 12px;font-size:13px;color:var(--dsw-alias-label-tertiary)}
 `;
 
@@ -62,13 +78,7 @@ if (
   document.head.appendChild(tag);
 }
 
-/** 已选中的带思考等级的模型：等待选择等级。 */
-interface PickedModel {
-  readonly provider: string;
-  readonly model: DirectoryModel;
-}
-
-/** 触发按钮与模型选择浮层。 */
+/** 触发按钮与模型多选浮层。 */
 export function OmRecompressMenu({ source, t, onPick }: OmRecompressMenuProps) {
   const state = useSyncExternalStore(
     (listener) => source.directory.subscribe(listener),
@@ -76,7 +86,11 @@ export function OmRecompressMenu({ source, t, onPick }: OmRecompressMenuProps) {
   );
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [picked, setPicked] = useState<PickedModel | null>(null);
+  // 已勾选模型，按勾选顺序保存（含目录元数据快照，展开组合时使用）
+  const [selected, setSelected] = useState<readonly SelectedModel[]>([]);
+  // 全局思考等级勾选：「模型默认」默认勾上，具体等级默认不勾
+  const [useDefault, setUseDefault] = useState(true);
+  const [effortIds, setEffortIds] = useState<ReadonlySet<string>>(() => new Set());
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -90,13 +104,19 @@ export function OmRecompressMenu({ source, t, onPick }: OmRecompressMenuProps) {
       .filter((group) => group.models.length > 0);
   }, [state.groups, query, showSearch]);
 
+  const efforts = useMemo(() => effortUnion(selected), [selected]);
+  const picks = useMemo(() => ({ useDefault, effortIds }), [useDefault, effortIds]);
+  const choices = useMemo(() => expandRecompressChoices(selected, picks), [selected, picks]);
+
   const close = useCallback(() => {
     setOpen(false);
-    setPicked(null);
     setQuery('');
+    setSelected([]);
+    setUseDefault(true);
+    setEffortIds(new Set());
   }, []);
 
-  // 点击浮层外或按 Esc 关闭
+  // 点击浮层外或按 Esc 关闭（不提交）
   useEffect(() => {
     if (!open) return;
     const outside = (event: globalThis.MouseEvent) => {
@@ -117,7 +137,7 @@ export function OmRecompressMenu({ source, t, onPick }: OmRecompressMenuProps) {
   }, [open, close]);
 
   // 浮层贴触发按钮右缘：下方放不下时翻到上方，并限制在视口内
-  // biome-ignore lint/correctness/useExhaustiveDependencies: 目录、搜索与等级面板会改变浮层尺寸，需重新定位
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 目录、搜索与勾选状态会改变浮层尺寸，需重新定位
   useLayoutEffect(() => {
     if (!open) {
       setPosition(null);
@@ -147,61 +167,39 @@ export function OmRecompressMenu({ source, t, onPick }: OmRecompressMenuProps) {
       window.removeEventListener('scroll', place, true);
       window.removeEventListener('resize', place);
     };
-  }, [open, state, query, picked]);
+  }, [open, state, query, selected, useDefault, effortIds]);
 
-  const choose = (provider: string, model: DirectoryModel) => {
-    if (model.reasoning === undefined || model.reasoning.efforts.length === 0) {
-      close();
-      onPick({ provider, model: model.id });
-      return;
-    }
-    setPicked({ provider, model });
+  const isSelected = (provider: string, model: DirectoryModel) =>
+    selected.some((entry) => entry.provider === provider && entry.model.id === model.id);
+  const toggleModel = (provider: string, model: DirectoryModel) => {
+    setSelected((prev) =>
+      prev.some((entry) => entry.provider === provider && entry.model.id === model.id)
+        ? prev.filter((entry) => !(entry.provider === provider && entry.model.id === model.id))
+        : [...prev, { provider, model }],
+    );
   };
-  const finish = (effort: string | undefined) => {
-    if (picked === null) return;
-    const choice: RecompressChoice = {
-      provider: picked.provider,
-      model: picked.model.id,
-      ...(effort === undefined ? {} : { reasoningEffort: effort }),
-    };
+  const toggleEffort = (id: string) => {
+    setEffortIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  // 点「开始」：一次性提交全部组合并关闭浮层
+  const submit = () => {
+    const batch = choices;
     close();
-    onPick(choice);
+    onPick(batch);
   };
+  const mark = (checked: boolean) => (
+    <span className={css.mark} aria-hidden="true">
+      {checked ? '☑' : '☐'}
+    </span>
+  );
 
   let body: ReactNode;
-  if (picked !== null) {
-    body = (
-      <div className={css.list}>
-        <button
-          type="button"
-          className={css.row}
-          data-om-recompress-back
-          onClick={() => setPicked(null)}
-        >
-          ← {picked.model.name}
-        </button>
-        <button
-          type="button"
-          className={css.row}
-          data-om-recompress-effort=""
-          onClick={() => finish(undefined)}
-        >
-          {t('recompress.effort.default')}
-        </button>
-        {picked.model.reasoning?.efforts.map((effort) => (
-          <button
-            type="button"
-            key={effort.id}
-            className={css.row}
-            data-om-recompress-effort={effort.id}
-            onClick={() => finish(effort.id)}
-          >
-            {effort.name}
-          </button>
-        ))}
-      </div>
-    );
-  } else if (state.status === 'error' && state.groups.length === 0) {
+  if (state.status === 'error' && state.groups.length === 0) {
     body = (
       <div className={css.note}>
         {state.error ?? t('recompress.loadFailed')}{' '}
@@ -238,19 +236,69 @@ export function OmRecompressMenu({ source, t, onPick }: OmRecompressMenuProps) {
         <div className={css.list}>
           {groups.map((group) => (
             <MenuGroup key={group.id} label={group.name}>
-              {group.models.map((model) => (
-                <button
-                  type="button"
-                  key={model.id}
-                  className={css.row}
-                  data-om-recompress-model={`${group.id}/${model.id}`}
-                  onClick={() => choose(group.id, model)}
-                >
-                  {model.name}
-                </button>
-              ))}
+              {group.models.map((model) => {
+                const checked = isSelected(group.id, model);
+                return (
+                  <button
+                    type="button"
+                    key={model.id}
+                    className={css.row}
+                    role="menuitemcheckbox"
+                    aria-checked={checked}
+                    data-om-recompress-model={`${group.id}/${model.id}`}
+                    onClick={() => toggleModel(group.id, model)}
+                  >
+                    {mark(checked)}
+                    {model.name}
+                  </button>
+                );
+              })}
             </MenuGroup>
           ))}
+          {efforts.length > 0 && (
+            <>
+              <div className={css.section}>{t('recompress.effort.title')}</div>
+              <button
+                type="button"
+                className={css.row}
+                role="menuitemcheckbox"
+                aria-checked={useDefault}
+                data-om-recompress-effort=""
+                onClick={() => setUseDefault((prev) => !prev)}
+              >
+                {mark(useDefault)}
+                {t('recompress.effort.default')}
+              </button>
+              {efforts.map((effort) => {
+                const checked = effortIds.has(effort.id);
+                return (
+                  <button
+                    type="button"
+                    key={effort.id}
+                    className={css.row}
+                    role="menuitemcheckbox"
+                    aria-checked={checked}
+                    data-om-recompress-effort={effort.id}
+                    onClick={() => toggleEffort(effort.id)}
+                  >
+                    {mark(checked)}
+                    {effort.name}
+                  </button>
+                );
+              })}
+            </>
+          )}
+        </div>
+        <div className={css.footer}>
+          <button
+            type="button"
+            className={css.start}
+            data-om-recompress-start
+            disabled={choices.length === 0}
+            onClick={submit}
+          >
+            {t('recompress.start', { count: choices.length })}
+          </button>
         </div>
       </>
     );

@@ -183,7 +183,7 @@ const type = (input: HTMLInputElement, text: string) => {
 };
 
 describe('dsh-plugin-om 的配置槽和编辑', () => {
-  it('把行配置注册到服务中的 namespace，并显示 18 个可以编辑的值控件', () => {
+  it('把行配置注册到服务中的 namespace，并显示 19 个可以编辑的值控件', () => {
     const { entry, registrations, container } = mount();
     expect(registrations).toEqual(['dsh-plugin-om']);
     expect(entry.name).toBe('plugins.row.config');
@@ -198,6 +198,7 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       'compressReasoningEffort',
       'compressSkipReasoning',
       'rateLimitWaitMs',
+      'recompressConcurrency',
       'modelDir',
       'omEnabled',
       'progressReminderEnabled',
@@ -209,7 +210,7 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       'debug',
     ];
     for (const key of keys) expect(control(container, key).disabled, key).toBe(false);
-    expect(container.querySelectorAll('input').length).toBe(18);
+    expect(container.querySelectorAll('input').length).toBe(19);
   });
 
   it('真实控件暂存整数、选填字符串和布尔值，不会编辑即持久化', () => {
@@ -223,7 +224,7 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     expect(host.state.user).toEqual({});
   });
 
-  it('一次保存原子提交全部 18 项和读取时 revision，成功后同步宿主接受值', async () => {
+  it('一次保存原子提交全部 19 项和读取时 revision，成功后同步宿主接受值', async () => {
     const { host, container, face } = mount();
     const numberFields = [
       'observeThresholdTokens',
@@ -231,6 +232,7 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       'tailMessageCount',
       'compressMaxTokens',
       'rateLimitWaitMs',
+      'recompressConcurrency',
       'progressReminderIdleSteps',
       'progressReminderIdleToolCalls',
     ];
@@ -260,7 +262,7 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     });
     expect(host.calls).toHaveLength(1);
     expect(host.calls[0]?.revision).toBe(4);
-    expect(host.calls[0]?.ops).toHaveLength(18);
+    expect(host.calls[0]?.ops).toHaveLength(19);
     // 被隐藏的字段草稿仍随保存提交
     expect(host.calls[0]?.ops).toContainEqual({
       op: 'set',
@@ -535,7 +537,7 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     expect(control(container, 'observeThresholdTokens').value).toBe('77');
   });
 
-  it('真实中英字典在 DOM 中显示全部 18 项标题、说明和保存失败反馈', async () => {
+  it('真实中英字典在 DOM 中显示全部 19 项标题、说明和保存失败反馈', async () => {
     const keys = [
       'observeThresholdTokens',
       'reflectThresholdTokens',
@@ -546,6 +548,7 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       'compressReasoningEffort',
       'compressSkipReasoning',
       'rateLimitWaitMs',
+      'recompressConcurrency',
       'modelDir',
       'omEnabled',
       'progressReminderEnabled',
