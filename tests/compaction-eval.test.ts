@@ -21,6 +21,7 @@ import {
   buckets,
   buildAfter,
   type CompactionLog,
+  evalDirName,
   loadLog,
   type Phase,
   parseLog,
@@ -177,6 +178,12 @@ describe('prepare', () => {
     expect(bareId('b011-4c92')).toBe('b011-4c92');
   });
 
+  it('evalDirName 取会话 id 前 8 位，带不带 session- 前缀一致', () => {
+    const id = 'dc114f4d-f44b-49f8-b623-11b2edb5927b';
+    expect(evalDirName(id, 'observe', 328, 383)).toBe('eval-dc114f4d-observe-328-383');
+    expect(evalDirName(`session-${id}`, 'reflect', 0, 9)).toBe('eval-dc114f4d-reflect-0-9');
+  });
+
   it('selectGroup 按阶段分组，同区间多阶段需显式指定', () => {
     const base = parseLog(compactionEvents());
     const mk = (phase: Phase, created: number, range: [number, number]): CompactionLog => ({
@@ -303,7 +310,7 @@ describe('aggregate', () => {
       irrelevant: 0,
       conciseness: 50,
       time: 50,
-      composite: -20,
+      composite: -47.5,
       credential_leak: true,
       unsupported_claims: 1,
     });
@@ -314,7 +321,7 @@ describe('aggregate', () => {
     const d = tmp();
     writeEvalDir(d);
     const { variants } = scoreAll(d);
-    expect(modelSummary(variants)).toEqual([{ model: 'm max', n: 2, mean: 40, std: 84.9 }]);
+    expect(modelSummary(variants)).toEqual([{ model: 'm max', n: 2, mean: 26.3, std: 104.3 }]);
     const single = Object.fromEntries(Object.entries(variants).slice(0, 1));
     expect(modelSummary(single)).toEqual([]);
   });

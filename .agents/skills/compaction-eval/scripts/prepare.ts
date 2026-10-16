@@ -128,6 +128,11 @@ export function bareId(id: string): string {
   return id.replace(/^session-/, '');
 }
 
+/** 评估目录名：eval-<会话 id 前 8 位>-<阶段>-<A>-<B>。 */
+export function evalDirName(sessionId: string, phase: Phase, lo: number, hi: number): string {
+  return `eval-${bareId(sessionId).slice(0, 8)}-${phase}-${lo}-${hi}`;
+}
+
 /** 在全部工作区中按 id 前缀定位主会话目录。 */
 function findMain(prefix: string): string {
   const p = bareId(prefix);
@@ -421,11 +426,7 @@ function main(): void {
 
   const out =
     values.out ??
-    join(
-      mainHead.cwd ?? '.',
-      '.session-snapshots',
-      `eval-${mainId.slice(8, 16)}-${sel.phase}-${lo}-${hi}`,
-    );
+    join(mainHead.cwd ?? '.', '.session-snapshots', evalDirName(mainId, sel.phase, lo, hi));
   mkdirSync(out, { recursive: true });
   const source = pickSource(group, lo, hi);
   write(out, 'source.xml', source);
