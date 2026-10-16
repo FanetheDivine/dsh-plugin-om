@@ -118,6 +118,16 @@ Claude 的 thinking 签名绑定其前全部内容，宿主也未开放 `drop_bl
       name: file:///<repo>/dist/index.mjs
 ```
 
+开启热更新时，在同一文件启用 `hmr` 并监听 `dist`。仓库路径含 `.dsh`（如 worktree）时去掉默认忽略的 `**/.*`。改动补丁后重启 DSH，之后 `pnpm dev` 重建 `dist` 会自动重载插件：
+
+```yaml
+- id: hmr
+  disabled: false
+  config:
+    root: ["<repo>/dist"]
+    ignored: ["**/node_modules"]
+```
+
 语义增强首次使用时自动下载嵌入模型，也可运行 `pnpm run download:model` 预下载。
 
 | 命令 | 作用 |
