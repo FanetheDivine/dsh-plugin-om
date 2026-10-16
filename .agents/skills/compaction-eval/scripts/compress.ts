@@ -10,7 +10,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { Context } from '@deepseek-ai/cordis';
@@ -207,6 +207,12 @@ export function describeOutcome(
   return `成功 ${head} 轮数 ${outcome.rounds} 字符 ${file.originalChars}→${outcome.text.length} ${sec}s ${log}`;
 }
 
+/** 用法行中的脚本名：取实际入口文件名，源码版为 compress.ts，发布版为 compress.mjs。 */
+function selfName(): string {
+  const entry = process.argv[1];
+  return entry === undefined ? 'compress.ts' : basename(entry);
+}
+
 /** 命令行入口。 */
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({
@@ -215,7 +221,7 @@ async function main(): Promise<void> {
   });
   const [viewPath, targetText] = positionals;
   if (!viewPath || !targetText || !values.out)
-    throw new Error('用法：compress.ts <view.json> <provider/model[:effort]> --out <目录>');
+    throw new Error(`用法：${selfName()} <view.json> <provider/model[:effort]> --out <目录>`);
   const file = JSON.parse(readFileSync(resolve(viewPath), 'utf8')) as ViewFile;
   const target = parseTarget(targetText);
   const profile = loadProfile();

@@ -1,6 +1,6 @@
 // DSH 0.2 发布物集成：真实宿主工具、浏览器 bundle 与 npm 包内容。
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -16,6 +16,23 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RELEASE = '0.2.0-rc.2';
+
+/** 发布的 compaction-eval skill 目录（dist 内）。 */
+const SKILL_DIST = path.join(ROOT, 'dist', 'skill', 'compaction-eval');
+
+/** 仓库内 compaction-eval skill 源目录。 */
+const SKILL_SOURCE = path.join(ROOT, '.agents', 'skills', 'compaction-eval');
+
+/**
+ * 发布契约中的 skill 脚本产物名（tarball 路径）。写死而不由构建脚本推导：
+ * 脚本改名或产物缺失时本测试必须报错，而不是跟着源头一起变。
+ */
+const SKILL_DIST_SCRIPTS = [
+  'dist/skill/compaction-eval/scripts/prepare.mjs',
+  'dist/skill/compaction-eval/scripts/view.mjs',
+  'dist/skill/compaction-eval/scripts/compress.mjs',
+  'dist/skill/compaction-eval/scripts/aggregate.mjs',
+];
 
 /** 在项目根目录运行发布构建或 npm 打包命令。 */
 function run(command: string, args: string[]): string {
@@ -276,9 +293,57 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
       'dist/index.d.ts',
       'dist/client.js',
       'dist/client/index.d.ts',
+      'dist/skill/compaction-eval/SKILL.md',
+      'dist/skill/compaction-eval/references/rules.md',
+      ...SKILL_DIST_SCRIPTS,
     ]) {
       expect(paths.has(file), file).toBe(true);
     }
     expect(installedVersion('dsh-agent')).toBe(RELEASE);
   }, 30_000);
+
+  it('发布的 skill 文档改为发布版写法，references 原样复制', () => {
+    const doc = readFileSync(path.join(SKILL_DIST, 'SKILL.md'), 'utf8');
+    // 发布版脚本是自包含 .mjs：文档若残留 .ts 或类型转换标志，用户会照文档跑不存在的源码
+    for (const name of ['prepare', 'view', 'compress', 'aggregate']) {
+      expect(doc, `${name}.ts`).not.toContain(`${name}.ts`);
+      expect(doc, `${name}.mjs`).toContain(`${name}.mjs`);
+    }
+    expect(doc).toContain('N="node"');
+    expect(doc).not.toContain('--experimental-transform-types');
+    expect(doc).not.toContain('dev-only');
+    expect(doc).not.toContain('pnpm install');
+    for (const name of readdirSync(path.join(SKILL_SOURCE, 'references'))) {
+      expect(readFileSync(path.join(SKILL_DIST, 'references', name), 'utf8')).toBe(
+        readFileSync(path.join(SKILL_SOURCE, 'references', name), 'utf8'),
+      );
+    }
+  }, 30_000);
+
+  it('发布的 skill 脚本自包含且可执行：无参调用报用法错误而非空跑', () => {
+    // 多出共享 chunk 说明多入口拆分复现：被共享的入口只剩转发壳，main() 守卫失效
+    expect(readdirSync(path.join(SKILL_DIST, 'scripts')).sort()).toEqual([
+      'aggregate.mjs',
+      'compress.mjs',
+      'prepare.mjs',
+      'view.mjs',
+    ]);
+    for (const rel of SKILL_DIST_SCRIPTS) {
+      const res = spawnSync(process.execPath, [path.join(ROOT, rel)], {
+        cwd: ROOT,
+        encoding: 'utf8',
+        timeout: 60_000,
+      });
+      const output = `${res.stderr}${res.stdout}`;
+      // 能因参数缺失失败，说明 bundle 与 external（@deepseek-ai/*、zod）都解析成功
+      expect(res.status, output).not.toBe(0);
+      expect(output.trim().length, rel).toBeGreaterThan(0);
+    }
+    const usage = spawnSync(process.execPath, [path.join(SKILL_DIST, 'scripts', 'compress.mjs')], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+    expect(usage.stderr).toContain('用法：compress.mjs');
+  }, 120_000);
 });

@@ -23,13 +23,25 @@ disable-model-invocation: true
 ## 约定
 
 - 用户给出 DSH 导出的 zip 时直接用；未指明会话时用 `ask_user_question` 确认。
-- 脚本用 Node 直接运行 TS，先 `pnpm install`。`view.ts` 与 `compress.ts` 引用插件源码，需加 `--experimental-transform-types`。
 - 盲评完成前不读 `_blind_key.json`，subagent 提示词中不写模型名。
 
 ## 输入
 
 - 本地会话：主会话为 `~/.dsh/sessions/<工作区>/<会话 id>/session.v4.jsonl.zstd`，同目录 `om-compaction-log-*` 为压缩日志，parentSession 指向主会话。
 - 导出 zip：根部 `session.v4.jsonl` 为主会话，`subagents/om-compaction-log-*/` 为压缩日志。导出时需包含 subagents。
+
+## 脚本
+
+脚本在本 skill 目录的 `scripts/` 下，`<skill 目录>` 指本文件所在目录。后续步骤的命令行都用这里定义的 `$S` 与 `$N`。
+
+```sh
+S=<skill 目录>/scripts
+N="node --experimental-transform-types --no-warnings"
+```
+
+<!-- dev-only -->
+源码版脚本是 TS 且引用插件源码：先在仓库根 `pnpm install`，运行时必须带 `--experimental-transform-types`。
+<!-- /dev-only -->
 
 ## 步骤
 
@@ -38,8 +50,6 @@ disable-model-invocation: true
 用户要求为已有压缩或指定区间生成变体时执行。脚本各做一件事，由调用方组合。
 
 ```sh
-S=.agents/skills/compaction-eval/scripts
-N="node --experimental-transform-types --no-warnings"
 $N $S/view.ts --session <id>                                    # 列出已有压缩：id、阶段、区间、成败、模型
 $N $S/view.ts --session <id> --compaction <压缩 id> --out v.json # 复现该次压缩的输入
 $N $S/view.ts --session <id> --range A..B --out v.json          # 复现 B 结束时插件看到的区间视图
@@ -55,7 +65,7 @@ $N $S/compress.ts v.json <provider/model[:effort]> --out <变体目录>
 ### 2. 准备数据
 
 ```sh
-node .agents/skills/compaction-eval/scripts/prepare.ts (--session <会话 id 或前缀> | --zip <zip 路径>) [--variants <变体目录>]... [--range A..B] [--phase observe|reflect] [--out 目录]
+$N $S/prepare.ts (--session <会话 id 或前缀> | --zip <zip 路径>) [--variants <变体目录>]... [--range A..B] [--phase observe|reflect] [--out 目录]
 ```
 
 - 分组：变体按阶段与区间分组，缺省选变体最多的组。同区间同时有观察与反思日志时，用 `--phase` 指定。只有 1 个变体也可评，但不做对比。
@@ -82,7 +92,7 @@ node .agents/skills/compaction-eval/scripts/prepare.ts (--session <会话 id 或
 ### 5. 汇总
 
 ```sh
-node .agents/skills/compaction-eval/scripts/aggregate.ts <评估目录>
+$N $S/aggregate.ts <评估目录>
 ```
 
 - 校验：评审文件齐全、facts 与 irrelevant 全覆盖、判定词合法，否则直接报错。
