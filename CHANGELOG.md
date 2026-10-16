@@ -2,6 +2,8 @@
 
 ## Changes
 
+- 观察压缩改为后台预压缩：净压力达到 `observeThresholdTokens` 时记录待定标记并立即在后台开始压缩，结果以 `om/observe-summary` 信封写入会话日志，不做表层替换；每个 pre-step 对账标记与后台任务，重启后直接采纳已持久化结果，不重复压缩；新增完整消息达到 `tailMessageCount` 后注入摘要，到期未完成时阻塞等待后台任务，turn 取消则放行不注入；`tailMessageCount=0` 在触发当轮等待并注入；失败路径不再写 compaction 生命周期事件，诊断子会话照常落盘，下个 pre-step 丢弃失败任务重试。
+
 - 修复压缩会话记录子会话在新会话视图中缺失系统提示词、任务指令显示为上下文注入：压缩循环的系统提示词随任务指令 step 落盘为 system/message 事件，任务指令 source 改写为用户来源，轮间提醒保持插件来源。
 - 压缩视图（观察视图、getHistory、最终 `<history>` 块）与 recall 输出的 toolcall 条目不再携带 `callId` 属性：callId 是 provider 随机串，对模型无语义，纯占 token；历史块中旧格式的 `callId` 属性解析时忽略、重新渲染后消失，压缩提示词与块首格式说明注释同步更新，消息层内部关联（ask 配对、压缩记录、语义检索排除自身）不受影响。
 
