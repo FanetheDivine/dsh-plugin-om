@@ -3,7 +3,7 @@
  *
  * 用法：node aggregate.ts <评估目录>
  * 输入：meta.json、_blind_key.json、facts.json、judge-<V>-1.json、judge-<V>-2.json、V*.xml、source.xml。
- * 维度：关键信息保留 50%、精简度 20%、无关信息压缩 15%、模型耗时 15%。
+ * 维度：关键信息保留 70%、无关信息压缩 20%、精简度 5%、模型耗时 5%。
  * 诊断输出不计分：分段保留率、分段压缩率、清单外无关内容、评审分歧。
  */
 
@@ -91,7 +91,7 @@ const VERDICT: Record<string, number> = { 保留: 1, 部分: 0.5, 丢失: 0, 歪
 /** 无关信息判定得分。 */
 const D_VERDICT: Record<string, number> = { 已省略: 1, 已概括: 0.7, 详细保留: 0 };
 /** 综合分维度权重。 */
-const WEIGHTS = { retention: 0.5, conciseness: 0.2, irrelevant: 0.15, time: 0.15 } as const;
+const WEIGHTS = { retention: 0.7, conciseness: 0.05, irrelevant: 0.2, time: 0.05 } as const;
 /** 每条无依据断言扣除的分子分。 */
 const CLAIM_PENALTY = 2;
 /** 每个变体的评审数量。 */

@@ -10,10 +10,10 @@ disable-model-invocation: true
 
 ## 评分维度
 
-- 关键信息保留 50%：事实按 A 不可再生 3、B 高代价可再生 2、C 廉价可再生 1 加权；保留 1、部分 0.5、丢失 0、歪曲 −1；每条无依据断言从分子扣 2 分。
-- 精简度 20%：最小产物字符数 / 本变体产物字符数，防止几乎不压缩的变体拿高分。
-- 无关信息压缩 15%：已省略 1、已概括 0.7、详细保留 0。凭据出现单独标出。
-- 模型耗时 15%：最快模型耗时 / 本变体模型耗时，只计模型请求，不含限流等待。
+- 关键信息保留 70%：事实按 A 不可再生 3、B 高代价可再生 2、C 廉价可再生 1 加权；保留 1、部分 0.5、丢失 0、歪曲 −1；每条无依据断言从分子扣 2 分。
+- 无关信息压缩 20%：已省略 1、已概括 0.7、详细保留 0。凭据出现单独标出。
+- 精简度 5%：最小产物字符数 / 本变体产物字符数，防止几乎不压缩的变体拿高分。
+- 模型耗时 5%：最快模型耗时 / 本变体模型耗时，只计模型请求，不含限流等待。
 
 分段保留率、分段压缩率、清单外无关内容数量与评审分歧只作诊断输出，不计分。结构合法性由插件代码保证，不评。
 
@@ -23,17 +23,18 @@ disable-model-invocation: true
 
 - 主会话日志位于 `~/.dsh/sessions/<工作区>/<会话 id>/session.v4.jsonl.zstd`，压缩日志为同目录下 `om-compaction-log-*`，parentSession 指向主会话。
 - 变体按阶段与区间分组，同区间同时有观察与反思日志时必须用 `--phase` 指定。
+- 用户给出 DSH 导出的会话日志 zip 时直接用它，无需再确认会话。zip 根部 `session.v4.jsonl` 为主会话，`subagents/om-compaction-log-*/` 为压缩日志，导出时需包含 subagents。
 - 用户未指明会话时，用 `ask_user_question` 确认。
 - 脚本用 Node 直接运行 TS，依赖已在项目 devDependencies 中，先 `pnpm install`。
 
 ### 2. 准备数据
 
 ```sh
-node .agents/skills/compaction-eval/scripts/prepare.ts --session <会话 id 或前缀> [--range A..B] [--phase observe|reflect] [--out 目录]
+node .agents/skills/compaction-eval/scripts/prepare.ts (--session <会话 id 或前缀> | --zip <zip 路径>) [--range A..B] [--phase observe|reflect] [--out 目录]
 ```
 
 - 列出各分组的变体，缺省选变体最多的分组。只有 1 个变体时也可评，但不做对比。
-- 输出目录缺省为 `<工作区>/.session-snapshots/eval-<会话>-<阶段>-<A>-<B>/`。
+- 输出目录名为 `eval-<会话 id 前 8 位>-<阶段>-<A>-<B>`。本地会话缺省放在 `<工作区>/.session-snapshots/` 下，zip 缺省放在 `<zip 所在目录>/<zip 名>/` 下。
 - 产出：盲化变体 `V*.xml`、压缩输入 `source.xml`、后续轨迹 `after.md`、规则 `rules.md`、映射 `_blind_key.json`、`meta.json`。
 - 盲评完成前不要读 `_blind_key.json`，也不要把模型名写进 subagent 提示词。
 
