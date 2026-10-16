@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # compaction-eval
 
-同一压缩区间的多个变体，即原始压缩与重压缩，用 subagent 盲评打分。
+同一压缩区间的多个变体，即原始压缩与重压缩，用 subagent 盲评打分。变体可由用户在 DSH 中重压缩，或由脚本生成。
 
 ## 评分维度
 
@@ -25,30 +25,50 @@ disable-model-invocation: true
 - 变体按阶段与区间分组，同区间同时有观察与反思日志时必须用 `--phase` 指定。
 - 用户给出 DSH 导出的会话日志 zip 时直接用它，无需再确认会话。zip 根部 `session.v4.jsonl` 为主会话，`subagents/om-compaction-log-*/` 为压缩日志，导出时需包含 subagents。
 - 用户未指明会话时，用 `ask_user_question` 确认。
-- 脚本用 Node 直接运行 TS，依赖已在项目 devDependencies 中，先 `pnpm install`。
+- 脚本用 Node 直接运行 TS，依赖已在项目 devDependencies 中，先 `pnpm install`。`view.ts` 与 `compress.ts` 引用插件源码，需加 `--experimental-transform-types`。
 
-### 2. 准备数据
+### 2. 生成变体（可选）
+
+用户要求对已有压缩或指定区间生成变体时执行。脚本功能单一，由调用方组合。
 
 ```sh
-node .agents/skills/compaction-eval/scripts/prepare.ts (--session <会话 id 或前缀> | --zip <zip 路径>) [--range A..B] [--phase observe|reflect] [--out 目录]
+S=.agents/skills/compaction-eval/scripts
+N="node --experimental-transform-types --no-warnings"
+$N $S/view.ts --session <id>                                   # 列出已有压缩：id、阶段、区间、成败、模型
+$N $S/view.ts --session <id> --compaction <压缩 id> --out v.json # 复现该次压缩的输入
+$N $S/view.ts --session <id> --range A..B --out v.json         # 复现 B 结束时插件看到的区间视图
+$N $S/compress.ts v.json <provider/model[:effort]> --out <变体目录>
 ```
+
+- `--range` 的 A..B 为完整消息 index，块外取原文、块内取相交的摘要条目；含摘要条目即为反思，否则为观察，区间按实际条目扩展。
+- `compress.ts` 每次跑一个变体，打印一行结果，失败时退出码非 0。重复次数与模型、思考等级组合由调用方循环，可后台并行。
+- 模型与插件配置读 `~/.dsh/profiles/<DSH_PROFILE 或 web>/cordis.patch.yml`；凭据依次取环境变量、Windows 用户环境变量、`~/.dsh/.credentials.yaml`、`.env`。
+- 产出与 DSH 同格式的 `om-compaction-log-*` 日志，标记为重压缩，不改原会话。
+
+### 3. 准备数据
+
+```sh
+node .agents/skills/compaction-eval/scripts/prepare.ts (--session <会话 id 或前缀> | --zip <zip 路径>) [--variants <变体目录>]... [--range A..B] [--phase observe|reflect] [--out 目录]
+```
+
+- `--variants` 可重复，并入第 2 步产出的日志，与原始压缩按阶段与区间同组。
 
 - 列出各分组的变体，缺省选变体最多的分组。只有 1 个变体时也可评，但不做对比。
 - 输出目录名为 `eval-<会话 id 前 8 位>-<阶段>-<A>-<B>`。本地会话缺省放在 `<工作区>/.session-snapshots/` 下，zip 缺省放在 `<zip 所在目录>/<zip 名>/` 下。
 - 产出：盲化变体 `V*.xml`、压缩输入 `source.xml`、后续轨迹 `after.md`、规则 `rules.md`、映射 `_blind_key.json`、`meta.json`。
 - 盲评完成前不要读 `_blind_key.json`，也不要把模型名写进 subagent 提示词。
 
-### 3. 构建事实清单
+### 4. 构建事实清单
 
 - 用 [facts-prompt.md](references/facts-prompt.md) 启动一个 subagent，产出 `facts.json`。
 - 抽查 A 类事实与 source.xml 是否一致，不合理就让 subagent 修正。
 
-### 4. 盲评
+### 5. 盲评
 
 - 用 [judge-prompt.md](references/judge-prompt.md) 为每个变体启动两名评审 subagent，全部在同一条消息中并行启动，产出 `judge-V*-1.json` 与 `judge-V*-2.json`。
 - 汇总脚本会校验评审文件齐全、facts 与 irrelevant 全覆盖、判定词合法，不合法直接报错。
 
-### 5. 汇总
+### 6. 汇总
 
 ```sh
 node .agents/skills/compaction-eval/scripts/aggregate.ts <评估目录>
@@ -59,9 +79,9 @@ node .agents/skills/compaction-eval/scripts/aggregate.ts <评估目录>
 - 清单有误：修正 facts.json 后重跑全部评审再汇总。评审错误：修正对应 judge 文件后重跑汇总。
 - 同模型同思考等级有多个变体时，scores.md 附综合分均值与标准差。
 
-### 6. 汇报
+### 7. 汇报
 
 - 排名表：模型、综合分、保留、精简、无关压缩、耗时、A 类、无依据断言、token。
 - 关键发现：区分度来源、共性失败及原因、无依据断言、评审分歧、凭据泄漏。
 - 建议：质量优先与速度优先的组合，可改进的压缩提示词点。
-- 局限：单次运行、单区间、权重未经下游校准；after.md 是原始摘要下的真实轨迹，对重压缩变体只能作近似参照。建议每个组合重压缩 2–3 次，用均值与标准差估方差。
+- 局限：单次运行、单区间、权重未经下游校准；after.md 是原始摘要下的真实轨迹，对重压缩变体只能作近似参照。建议每个组合用第 2 步生成 2–3 次，用均值与标准差估方差。

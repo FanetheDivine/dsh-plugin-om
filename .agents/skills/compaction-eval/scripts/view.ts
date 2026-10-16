@@ -7,8 +7,8 @@
  * 导出 toSession / listCompactions / rangeView / buildViewFile 与 ViewFile 类型。
  */
 
-import { writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
@@ -225,7 +225,9 @@ function main(): void {
       ? { compactionId: values.compaction }
       : { range: parseRange(values.range ?? '') },
   );
-  writeFileSync(resolve(values.out), JSON.stringify(file, null, 1), 'utf8');
+  const outFile = resolve(values.out);
+  mkdirSync(dirname(outFile), { recursive: true });
+  writeFileSync(outFile, JSON.stringify(file, null, 1), 'utf8');
   console.log(
     `${file.phase} [${file.view.minIndex}..${file.view.maxIndex}] 条目 ${file.view.entries.length}，原文 ${file.originalChars} 字符 → ${values.out}`,
   );

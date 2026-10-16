@@ -2,7 +2,7 @@
 // 凭据解析顺序，以及经真实 LlmRuntime / SessionStore / jsonl 落盘跑一次压缩，
 // 产出的日志可被 prepare.ts 解析为重压缩变体。
 
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -22,7 +22,7 @@ import {
   parseTarget,
   resolveSecret,
 } from '../.agents/skills/compaction-eval/scripts/compress.ts';
-import { loadLog, parseLog } from '../.agents/skills/compaction-eval/scripts/prepare.ts';
+import { loadVariants, parseLog } from '../.agents/skills/compaction-eval/scripts/prepare.ts';
 import { buildViewFile } from '../.agents/skills/compaction-eval/scripts/view.ts';
 import { resolveConfig } from '../src/config.ts';
 import { hostLog, type RoundScript, roundChunks, twoCallFlow } from './helpers.ts';
@@ -140,13 +140,6 @@ class ScriptedAdapter extends LlmAdapter {
   }
 }
 
-/** 递归找出 om-compaction-log-* 目录下的日志文件。 */
-function findLogs(root: string): string[] {
-  return readdirSync(root, { recursive: true, encoding: 'utf8' })
-    .filter((p) => /om-compaction-log-[^/\\]+[/\\]session\.v\d+\.jsonl\.zstd$/.test(p))
-    .map((p) => join(root, p));
-}
-
 describe('compressView', () => {
   it('对区间视图跑压缩，落盘的日志可被 prepare.ts 解析为重压缩变体', async () => {
     const out = tempDir();
@@ -167,10 +160,10 @@ describe('compressView', () => {
       /^成功 observe \[0\.\.5\] stub\/m:high 轮数 3 .* om-compaction-log-/,
     );
 
-    const [logFile, ...rest] = findLogs(out);
+    const [events, ...rest] = loadVariants(out);
     expect(rest).toEqual([]);
-    expect(logFile).toContain(String(outcome.recordSessionId));
-    const log = parseLog(loadLog(String(logFile)));
+    expect(events?.[0]?.id).toBe(outcome.recordSessionId);
+    const log = parseLog(events ?? []);
     expect(log).toMatchObject({
       parent: 'session-view-test',
       phase: 'observe',
@@ -182,5 +175,13 @@ describe('compressView', () => {
     });
     expect(outcome.ok && log.product).toBe(outcome.ok ? outcome.text : false);
     expect(log.product).toContain('助手摘要');
+  });
+});
+
+describe('loadVariants', () => {
+  it('目录中没有压缩日志时报错', () => {
+    const dir = tempDir();
+    mkdirSync(join(dir, 'other'));
+    expect(() => loadVariants(dir)).toThrow('目录中没有压缩日志');
   });
 });
