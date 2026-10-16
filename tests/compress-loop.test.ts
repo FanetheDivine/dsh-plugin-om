@@ -9,6 +9,7 @@ import {
   type CompressionLoopOptions,
   REFLECT_COMPRESSION_PROMPT,
   runCompressionLoop,
+  withoutReasoning,
 } from '../src/compress-loop.ts';
 import { buildReflectView, type CompressionView, type ViewEntry } from '../src/compress-view.ts';
 import {
@@ -28,6 +29,16 @@ function testView(): CompressionView {
     { kind: 'assistant', lo: 2, hi: 2, text: '助手C' },
   ];
   return { entries, minIndex: 0, maxIndex: 2 };
+}
+
+/** 含 reasoning 参考条目的预建视图：0 用户 / 1 assistant（其前带 reasoning）。 */
+function reasoningView(): CompressionView {
+  const entries: ViewEntry[] = [
+    { kind: 'user', lo: 0, hi: 0, text: '用户消息' },
+    { kind: 'reasoning', lo: 1, hi: 1, text: '其他模型的思考' },
+    { kind: 'assistant', lo: 1, hi: 1, text: '助手B' },
+  ];
+  return { entries, minIndex: 0, maxIndex: 1 };
 }
 
 /** 带两条原始合法 ask 的视图，覆盖混合处理路径。 */
@@ -328,7 +339,40 @@ describe('buildCompressionPrompt / buildCompressionTaskText', () => {
   });
 });
 
+describe('withoutReasoning', () => {
+  it('skipReasoning=true 去掉 reasoning 条目并保留其余条目与区间，false 原样返回', () => {
+    const view = reasoningView();
+    const stripped = withoutReasoning(view, true);
+    expect(stripped.entries.map((e) => e.kind)).toEqual(['user', 'assistant']);
+    expect([stripped.minIndex, stripped.maxIndex]).toEqual([0, 1]);
+    expect(withoutReasoning(view, false)).toBe(view);
+  });
+});
+
 describe('runCompressionLoop', () => {
+  it.each([
+    [true, false],
+    [false, true],
+  ])(
+    '预建视图带 reasoning 时：skipReasoning=%s，getHistory 输出含 reasoning=%s',
+    async (skip, shown) => {
+      const ctx = makeCtx({
+        llmStreamFactory: (index) =>
+          index === 0
+            ? roundChunks({ calls: [{ id: 't1', name: 'getHistory', args: {} }] })
+            : roundChunks({ calls: [{ id: 't2', name: 'completeCompression' }] }),
+      });
+      await runCompressionLoop(
+        ctx,
+        makeSession(),
+        loopOptions({ view: reasoningView(), skipReasoning: skip }),
+      );
+      const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
+      const historyResult = events.find((e) => e.type === 'tool/result');
+      expect(JSON.stringify(historyResult?.data).includes('其他模型的思考')).toBe(shown);
+    },
+  );
+
   it('基本流程：getHistory → compressHistory → completeCompression，成功构建最终块并落盘会话记录', async () => {
     const ctx = makeCtx({
       llmStreamFactory: (index) => {

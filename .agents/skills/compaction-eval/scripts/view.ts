@@ -24,6 +24,7 @@ import {
   buildReflectView,
   type ViewEntry,
 } from '../../../../src/compress-view.ts';
+import { resolveConfig } from '../../../../src/config.ts';
 import { indexCompleteMessages } from '../../../../src/log-index.ts';
 import { compactionView, type ReplayView } from '../../../../src/recompress.ts';
 import type {
@@ -31,6 +32,7 @@ import type {
   CompactionStartPayload,
   CompactionSummaryPayload,
 } from '../../../../src/types.ts';
+import { loadProfile } from './compress.ts';
 import { loadBundle, type SessionEvent } from './prepare.ts';
 
 /** view.json：压缩输入视图与来源。 */
@@ -185,7 +187,7 @@ function parseRange(text: string): [number, number] {
 export function buildViewFile(
   events: SessionEvent[],
   select: { compactionId: string } | { range: [number, number] },
-  skipReasoning = false,
+  skipReasoning = resolveConfig().compressSkipReasoning,
 ): ViewFile {
   const session = toSession(events);
   const replay =
@@ -224,6 +226,7 @@ function main(): void {
     values.compaction !== undefined
       ? { compactionId: values.compaction }
       : { range: parseRange(values.range ?? '') },
+    resolveConfig(loadProfile().plugin).compressSkipReasoning,
   );
   const outFile = resolve(values.out);
   mkdirSync(dirname(outFile), { recursive: true });

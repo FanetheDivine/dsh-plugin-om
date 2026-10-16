@@ -269,6 +269,12 @@ function isRateLimitFailure(message: string, status?: number): boolean {
   return status === 429 || isRateLimitError(message);
 }
 
+/** skipReasoning=true 时去掉视图中的 reasoning 条目（兑现 getHistory 不输出 reasoning 的契约）；否则原样返回。 */
+export function withoutReasoning(view: CompressionView, skipReasoning: boolean): CompressionView {
+  if (!skipReasoning) return view;
+  return { ...view, entries: view.entries.filter((entry) => entry.kind !== 'reasoning') };
+}
+
 /**
  * 运行工具驱动的压缩循环：直到模型调用 completeCompression（成功）、连续 2 轮无
  * 工具调用、请求级错误或 signal 中止（失败）。成功与失败均落盘循环会话记录。
@@ -279,7 +285,8 @@ export async function runCompressionLoop(
   options: CompressionLoopOptions,
 ): Promise<CompressionOutcome> {
   const logger = makeLogger(ctx, options.debug);
-  const state = new CompressionState(options.view);
+  const view = withoutReasoning(options.view, options.skipReasoning);
+  const state = new CompressionState(view);
   const tools = state.hasPendingAsks
     ? [...COMPRESSION_TOOL_SCHEMAS, REWRITE_ASK_TOOL_SCHEMA]
     : COMPRESSION_TOOL_SCHEMAS;
@@ -312,7 +319,7 @@ export async function runCompressionLoop(
       debug: options.debug,
       info: compressionInfo({
         target: options.target,
-        originalChars: options.originalChars ?? viewCharCount(options.view),
+        originalChars: options.originalChars ?? viewCharCount(view),
         ...(options.reasoningEffort === undefined
           ? {}
           : { reasoningEffort: options.reasoningEffort }),
