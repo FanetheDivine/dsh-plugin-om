@@ -328,6 +328,8 @@ export function makeCtx({
   sessionsMounted = true,
 }: MockCtxOptions = {}) {
   const onCallbacks = new Map<string, ((...args: unknown[]) => unknown)[]>();
+  /** ctx.on 的注册选项（与 onCallbacks 同序）。 */
+  const onOptions = new Map<string, unknown[]>();
   const registeredTools: unknown[] = [];
   const sections: unknown[] = [];
   /** systemPrompt.assemble 调用记录（测试据此断言传入的 agent/scope/signal）。 */
@@ -356,7 +358,10 @@ export function makeCtx({
   const createdSessions: Array<{ id: string; options: unknown; session: Session }> = [];
   /** sessions 服务 mock：create 以 options.seed 重建会话日志（无 seed 则为空、可 append）并记录；flush 记录被 flush 的会话。 */
   const flushedSessions: Session[] = [];
+  /** sessions.get 可查到的活动会话（测试按 id 登记）。 */
+  const liveSessions = new Map<string, Session>();
   const sessions = {
+    get: (id: string) => liveSessions.get(id),
     create: (id: unknown, options: unknown) => {
       const seed = (options as { seed?: readonly SessionEvent[] } | undefined)?.seed;
       const session = makeSession({ events: seed === undefined ? [] : [...seed] });
@@ -426,7 +431,11 @@ export function makeCtx({
     },
     /** 依赖服务全部可用时才运行回调（模拟 commands 与 tools 服务）。 */
     inject(deps: readonly string[], callback: (inner: unknown) => void) {
-      const mounted: Record<string, boolean> = { commands: commandsMounted, tools: toolsMounted };
+      const mounted: Record<string, boolean> = {
+        commands: commandsMounted,
+        tools: toolsMounted,
+        sessions: sessionsMounted,
+      };
       if (deps.every((name) => mounted[name] === true)) callback(ctx);
     },
     /** 立即运行副作用并忽略其返回的注销函数（测试不卸载）。 */
@@ -458,7 +467,8 @@ export function makeCtx({
     tokenMeter: meter,
     sessions,
     sessionPersistence,
-    on(type: string, fn: (...args: unknown[]) => unknown) {
+    on(type: string, fn: (...args: unknown[]) => unknown, options?: unknown) {
+      onOptions.set(type, [...(onOptions.get(type) ?? []), options]);
       let list = onCallbacks.get(type);
       if (!list) {
         list = [];
@@ -486,6 +496,8 @@ export function makeCtx({
       return undefined;
     },
     _onCallbacks: onCallbacks,
+    _onOptions: onOptions,
+    _liveSessions: liveSessions,
     _registeredTools: registeredTools,
     _registeredCommands: registeredCommands,
     _sections: sections,
@@ -510,6 +522,8 @@ export function makeCtx({
   return ctx as unknown as Context & {
     _mockSessionPersistence: typeof sessionPersistence;
     _onCallbacks: Map<string, ((...args: unknown[]) => unknown)[]>;
+    _onOptions: Map<string, unknown[]>;
+    _liveSessions: Map<string, Session>;
     _registeredTools: Array<{ name?: string }>;
     _registeredCommands: RegisteredCommand[];
     _sections: Array<{ name?: string }>;
