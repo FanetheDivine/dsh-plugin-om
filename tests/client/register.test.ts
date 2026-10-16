@@ -156,31 +156,15 @@ describe('client apply', () => {
   });
 
   describe('/om-compaction-eval 模型面板', () => {
-    interface PanelUi {
-      kind: string;
-      searchMode?: string;
-      options: (session: { sessionId: string }, signal: AbortSignal) => Promise<unknown[]>;
-      onSelect: (option: { id: string }, session: { sessionId: string }) => Promise<void>;
-    }
     interface Decoration {
       name: string;
       available: (session: { sessionId: string }) => boolean;
-      ui: PanelUi;
+      ui: { kind: string; run?: (session: { sessionId: string }) => void };
     }
 
     /** 构造带 commandUi 与模型目录的宿主，返回收集到的装饰。 */
-    function panel(commandResult: unknown) {
+    function panel() {
       const decorations: Decoration[] = [];
-      const state = {
-        groups: [{ id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-5', name: 'GPT-5' }] }],
-        failures: [],
-      };
-      const load = vi.fn().mockResolvedValue(state);
-      const directoryFor = vi.fn().mockReturnValue({
-        load,
-        store: { subscribe: () => () => {}, getSnapshot: () => state },
-      });
-      const execute = vi.fn().mockResolvedValue(commandResult);
       const host = setup({
         commandUi: {
           decorate: (decoration: Decoration) => {
@@ -188,25 +172,18 @@ describe('client apply', () => {
             return () => {};
           },
         },
-        modelDirectories: { directoryFor },
-        'remote.commands': { execute },
+        modelDirectories: { directoryFor: vi.fn() },
+        'remote.commands': { execute: vi.fn() },
       });
-      return { decorations, directoryFor, load, execute, ...host };
+      return { decorations, ...host };
     }
 
-    /** 取唯一一条装饰，缺失即失败。 */
-    function only(decorations: Decoration[]): Decoration {
-      const [first] = decorations;
-      if (first === undefined) throw new Error('缺少装饰注册');
-      return first;
-    }
-
-    it('commandUi 与模型目录就绪时给评估命令挂面板', () => {
-      const { decorations } = panel({ ok: true, value: { result: { kind: 'success' } } });
+    it('commandUi 与模型目录就绪时给评估命令挂 action 装饰', () => {
+      const { decorations } = panel();
       expect(decorations).toHaveLength(1);
-      expect(only(decorations).name).toBe('om-compaction-eval');
-      expect(only(decorations).ui.kind).toBe('popupSelect');
-      expect(only(decorations).ui.searchMode).toBe('fuzzy-label');
+      expect(decorations[0]?.name).toBe('om-compaction-eval');
+      expect(decorations[0]?.ui.kind).toBe('action');
+      expect(decorations[0]?.available({ sessionId: 's-1' })).toBe(true);
     });
 
     it('缺少 commandUi 或模型目录时不挂面板也不抛错', () => {
@@ -215,56 +192,6 @@ describe('client apply', () => {
       const decorate = vi.fn();
       setup({ commandUi: { decorate } });
       expect(decorate).not.toHaveBeenCalled();
-    });
-
-    it('面板选项来自当前会话的模型目录', async () => {
-      const { decorations, directoryFor } = panel({
-        ok: true,
-        value: { result: { kind: 'success' } },
-      });
-      const options = await only(decorations).ui.options(
-        { sessionId: 's-1' },
-        new AbortController().signal,
-      );
-      expect(directoryFor).toHaveBeenCalledWith('s-1');
-      expect(options).toMatchObject([{ label: 'GPT-5', group: { label: 'OpenAI' } }]);
-    });
-
-    it('选中模型：提交不带等级的命令行并跳转到新会话', async () => {
-      const { decorations, execute, openSession } = panel({
-        ok: true,
-        value: { result: { kind: 'success', text: '已启动 OM 结果分析会话 session-new' } },
-      });
-      const options = (await only(decorations).ui.options(
-        { sessionId: 's-1' },
-        new AbortController().signal,
-      )) as { id: string }[];
-      await only(decorations).ui.onSelect(options[0] ?? { id: '' }, { sessionId: 's-1' });
-      expect(execute).toHaveBeenCalledExactlyOnceWith(
-        's-1',
-        '/om-compaction-eval openai/gpt-5',
-        [],
-      );
-      expect(openSession).toHaveBeenCalledExactlyOnceWith('session-new');
-    });
-
-    it('命令失败时把原因抛给面板且不跳转', async () => {
-      const { decorations, openSession } = panel({
-        ok: true,
-        value: { result: { kind: 'error', text: '仅支持主会话' } },
-      });
-      await expect(
-        only(decorations).ui.onSelect({ id: 'openai/gpt-5' }, { sessionId: 's-1' }),
-      ).rejects.toThrow('仅支持主会话');
-      expect(openSession).not.toHaveBeenCalled();
-    });
-
-    it('选中已不在目录的选项时抛错且不执行命令', async () => {
-      const { decorations, execute } = panel({ ok: true, value: { result: { kind: 'success' } } });
-      await expect(
-        only(decorations).ui.onSelect({ id: 'openai/removed' }, { sessionId: 's-1' }),
-      ).rejects.toThrow();
-      expect(execute).not.toHaveBeenCalled();
     });
   });
 });

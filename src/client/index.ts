@@ -23,7 +23,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-workspace/client';
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client';
 import { registerCompactionEvalJump } from './compaction-eval-jump.ts';
 import { omCompactionDefinition, omWarningDefinition } from './definition.ts';
-import { registerEvalModelPanel } from './eval-model-register.ts';
+import { registerEvalModelPanel } from './eval-model-register.tsx';
 import { en, NS, zh } from './locales.ts';
 import { OmCompactionCard } from './OmCompactionCard.tsx';
 import { OmConfigCard } from './OmConfigCard.tsx';

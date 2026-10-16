@@ -1,20 +1,31 @@
 /**
- * /om-compaction-eval 的模型面板：裸调用时列出会话模型目录，选一个模型即启动评估。
- * 只选模型，不选思考等级（提交的命令行不带等级，即用该模型默认等级）。
- * 导出 EvalModelState / EvalModelChoice / evalModelOptions / evalModelChoice /
+ * /om-compaction-eval 的模型面板逻辑：目录整理、默认思考等级、命令行拼装与提交跳转。
+ * 面板左栏选模型、右栏选该模型的思考等级；等级缺省表示模型默认。
+ * 导出 EvalModelState / EvalModelChoice / evalModelGroups / defaultEvalEffort /
  * evalModelLine / runEvalModel。
  */
-import type { SelectOption } from '@deepseek-ai/dsh-client-ui-commands/client';
 import { EVAL_COMMAND_NAME } from '../eval-session-text.ts';
 import { evalJumpTarget } from './compaction-eval-jump.ts';
 import type { CommandExecutor } from './recompress-run.ts';
+
+/** 目录中一个模型的思考等级元数据。 */
+export interface EvalModelReasoning {
+  readonly efforts: readonly { readonly id: string; readonly name: string }[];
+}
+
+/** 面板读取的目录模型。 */
+export interface EvalModelEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly reasoning?: EvalModelReasoning | undefined;
+}
 
 /** 面板读取的模型目录快照（宿主 ModelDirectoryState 的结构子集）。 */
 export interface EvalModelState {
   readonly groups: readonly {
     readonly id: string;
     readonly name: string;
-    readonly models: readonly { readonly id: string; readonly name: string }[];
+    readonly models: readonly EvalModelEntry[];
   }[];
   readonly failures: readonly {
     readonly id: string;
@@ -23,15 +34,18 @@ export interface EvalModelState {
   }[];
 }
 
-/** 面板选中的模型。 */
+/** 面板提交的选择：reasoningEffort 缺省表示用模型默认等级。 */
 export interface EvalModelChoice {
   readonly provider: string;
   readonly model: string;
+  readonly reasoningEffort?: string;
 }
 
-/** 选项 id：仅作不透明键，经目录反查，从不解析。 */
-function rowId(provider: string, model: string): string {
-  return `${provider}/${model}`;
+/** 面板里的一个供应商分组（只含命令行能表达的模型）。 */
+export interface EvalModelGroup {
+  readonly id: string;
+  readonly name: string;
+  readonly models: readonly EvalModelEntry[];
 }
 
 /**
@@ -42,50 +56,33 @@ function expressible(provider: string, model: string): boolean {
   return !/\s/.test(provider) && !provider.includes('/') && !/\s/.test(model);
 }
 
-/**
- * 目录转面板选项：按供应商分组，每个模型一行；加载失败的供应商只展示原因，不可选。
- * 命令行无法表达的 provider 或模型不列出。
- */
-export function evalModelOptions(
-  state: EvalModelState,
-  loadError: (message: string) => string,
-): SelectOption[] {
-  const rows: SelectOption[] = [];
+/** 目录转面板分组：命令行无法表达的模型不列出，思考等级里含空白的等级丢弃，空分组不保留。 */
+export function evalModelGroups(state: EvalModelState): EvalModelGroup[] {
+  const groups: EvalModelGroup[] = [];
   for (const group of state.groups) {
-    for (const model of group.models) {
-      if (!expressible(group.id, model.id)) continue;
-      rows.push({
-        id: rowId(group.id, model.id),
-        label: model.name,
-        group: { name: group.id, label: group.name },
+    const models = group.models
+      .filter((model) => expressible(group.id, model.id))
+      .map((model): EvalModelEntry => {
+        if (model.reasoning === undefined) return model;
+        const efforts = model.reasoning.efforts.filter((effort) => !/\s/.test(effort.id));
+        return { ...model, reasoning: { efforts } };
       });
-    }
+    if (models.length > 0) groups.push({ id: group.id, name: group.name, models });
   }
-  for (const failure of state.failures) {
-    rows.push({
-      id: `failure/${failure.id}`,
-      label: failure.name,
-      detail: loadError(failure.message),
-    });
-  }
-  return rows;
+  return groups;
 }
 
-/** 选项 id 反查所选模型；失败行与已不在目录的 id 返回 undefined。 */
-export function evalModelChoice(state: EvalModelState, id: string): EvalModelChoice | undefined {
-  for (const group of state.groups) {
-    for (const model of group.models) {
-      if (rowId(group.id, model.id) === id && expressible(group.id, model.id)) {
-        return { provider: group.id, model: model.id };
-      }
-    }
-  }
-  return undefined;
+/** 默认思考等级：模型支持 max 就用 max，否则返回 undefined（模型默认）。 */
+export function defaultEvalEffort(model: EvalModelEntry): string | undefined {
+  return model.reasoning?.efforts.some((effort) => effort.id === 'max') === true
+    ? 'max'
+    : undefined;
 }
 
-/** 拼出命令行：/om-compaction-eval <provider>/<model>（不带思考等级）。 */
+/** 拼出命令行：/om-compaction-eval <provider>/<model> [思考等级]。 */
 export function evalModelLine(choice: EvalModelChoice): string {
-  return `/${EVAL_COMMAND_NAME} ${choice.provider}/${choice.model}`;
+  const effort = choice.reasoningEffort === undefined ? '' : ` ${choice.reasoningEffort}`;
+  return `/${EVAL_COMMAND_NAME} ${choice.provider}/${choice.model}${effort}`;
 }
 
 /** 提交与跳转所需的最小依赖。 */
