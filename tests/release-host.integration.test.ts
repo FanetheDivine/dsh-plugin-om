@@ -23,8 +23,7 @@ const SKILL_DIST = path.join(ROOT, 'dist', 'skill', 'compaction-eval');
 /** 仓库内 compaction-eval skill 源目录。 */
 const SKILL_SOURCE = path.join(ROOT, '.agents', 'skills', 'compaction-eval');
 
-/**
- * 发布契约中的 skill 脚本产物名（tarball 路径）。写死而不由构建脚本推导：
+/** 发布契约中的 skill 脚本产物名（tarball 路径）。写死而不由构建脚本推导：
  * 脚本改名或产物缺失时本测试必须报错，而不是跟着源头一起变。
  */
 const SKILL_DIST_SCRIPTS = [
@@ -33,6 +32,13 @@ const SKILL_DIST_SCRIPTS = [
   'dist/skill/compaction-eval/scripts/compress.mjs',
   'dist/skill/compaction-eval/scripts/aggregate.mjs',
 ];
+
+/** bundle 注册的 command/executed 监听回调形状（会话 id、命令名、宿主命令结果）。 */
+type ExecutedListener = (
+  sessionId: string,
+  name: string,
+  result: { kind: string; text?: string },
+) => void;
 
 /** 在项目根目录运行发布构建或 npm 打包命令。 */
 function run(command: string, args: string[]): string {
@@ -59,6 +65,8 @@ interface BrowserPlugin {
   inject: string[];
   apply(ctx: {
     effect(register: () => (() => void) | undefined, label: string): void;
+    on(type: string, listener: ExecutedListener): () => void;
+    uiWorkspace: { openSession(target: string): void };
     locale: { register(namespace: string, dictionaries: object): void };
     uiConversation: { events: { register(definition: { kind: string }): void } };
     configForms: {
@@ -207,11 +215,24 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
     const served: string[] = [];
     const scoped: string[] = [];
     const releases: Array<() => void> = [];
+    /** bundle 注册的客户端事件监听（type + 回调）。 */
+    const events: Array<{ type: string; fn: ExecutedListener }> = [];
+    /** uiWorkspace.openSession 收到的跳转目标。 */
+    const opened: string[] = [];
     let rowStatus: string | undefined;
     plugin.apply({
       effect: (register) => {
         const release = register();
         if (release) releases.push(release);
+      },
+      on: (type: string, fn: ExecutedListener) => {
+        events.push({ type, fn });
+        return () => {};
+      },
+      uiWorkspace: {
+        openSession: (target: string) => {
+          opened.push(target);
+        },
       },
       locale: {
         register: (namespace) => {
@@ -261,6 +282,15 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
     expect(scoped).toEqual(['dsh-plugin-om']);
     expect(served).toEqual(['dsh-plugin-om']);
     expect(rowStatus).toBe('ready');
+    // 发布的 bundle 内含 OM 结果评估跳转：监听 command/executed，只对本命令的成功结果跳转
+    expect(events.map((item) => item.type)).toContain('command/executed');
+    const jump = events.find((item) => item.type === 'command/executed');
+    jump?.fn('s-1', 'om-compaction-eval', {
+      kind: 'success',
+      text: '已启动 OM 结果分析会话 session-new',
+    });
+    jump?.fn('s-1', 'om-recompress', { kind: 'success', text: '重压缩完成' });
+    expect(opened).toEqual(['session-new']);
     for (const release of releases) release();
     expect(disposed).toBe(1);
     expect(plugin.inject).toEqual(

@@ -94,6 +94,8 @@ function setup(
       const cleanup = factory();
       if (cleanup) disposers.push(cleanup);
     },
+    // 入口还会注册 command/executed 监听（OM 结果评估跳转），本桩只记录不派发
+    on: () => () => {},
     locale: {
       register: () => () => {},
       bind: () => (key: string) => key,

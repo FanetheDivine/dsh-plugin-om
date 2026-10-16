@@ -1,5 +1,6 @@
 /**
- * 浏览器客户端入口：注册压缩卡片、功能降级警告及 WebUI 插件行配置页。
+ * 浏览器客户端入口：注册压缩卡片、功能降级警告及 WebUI 插件行配置页，
+ * 并监听本浏览器的命令执行结果，把 /om-compaction-eval 新建的会话跳转过去。
  * 配置页只在宿主提供 dsh-plugin-om 命名空间时挂载，并随客户端释放订阅。
  */
 import type { Context } from '@deepseek-ai/cordis';
@@ -20,6 +21,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
 // Type-only: 拉取 uiWorkspace 服务（会话跳转）的 Context 合并。
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client';
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client';
+import { registerCompactionEvalJump } from './compaction-eval-jump.ts';
 import { omCompactionDefinition, omWarningDefinition } from './definition.ts';
 import { en, NS, zh } from './locales.ts';
 import { OmCompactionCard } from './OmCompactionCard.tsx';
@@ -45,6 +47,8 @@ export function apply(ctx: Context): void {
     () => ctx.uiConversation.events.register(omWarningDefinition),
     'dsh-plugin-om: om warning definition',
   );
+  // /om-compaction-eval 由宿主执行；本浏览器监听执行结果后跳转到新会话
+  ctx.effect(() => registerCompactionEvalJump(ctx), 'dsh-plugin-om: compaction eval jump');
   ctx.slots.inject('conversation.chat.node', () =>
     ctx.slots.register(
       {
