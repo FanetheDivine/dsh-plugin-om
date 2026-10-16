@@ -43,7 +43,7 @@ node $S/view.ts --session <id> --range A..B --out v.json             # 复现指
 node $S/compress.ts v.json <provider/model[:effort]> --out <重压缩目录> # 跑一次重压缩
 ```
 
-模型与凭据读 DSH profile。多次运行或多模型对比由调用方循环，可后台并行。
+模型、凭据与是否省略 reasoning（`compressSkipReasoning`）读 DSH profile。多次运行或多模型对比由调用方循环，可后台并行。
 
 ### 2. 准备数据
 
