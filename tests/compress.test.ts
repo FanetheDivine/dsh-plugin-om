@@ -1,5 +1,5 @@
 // compress.ts 单元测试：token 估算 estimateTextTokens、观察触发净压力口径
-// （上下文压力 − 已压缩块 − 系统提示词 − 工具定义，经 apply 接线验证）、
+// （换算系数 ×（表层 − 已压缩块 − 系统提示词），经 apply 接线验证）、
 // 压缩区间 computeCompressRange（区间截至触发点完整消息）、观察待定标记
 // findObservePending、配对平衡 isPairBalancedAfter、压缩边界 historySection。
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -49,7 +49,7 @@ describe('token 估算 estimateTextTokens', () => {
   });
 });
 
-describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 系统提示词 − 工具定义，ctx.tokenMeter.measure）', () => {
+describe('观察触发：净压力口径（换算系数 × 未压缩表层估算，ctx.tokenMeter.measure）', () => {
   /** 运行 pre-step 监听器。 */
   async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
     const listeners = ctx._onCallbacks.get('agent/pre-step');
@@ -74,7 +74,7 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     };
   }
 
-  it('压力取 measure().totalTokens：真实 usage 远大于表层启发式时也触发', async () => {
+  it('真实用量基线远大于表层启发式：换算后净压力达阈值触发', async () => {
     const session = makeSession({
       events: buildToolCallFlow({
         code: 'a()',
@@ -90,11 +90,11 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     });
     apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
     await runPreStep(ctx, session);
-    // 表层启发式远小于阈值，但注入的真实压力 500000 ≥ 100000 → 触发观察压缩
+    // 表层启发式远小于阈值，但真实用量基线 500000 换算后净压力 ≥ 100000 → 触发观察压缩
     expect(ctx._llmCalls).toHaveLength(3);
   });
 
-  it('压力低于阈值跳过（日志说明上下文压力）', async () => {
+  it('净压力低于阈值跳过（日志写出换算各项）', async () => {
     const session = makeSession({
       events: buildToolCallFlow({
         code: 'a()',
@@ -104,7 +104,8 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
         withTurnEnd: true,
       }),
     });
-    const ctx = makeCtx({ meterTotalTokens: 50 });
+    // 真实用量基线 50 = 表层估算 50 → 换算系数 1.00，净压力 50 < 阈值
+    const ctx = makeCtx({ meterTotalTokens: 50, meterSurfaceTokens: 50 });
     apply(ctx, { observeThresholdTokens: 100000 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(0);
@@ -112,13 +113,13 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     expect(
       steps.some((s) =>
         s.includes(
-          '净压力 50 tokens（上下文压力 50 − 已压缩块 0 − 系统提示词 0 − 工具定义 0）< 阈值 100000',
+          '净压力 50 tokens（换算系数 1.00 ×（表层 50 − 已压缩块 0 − 系统提示词 0））< 阈值 100000',
         ),
       ),
     ).toBe(true);
   });
 
-  it('meter 未注入真实 usage 时回退表层启发式（totalTokens = surfaceTokens）', async () => {
+  it('无真实用量基线时换算系数为 1（净压力 = 表层估算）', async () => {
     const session = makeSession({
       events: buildToolCallFlow({
         code: 'a()',
@@ -152,17 +153,17 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     const historyTokens = estimateTextTokens(
       `<history tip="${HISTORY_TIP}">\n${inner}\n</history>`,
     );
-    // 注入压力 = 阈值 + 历史块 tokens − 1 → 净压力恰低于阈值 1 token
-    const pressure = 100000 + historyTokens - 1;
-    const ctx = makeCtx({ meterTotalTokens: pressure });
-    apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
+    // 注入表层估算 1000（估算基线，换算系数 1）→ 净压力 = 1000 − 历史块，恰低于阈值 1 token
+    const threshold = 1000 - historyTokens + 1;
+    const ctx = makeCtx({ meterSurfaceTokens: 1000 });
+    apply(ctx, { observeThresholdTokens: threshold, tailMessageCount: 0 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(0);
     const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
     expect(
       steps.some((s) =>
         s.includes(
-          `净压力 ${pressure - historyTokens} tokens（上下文压力 ${pressure} − 已压缩块 ${historyTokens} − 系统提示词 0 − 工具定义 0）< 阈值 100000`,
+          `净压力 ${1000 - historyTokens} tokens（换算系数 1.00 ×（表层 1000 − 已压缩块 ${historyTokens} − 系统提示词 0））< 阈值 ${threshold}`,
         ),
       ),
     ).toBe(true);
@@ -179,9 +180,9 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
       }),
     });
     const sysText = 'S'.repeat(40); // 长度/4 → 10 tokens
-    const pressure = 100000 + 10 - 1; // 扣除系统提示词后恰好低于阈值 1 token
+    // 注入表层估算 100（估算基线，换算系数 1）→ 净压力 = 100 − 系统提示词 10 = 90，恰低于阈值 1 token
     const ctx = makeCtx({
-      meterTotalTokens: pressure,
+      meterSurfaceTokens: 100,
       systemPromptAssemble: async () => ({
         sections: [{ name: 'stub', text: sysText }],
         contexts: [],
@@ -189,7 +190,7 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
         variables: {},
       }),
     });
-    apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
+    apply(ctx, { observeThresholdTokens: 91, tailMessageCount: 0 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(0);
     expect(ctx._assembleCalls).toHaveLength(1);
@@ -197,7 +198,7 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     expect(
       steps.some((s) =>
         s.includes(
-          `净压力 ${pressure - 10} tokens（上下文压力 ${pressure} − 已压缩块 0 − 系统提示词 10 − 工具定义 0）< 阈值 100000`,
+          '净压力 90 tokens（换算系数 1.00 ×（表层 100 − 已压缩块 0 − 系统提示词 10））< 阈值 91',
         ),
       ),
     ).toBe(true);
@@ -214,9 +215,9 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
       }),
     });
     const sysText = 'S'.repeat(40); // 长度/4 → 10 tokens
-    const pressure = 100000 + 10; // 扣除系统提示词后恰好达到阈值
+    // 注入表层估算 100（估算基线，换算系数 1）→ 净压力 = 100 − 系统提示词 10 = 90，恰达阈值
     const ctx = makeCtx({
-      meterTotalTokens: pressure,
+      meterSurfaceTokens: 100,
       llmStreamFactory: successFactory(),
       systemPromptAssemble: async () => ({
         sections: [{ name: 'stub', text: sysText }],
@@ -225,7 +226,7 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
         variables: {},
       }),
     });
-    apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
+    apply(ctx, { observeThresholdTokens: 90, tailMessageCount: 0 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3);
     expect(ctx._assembleCalls).toHaveLength(1);
@@ -245,7 +246,7 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
       }),
     });
     const ctx = makeCtx({
-      meterTotalTokens: 99999,
+      meterSurfaceTokens: 100,
       systemPromptAssemble: async () => {
         throw new Error('boom');
       },
@@ -256,10 +257,10 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
     expect(warns.some((s) => s.includes('系统提示词 tokens 估算失败，按 0 计: boom'))).toBe(true);
     const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
-    expect(steps.some((s) => s.includes('− 系统提示词 0 − 工具定义 0）< 阈值 100000'))).toBe(true);
+    expect(steps.some((s) => s.includes('− 系统提示词 0））< 阈值 100000'))).toBe(true);
   });
 
-  it('工具定义 token 从净压力扣除：低于阈值跳过', async () => {
+  it('工具定义估算参与换算系数：净压力低于阈值跳过', async () => {
     const session = makeSession({
       events: buildToolCallFlow({
         code: 'a()',
@@ -278,23 +279,25 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     });
     const header = session.requestHeader() as { tools?: unknown[] };
     const toolsTokens = estimateTextTokens(JSON.stringify(header.tools));
-    // 注入压力 = 阈值 + 工具定义 tokens − 1 → 扣除后净压力恰低于阈值 1 token
-    const pressure = 100000 + toolsTokens - 1;
-    const ctx = makeCtx({ meterTotalTokens: pressure });
-    apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
+    // 真实用量基线 = 2 ×（工具估算 + 表层 500）→ 换算系数 2.00，净压力 = 2 × 500 = 1000，恰低于阈值 1 token
+    const ctx = makeCtx({
+      meterTotalTokens: 2 * (toolsTokens + 500),
+      meterSurfaceTokens: 500,
+    });
+    apply(ctx, { observeThresholdTokens: 1001, tailMessageCount: 0 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(0);
     const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
     expect(
       steps.some((s) =>
         s.includes(
-          `净压力 ${pressure - toolsTokens} tokens（上下文压力 ${pressure} − 已压缩块 0 − 系统提示词 0 − 工具定义 ${toolsTokens}）< 阈值 100000`,
+          '净压力 1000 tokens（换算系数 2.00 ×（表层 500 − 已压缩块 0 − 系统提示词 0））< 阈值 1001',
         ),
       ),
     ).toBe(true);
   });
 
-  it('工具定义 token 从净压力扣除：扣除后仍达阈值则触发', async () => {
+  it('工具定义估算参与换算系数：换算后净压力达阈值触发', async () => {
     const session = makeSession({
       events: buildToolCallFlow({
         code: 'a()',
@@ -310,13 +313,13 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     });
     const header = session.requestHeader() as { tools?: unknown[] };
     const toolsTokens = estimateTextTokens(JSON.stringify(header.tools));
-    // 注入压力 = 阈值 + 工具定义 tokens → 扣除后净压力恰达阈值（触发）
-    const pressure = 100000 + toolsTokens;
+    // 真实用量基线 = 2 ×（工具估算 + 表层 500）→ 换算系数 2.00，净压力 = 2 × 500 = 1000，恰达阈值（触发）
     const ctx = makeCtx({
-      meterTotalTokens: pressure,
+      meterTotalTokens: 2 * (toolsTokens + 500),
+      meterSurfaceTokens: 500,
       llmStreamFactory: successFactory(),
     });
-    apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
+    apply(ctx, { observeThresholdTokens: 1000, tailMessageCount: 0 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3);
   });
@@ -338,14 +341,92 @@ describe('观察触发：净压力口径（上下文压力 − 已压缩块 − 
     const historyTokens = estimateTextTokens(
       `<history tip="${HISTORY_TIP}">\n${inner}\n</history>`,
     );
-    // 注入压力 = 阈值 + 历史块 tokens → 净压力恰达阈值（触发）
+    // 注入表层估算 1000（估算基线，换算系数 1）→ 净压力 = 1000 − 历史块，恰达阈值（触发）
     const ctx = makeCtx({
-      meterTotalTokens: 100000 + historyTokens,
+      meterSurfaceTokens: 1000,
       llmStreamFactory: successFactory(),
     });
-    apply(ctx, { observeThresholdTokens: 100000, tailMessageCount: 0 });
+    apply(ctx, { observeThresholdTokens: 1000 - historyTokens, tailMessageCount: 0 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3);
+  });
+
+  it('换算系数放大扣除项：已压缩块与系统提示词按系数扣除后恰低于阈值跳过', async () => {
+    const inner = '旧摘要内容'.repeat(100);
+    const session = makeSession({
+      events: [
+        historyMessage(inner),
+        ...buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+          withTurnEnd: true,
+        }),
+      ],
+    });
+    const historyTokens = estimateTextTokens(
+      `<history tip="${HISTORY_TIP}">\n${inner}\n</history>`,
+    );
+    const sysText = 'S'.repeat(40); // 长度/4 → 10 tokens
+    // 真实用量基线 2000 = 2 × 表层 1000 → 换算系数 2.00
+    // 净压力 = 2 × (1000 − 已压缩块 − 系统提示词 10)
+    const net = 2 * (1000 - historyTokens - 10);
+    const ctx = makeCtx({
+      meterTotalTokens: 2000,
+      meterSurfaceTokens: 1000,
+      systemPromptAssemble: async () => ({
+        sections: [{ name: 'stub', text: sysText }],
+        contexts: [],
+        tools: [],
+        variables: {},
+      }),
+    });
+    apply(ctx, {
+      observeThresholdTokens: net + 1,
+      tailMessageCount: 0,
+      reflectThresholdTokens: 100000,
+    });
+    await runPreStep(ctx, session);
+    expect(ctx._llmCalls).toHaveLength(0);
+    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
+    expect(
+      steps.some((s) =>
+        s.includes(
+          `净压力 ${net} tokens（换算系数 2.00 ×（表层 1000 − 已压缩块 ${historyTokens} − 系统提示词 10））< 阈值 ${net + 1}`,
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it('表层增量为负：换算系数按锚点表层计算，净压力只放大当前未压缩表层', async () => {
+    const session = makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
+    });
+    // 真实用量基线 20000，锚点表层 = 当前表层 1000 − 增量 −9000 = 10000 → 换算系数 2.00
+    // 净压力 = 2 × 1000 = 2000：压缩遮蔽消息后不再把基线用量整个当成净压力（不高估）
+    const ctx = makeCtx({
+      meterTotalTokens: 20000,
+      meterSurfaceTokens: 1000,
+      meterSurfaceDeltaTokens: -9000,
+    });
+    apply(ctx, { observeThresholdTokens: 2001, tailMessageCount: 0 });
+    await runPreStep(ctx, session);
+    expect(ctx._llmCalls).toHaveLength(0);
+    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
+    expect(
+      steps.some((s) =>
+        s.includes(
+          '净压力 2000 tokens（换算系数 2.00 ×（表层 1000 − 已压缩块 0 − 系统提示词 0））< 阈值 2001',
+        ),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -692,6 +773,70 @@ describe('反思保留已处理问答', () => {
     expect(blocks).toHaveLength(1);
     expect(blocks[0]?.text).toContain(inner);
     expect(blocks[0]?.text).not.toContain('o1:');
+  });
+});
+
+describe('反思阈值按换算系数折算真实 token', () => {
+  const inner = '<user_message index="0">旧内容</user_message>';
+  const blockText = `<history tip="${HISTORY_TIP}">\n${inner}\n</history>`;
+
+  it('换算系数 2：摘要估算 × 2 达阈值触发合并', async () => {
+    const session = makeSession({ events: [historyMessage(inner)] });
+    const estimated = estimateTextTokens(blockText);
+    // 真实用量基线 = 2 × 表层估算 → 换算系数 2.00；摘要 tokens = 估算 × 2
+    const ctx = makeCtx({
+      meterTotalTokens: 2 * estimated,
+      meterSurfaceTokens: estimated,
+      llmStreamFactory: () =>
+        roundChunks({
+          calls: [
+            { id: 'view', name: 'getHistory' },
+            { id: 'done', name: 'completeCompression' },
+          ],
+        }),
+    });
+    const result = await reflectPass(
+      ctx,
+      { session } as never,
+      resolveConfig({ reflectThresholdTokens: 2 * estimated, rateLimitWaitMs: 0 }),
+      { provider: 'test', model: 'test-model' },
+    );
+    expect(result.failed).toBe(false);
+    expect(ctx._llmCalls).toHaveLength(1); // 达阈值：压缩循环执行一轮
+    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
+    expect(
+      steps.some((s) =>
+        s.includes(
+          `反思：摘要 ${2 * estimated} tokens（估算 ${estimated} × 换算系数 2.00）≥ 阈值 ${2 * estimated}`,
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it('换算系数 2：摘要估算 × 2 仍低于阈值则跳过', async () => {
+    const session = makeSession({ events: [historyMessage(inner)] });
+    const estimated = estimateTextTokens(blockText);
+    const ctx = makeCtx({
+      meterTotalTokens: 2 * estimated,
+      meterSurfaceTokens: estimated,
+      llmStreamFactory: () => roundChunks({ text: '不应被调用' }),
+    });
+    const result = await reflectPass(
+      ctx,
+      { session } as never,
+      resolveConfig({ reflectThresholdTokens: 2 * estimated + 1, rateLimitWaitMs: 0 }),
+      { provider: 'test', model: 'test-model' },
+    );
+    expect(result.failed).toBe(false);
+    expect(ctx._llmCalls).toHaveLength(0);
+    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
+    expect(
+      steps.some((s) =>
+        s.includes(
+          `反思：摘要 ${2 * estimated} tokens（估算 ${estimated} × 换算系数 2.00）< 阈值 ${2 * estimated + 1}，跳过`,
+        ),
+      ),
+    ).toBe(true);
   });
 });
 
