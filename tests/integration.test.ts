@@ -44,7 +44,7 @@ import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent';
 import { PLUGIN_LABEL, PLUGIN_SOURCE_KIND } from '../src/constants.ts';
 // 命中 vi.mock 打桩后的模块（ensureModelReady 为 vi.fn，可断言预热调用）
 import * as embedding from '../src/embedding.ts';
-import { apply, name } from '../src/index.ts';
+import { apply, inject, name } from '../src/index.ts';
 import { appendOmEvent, findOmEvents } from '../src/om-event.ts';
 
 /** mock LLM adapter：只实现 stream()，按注入的分块工厂回放响应并记录调用。 */
@@ -112,7 +112,7 @@ async function stackHarness(options: {
   const adapter = new MockAdapter(options.chunksFor);
   app.llm.registerAdapter(['mock'], adapter);
   await app.plugin(
-    { name, inject: ['tools', 'llm', 'tokenMeter', 'sessions'], apply },
+    { name, inject, apply },
     {
       observeThresholdTokens: 100,
       reflectThresholdTokens: 1000000,

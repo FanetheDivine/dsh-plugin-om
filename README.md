@@ -26,6 +26,8 @@
 
 要求 DSH 0.2.0-rc.2 或更高版本。
 
+服务端必需 `llm` 和 `tokenMeter`。`tools`、`sessions` 和 `commands` 缺失时，对应的 `recall`、压缩会话记录和重压缩命令停用，压缩照常运行。
+
 ```sh
 dsh plugin --profile <profile> add dsh-plugin-om
 ```

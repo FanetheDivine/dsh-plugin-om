@@ -1485,6 +1485,58 @@ describe('apply 接线（recallEnabled / semanticRecallEnabled）', () => {
     expect(ctx._onCallbacks.has('agent/pre-step')).toBe(true);
   });
 
+  it('tools 服务缺失：不注册 recall、不下载模型，压缩接线与完整压缩仍可用', async () => {
+    const mockEnsure = ensureModelReady as unknown as ReturnType<typeof vi.fn>;
+    mockEnsure.mockClear();
+    const session = makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
+    });
+    const ctx = makeCtx({
+      toolsMounted: false,
+      sessionsMounted: false,
+      llmStreamFactory: (index) => {
+        if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+        if (index === 1)
+          return roundChunks({
+            calls: [
+              {
+                id: 't2',
+                name: 'compressHistory',
+                args: { start: 1, end: 2, content: 'toolcall index:2 purpose:任务A summary:完成' },
+              },
+            ],
+          });
+        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
+      },
+    });
+    apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1 });
+    expect(registeredNames(ctx)).toEqual([]);
+    expect(mockEnsure).not.toHaveBeenCalled();
+    const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
+    expect(warns.some((w) => w.includes('tools'))).toBe(true);
+    expect(warns.some((w) => w.includes('commands'))).toBe(true);
+    const listeners = ctx._onCallbacks.get('agent/pre-step');
+    await listeners?.[0]?.({ agent: { session }, signal: new AbortController().signal }, () => {});
+    expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
+    expect(ctx._createdSessions).toHaveLength(0); // 无 sessions：不落盘压缩会话记录
+  });
+
+  it('服务齐全或 recall 关闭时不为 tools/commands 打 warn', () => {
+    const full = makeCtx({ commandsMounted: true });
+    apply(full, {});
+    const off = makeCtx({ toolsMounted: false, commandsMounted: true });
+    apply(off, { recallEnabled: false });
+    for (const ctx of [full, off]) {
+      expect(ctx._loggerCalls.filter((c) => c.level === 'warn')).toEqual([]);
+    }
+  });
+
   it('启用：apply 触发模型后台预热下载（ensureModelReady 被调用）', () => {
     const mockEnsure = ensureModelReady as unknown as ReturnType<typeof vi.fn>;
     mockEnsure.mockClear();

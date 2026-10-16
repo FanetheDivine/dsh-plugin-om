@@ -307,6 +307,10 @@ interface MockCtxOptions {
   meterThrows?: Error;
   /** commands 服务是否挂载（缺省 false；true 时 ctx.inject 运行回调并记录注册的命令）。 */
   commandsMounted?: boolean;
+  /** tools 服务是否挂载（缺省 true；false 时 ctx.inject(['tools']) 不运行回调）。 */
+  toolsMounted?: boolean;
+  /** sessions 服务是否挂载（缺省 true；false 时 ctx.get('sessions') 返回 undefined）。 */
+  sessionsMounted?: boolean;
 }
 
 /** 可编程 ctx 模拟（回调由测试注入）。 */
@@ -320,6 +324,8 @@ export function makeCtx({
   systemPromptMounted = true,
   meterThrows,
   commandsMounted = false,
+  toolsMounted = true,
+  sessionsMounted = true,
 }: MockCtxOptions = {}) {
   const onCallbacks = new Map<string, ((...args: unknown[]) => unknown)[]>();
   const registeredTools: unknown[] = [];
@@ -418,9 +424,10 @@ export function makeCtx({
         };
       },
     },
-    /** 依赖服务可用时才运行回调（仅模拟 commands 服务）。 */
-    inject(_deps: unknown, callback: (inner: unknown) => void) {
-      if (commandsMounted) callback(ctx);
+    /** 依赖服务全部可用时才运行回调（模拟 commands 与 tools 服务）。 */
+    inject(deps: readonly string[], callback: (inner: unknown) => void) {
+      const mounted: Record<string, boolean> = { commands: commandsMounted, tools: toolsMounted };
+      if (deps.every((name) => mounted[name] === true)) callback(ctx);
     },
     /** 立即运行副作用并忽略其返回的注销函数（测试不卸载）。 */
     effect(run: () => unknown) {
@@ -472,6 +479,9 @@ export function makeCtx({
     get(name: string) {
       if (name === 'toolResultPruner') return pruner;
       if (name === 'sessionPersistence') return sessionPersistence;
+      if (name === 'sessions') return sessionsMounted ? sessions : undefined;
+      if (name === 'tools') return toolsMounted ? ctx.tools : undefined;
+      if (name === 'commands') return commandsMounted ? ctx.commands : undefined;
       if (name === 'systemPrompt') return systemPromptMountedNow ? systemPromptStub : undefined;
       return undefined;
     },
