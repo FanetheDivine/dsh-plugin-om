@@ -2,6 +2,7 @@
 // 按 compactionId 重建视图、按完整消息区间复现当时视图（块外原文、块内相交条目、混合时为反思）、
 // 区间越界与倒置报错，以及 buildViewFile 携带会话头与来源。
 
+import type { SessionEvent } from '@deepseek-ai/dsh-session';
 import { describe, expect, it } from 'vitest';
 
 import type { SessionEvent as LogEvent } from '../.agents/skills/compaction-eval/scripts/prepare.ts';
@@ -78,6 +79,43 @@ describe('toSession / listCompactions', () => {
     const atStart = toSession(events, 7);
     expect(listCompactions(atStart)).toEqual([]);
     expect(atStart.surface.nodes).toEqual([0, 1, 3, 4, 5, 7]);
+  });
+});
+
+/** 给 twoCallFlow 的每条 assistant 消息前插入 reasoning 块。 */
+function flowWithReasoning(): LogEvent[] {
+  return hostLog(
+    twoCallFlow().map((e) => {
+      if (e.type !== 'assistant/message') return e;
+      const message = e.data.message;
+      return {
+        ...e,
+        data: {
+          ...e.data,
+          message: {
+            ...message,
+            content: [{ type: 'reasoning' as const, text: '其他模型的思考' }, ...message.content],
+          },
+        },
+      } as unknown as SessionEvent;
+    }),
+  );
+}
+
+describe('buildViewFile：reasoning 条目', () => {
+  it('skipReasoning=true 视图不含 reasoning，false 保留', () => {
+    const events = flowWithReasoning();
+    const kinds = (skip: boolean) =>
+      buildViewFile(events, { range: [0, 5] }, skip).view.entries.map((e) => e.kind);
+    expect(kinds(false)).toContain('reasoning');
+    expect(kinds(true)).not.toContain('reasoning');
+  });
+
+  it('缺省值取插件默认配置 compressSkipReasoning', () => {
+    const entries = buildViewFile(flowWithReasoning(), { range: [0, 5] }).view.entries;
+    expect(entries.some((e) => e.kind === 'reasoning')).toBe(
+      !resolveConfig().compressSkipReasoning,
+    );
   });
 });
 
