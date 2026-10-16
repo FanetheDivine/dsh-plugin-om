@@ -307,6 +307,23 @@ interface MockCtxOptions {
   meterThrows?: Error;
   /** commands 服务是否挂载（缺省 false；true 时 ctx.inject 运行回调并记录注册的命令）。 */
   commandsMounted?: boolean;
+  /** sessionController 服务是否挂载（缺省 false：ctx.get 返回 undefined，模拟宿主未提供）。 */
+  sessionControllerMounted?: boolean;
+  /** sessionController.create 返回的新会话 id（缺省 'session-eval-child'）。 */
+  createdSessionId?: string;
+  /** sessionController.create 抛错（模拟宿主拒绝建会话）。 */
+  createThrows?: Error;
+  /** sessionController.prompt 抛错（模拟首条消息投递失败）。 */
+  promptThrows?: Error;
+  /** workspaceRegistry.list() 返回的工作区；缺省未挂载（ctx.get 返回 undefined）。 */
+  workspaces?: MockWorkspace[];
+}
+
+/** workspaceRegistry 桩中的一个工作区（仅命令用到的字段）。 */
+export interface MockWorkspace {
+  id: string;
+  path: string;
+  sessionIds: string[];
 }
 
 /** 可编程 ctx 模拟（回调由测试注入）。 */
@@ -320,6 +337,11 @@ export function makeCtx({
   systemPromptMounted = true,
   meterThrows,
   commandsMounted = false,
+  sessionControllerMounted = false,
+  createdSessionId = 'session-eval-child',
+  createThrows,
+  promptThrows,
+  workspaces,
 }: MockCtxOptions = {}) {
   const onCallbacks = new Map<string, ((...args: unknown[]) => unknown)[]>();
   const registeredTools: unknown[] = [];
@@ -407,6 +429,23 @@ export function makeCtx({
   const systemPromptMountedNow = systemPromptMounted && systemPromptAssemble !== undefined;
   /** commands.register 登记的命令定义（注销后移除）。 */
   const registeredCommands: RegisteredCommand[] = [];
+  /** sessionController.create 的调用记录（请求原样入列）。 */
+  const sessionCreations: unknown[] = [];
+  /** sessionController.prompt 的调用记录（请求原样入列）。 */
+  const sessionPrompts: unknown[] = [];
+  /** sessionController 服务桩：记录建会话与投递首条消息的入参，可按选项抛错。 */
+  const sessionController = {
+    create: async (request: unknown) => {
+      sessionCreations.push(request);
+      if (createThrows !== undefined) throw createThrows;
+      return { sessionId: createdSessionId };
+    },
+    prompt: async (request: unknown) => {
+      sessionPrompts.push(request);
+      if (promptThrows !== undefined) throw promptThrows;
+      return { accepted: true as const };
+    },
+  };
   const ctx = {
     logger,
     commands: {
@@ -473,11 +512,17 @@ export function makeCtx({
       if (name === 'toolResultPruner') return pruner;
       if (name === 'sessionPersistence') return sessionPersistence;
       if (name === 'systemPrompt') return systemPromptMountedNow ? systemPromptStub : undefined;
+      if (name === 'sessionController')
+        return sessionControllerMounted ? sessionController : undefined;
+      if (name === 'workspaceRegistry')
+        return workspaces === undefined ? undefined : { list: () => workspaces };
       return undefined;
     },
     _onCallbacks: onCallbacks,
     _registeredTools: registeredTools,
     _registeredCommands: registeredCommands,
+    _sessionCreations: sessionCreations,
+    _sessionPrompts: sessionPrompts,
     _sections: sections,
     _assembleCalls: assembleCalls,
     _llmCalls: llmCalls,
@@ -502,6 +547,8 @@ export function makeCtx({
     _onCallbacks: Map<string, ((...args: unknown[]) => unknown)[]>;
     _registeredTools: Array<{ name?: string }>;
     _registeredCommands: RegisteredCommand[];
+    _sessionCreations: unknown[];
+    _sessionPrompts: unknown[];
     _sections: Array<{ name?: string }>;
     _assembleCalls: unknown[];
     _llmCalls: Array<{ options: unknown }>;

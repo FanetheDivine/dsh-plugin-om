@@ -3,7 +3,8 @@
  * apply 维护 recall 工具（含语义增强），处理 Loader volatile 配置提交，
  * 并接线 agent/pre-step 自动压缩（先反思后观察，仅主会话生效）与提醒补发
  * （进度提醒的 system-reminder 用户消息，见 system-reminder.ts），
- * commands 服务可用时注册换模型重压缩命令（见 recompress.ts）。压缩走工具驱动的压缩循环（模型经 getHistory /
+ * commands 服务可用时注册换模型重压缩命令（见 recompress.ts）与 OM 结果评估命令
+ * （见 compaction-eval-command.ts）。压缩走工具驱动的压缩循环（模型经 getHistory /
  * compressHistory / completeCompression 工具完成，见 compress-loop.ts）；最终失败
  * （连续无工具调用 / 请求级错误）时拒绝本 step 中断当前 turn（signal 中止除外），
  * 主会话日志记录失败原因与诊断子会话 sessionId（完整循环会话由 compaction-log.ts
@@ -12,6 +13,7 @@
  */
 import type {} from '@deepseek-ai/cordis-plugin-loader';
 import type {} from '@deepseek-ai/dsh-commands';
+import { buildCompactionEvalCommand } from './compaction-eval-command.ts';
 import { type CompressPassResult, maybeCompress } from './compress.ts';
 import { Config, currentConfig } from './config.ts';
 import { ensureModelReady, getEmbedder } from './embedding.ts';
@@ -97,6 +99,11 @@ export function apply(ctx: Context, config?: unknown): void {
     inner.effect(
       () => inner.commands.register(buildRecompressCommand(ctx, () => currentConfig(config))),
       'dsh-plugin-om: recompress command',
+    );
+    // OM 结果评估入口：新建同工作区会话，由它按随包发布的 compaction-eval 文档分析本会话
+    inner.effect(
+      () => inner.commands.register(buildCompactionEvalCommand(ctx)),
+      'dsh-plugin-om: compaction eval command',
     );
   });
 

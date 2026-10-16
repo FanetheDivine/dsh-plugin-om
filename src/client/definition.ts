@@ -9,6 +9,7 @@
  * （双方共存无视觉冲突：宿主无检查点证据时不产出节点）。
  */
 
+import type { SessionEventLike } from '@deepseek-ai/dsh-api-session-controller/client';
 import type { ChatNode, ChatNodeDataMap } from '@deepseek-ai/dsh-client-ui-chat/client';
 import type {
   ConversationMatch,
@@ -95,10 +96,19 @@ function isReplacementSurface(event: SessionEvent): boolean {
 }
 
 /**
- * 从压缩替换检查点（user/message + replace surface + source 为插件自产）读取
- * 关联 compactionId；其余事件返回 undefined。
+ * 收窄客户端事件：会话窗口里可能出现浏览器专有的 assistant/live-chunk 呈现，
+ * 压缩与 om 信封证据只存在于持久事件上，其余一律视为无证据。
  */
-export function checkpointCompactionId(event: SessionEvent): string | undefined {
+function durableEvent(event: SessionEventLike): SessionEvent | undefined {
+  return event.type === 'assistant/live-chunk' ? undefined : event;
+}
+
+/**
+ * 从压缩替换检查点（user/message + replace surface + source 为插件自产）读取
+ * 关联 compactionId；其余事件与缺省返回 undefined。
+ */
+export function checkpointCompactionId(event: SessionEvent | undefined): string | undefined {
+  if (event === undefined) return undefined;
   if (event.type !== 'user/message' || !isReplacementSurface(event)) return undefined;
   const source = event.data.source;
   if (source?.kind !== PLUGIN_SOURCE_KIND) return undefined;
@@ -252,7 +262,7 @@ function failureData(
 function fallbackState(context: ConversationNodeContext<OmCompactionState>): OmCompactionState {
   const summary = context.matches.find((match) => match.event.type === 'compaction/summary');
   const checkpoint = context.matches.find(
-    (match) => checkpointCompactionId(match.event) !== undefined,
+    (match) => checkpointCompactionId(durableEvent(match.event)) !== undefined,
   );
   const end = context.matches.find((match) => match.event.type === 'compaction/end');
   return {
@@ -293,7 +303,7 @@ export const omCompactionDefinition: ConversationNodeDefinition<OmCompactionStat
   kind: COMPACTION_CARD_KIND,
   target: 'chat',
   match: (event) => {
-    const compactionId = checkpointCompactionId(event);
+    const compactionId = checkpointCompactionId(durableEvent(event));
     if (compactionId !== undefined) return { id: compactionId, role: 'update' };
     if (
       event.type === 'compaction/start' ||
@@ -310,7 +320,7 @@ export const omCompactionDefinition: ConversationNodeDefinition<OmCompactionStat
   update: (context, match) => {
     if (match.event.type === 'compaction/summary') return { ...context.state, summary: match };
     if (match.event.type === 'compaction/end') return { ...context.state, end: match };
-    if (checkpointCompactionId(match.event) !== undefined)
+    if (checkpointCompactionId(durableEvent(match.event)) !== undefined)
       return { ...context.state, checkpoint: match };
     return context.state;
   },
@@ -377,7 +387,7 @@ export const omWarningDefinition: ConversationNodeDefinition = {
   kind: OM_WARNING_CARD_KIND,
   target: 'chat',
   match: (event) => {
-    if (readOmEvent(event)?.kind !== 'om/warning') return null;
+    if (readOmEvent(durableEvent(event))?.kind !== 'om/warning') return null;
     return { id: `om-warning:${event.seq}`, role: 'start' };
   },
   start: () => ({}),
@@ -385,7 +395,7 @@ export const omWarningDefinition: ConversationNodeDefinition = {
   buildViewNode: (context) => {
     const start = context.start;
     if (start === undefined) return null;
-    const om = readOmEvent(start.event);
+    const om = readOmEvent(durableEvent(start.event));
     if (om?.kind !== 'om/warning') return null;
     const problem = om.data.problem !== '' ? om.data.problem : null;
     const message = om.data.message !== '' ? om.data.message : null;
