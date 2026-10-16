@@ -110,7 +110,7 @@ describe('完整消息索引 indexCompleteMessages', () => {
     expect(cms.flatMap((c) => c.seqs)).not.toContain(10); // 快照事件 seq（history@0 + checkpoint@1 + 流程 2..9 + 快照@10）
   });
 
-  it('kind:user 归为用户消息；其余 kind 为系统消息，不占 index', () => {
+  it('kind:user 为用户消息，带 name 的 skill-invocation 为 skill；其余系统消息不占 index', () => {
     const session = makeSession({
       events: [
         {
@@ -133,10 +133,34 @@ describe('完整消息索引 indexCompleteMessages', () => {
             id: 'sys-catalog',
           }),
         } as unknown as SessionEvent,
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('<skill_content name="lark-im">正文</skill_content>')],
+            source: { kind: 'skill-invocation', name: 'lark-im', form: 'instructions' },
+            id: 'sys-skill',
+          }),
+        } as unknown as SessionEvent,
+        {
+          type: 'user/message',
+          data: makeMessage({
+            content: [textBlock('缺少名称')],
+            source: { kind: 'skill-invocation', form: 'instructions' },
+            id: 'sys-skill-noname',
+          }),
+        } as unknown as SessionEvent,
       ],
     });
     const cms = indexCompleteMessages(session);
-    expect(cms.map((c) => [c.index, c.type, c.seqs])).toEqual([[0, 'user', [1]]]);
+    expect(cms.map((c) => [c.index, c.type, c.seqs, c.skillName])).toEqual([
+      [0, 'user', [1], undefined],
+      [1, 'skill', [3], 'lark-im'],
+    ]);
+    const skill = cms[1];
+    if (!skill) throw new Error('缺少 skill 完整消息');
+    expect(renderCompleteMessage(session, skill)).toBe(
+      '<skill_content name="lark-im">正文</skill_content>',
+    );
   });
 
   it('未匹配的 result 独立成条（防御；旧版日志形态兼容）', () => {
