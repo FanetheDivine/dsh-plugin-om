@@ -1,0 +1,139 @@
+// compaction-eval view.ts 单元测试：由宿主格式日志重建真实 Session、列出已有压缩、
+// 按 compactionId 重建视图、按完整消息区间复现当时视图（块外原文、块内相交条目、混合时为反思）、
+// 区间越界与倒置报错，以及 buildViewFile 携带会话头与来源。
+
+import { describe, expect, it } from 'vitest';
+
+import type { SessionEvent as LogEvent } from '../.agents/skills/compaction-eval/scripts/prepare.ts';
+import {
+  buildViewFile,
+  listCompactions,
+  rangeView,
+  toSession,
+} from '../.agents/skills/compaction-eval/scripts/view.ts';
+import { observePass } from '../src/compress.ts';
+import { resolveConfig } from '../src/config.ts';
+import { indexCompleteMessages } from '../src/log-index.ts';
+import {
+  buildToolCallFlow,
+  hostLog,
+  makeCtx,
+  makeSession,
+  type RoundScript,
+  roundChunks,
+  twoCallFlow,
+} from './helpers.ts';
+
+/** 观察压缩脚本：getHistory → 把助手条目改写为摘要 → completeCompression。 */
+function observeScript(index: number): unknown[] {
+  const scripts: RoundScript[] = [
+    { calls: [{ id: 'g', name: 'getHistory' }] },
+    { calls: [{ id: 'c', name: 'compressHistory', args: { index: 1, content: '助手摘要' } }] },
+    { calls: [{ id: 'done', name: 'completeCompression' }] },
+  ];
+  return roundChunks(scripts[Math.min(index, scripts.length - 1)] as RoundScript);
+}
+
+/** 对 twoCallFlow（完整消息 0..5）跑一次观察压缩，再追加一轮工具调用（6..8），返回宿主格式日志。 */
+async function compactedLog(): Promise<LogEvent[]> {
+  const session = makeSession({ events: twoCallFlow() });
+  const ctx = makeCtx({ meterTotalTokens: 1_000_000, llmStreamFactory: observeScript });
+  const result = await observePass(
+    ctx,
+    { session } as never,
+    resolveConfig({ observeThresholdTokens: 1, tailMessageCount: 0, rateLimitWaitMs: 0 }),
+    0,
+    { provider: 'test', model: 'test-model' },
+  );
+  expect(result.failed).toBe(false);
+  const later = buildToolCallFlow({
+    code: 'thirdCode()',
+    description: '第三次',
+    callId: 'c3',
+    resultText: 'out3',
+  });
+  return hostLog([...session.snapshotEvents(), ...later]);
+}
+
+describe('toSession / listCompactions', () => {
+  it('由日志重建真实会话，并列出压缩的阶段、区间、成败与模型', async () => {
+    const events = await compactedLog();
+    const session = toSession(events);
+    expect(indexCompleteMessages(session).map((cm) => cm.index)).toEqual([
+      0, 1, 2, 3, 4, 5, 6, 7, 8,
+    ]);
+    const [brief, ...rest] = listCompactions(session);
+    expect(rest).toEqual([]);
+    expect(brief).toMatchObject({
+      phase: 'observe',
+      range: [0, 5],
+      ok: true,
+      error: undefined,
+      model: 'test/test-model',
+    });
+  });
+
+  it('截到某个 seq 时表层停在当时，后续压缩不生效', async () => {
+    const events = await compactedLog();
+    const atStart = toSession(events, 7);
+    expect(listCompactions(atStart)).toEqual([]);
+    expect(atStart.surface.nodes).toEqual([0, 1, 3, 4, 5, 7]);
+  });
+});
+
+describe('buildViewFile：按 compactionId 重建', () => {
+  it('复现该次压缩的原文视图，并带上会话头与来源', async () => {
+    const events = await compactedLog();
+    const [brief] = listCompactions(toSession(events));
+    const file = buildViewFile(events, { compactionId: String(brief?.id) });
+    expect(file.phase).toBe('observe');
+    expect(file.source).toEqual({ compactionId: brief?.id });
+    expect(file.header.id).toBe('session-view-test');
+    expect([file.view.minIndex, file.view.maxIndex]).toEqual([0, 5]);
+    expect(file.view.entries.some((e) => e.text.includes('firstCode()'))).toBe(true);
+  });
+
+  it('未知 compactionId 报错', async () => {
+    const events = await compactedLog();
+    expect(() => buildViewFile(events, { compactionId: 'nope' })).toThrow();
+  });
+});
+
+describe('rangeView：按完整消息区间复现视图', () => {
+  it('区间全在块外时为观察，条目为原文且严格落在区间内', async () => {
+    const events = await compactedLog();
+    const replay = rangeView(events, 7, 8, false);
+    if ('error' in replay) throw new Error(replay.error);
+    expect(replay.phase).toBe('observe');
+    expect([replay.view.minIndex, replay.view.maxIndex]).toEqual([7, 8]);
+    expect(replay.view.entries.every((e) => e.blockSeq === undefined)).toBe(true);
+    expect(replay.view.entries.some((e) => e.text.includes('thirdCode()'))).toBe(true);
+    expect(replay.originalChars).toBeGreaterThan(0);
+  });
+
+  it('跨越压缩块时为反思：块内取相交条目，块外取原文', async () => {
+    const events = await compactedLog();
+    const replay = rangeView(events, 4, 7, false);
+    if ('error' in replay) throw new Error(replay.error);
+    expect(replay.phase).toBe('reflect');
+    const inBlock = replay.view.entries.filter((e) => e.blockSeq !== undefined);
+    const outside = replay.view.entries.filter((e) => e.blockSeq === undefined);
+    expect(inBlock.map((e) => e.lo)).toEqual([4, 5]);
+    expect(outside.map((e) => e.lo)).toEqual([6, 7]);
+    expect([replay.view.minIndex, replay.view.maxIndex]).toEqual([4, 7]);
+  });
+
+  it('区间终点早于压缩时取当时表层，全部为原文', async () => {
+    const events = await compactedLog();
+    const replay = rangeView(events, 0, 3, false);
+    if ('error' in replay) throw new Error(replay.error);
+    expect(replay.phase).toBe('observe');
+    expect(replay.view.entries.map((e) => e.lo)).toEqual([0, 1, 2, 3]);
+  });
+
+  it('区间倒置或越界时返回错误', async () => {
+    const events = await compactedLog();
+    expect(rangeView(events, 5, 2, false)).toHaveProperty('error');
+    expect(rangeView(events, 0, 99, false)).toHaveProperty('error');
+  });
+});

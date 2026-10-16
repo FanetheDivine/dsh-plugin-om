@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { clearCompressionModelInfoCache, observePass, reflectPass } from '../src/compress.ts';
 import { resolveConfig } from '../src/config.ts';
 import { apply } from '../src/index.ts';
-import { parseRecompressInput, recompress } from '../src/recompress.ts';
+import { compactionView, parseRecompressInput, recompress } from '../src/recompress.ts';
 import { resetRecompressGate } from '../src/recompress-gate.ts';
 import type { Context, Session } from '../src/types.ts';
 import {
@@ -204,6 +204,43 @@ describe('recompress：反思压缩重放', () => {
     expect(created).toContain('旧内容A');
     expect(created).toContain('旧内容B');
     expect(created).not.toContain('合并A"');
+  });
+});
+
+describe('compactionView：重建压缩输入', () => {
+  it('观察压缩：视图区间与被遮蔽消息一致，含原文，不请求模型', async () => {
+    const { session, compactionId } = await observedSession();
+    const replay = compactionView(session, compactionId, false);
+    if ('error' in replay) throw new Error(replay.error);
+    expect(replay.phase).toBe('observe');
+    const indices = replay.view.entries.flatMap((entry) =>
+      entry.lo === undefined ? [] : [entry.lo],
+    );
+    expect(replay.view.minIndex).toBe(Math.min(...indices));
+    expect(replay.view.maxIndex).toBeGreaterThanOrEqual(replay.view.minIndex);
+    expect(replay.originalChars).toBeGreaterThan(0);
+    expect(JSON.stringify(replay.view.entries)).not.toContain('原模型的助手摘要');
+  });
+
+  it('反思压缩：视图由被合并的块条目组成', async () => {
+    const session = makeSession({
+      events: [
+        historyMessage('<user_message index="0"><![CDATA[旧内容A]]></user_message>', 'h1'),
+        historyMessage('<assistant index="1"><![CDATA[旧内容B]]></assistant>', 'h2'),
+      ],
+    });
+    const reflected = await reflectPass(
+      makeCtx({ llmStreamFactory: (index) => scriptedFactory({ 0: '合并A', 1: '合并B' })(index) }),
+      { session } as never,
+      resolveConfig({ reflectThresholdTokens: 1, rateLimitWaitMs: 0 }),
+      ORIGINAL,
+    );
+    expect(reflected.failed).toBe(false);
+    const replay = compactionView(session, lastCompactionId(session), false);
+    if ('error' in replay) throw new Error(replay.error);
+    expect(replay.phase).toBe('reflect');
+    expect(replay.view.entries.map((entry) => entry.text)).toEqual(['旧内容A', '旧内容B']);
+    expect([replay.view.minIndex, replay.view.maxIndex]).toEqual([0, 1]);
   });
 });
 

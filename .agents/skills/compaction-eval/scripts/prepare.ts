@@ -2,8 +2,9 @@
  * 准备压缩质量评估数据：定位主会话的压缩日志，按区间分组，导出盲化变体、原文、后续轨迹与规则。
  *
  * 用法：node prepare.ts (--session <主会话 id 或前缀> | --zip <会话日志 zip>)
- *       [--range A..B] [--phase observe|reflect] [--out 目录] [--seed N] [--after-max N]
- * 输入：本地 ~/.dsh/sessions，或 DSH 导出的会话日志 zip，需含 subagents。
+ *       [--variants 目录]... [--range A..B] [--phase observe|reflect] [--out 目录] [--seed N] [--after-max N]
+ * 输入：本地 ~/.dsh/sessions，或 DSH 导出的会话日志 zip，需含 subagents；
+ *       --variants 可重复，并入 compress.ts 产出目录中的压缩日志。
  * 产出：V*.xml、source.xml、after.md、rules.md、_blind_key.json、meta.json。
  */
 
@@ -116,6 +117,8 @@ const MODEL_RE = /压缩使用模型 (\S+?)（([^）]+)）/;
 const ZIP_MAIN_RE = /^session(\.v\d+)?\.jsonl$/;
 /** 导出 zip 中的压缩日志。 */
 const ZIP_LOG_RE = /^subagents\/om-compaction-log-[^/]+\/session(\.v\d+)?\.jsonl$/;
+/** 变体目录中的压缩日志相对路径：om-compaction-log-<id>/session[.vN].jsonl[.zstd]。 */
+const VARIANT_LOG_RE = /(^|\/)om-compaction-log-[^/]+\/session(\.v\d+)?\.jsonl(\.zstd)?$/;
 
 /** 解析 jsonl 文本为事件列表。 */
 function parseJsonl(text: string): SessionEvent[] {
@@ -189,6 +192,22 @@ function loadLocal(prefix: string): SessionBundle {
     .filter((d) => d.startsWith('om-compaction-log-'))
     .map((d) => loadLog(logFile(join(wsDir, d))));
   return { main: loadLog(logFile(mainDir)), logs };
+}
+
+/** 读取目录下全部压缩日志：递归匹配 om-compaction-log-* 会话目录中的日志文件。 */
+export function loadVariants(dir: string): SessionEvent[][] {
+  const root = resolve(dir);
+  const files = readdirSync(root, { recursive: true, encoding: 'utf8' }).filter((p) =>
+    VARIANT_LOG_RE.test(p.replaceAll('\\', '/')),
+  );
+  if (!files.length) throw new Error(`目录中没有压缩日志：${root}`);
+  return files.map((p) => loadLog(join(root, p)));
+}
+
+/** 按 --session 前缀或 --zip 路径读取会话，二者恰选其一。 */
+export function loadBundle(source: { session?: string; zip?: string }): SessionBundle {
+  if (!source.session === !source.zip) throw new Error('需指定 --session 或 --zip 之一');
+  return source.zip ? readZip(resolve(source.zip)) : loadLocal(source.session ?? '');
 }
 
 /** 拼接消息 content 中的文本。 */
@@ -433,6 +452,7 @@ function main(): void {
     options: {
       session: { type: 'string' },
       zip: { type: 'string' },
+      variants: { type: 'string', multiple: true },
       range: { type: 'string' },
       phase: { type: 'string' },
       out: { type: 'string' },
@@ -440,15 +460,13 @@ function main(): void {
       'after-max': { type: 'string', default: '60000' },
     },
   });
-  if (!values.session === !values.zip) throw new Error('需指定 --session 或 --zip 之一');
-
   const zip = values.zip ? resolve(values.zip) : undefined;
-  const bundle = zip ? readZip(zip) : loadLocal(values.session ?? '');
+  const bundle = loadBundle(values);
   const mainEv = bundle.main;
   const mainHead = mainEv[0];
   if (!mainHead?.id) throw new Error('主会话缺少会话头');
   const mainId = bareId(mainHead.id);
-  const logs = bundle.logs
+  const logs = [...bundle.logs, ...(values.variants ?? []).flatMap(loadVariants)]
     .map(parseLog)
     .filter((x) => !x.failed && bareId(x.parent ?? '') === mainId && x.range);
   if (!logs.length) throw new Error('该会话没有可用的压缩日志');

@@ -1,7 +1,8 @@
 /**
  * 换模型重压缩：对已成功的 compaction 用另一模型在临时循环里重新压缩一次，便于对比
- * 不同模型的压缩效果。导出 parseRecompressInput / recompress / RecompressRequest /
- * RecompressResult / buildRecompressCommand / RECOMPRESS_COMMAND_NAME。
+ * 不同模型的压缩效果。导出 parseRecompressInput / compactionView / recompress /
+ * RecompressRequest / RecompressResult / ReplayView / buildRecompressCommand /
+ * RECOMPRESS_COMMAND_NAME。
  *
  * - 视图重放：compaction/summary 载荷的 shadowedSeqs 加 compaction/start 的 phase 足以
  *   重建当时的压缩视图（观察取被遮蔽的原消息，反思取被合并的 <history> 块），二者都只
@@ -145,6 +146,46 @@ function rebuildView(
   return buildObserveView(session, shadowedSeqs, { skipReasoning });
 }
 
+/** 重放视图：阶段、可定位区间的视图与原始字符数。 */
+export type ReplayView = {
+  phase: 'observe' | 'reflect';
+  view: CompressionView & { minIndex: number; maxIndex: number };
+  originalChars: number;
+};
+
+/** 按 compactionId 重建一次已成功压缩的输入视图；不可重放时返回错误文本。 */
+export function compactionView(
+  session: Session,
+  compactionId: string,
+  skipReasoning: boolean,
+): ReplayView | { error: string } {
+  const lifecycle = findLifecycle(session, compactionId);
+  if (lifecycle.phase === undefined && lifecycle.summary === undefined) {
+    return { error: `未找到压缩 ${compactionId}` };
+  }
+  const summary = lifecycle.summary;
+  if (summary === undefined || lifecycle.end === undefined || lifecycle.end.error !== undefined) {
+    return { error: `压缩 ${compactionId} 未成功完成，无法重压缩` };
+  }
+  const shadowedSeqs = (summary.shadowedSeqs ?? []).map(Number);
+  if (shadowedSeqs.length === 0) {
+    return { error: `压缩 ${compactionId} 缺少 shadowedSeqs，无法重放` };
+  }
+  const firstEvent = session.snapshotEvents()[shadowedSeqs[0] ?? -1];
+  const phase =
+    lifecycle.phase ?? (historyTextOf(firstEvent) === undefined ? 'observe' : 'reflect');
+  const view = rebuildView(session, phase, shadowedSeqs, skipReasoning);
+  if (typeof view === 'string') return { error: view };
+  const { minIndex, maxIndex } = view;
+  if (minIndex === undefined || maxIndex === undefined) {
+    return { error: `压缩 ${compactionId} 的原内容无可定位条目` };
+  }
+  const originalChars =
+    summary.shadowedCharCount ??
+    (phase === 'observe' ? seqsCharCount(session, shadowedSeqs) : viewCharCount(view));
+  return { phase, view: { ...view, minIndex, maxIndex }, originalChars };
+}
+
 /**
  * 对已成功的 compaction 用目标模型重压缩一次。校验失败、压缩循环失败均以
  * { ok: false } 返回，不抛错；会话本身不被修改（见文件头说明）。
@@ -158,26 +199,9 @@ export async function recompress(
 ): Promise<RecompressResult> {
   const session = agent.session;
   if (!isMainSession(session)) return { ok: false, error: '重压缩仅支持主会话' };
-  const lifecycle = findLifecycle(session, request.compactionId);
-  if (lifecycle.phase === undefined && lifecycle.summary === undefined) {
-    return { ok: false, error: `未找到压缩 ${request.compactionId}` };
-  }
-  const summary = lifecycle.summary;
-  if (summary === undefined || lifecycle.end === undefined || lifecycle.end.error !== undefined) {
-    return { ok: false, error: `压缩 ${request.compactionId} 未成功完成，无法重压缩` };
-  }
-  const shadowedSeqs = (summary.shadowedSeqs ?? []).map(Number);
-  if (shadowedSeqs.length === 0) {
-    return { ok: false, error: `压缩 ${request.compactionId} 缺少 shadowedSeqs，无法重放` };
-  }
-  const firstEvent = session.snapshotEvents()[shadowedSeqs[0] ?? -1];
-  const phase =
-    lifecycle.phase ?? (historyTextOf(firstEvent) === undefined ? 'observe' : 'reflect');
-  const view = rebuildView(session, phase, shadowedSeqs, config.compressSkipReasoning);
-  if (typeof view === 'string') return { ok: false, error: view };
-  if (view.minIndex === undefined || view.maxIndex === undefined) {
-    return { ok: false, error: `压缩 ${request.compactionId} 的原内容无可定位条目` };
-  }
+  const replay = compactionView(session, request.compactionId, config.compressSkipReasoning);
+  if ('error' in replay) return { ok: false, error: replay.error };
+  const { phase, view, originalChars } = replay;
   if (signal?.aborted === true) return { ok: false, error: COMPACTION_ABORTED_ERROR };
 
   const target = { provider: request.provider, model: request.model };
@@ -187,9 +211,6 @@ export async function recompress(
       request.reasoningEffort === undefined ? '' : ` · ${request.reasoningEffort}`
     }`,
   );
-  const originalChars =
-    summary.shadowedCharCount ??
-    (phase === 'observe' ? seqsCharCount(session, shadowedSeqs) : viewCharCount(view));
   const outcome = await runCompressionLoop(ctx, session, {
     view,
     originalChars,
