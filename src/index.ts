@@ -3,7 +3,8 @@
  * apply 在 tools 服务可用时维护 recall 工具（含语义增强）并处理 Loader volatile 配置提交，
  * 并接线 agent/pre-step 自动压缩（先反思后观察，仅主会话生效）与提醒补发
  * （进度提醒的 system-reminder 用户消息，见 system-reminder.ts），
- * commands 服务可用时注册换模型重压缩命令（见 recompress.ts）。压缩走工具驱动的压缩循环（模型经 getHistory /
+ * commands 服务可用时注册换模型重压缩命令（见 recompress.ts），sessions 服务可用时注册
+ * llm/stream 中间件剥离 OM 压缩前生成的 Claude thinking 签名（见 thinking-binding.ts）。压缩走工具驱动的压缩循环（模型经 getHistory /
  * compressHistory / completeCompression 工具完成，见 compress-loop.ts）；最终失败
  * （连续无工具调用 / 请求级错误）时拒绝本 step 中断当前 turn（signal 中止除外），
  * 主会话日志记录失败原因与诊断子会话 sessionId（完整循环会话由 compaction-log.ts
@@ -23,6 +24,7 @@ import {
   ensureSystemReminders,
   progressIdleOptions,
 } from './system-reminder.ts';
+import { registerThinkingBinding } from './thinking-binding.ts';
 import type { Context } from './types.ts';
 import { isMainSession } from './utils.ts';
 
@@ -122,6 +124,9 @@ export function apply(ctx: Context, config?: unknown): void {
       'dsh-plugin-om: recompress command',
     );
   });
+
+  // Claude thinking 签名绑定前缀：sessions 服务可用时在请求发出前剥离 OM 压缩前生成的签名。
+  ctx.inject(['sessions'], (inner) => registerThinkingBinding(inner, logger));
 
   // 两级自动压缩：pre-step 阻塞串行（先反思后观察）；仅主会话生效。
   // 压缩之后再确保提醒在消息列表中：被压缩遮蔽则补发。

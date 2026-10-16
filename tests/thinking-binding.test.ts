@@ -1,6 +1,13 @@
 // thinking 签名前缀绑定修复：过期判定、Anthropic 签名识别与 reasoning 剥离。
-import type { AssistantMessage, RequestMessage } from '@deepseek-ai/dsh-llm';
-import { describe, expect, it } from 'vitest';
+import {
+  type AssistantMessage,
+  type GenerateOptions,
+  isAgentLoopRequest,
+  markAgentLoopRequest,
+  type RequestMessage,
+} from '@deepseek-ai/dsh-llm';
+import { describe, expect, it, vi } from 'vitest';
+import { apply } from '../src/index.ts';
 import {
   isAnthropicSigned,
   sanitizeMessages,
@@ -10,6 +17,7 @@ import {
 import type { Session, SessionEvent } from '../src/types.ts';
 import {
   historyMessage,
+  makeCtx,
   makeMessage,
   makeSession,
   systemMessageEvent,
@@ -217,5 +225,83 @@ describe('sanitizeMessages', () => {
       events: [userEvent('任务'), assistantEvent(assistant('a1'))],
     });
     expect(sanitizeMessages(session, requestOf(session))).toBeUndefined();
+  });
+});
+
+/** llm/stream 中间件签名（与宿主 waterfall 一致）。 */
+type StreamListener = (options: GenerateOptions, next: () => unknown) => unknown;
+
+/** 挂载插件并返回登记的 llm/stream 中间件；session 登记为活动会话。 */
+function mount(session?: Session, sessionsMounted = true) {
+  const ctx = makeCtx({ sessionsMounted });
+  if (session !== undefined) ctx._liveSessions.set(session.id, session);
+  apply(ctx, { rateLimitWaitMs: 0 });
+  const listener = ctx._onCallbacks.get('llm/stream')?.[0] as StreamListener | undefined;
+  return { ctx, listener };
+}
+
+/** 构造会话请求；sessionId 为 null 时省略。 */
+function sessionRequest(
+  session: Session,
+  { sessionId = session.id, purpose }: { sessionId?: string | null; purpose?: 'compaction' } = {},
+): GenerateOptions {
+  return {
+    provider: 'gateway',
+    model: 'claude-opus-5',
+    ...(sessionId === null ? {} : { sessionId }),
+    ...(purpose === undefined ? {} : { purpose }),
+    messages: requestOf(session),
+  } as GenerateOptions;
+}
+
+/** 耗尽中间件返回的流。 */
+async function drain(stream: unknown): Promise<void> {
+  for await (const _ of stream as AsyncIterable<unknown>) {
+    /* 只需触发下游调用 */
+  }
+}
+
+describe('apply 接线（llm/stream 剥离 thinking 签名）', () => {
+  it('前置注册中间件，需剥离时以新请求重新调用 llm.stream 并保留 agent loop 标记', async () => {
+    const { session } = compactedSession();
+    const { ctx, listener } = mount(session);
+    expect(ctx._onOptions.get('llm/stream')?.[0]).toEqual({ prepend: true });
+    const next = vi.fn();
+    await drain(listener?.(markAgentLoopRequest(sessionRequest(session)), next));
+    expect(next).not.toHaveBeenCalled();
+    const sent = ctx._llmCalls[0]?.options as GenerateOptions;
+    const reasoning = sent.messages.filter(
+      (message) =>
+        message.role === 'assistant' && message.content.some((block) => block.type === 'reasoning'),
+    );
+    expect(reasoning.map((message) => message.id)).toEqual(['a3']);
+    expect(isAgentLoopRequest(sent)).toBe(true);
+    // 重新发出的请求再次进入中间件时直接放行，不再循环
+    const reentry = vi.fn(() => 'downstream');
+    expect(listener?.(sent, reentry)).toBe('downstream');
+    expect(reentry).toHaveBeenCalledTimes(1);
+  });
+
+  it('无需剥离、无 sessionId、辅助调用或会话不存在时直接放行', () => {
+    const plain = makeSession({ events: [userEvent('任务'), assistantEvent(assistant('a1'))] });
+    const { session } = compactedSession();
+    const { ctx, listener } = mount(session);
+    ctx._liveSessions.set('plain', plain);
+    const cases: GenerateOptions[] = [
+      sessionRequest(plain, { sessionId: 'plain' }),
+      sessionRequest(session, { sessionId: null }),
+      sessionRequest(session, { purpose: 'compaction' }),
+      sessionRequest(session, { sessionId: 'missing' }),
+    ];
+    for (const request of cases) {
+      const next = vi.fn(() => 'downstream');
+      expect(listener?.(request, next)).toBe('downstream');
+      expect(next).toHaveBeenCalledTimes(1);
+    }
+    expect(ctx._llmCalls).toHaveLength(0);
+  });
+
+  it('sessions 服务未挂载时不注册中间件', () => {
+    expect(mount(undefined, false).listener).toBeUndefined();
   });
 });
