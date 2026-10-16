@@ -2,14 +2,13 @@
  * 对 view.json 跑一次压缩，产出与 DSH 同格式的压缩日志。不改原会话。
  *
  * 用法：node compress.ts <view.json> <provider/model[:effort]> --out <目录>
- * 模型调用走 dsh-llm + dsh-llm-pi-ai；providers 与插件配置读 DSH profile 的 cordis.patch.yml。
+ * 模型调用走 dsh-llm + dsh-llm-pi-ai；providers 与插件配置由 profile.ts 读 DSH profile。
  * 凭据依次取环境变量、Windows 用户环境变量、$DSH_HOME/.credentials.yaml、<cwd>/.env、$DSH_HOME/.env。
- * 导出 parseTarget / loadProfile / resolveSecret / createRuntime / compressView。
+ * 导出 parseTarget / resolveSecret / createRuntime / compressView / describeOutcome。
  */
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -25,6 +24,7 @@ import {
   runCompressionLoop,
 } from '../../../../src/compress-loop.ts';
 import { type PluginConfig, resolveConfig } from '../../../../src/config.ts';
+import { dshHome, loadProfile, type ProviderProfile } from './profile.ts';
 import type { ViewFile } from './view.ts';
 
 /** 压缩目标：渠道、模型与可选思考等级。 */
@@ -32,33 +32,6 @@ export interface Target {
   provider: string;
   model: string;
   reasoningEffort?: ReasoningEffortId;
-}
-
-/** pi-ai 渠道配置，原样取自 profile。 */
-export type ProviderProfile = piAi.PiAiProviderProfile;
-
-/** profile 中与压缩相关的配置。 */
-export interface Profile {
-  providers: Record<string, ProviderProfile>;
-  /** dsh-plugin-om 条目的原始配置；缺省为空对象。 */
-  plugin: Record<string, PatchValue>;
-}
-
-/** cordis.patch.yml 的 YAML 值。 */
-type PatchValue = string | number | boolean | null | PatchValue[] | { [key: string]: PatchValue };
-
-/** cordis.patch.yml 的一行：按 id 覆盖配置，或 insert 新插件。 */
-interface PatchEntry {
-  id?: string;
-  name?: string;
-  disabled?: boolean;
-  config?: Record<string, PatchValue>;
-  insert?: PatchEntry[];
-}
-
-/** DSH 主目录。 */
-export function dshHome(): string {
-  return process.env.DSH_HOME ?? join(homedir(), '.dsh');
 }
 
 /** 解析 provider/model[:effort]。模型 id 可含 /，按首个 / 切分渠道。 */
@@ -74,29 +47,6 @@ export function parseTarget(text: string): Target {
   return effort
     ? { provider, model, reasoningEffort: effort as ReasoningEffortId }
     : { provider, model };
-}
-
-/** 展开 insert 行，得到全部插件条目。 */
-function flattenEntries(entries: PatchEntry[]): PatchEntry[] {
-  return entries.flatMap((e) => (e.insert ? flattenEntries(e.insert) : [e]));
-}
-
-/** 是否为 dsh-plugin-om 条目，含本地开发 insert。 */
-function isPluginEntry(e: PatchEntry): boolean {
-  return (e.id ?? '').startsWith('dsh-plugin-om') || (e.name ?? '').includes('dsh-plugin-om');
-}
-
-/** 读 profile 的 pi-ai providers 与插件配置。profile 默认取 $DSH_PROFILE 或 web。 */
-export function loadProfile(profile = process.env.DSH_PROFILE ?? 'web', home = dshHome()): Profile {
-  const file = join(home, 'profiles', profile, 'cordis.patch.yml');
-  const doc = parse(readFileSync(file, 'utf8'), { logLevel: 'error' }) as PatchEntry[] | null;
-  const entries = flattenEntries(doc ?? []).filter((e) => e.disabled !== true);
-  const llm = entries.findLast(
-    (e) => e.id === 'llm-pi-ai' || e.name === '@deepseek-ai/dsh-llm-pi-ai',
-  );
-  const providers = llm?.config?.providers as Record<string, ProviderProfile> | undefined;
-  if (!providers) throw new Error(`${file} 没有 llm-pi-ai 的 providers 配置`);
-  return { providers, plugin: entries.findLast(isPluginEntry)?.config ?? {} };
 }
 
 /** 解析 KEY=VALUE 形式的 .env 文件。 */
