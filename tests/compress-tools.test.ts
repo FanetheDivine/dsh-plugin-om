@@ -395,6 +395,147 @@ describe('getHistory', () => {
   });
 });
 
+/** getHistory 结果的注释头（首行）。 */
+const headerOf = (text: string): string => text.split('\n')[0] ?? '';
+
+describe('getHistory 当前状态', () => {
+  it('压缩后被替换条目显示为摘要并位于原位置，注释头列出本次已压缩区间', () => {
+    const state = new CompressionState(observeView());
+    expect(state.compressHistory({ start: 1, end: 2, content: '摘要A2-B' }).isError).toBe(false);
+    expect(state.compressHistory({ index: 4, content: '摘要D' }).isError).toBe(false);
+    const text = state.getHistory({}).text;
+    expect(headerOf(text)).toBe('<!-- 完整消息区间 [0..7]，共 7 条；本次已压缩 [1..2]、[4] -->');
+    const order = [
+      '<user_message index="0">',
+      '<assistant start="1" end="2"><![CDATA[摘要A2-B]]></assistant>',
+      '<assistant index="3"><![CDATA[助手C]]></assistant>',
+      '<assistant index="4"><![CDATA[摘要D]]></assistant>',
+      '<user_message index="5">',
+    ].map((part) => text.indexOf(part));
+    expect(order.every((at) => at >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(text).not.toContain('助手A2');
+    expect(text).not.toContain('助手B');
+    expect(text).not.toContain('助手D');
+  });
+
+  it('查询区间与摘要相交时返回整条摘要，不相交时不返回', () => {
+    const state = new CompressionState(observeView());
+    expect(state.compressHistory({ start: 1, end: 4, content: '摘要1-4' }).isError).toBe(false);
+    const hit = state.getHistory({ start: 3, end: 3 });
+    expect(headerOf(hit.text)).toBe('<!-- 完整消息区间 [3..3]，共 1 条；本次已压缩 [1..4] -->');
+    expect(hit.text).toContain('<assistant start="1" end="4"><![CDATA[摘要1-4]]></assistant>');
+    const miss = state.getHistory({ start: 5, end: 7 });
+    expect(headerOf(miss.text)).toBe('<!-- 完整消息区间 [5..7]，共 3 条 -->');
+    expect(miss.text).not.toContain('摘要1-4');
+  });
+
+  it('覆盖后只显示最新摘要', () => {
+    const state = new CompressionState(observeView());
+    expect(state.compressHistory({ start: 2, end: 3, content: '旧摘要' }).isError).toBe(false);
+    expect(state.compressHistory({ start: 1, end: 4, content: '新摘要' }).isError).toBe(false);
+    const text = state.getHistory({}).text;
+    expect(headerOf(text)).toContain('本次已压缩 [1..4] -->');
+    expect(text).toContain('<assistant start="1" end="4"><![CDATA[新摘要]]></assistant>');
+    expect(text).not.toContain('旧摘要');
+    expect(state.compressHistory({ start: 1, end: 4, content: '再次修正' }).isError).toBe(false);
+    expect(state.getHistory({}).text).not.toContain('新摘要');
+    expect(state.getHistory({}).text).toContain('再次修正');
+  });
+
+  it('重写的提问仍显示原题、选项和回答，被直接压缩的提问显示为摘要', () => {
+    const state = new CompressionState(
+      viewOf([
+        originalAsk(1),
+        { kind: 'assistant', lo: 2, hi: 2, text: '执行灰度发布' },
+        originalAsk(3),
+      ]),
+    );
+    state.getHistory({});
+    state.markHistoryDelivered();
+    expect(rewrite(state).isError).toBe(false);
+    expect(state.compressHistory({ start: 2, end: 3, content: '执行并再次确认' }).isError).toBe(
+      true,
+    );
+    expect(state.compressHistory({ start: 2, end: 3, content: '执行并再次确认' }).isError).toBe(
+      false,
+    );
+    const text = state.getHistory({}).text;
+    expect(headerOf(text)).toBe('<!-- 完整消息区间 [1..3]，共 2 条；本次已压缩 [2..3] -->');
+    expect(text).toContain('o2:全量发布');
+    expect(text).toContain('a:第一个');
+    expect(text).not.toContain('采用灰度发布，先向少量用户开放。');
+    expect(text).toContain('<assistant start="2" end="3"><![CDATA[执行并再次确认]]></assistant>');
+    expect(state.complete().isError).toBe(false);
+    expect(state.buildFinalBlock()).toContain('a:采用灰度发布，先向少量用户开放。');
+  });
+
+  it('reasoning 随所属条目消失：带 index 的看自身区间，无 index 的跟随其后第一条条目', () => {
+    const observe = new CompressionState(
+      viewOf([
+        { kind: 'user', lo: 0, hi: 0, text: 'U' },
+        { kind: 'reasoning', lo: 1, hi: 1, text: '思考甲' },
+        { kind: 'assistant', lo: 1, hi: 1, text: '助手甲' },
+        { kind: 'reasoning', lo: 2, hi: 2, text: '思考乙' },
+        { kind: 'assistant', lo: 2, hi: 2, text: '助手乙' },
+      ]),
+    );
+    expect(observe.compressHistory({ index: 1, content: '甲摘要' }).isError).toBe(false);
+    const observed = observe.getHistory({}).text;
+    expect(observed).not.toContain('思考甲');
+    expect(observed).toContain('思考乙');
+    const reflect = new CompressionState(
+      viewOf([
+        { kind: 'user', lo: 0, hi: 0, text: 'U', blockSeq: 10 },
+        { kind: 'reasoning', text: '块内思考甲', blockSeq: 10 },
+        { kind: 'assistant', lo: 1, hi: 3, text: '块内摘要甲', blockSeq: 10 },
+        { kind: 'reasoning', text: '块内思考乙', blockSeq: 10 },
+        { kind: 'assistant', lo: 4, hi: 4, text: '块内摘要乙', blockSeq: 10 },
+      ]),
+    );
+    expect(reflect.compressHistory({ start: 1, end: 3, content: '合并摘要' }).isError).toBe(false);
+    const reflected = reflect.getHistory({}).text;
+    expect(reflected).not.toContain('块内思考甲');
+    expect(reflected).toContain('块内思考乙');
+    expect(reflected.indexOf('U]]>')).toBeLessThan(reflected.indexOf('合并摘要'));
+    expect(reflected.indexOf('合并摘要')).toBeLessThan(reflected.indexOf('块内思考乙'));
+  });
+
+  it('切入已有块时返回该块当前条目，跨块摘要连带展开其覆盖的全部块', () => {
+    const state = new CompressionState(
+      viewOf([
+        { kind: 'user', lo: 0, hi: 0, text: 'U0', blockSeq: 10 },
+        { kind: 'assistant', lo: 1, hi: 2, text: '块1摘要甲', blockSeq: 10 },
+        { kind: 'assistant', lo: 3, hi: 4, text: '块1摘要乙', blockSeq: 10 },
+        { kind: 'assistant', lo: 5, hi: 6, text: '块2摘要', blockSeq: 20 },
+        { kind: 'user', lo: 7, hi: 7, text: 'U7', blockSeq: 20 },
+        { kind: 'assistant', lo: 8, hi: 9, text: '块3摘要', blockSeq: 30 },
+      ]),
+    );
+    expect(state.compressHistory({ start: 3, end: 6, content: '跨块合并' }).isError).toBe(false);
+    const head = state.getHistory({ start: 0, end: 0 }).text;
+    expect(headerOf(head)).toBe('<!-- 完整消息区间 [0..0]，共 4 条；本次已压缩 [3..6] -->');
+    for (const part of ['U0', '块1摘要甲', '跨块合并', 'U7']) expect(head).toContain(part);
+    for (const part of ['块1摘要乙', '块2摘要', '块3摘要']) expect(head).not.toContain(part);
+    const tail = state.getHistory({ start: 8, end: 9 }).text;
+    expect(headerOf(tail)).toBe('<!-- 完整消息区间 [8..9]，共 1 条 -->');
+    expect(tail).toContain('块3摘要');
+  });
+
+  it('查看全区间与最终块条目一致', () => {
+    const state = new CompressionState(observeView());
+    expect(state.compressHistory({ start: 1, end: 2, content: '摘要甲' }).isError).toBe(false);
+    expect(state.compressHistory({ index: 6, content: '摘要乙' }).isError).toBe(false);
+    const body = state.getHistory({}).text.split('\n').slice(1).join('\n');
+    const block = state.buildFinalBlock();
+    const prefix = `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${historyFormatNote({ user: true })}\n`;
+    const suffix = `\n</${HISTORY_TAG}>`;
+    expect(block.startsWith(prefix)).toBe(true);
+    expect(block.endsWith(suffix)).toBe(true);
+    expect(body).toBe(block.slice(prefix.length, -suffix.length));
+  });
+});
+
 describe('compressHistory 参数校验', () => {
   it('index 与 start/end 同时提供、都不提供、start 无 end 均报错', () => {
     const state = new CompressionState(observeView());
@@ -623,6 +764,19 @@ describe('buildFinalBlock', () => {
     expect(block).toContain('<assistant index="0"><![CDATA[A]]></assistant>');
     expect(block).toContain('<assistant><![CDATA[遗留块内容]]></assistant>');
     expect(block).toContain('<assistant index="1"><![CDATA[B]]></assistant>');
+  });
+
+  it('摘要位于被替换条目原位置，不提前到其前的遗留条目之前', () => {
+    const view = viewOf([
+      { kind: 'assistant', text: '遗留块内容', blockSeq: 9 },
+      { kind: 'assistant', lo: 1, hi: 1, text: 'B', blockSeq: 10 },
+      { kind: 'assistant', lo: 2, hi: 2, text: 'C', blockSeq: 10 },
+    ]);
+    const state = new CompressionState(view);
+    expect(state.compressHistory({ start: 1, end: 2, content: '摘要BC' }).isError).toBe(false);
+    const block = state.buildFinalBlock();
+    expect(block.indexOf('遗留块内容')).toBeGreaterThan(-1);
+    expect(block.indexOf('遗留块内容')).toBeLessThan(block.indexOf('摘要BC'));
   });
 
   it('skill 条目未压缩以 <skill_content name index> 呈现，压缩后变为常规 assistant 摘要条目', () => {

@@ -2,19 +2,13 @@
  * 压缩工具状态机：历史查看、区间摘要替换、原始 ask 重写与完成门禁。
  * 导出 CompressionState / ToolCallResult / COMPRESSION_TOOL_SCHEMAS /
  * REWRITE_ASK_TOOL_SCHEMA / SKILL_TOOL_NAME。
+ * getHistory 与最终 history 共用当前状态投影：本次替换的区间显示为摘要条目。
  * skill 和合法 ask 直接压缩需二次确认；未直接压缩的原始 ask 必须查看后重写。
  * 最终 history 保留用户、系统与历史条目，原始 ask 仅输出重写后的 q/a。
  */
 
 import type { ToolSchema } from '@deepseek-ai/dsh-llm';
-import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
-import {
-  appendCdataText,
-  type CompressionView,
-  entryToElement,
-  renderEntriesXml,
-  type ViewEntry,
-} from './compress-view.ts';
+import { type CompressionView, renderEntriesXml, type ViewEntry } from './compress-view.ts';
 import {
   ASK_USER_QUESTION_TOOL_NAME,
   HISTORY_TAG,
@@ -41,6 +35,16 @@ type Replacement = {
   hi: number;
   /** 替换后的摘要文本（纯文本）。 */
   content: string;
+};
+
+/** 当前状态投影中的一条：条目、所属压缩块，摘要条目另带其替换记录。 */
+type ProjectedEntry = {
+  /** 视图条目；摘要条目为 content 构成的 assistant 条目。 */
+  entry: ViewEntry;
+  /** 所属压缩块 seq；摘要条目取全部被替换条目的块，块外条目为空。 */
+  blocks: number[];
+  /** 摘要条目对应的替换记录。 */
+  replacement?: Replacement;
 };
 
 /** 工具参数来自 JSON；验证前仅包含 JSON 值。 */
@@ -156,9 +160,10 @@ export class CompressionState {
   }
 
   /**
-   * getHistory：返回 [start..end] 区间内的条目（压缩视图，无 <history> 包裹）。
-   * start/end 缺省为要求区间首尾；越界或 start > end 返回错误。区间切入已有压缩
-   * 块（反思视图）时返回该块全部条目。
+   * getHistory：返回 [start..end] 区间内的当前条目（无 <history> 包裹）。
+   * start/end 缺省为要求区间首尾；越界或 start > end 返回错误。本次替换的区间显示为
+   * 摘要条目，与查询区间相交即整条返回；区间切入已有压缩块（反思视图）时返回该块当前
+   * 全部条目，跨块摘要连带展开其覆盖的块。注释头列出返回内容中本次已压缩的区间。
    */
   getHistory(args: Record<string, unknown>): ToolCallResult {
     const { minIndex, maxIndex } = this.view;
@@ -189,19 +194,36 @@ export class CompressionState {
     }
     const intersects = (entry: ViewEntry): boolean =>
       entry.lo !== undefined && entry.hi !== undefined && entry.lo <= end && entry.hi >= start;
-    // 块整体展开：任一条目相交的压缩块，其全部条目一并返回
-    const expandedBlocks = new Set<number>();
-    for (const entry of this.view.entries) {
-      if (entry.blockSeq !== undefined && intersects(entry)) expandedBlocks.add(entry.blockSeq);
+    const projected = this.project();
+    // 块整体展开：相交条目所属的块全部展开；摘要可跨块，展开到不再新增块为止
+    const expanded = new Set<number>();
+    for (let grown = true; grown; ) {
+      grown = false;
+      for (const item of projected) {
+        if (!intersects(item.entry) && !item.blocks.some((seq) => expanded.has(seq))) continue;
+        for (const seq of item.blocks) {
+          if (expanded.has(seq)) continue;
+          expanded.add(seq);
+          grown = true;
+        }
+      }
     }
-    const selected = this.view.entries.filter((entry) =>
-      entry.blockSeq !== undefined ? expandedBlocks.has(entry.blockSeq) : intersects(entry),
+    const selected = projected.filter((item) =>
+      item.blocks.length > 0
+        ? item.blocks.some((seq) => expanded.has(seq))
+        : intersects(item.entry),
     );
     if (selected.length === 0) {
       return { text: `区间 [${start}..${end}] 没有条目`, isError: false };
     }
-    const text = `<!-- 完整消息区间 [${start}..${end}]，共 ${selected.length} 条 -->\n${renderEntriesXml(selected)}`;
-    for (const entry of selected) {
+    const done = selected.flatMap(({ replacement: rep }) =>
+      rep === undefined ? [] : [rep.lo === rep.hi ? `[${rep.lo}]` : `[${rep.lo}..${rep.hi}]`],
+    );
+    const header = `完整消息区间 [${start}..${end}]，共 ${selected.length} 条${
+      done.length === 0 ? '' : `；本次已压缩 ${done.join('、')}`
+    }`;
+    const text = `<!-- ${header} -->\n${renderEntriesXml(selected.map((item) => item.entry))}`;
+    for (const { entry } of selected) {
       if (entry.ask !== undefined && entry.lo !== undefined) this.undeliveredAsks.add(entry.lo);
     }
     return { text, isError: false };
@@ -354,19 +376,56 @@ export class CompressionState {
     };
   }
 
+  /** 完全包含该条目的替换记录；替换区间两两不相交，至多一条。 */
+  private replacementFor(entry: ViewEntry): Replacement | undefined {
+    const { lo, hi } = entry;
+    if (lo === undefined || hi === undefined) return undefined;
+    return this.replacements.find((rep) => lo >= rep.lo && hi <= rep.hi);
+  }
+
   /** 条目是否已被成功直接压缩完全覆盖。 */
   private coveredBy(entry: ViewEntry): boolean {
-    return (
-      entry.lo !== undefined &&
-      entry.hi !== undefined &&
-      this.replacements.some(
-        (rep) =>
-          entry.lo !== undefined &&
-          entry.hi !== undefined &&
-          entry.lo >= rep.lo &&
-          entry.hi <= rep.hi,
-      )
-    );
+    return this.replacementFor(entry) !== undefined;
+  }
+
+  /**
+   * 当前状态投影：按视图顺序，被替换条目由一条摘要条目代替，摘要位于首个被替换条目处。
+   * reasoning 带 index 时按自身区间取舍，无 index 时跟随其后第一条非 reasoning 条目。
+   */
+  private project(): ProjectedEntry[] {
+    const entries = this.view.entries;
+    const reps = new Array<Replacement | undefined>(entries.length);
+    let next: Replacement | undefined;
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const entry = entries[i];
+      if (entry === undefined) continue;
+      const own = this.replacementFor(entry);
+      if (entry.kind !== 'reasoning') next = own;
+      reps[i] = entry.kind === 'reasoning' && entry.lo === undefined ? next : own;
+    }
+    const projected: ProjectedEntry[] = [];
+    const summaries = new Map<Replacement, ProjectedEntry>();
+    entries.forEach((entry, i) => {
+      const rep = reps[i];
+      if (rep === undefined) {
+        projected.push({ entry, blocks: entry.blockSeq === undefined ? [] : [entry.blockSeq] });
+        return;
+      }
+      let summary = summaries.get(rep);
+      if (summary === undefined) {
+        summary = {
+          entry: { kind: 'assistant', lo: rep.lo, hi: rep.hi, text: rep.content },
+          blocks: [],
+          replacement: rep,
+        };
+        summaries.set(rep, summary);
+        projected.push(summary);
+      }
+      if (entry.blockSeq !== undefined && !summary.blocks.includes(entry.blockSeq)) {
+        summary.blocks.push(entry.blockSeq);
+      }
+    });
+    return projected;
   }
 
   /** 重写已查看、尚未压缩覆盖的原始 ask，一次提交全部题。 */
@@ -469,74 +528,34 @@ export class CompressionState {
   }
 
   /**
-   * 构建最终 <history> 块：按 index 顺序合并视图条目与替换记录——user 条目
-   * 原样、被替换区间生成 <assistant index|start end> 摘要条目（content 以 CDATA 包裹嵌入）、
-   * 未替换普通与历史条目原样保留，原始 ask 使用重写后的 q/a；reasoning 不进产物。
-   * 块首按最终条目动态生成格式说明注释，开标签携带 tip 属性。
+   * 构建最终 <history> 块：取当前状态投影并去掉 reasoning——user 条目原样、被替换区间为
+   * <assistant index|start end> 摘要条目、未替换普通与历史条目原样保留，原始 ask 使用
+   * 重写后的 q/a。块首按最终条目动态生成格式说明注释，开标签携带 tip 属性。
    */
   buildFinalBlock(): string {
     const pending = this.unprocessedAskIndices();
     if (pending.length > 0) throw new Error(`原始 ask 尚未处理：index ${pending.join('、')}`);
-    const doc = new DOMParser({ onError: () => {} }).parseFromString(
-      `<${HISTORY_TAG} />`,
-      'text/xml',
-    );
-    const root = doc.documentElement;
-    if (!root) return '';
-    const coveredBy = (entry: ViewEntry): boolean => this.coveredBy(entry);
-    const reps = [...this.replacements].sort((a, b) => a.lo - b.lo);
-    let nextRep = 0;
-    const emitReplacement = (rep: Replacement): void => {
-      const el = doc.createElement('assistant');
-      if (rep.lo === rep.hi) el.setAttribute('index', String(rep.lo));
-      else {
-        el.setAttribute('start', String(rep.lo));
-        el.setAttribute('end', String(rep.hi));
-      }
-      appendCdataText(doc, el, rep.content);
-      root.appendChild(el);
-    };
-    const flushReplacementsBefore = (lo: number | undefined): void => {
-      while (nextRep < reps.length) {
-        const rep = reps[nextRep];
-        if (rep === undefined) break;
-        if (lo !== undefined && rep.lo >= lo) break;
-        emitReplacement(rep);
-        nextRep += 1;
-      }
-    };
-    for (const entry of this.view.entries) {
-      if (entry.kind === 'reasoning') continue;
-      if (coveredBy(entry)) continue;
-      flushReplacementsBefore(entry.lo);
+    const entries = this.project().flatMap(({ entry }): ViewEntry[] => {
+      if (entry.kind === 'reasoning') return [];
       const qa = entry.lo === undefined ? undefined : this.rewrittenAsks.get(entry.lo);
-      const output: ViewEntry =
-        entry.ask !== undefined && qa !== undefined && entry.lo !== undefined
-          ? {
-              kind: 'assistant',
-              lo: entry.lo,
-              hi: entry.lo,
-              toolName: ASK_USER_QUESTION_TOOL_NAME,
-              text: `<ask-user-question>${qa.map((item) => `q:${item.q}\na:${item.a}`).join('\n')}</ask-user-question>`,
-            }
-          : entry;
-      root.appendChild(entryToElement(doc, output));
-    }
-    flushReplacementsBefore(undefined);
-    // 块顶注释按产物内实际存在的条目动态生成：被替换覆盖的 skill / ask_user_question
-    // 条目已变为摘要条目，不再触发对应说明
-    const note = historyFormatNote({
-      user: this.view.entries.some((e) => e.kind === 'user'),
-      skill: this.view.entries.some(
-        (e) => e.kind === 'assistant' && e.toolName === SKILL_TOOL_NAME && !coveredBy(e),
-      ),
-      askUserQuestion: this.view.entries.some((e) => isAskEntry(e) && !coveredBy(e)),
+      if (entry.ask === undefined || qa === undefined || entry.lo === undefined) return [entry];
+      return [
+        {
+          kind: 'assistant',
+          lo: entry.lo,
+          hi: entry.lo,
+          toolName: ASK_USER_QUESTION_TOOL_NAME,
+          text: `<ask-user-question>${qa.map((item) => `q:${item.q}\na:${item.a}`).join('\n')}</ask-user-question>`,
+        },
+      ];
     });
-    const serializer = new XMLSerializer();
-    const inner = Array.from(root.childNodes)
-      .map((node) => serializer.serializeToString(node))
-      .join('\n');
-    return `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${note}\n${inner}\n</${HISTORY_TAG}>`;
+    // 块顶注释按产物内实际存在的条目动态生成：被替换的 skill / ask_user_question 已变为摘要条目
+    const note = historyFormatNote({
+      user: entries.some((e) => e.kind === 'user'),
+      skill: entries.some((e) => e.kind === 'assistant' && e.toolName === SKILL_TOOL_NAME),
+      askUserQuestion: entries.some(isAskEntry),
+    });
+    return `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${note}\n${renderEntriesXml(entries)}\n</${HISTORY_TAG}>`;
   }
 }
 
