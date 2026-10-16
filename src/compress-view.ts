@@ -56,8 +56,6 @@ export type ViewEntry = {
   toolName?: string;
   /** skill 条目的名称（工具参数或手动加载的消息来源提供；反思视图取自 name 属性）。 */
   skillName?: string;
-  /** toolcall 条目的调用 id（结构化渲染为 callId 属性）。 */
-  callId?: string;
   /** toolcall 条目的调用参数 JSON 文本（存在时条目渲染为 <assistant type="toolcall"> 结构）。 */
   toolArgs?: string;
   /** toolcall 条目的工具返回文本（缺失或为空时不输出 <tool-result> 子元素）。 */
@@ -371,7 +369,6 @@ export function buildObserveView(
       text,
       ...(toolName === undefined ? {} : { toolName }),
       ...(skillName === undefined ? {} : { skillName }),
-      ...(cm.callId === undefined || toolArgs === undefined ? {} : { callId: cm.callId }),
       ...(toolArgs === undefined ? {} : { toolArgs }),
       ...(toolResult === undefined ? {} : { toolResult }),
       ...(ask === null ? {} : { ask }),
@@ -529,16 +526,15 @@ function parseBlockEntries(blockText: string, blockSeq: number): ViewEntry[] {
         const toolArgs = childText(el, 'tool-args');
         if (toolArgs !== undefined) {
           // 结构化 toolcall 条目：调用参数与返回内容各自成子元素，重新渲染时保持结构
+          // （历史块中的 callId 属性无用途，解析时忽略、渲染时不再输出）
           const toolResult = childText(el, 'tool-result');
           const toolName = el.getAttribute('tool-name');
-          const callId = el.getAttribute('callId');
           entries.push({
             kind: 'assistant',
             lo: index,
             hi: index,
             text,
             ...(toolName === null || toolName === '' ? {} : { toolName }),
-            ...(callId === null || callId === '' ? {} : { callId }),
             toolArgs,
             ...(toolResult === undefined ? {} : { toolResult }),
             blockSeq,
@@ -668,17 +664,14 @@ export function entryToElement(doc: Document, entry: ViewEntry): Element {
     entry.hi !== undefined &&
     entry.lo === entry.hi
   ) {
-    // toolcall 条目：<assistant type="toolcall" tool-name callId index>，内文为
+    // toolcall 条目：<assistant type="toolcall" tool-name index>，内文为
     // <tool-args>（调用参数 JSON）与 <tool-result>（工具返回内容）两个 CDATA 子元素，
-    // 与 recall 的条目形态一致。
+    // 与 recall 的条目形态一致；callId 为 provider 随机串、对模型无用途，不渲染。
     const el = doc.createElement('assistant');
     el.setAttribute('index', String(entry.lo));
     el.setAttribute('type', 'toolcall');
     if (entry.toolName !== undefined && entry.toolName !== '') {
       el.setAttribute('tool-name', entry.toolName);
-    }
-    if (entry.callId !== undefined && entry.callId !== '') {
-      el.setAttribute('callId', entry.callId);
     }
     const args = doc.createElement('tool-args');
     appendCdataText(doc, args, entry.toolArgs);

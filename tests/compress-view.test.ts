@@ -85,15 +85,16 @@ describe('buildObserveView', () => {
       lo: 2,
       hi: 2,
       toolName: 'run_code',
-      callId: 'c1',
       toolArgs: '{"code":"x"}',
       toolResult: '执行结果',
     });
+    expect(toolcall).not.toHaveProperty('callId');
     // toolcall 条目渲染为结构化形态（与 recall 一致），不再输出 [tool-call] 纯文本
     const xml = renderEntriesXml(view.entries);
     expect(xml).toContain(
-      '<assistant index="2" type="toolcall" tool-name="run_code" callId="c1"><tool-args><![CDATA[{"code":"x"}]]></tool-args><tool-result><![CDATA[执行结果]]></tool-result></assistant>',
+      '<assistant index="2" type="toolcall" tool-name="run_code"><tool-args><![CDATA[{"code":"x"}]]></tool-args><tool-result><![CDATA[执行结果]]></tool-result></assistant>',
     );
+    expect(xml).not.toContain('callId');
     expect(xml).not.toContain('[tool-call');
     expect(xml).not.toContain('系统通知');
     expect(xml).not.toContain('<sys');
@@ -359,7 +360,7 @@ describe('buildReflectView', () => {
     expect(xml).toContain('<assistant index="6"><![CDATA[摘要]]></assistant>');
   });
 
-  it('结构化 toolcall 条目解析出参数与返回，round-trip 逐字还原结构', () => {
+  it('结构化 toolcall 条目解析出参数与返回，round-trip 逐字还原结构；旧块 callId 属性被忽略', () => {
     const block =
       '<history>\n<assistant index="3" type="toolcall" tool-name="run_code" callId="c1"><tool-args><![CDATA[{"code":"x"}]]></tool-args><tool-result><![CDATA[执行结果]]></tool-result></assistant>\n</history>';
     const view = buildReflectView([{ text: block, seq: 7 }]);
@@ -368,13 +369,13 @@ describe('buildReflectView', () => {
       lo: 3,
       hi: 3,
       toolName: 'run_code',
-      callId: 'c1',
       toolArgs: '{"code":"x"}',
       toolResult: '执行结果',
       blockSeq: 7,
     });
+    expect(view.entries[0]).not.toHaveProperty('callId');
     expect(renderEntriesXml(view.entries)).toBe(
-      '<assistant index="3" type="toolcall" tool-name="run_code" callId="c1"><tool-args><![CDATA[{"code":"x"}]]></tool-args><tool-result><![CDATA[执行结果]]></tool-result></assistant>',
+      '<assistant index="3" type="toolcall" tool-name="run_code"><tool-args><![CDATA[{"code":"x"}]]></tool-args><tool-result><![CDATA[执行结果]]></tool-result></assistant>',
     );
   });
 
@@ -574,14 +575,11 @@ describe('ask_user_question 条目', () => {
       expect(view.entries).toHaveLength(1);
       expect(view.entries[0]).toMatchObject({
         toolName: 'ask_user_question',
-        callId: 'c1',
         toolArgs: args,
         ...(result === undefined ? {} : { toolResult: result }),
       });
       const xml = renderEntriesXml(view.entries);
-      expect(xml).toContain(
-        '<assistant index="0" type="toolcall" tool-name="ask_user_question" callId="c1">',
-      );
+      expect(xml).toContain('<assistant index="0" type="toolcall" tool-name="ask_user_question">');
       expect(xml).toContain(`<tool-args><![CDATA[${args}]]></tool-args>`);
       if (result !== undefined && result !== '')
         expect(xml).toContain(`<tool-result><![CDATA[${result}]]></tool-result>`);
@@ -605,7 +603,6 @@ describe('ask_user_question 条目', () => {
     );
     expect(view.entries[0]).toMatchObject({
       toolName: 'ask_user_question',
-      callId: 'c1',
       toolArgs: validArgs,
       toolResult: validResult,
     });

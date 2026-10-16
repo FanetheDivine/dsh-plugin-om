@@ -61,7 +61,7 @@ export function historyFormatNote(sections: HistoryNoteSections = {}): string {
   const parts = [
     COMPLETE_MESSAGE_DEFINITION,
     '<TAG index="N">表示单条完整消息，<TAG start="A" end="B"> 表示多条连续消息，start/end 是首尾完整消息的 index；消息块的内容是用CDATA包裹的纯文本',
-    '<assistant type="toolcall" tool-name="T" callId="C" index="N"> 表示工具调用，内含 <tool-args> 与 <tool-result> 两个CDATA子元素（调用参数与工具返回内容）',
+    '<assistant type="toolcall" tool-name="T" index="N"> 表示工具调用，内含 <tool-args> 与 <tool-result> 两个CDATA子元素（调用参数与工具返回内容）',
   ];
   if (sections.user) parts.push('<user_message index="N"> 表示用户消息原文');
   if (sections.skill) parts.push('<skill_content name="S" index="N"> 表示未压缩的原始 skill');
