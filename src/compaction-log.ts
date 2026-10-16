@@ -303,7 +303,12 @@ export async function recordCompressionSession(
       options.retryTarget,
     );
     const seed = buildCompressionSeed(options.messages, options.stats, label, options.info);
-    const child = ctx.sessions.create(SessionId(`om-compaction-log-${uuid()}`), {
+    const sessions = ctx.get('sessions');
+    if (sessions === undefined) {
+      logger.warn('sessions 服务未挂载，跳过压缩会话记录落盘');
+      return undefined;
+    }
+    const child = sessions.create(SessionId(`om-compaction-log-${uuid()}`), {
       seed,
       meta: {
         ...(header.cwd === undefined ? {} : { cwd: header.cwd }),
@@ -328,7 +333,7 @@ export async function recordCompressionSession(
       mode: 'one-shot',
       label,
     });
-    await ctx.sessions.flush(parentSession);
+    await sessions.flush(parentSession);
     return child.id;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

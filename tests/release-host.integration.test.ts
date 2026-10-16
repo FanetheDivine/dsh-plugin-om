@@ -339,7 +339,6 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
       expect(doc, `${name}.ts`).not.toContain(`${name}.ts`);
       expect(doc, `${name}.mjs`).toContain(`${name}.mjs`);
     }
-    expect(doc).toContain('N="node"');
     expect(doc).not.toContain('--experimental-transform-types');
     expect(doc).not.toContain('dev-only');
     expect(doc).not.toContain('pnpm install');

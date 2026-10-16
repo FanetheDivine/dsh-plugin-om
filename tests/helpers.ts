@@ -317,6 +317,10 @@ interface MockCtxOptions {
   promptThrows?: Error;
   /** workspaceRegistry.list() 返回的工作区；缺省未挂载（ctx.get 返回 undefined）。 */
   workspaces?: MockWorkspace[];
+  /** tools 服务是否挂载（缺省 true；false 时 ctx.inject(['tools']) 不运行回调）。 */
+  toolsMounted?: boolean;
+  /** sessions 服务是否挂载（缺省 true；false 时 ctx.get('sessions') 返回 undefined）。 */
+  sessionsMounted?: boolean;
 }
 
 /** workspaceRegistry 桩中的一个工作区（仅命令用到的字段）。 */
@@ -342,8 +346,12 @@ export function makeCtx({
   createThrows,
   promptThrows,
   workspaces,
+  toolsMounted = true,
+  sessionsMounted = true,
 }: MockCtxOptions = {}) {
   const onCallbacks = new Map<string, ((...args: unknown[]) => unknown)[]>();
+  /** ctx.on 的注册选项（与 onCallbacks 同序）。 */
+  const onOptions = new Map<string, unknown[]>();
   const registeredTools: unknown[] = [];
   const sections: unknown[] = [];
   /** systemPrompt.assemble 调用记录（测试据此断言传入的 agent/scope/signal）。 */
@@ -372,7 +380,10 @@ export function makeCtx({
   const createdSessions: Array<{ id: string; options: unknown; session: Session }> = [];
   /** sessions 服务 mock：create 以 options.seed 重建会话日志（无 seed 则为空、可 append）并记录；flush 记录被 flush 的会话。 */
   const flushedSessions: Session[] = [];
+  /** sessions.get 可查到的活动会话（测试按 id 登记）。 */
+  const liveSessions = new Map<string, Session>();
   const sessions = {
+    get: (id: string) => liveSessions.get(id),
     create: (id: unknown, options: unknown) => {
       const seed = (options as { seed?: readonly SessionEvent[] } | undefined)?.seed;
       const session = makeSession({ events: seed === undefined ? [] : [...seed] });
@@ -457,9 +468,14 @@ export function makeCtx({
         };
       },
     },
-    /** 依赖服务可用时才运行回调（仅模拟 commands 服务）。 */
-    inject(_deps: unknown, callback: (inner: unknown) => void) {
-      if (commandsMounted) callback(ctx);
+    /** 依赖服务全部可用时才运行回调（模拟 commands 与 tools 服务）。 */
+    inject(deps: readonly string[], callback: (inner: unknown) => void) {
+      const mounted: Record<string, boolean> = {
+        commands: commandsMounted,
+        tools: toolsMounted,
+        sessions: sessionsMounted,
+      };
+      if (deps.every((name) => mounted[name] === true)) callback(ctx);
     },
     /** 立即运行副作用并忽略其返回的注销函数（测试不卸载）。 */
     effect(run: () => unknown) {
@@ -490,7 +506,8 @@ export function makeCtx({
     tokenMeter: meter,
     sessions,
     sessionPersistence,
-    on(type: string, fn: (...args: unknown[]) => unknown) {
+    on(type: string, fn: (...args: unknown[]) => unknown, options?: unknown) {
+      onOptions.set(type, [...(onOptions.get(type) ?? []), options]);
       let list = onCallbacks.get(type);
       if (!list) {
         list = [];
@@ -511,6 +528,9 @@ export function makeCtx({
     get(name: string) {
       if (name === 'toolResultPruner') return pruner;
       if (name === 'sessionPersistence') return sessionPersistence;
+      if (name === 'sessions') return sessionsMounted ? sessions : undefined;
+      if (name === 'tools') return toolsMounted ? ctx.tools : undefined;
+      if (name === 'commands') return commandsMounted ? ctx.commands : undefined;
       if (name === 'systemPrompt') return systemPromptMountedNow ? systemPromptStub : undefined;
       if (name === 'sessionController')
         return sessionControllerMounted ? sessionController : undefined;
@@ -519,6 +539,8 @@ export function makeCtx({
       return undefined;
     },
     _onCallbacks: onCallbacks,
+    _onOptions: onOptions,
+    _liveSessions: liveSessions,
     _registeredTools: registeredTools,
     _registeredCommands: registeredCommands,
     _sessionCreations: sessionCreations,
@@ -545,6 +567,8 @@ export function makeCtx({
   return ctx as unknown as Context & {
     _mockSessionPersistence: typeof sessionPersistence;
     _onCallbacks: Map<string, ((...args: unknown[]) => unknown)[]>;
+    _onOptions: Map<string, unknown[]>;
+    _liveSessions: Map<string, Session>;
     _registeredTools: Array<{ name?: string }>;
     _registeredCommands: RegisteredCommand[];
     _sessionCreations: unknown[];

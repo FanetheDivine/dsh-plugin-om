@@ -71,11 +71,14 @@ export class CompressionState {
   private readonly undeliveredAsks = new Set<number>();
   private readonly rewrittenAsks = new Map<number, RewrittenQuestion[]>();
   private _completed = false;
+  private readonly view: CompressionView;
 
   /**
    * @param view 压缩视图（观察或反思），工具校验与最终块构建的数据源。
    */
-  constructor(private readonly view: CompressionView) {}
+  constructor(view: CompressionView) {
+    this.view = view;
+  }
 
   /** 已成功应用的普通摘要替换区间数，不包含 ask 重写。 */
   get replacementCount(): number {

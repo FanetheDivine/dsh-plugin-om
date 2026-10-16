@@ -40,7 +40,7 @@ export const HISTORY_TIP = '当前块是历史消息的压缩产物，不要复�
  * 完整消息是摘要日志与 recall 共用的定位单位；首条 index 为 0，按会话顺序递增、全局稳定。
  */
 export const COMPLETE_MESSAGE_DEFINITION =
-  '`完整消息`指一条`用户消息`、`模型输出文本`或`具有result的toolcall`；首条 index 为 0，按会话顺序递增。';
+  '`完整消息`指一条`用户消息`、`模型输出文本`、`具有result的toolcall`或`手动加载的skill`；首条 index 为 0，按会话顺序递增。';
 
 /** 块顶格式说明注释中按块内条目动态追加的分段开关。 */
 export type HistoryNoteSections = {
@@ -74,6 +74,9 @@ export function historyFormatNote(sections: HistoryNoteSections = {}): string {
 
 /** skill 工具名：toolcall 条目的工具名为该值时视为 skill 加载，<history> 块中以 <skill_content> 元素呈现。 */
 export const SKILL_TOOL_NAME = 'skill';
+
+/** 手动加载 skill 的系统消息 source kind。 */
+export const SKILL_INVOCATION_KIND = 'skill-invocation';
 
 /**
  * 提问工具名：成功且问题与答案完整配对时视为合法 ask，失败调用按普通 toolcall 处理。

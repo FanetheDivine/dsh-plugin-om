@@ -11,10 +11,11 @@
 - 表层缺少同 kind 进度提醒时补发，不比较文本内容
 - 最近真实用户消息、非空模型文本、`ask_user_question` 调用或进度提醒之后，开启 `progressReminderIdleEnabled` 且表层活动累计至少 `progressReminderIdleSteps`（默认 4）个已结束模型 step、工具调用超过 `progressReminderIdleToolCalls`（默认 10）次时重发，并要求立刻输出记录
 - 完整消息定义写在 history 块顶注释和 recall 工具描述中
-- 通过工具循环生成摘要，保留用户消息和未压缩内容；系统消息不占完整消息 index
-- 保留工具加载的 skill 原文，并在压缩前再次确认
+- 通过工具循环生成摘要，保留用户消息和未压缩内容；手动加载的 skill 计入完整消息，其余系统消息不占 index
+- 保留工具加载与手动加载的 skill 原文，并在压缩前再次确认
 - 有效提问首次直接压缩需再次确认，保留时查看选项后在下一轮重写问答并展开选项引用
 - 中断或错误的提问作为普通工具调用处理
+- 压缩后发给 Claude 的请求剥离保留尾部中压缩前生成的 thinking 签名，避免前缀变化导致签名校验失败
 - 使用 `recall` 按消息序号回看原文，启用语义增强后还可按含义检索
 - 压缩会话记录落盘完整循环，以宿主原生时间线展示逐轮耗时与 token 用量
 - 压缩会话记录尾部追加模型文本：压缩模型、思考等级、原始与产物字符数（k/w/M 单位，与卡片一致）
@@ -26,6 +27,8 @@
 ## 安装
 
 要求 DSH 0.2.0-rc.2 或更高版本。
+
+服务端必需 `llm` 和 `tokenMeter`。`tools`、`sessions` 和 `commands` 缺失时，对应的 `recall`、压缩会话记录和重压缩命令停用并输出 warning，压缩照常运行。
 
 ```sh
 dsh plugin --profile <profile> add dsh-plugin-om
@@ -79,10 +82,21 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 
 ## 已知风险
 
-- 宿主会拒绝加载含未知事件类型的会话，插件也无法为事件标记 `ignorable`。
-- 因此观察待定标记和降级警告借用宿主已知的 `feedback/record` 事件写入会话日志。
-- 宿主把 `feedback/record` 视为用户反馈。遥测为默认的 `FEEDBACK_ONLY` 模式时，含这类记录的会话日志会上传到 DeepSeek 遥测服务。
-- 不希望上传时，设置环境变量 `DSH_TELEMETRY_MODE=DISABLED` 后启动 DSH。
+### 借用 feedback/record 事件
+
+宿主会拒绝加载含未知事件类型的会话，插件也无法为事件标记 `ignorable`。因此观察待定标记和降级警告借用宿主已知的 `feedback/record` 事件写入会话日志。
+
+宿主把 `feedback/record` 视为用户反馈。遥测为默认的 `FEEDBACK_ONLY` 模式时，含这类记录的会话日志会上传到 DeepSeek 遥测服务。不希望上传时，设置环境变量 `DSH_TELEMETRY_MODE=DISABLED` 后启动 DSH。
+
+### 改写 Claude 请求
+
+Claude 的 thinking 签名绑定其前全部内容，宿主也未开放 `drop_block`。因此插件在 `llm/stream` 中改写请求，剥离压缩前生成的签名。
+
+改写后的请求仍由会话日志确定，但宿主请求查看显示的是改写前的内容。
+
+插件与宿主加载的 `dsh-llm` 不是同一份时，改写后的请求会丢失 agent loop 标记，这次请求不触发会话标题生成。
+
+未强制校验签名的旧账号同样会剥离，压缩后尾部的 reasoning 不再发给 Claude。
 
 ## 命令
 
@@ -121,6 +135,7 @@ cordis.patch.yml                 # bundle patch，dsh plugin add 后作为组合
 src/
 ├── index.ts                     # 打包入口：注册 recall 工具并接线自动压缩和提醒补发
 ├── system-reminder.ts           # 进度提醒：system-reminder 消息的构造与缺失时补发
+├── thinking-binding.ts          # llm/stream 中间件：剥离 OM 压缩前生成的 Claude thinking 签名
 ├── config.ts                    # 配置默认值与宽松合并，未知键忽略、非法值回退默认
 ├── constants.ts                 # 共享常量：插件标识、history 标签、完整消息定义、格式说明注释
 ├── degrade.ts                   # 挂载失败降级上报：console 外部输出与 om/warning 会话事件

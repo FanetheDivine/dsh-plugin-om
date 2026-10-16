@@ -1,8 +1,8 @@
 // skill 打包：把仓库内的 compaction-eval skill 渲染成发布版写入 dist/skill/compaction-eval。
 // 发布版脚本是 tsdown 产出的自包含 .mjs（内联 fflate/fzstd/yaml 与插件源码），
-// 因此文档里的脚本名与运行器都要改写，源码版说明整段删除。
-// 导出 SKILL_NAME / SKILL_SCRIPTS / SOURCE_RUNNER / PACKAGED_RUNNER / renderPackagedSkill /
-// SKILL_SOURCE_DIR / SKILL_DIST_DIR / writeSkillDist。
+// 因此文档里的脚本名要改成 .mjs，仅源码版适用的说明整段删除。
+// 导出 SKILL_NAME / SKILL_SCRIPTS / renderPackagedSkill / SKILL_SOURCE_DIR /
+// SKILL_DIST_DIR / writeSkillDist。
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,12 +15,6 @@ export const SKILL_NAME = 'compaction-eval';
 
 /** skill 脚本名（不含扩展名）：源码版为 .ts，发布版为 tsdown 产出的 .mjs。 */
 export const SKILL_SCRIPTS = ['prepare', 'view', 'compress', 'aggregate'];
-
-/** 源码版运行器：Node 直接跑 TS，需要类型转换标志。 */
-export const SOURCE_RUNNER = 'node --experimental-transform-types --no-warnings';
-
-/** 发布版运行器：打包后的 .mjs 不需要任何标志。 */
-export const PACKAGED_RUNNER = 'node';
 
 /** 仓库内 skill 源目录。 */
 export const SKILL_SOURCE_DIR = path.join(ROOT, '.agents', 'skills', SKILL_NAME);
@@ -38,7 +32,8 @@ const DEV_ONLY_BLOCK_RE = /[ \t]*<!--\s*dev-only\s*-->[\s\S]*?<!--\s*\/dev-only\
 const SCRIPT_TS_RE = new RegExp(`\\b(${SKILL_SCRIPTS.join('|')})\\.ts\\b`, 'g');
 
 /**
- * 由源码版 SKILL.md 渲染发布版：删除 dev-only 段、脚本名改 .mjs、运行器降级为 node。
+ * 由源码版 SKILL.md 渲染发布版：删除 dev-only 段、脚本名改 .mjs。
+ * 运行器两版一致（都是 node），无需改写。
  * 结果幂等：对发布版再渲染不产生变化。
  * @param md - 源码版文档全文。
  * @returns 发布版文档全文。
@@ -47,8 +42,7 @@ export function renderPackagedSkill(md) {
   return md
     .replace(DEV_ONLY_INLINE_RE, '')
     .replace(DEV_ONLY_BLOCK_RE, '')
-    .replace(SCRIPT_TS_RE, '$1.mjs')
-    .replaceAll(`N="${SOURCE_RUNNER}"`, `N="${PACKAGED_RUNNER}"`);
+    .replace(SCRIPT_TS_RE, '$1.mjs');
 }
 
 /**

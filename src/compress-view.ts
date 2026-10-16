@@ -54,7 +54,7 @@ export type ViewEntry = {
   notes?: string[];
   /** skill 条目的工具名（skill 判定用）或普通 toolcall 的工具名。 */
   toolName?: string;
-  /** skill 条目的名称（工具参数提供；反思视图取自 name 属性）。 */
+  /** skill 条目的名称（工具参数或手动加载的消息来源提供；反思视图取自 name 属性）。 */
   skillName?: string;
   /** toolcall 条目的调用 id（结构化渲染为 callId 属性）。 */
   callId?: string;
@@ -313,6 +313,20 @@ export function buildObserveView(
         hi: cm.index,
         text: parts.text,
         ...(parts.notes.length === 0 ? {} : { notes: parts.notes }),
+      });
+      continue;
+    }
+    if (cm.type === 'skill') {
+      // 手动加载的 skill 与工具加载一致：保留原文，不可无确认压缩
+      const text = renderCompleteMessage(session, cm);
+      if (text.trim() === '') continue;
+      entries.push({
+        kind: 'assistant',
+        lo: cm.index,
+        hi: cm.index,
+        text,
+        toolName: SKILL_TOOL_NAME,
+        ...(cm.skillName === undefined ? {} : { skillName: cm.skillName }),
       });
       continue;
     }

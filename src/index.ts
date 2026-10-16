@@ -1,10 +1,11 @@
 /**
  * dsh-plugin-om 入口（tsdown 打包入口）：导出 name / inject / Config / apply。
- * apply 维护 recall 工具（含语义增强），处理 Loader volatile 配置提交，
+ * apply 在 tools 服务可用时维护 recall 工具（含语义增强）并处理 Loader volatile 配置提交，
  * 并接线 agent/pre-step 自动压缩（先反思后观察，仅主会话生效）与提醒补发
  * （进度提醒的 system-reminder 用户消息，见 system-reminder.ts），
  * commands 服务可用时注册换模型重压缩命令（见 recompress.ts）与 OM 结果评估命令
- * （见 compaction-eval-command.ts）。压缩走工具驱动的压缩循环（模型经 getHistory /
+ * （见 compaction-eval-command.ts），sessions 服务可用时注册
+ * llm/stream 中间件剥离 OM 压缩前生成的 Claude thinking 签名（见 thinking-binding.ts）。压缩走工具驱动的压缩循环（模型经 getHistory /
  * compressHistory / completeCompression 工具完成，见 compress-loop.ts）；最终失败
  * （连续无工具调用 / 请求级错误）时拒绝本 step 中断当前 turn（signal 中止除外），
  * 主会话日志记录失败原因与诊断子会话 sessionId（完整循环会话由 compaction-log.ts
@@ -25,6 +26,7 @@ import {
   ensureSystemReminders,
   progressIdleOptions,
 } from './system-reminder.ts';
+import { registerThinkingBinding } from './thinking-binding.ts';
 import type { Context } from './types.ts';
 import { isMainSession } from './utils.ts';
 
@@ -33,8 +35,11 @@ export const name = 'dsh-plugin-om';
 
 export { Config };
 
-/** 插件注入的服务依赖（tools/llm/tokenMeter/sessions），由宿主按序注入。 */
-export const inject = ['tools', 'llm', 'tokenMeter', 'sessions'];
+/**
+ * 插件必需的服务依赖：压缩请求（llm）与上下文压力计量（tokenMeter）。
+ * tools / commands / sessions 等为可选能力，缺失时对应功能自动停用。
+ */
+export const inject = ['llm', 'tokenMeter'];
 
 /** 插件激活入口：解析配置、注册工具、接线 pre-step 自动压缩与提醒补发。 */
 export function apply(ctx: Context, config?: unknown): void {
@@ -52,46 +57,66 @@ export function apply(ctx: Context, config?: unknown): void {
 
   const warnModel = (message: string) => ctx.logger.warn(`dsh-plugin-om: ${message}`);
   const logModel = (message: string) => logger.info(message);
-  let disposeRecall: (() => void) | undefined;
-  /** 当前已注册 recall 对应的语义增强开关与模型目录。 */
-  let registered: { semantic: boolean; modelDir: string } | undefined;
 
-  /** 保持注册的 recall 与当前配置一致；仅语义增强首次生效或更换目录时启动后台预热。 */
-  function syncTools(): void {
-    const next = currentConfig(config);
-    const semantic = next.recallEnabled && next.semanticRecallEnabled;
-    if (
-      disposeRecall &&
-      (!next.recallEnabled ||
-        registered?.semantic !== semantic ||
-        (semantic && registered.modelDir !== next.modelDir))
-    ) {
-      disposeRecall();
-      disposeRecall = undefined;
-      registered = undefined;
-    }
-    if (next.recallEnabled && !disposeRecall) {
-      const directory = next.modelDir;
-      disposeRecall = ctx.tools.register(
-        buildRecallTool({
-          getPruner: () => ctx.get('toolResultPruner'),
-          ...(semantic
-            ? {
-                semantic: {
-                  modelStatus: () => ensureModelReady(directory, warnModel, undefined, logModel),
-                  embedder: (texts: readonly string[]) =>
-                    getEmbedder(directory).then((embed) => embed(texts)),
-                },
-              }
-            : {}),
-        }),
-      );
-      registered = { semantic, modelDir: directory };
-      if (semantic) void ensureModelReady(directory, warnModel, undefined, logModel);
-    }
+  // 可选服务缺失只 warn：对应功能停用，服务出现后由 ctx.inject 回调自动启用。
+  if (resolved.recallEnabled && ctx.get('tools') === undefined) {
+    logger.warn('tools 服务未挂载，recall 暂不可用');
   }
-  syncTools();
-  ctx.on('loader/volatile-update', () => syncTools());
+  if (ctx.get('commands') === undefined) {
+    logger.warn('commands 服务未挂载，重压缩命令暂不可用');
+  }
+
+  // recall 是可选能力：tools 服务可用时才注册，服务缺失不影响压缩；
+  // 服务变化时回调重跑，注册状态随回调局部持有并在卸载时释放。
+  ctx.inject(['tools'], (inner) => {
+    let disposeRecall: (() => void) | undefined;
+    /** 当前已注册 recall 对应的语义增强开关与模型目录。 */
+    let registered: { semantic: boolean; modelDir: string } | undefined;
+
+    /** 保持注册的 recall 与当前配置一致；仅语义增强首次生效或更换目录时启动后台预热。 */
+    const syncTools = (): void => {
+      const next = currentConfig(config);
+      const semantic = next.recallEnabled && next.semanticRecallEnabled;
+      if (
+        disposeRecall &&
+        (!next.recallEnabled ||
+          registered?.semantic !== semantic ||
+          (semantic && registered.modelDir !== next.modelDir))
+      ) {
+        disposeRecall();
+        disposeRecall = undefined;
+        registered = undefined;
+      }
+      if (next.recallEnabled && !disposeRecall) {
+        const directory = next.modelDir;
+        disposeRecall = inner.tools.register(
+          buildRecallTool({
+            getPruner: () => inner.get('toolResultPruner'),
+            ...(semantic
+              ? {
+                  semantic: {
+                    modelStatus: () => ensureModelReady(directory, warnModel, undefined, logModel),
+                    embedder: (texts: readonly string[]) =>
+                      getEmbedder(directory).then((embed) => embed(texts)),
+                  },
+                }
+              : {}),
+          }),
+        );
+        registered = { semantic, modelDir: directory };
+        if (semantic) void ensureModelReady(directory, warnModel, undefined, logModel);
+      }
+    };
+    syncTools();
+    inner.on('loader/volatile-update', () => syncTools());
+    inner.effect(
+      () => () => {
+        disposeRecall?.();
+        disposeRecall = undefined;
+      },
+      'dsh-plugin-om: recall tool',
+    );
+  });
 
   // 压缩卡片的换模型重压缩入口：commands 服务可用时注册 /om-recompress，服务缺失则
   // 不注册（插件其余能力不受影响）。
@@ -106,6 +131,9 @@ export function apply(ctx: Context, config?: unknown): void {
       'dsh-plugin-om: compaction eval command',
     );
   });
+
+  // Claude thinking 签名绑定前缀：sessions 服务可用时在请求发出前剥离 OM 压缩前生成的签名。
+  ctx.inject(['sessions'], (inner) => registerThinkingBinding(inner, logger));
 
   // 两级自动压缩：pre-step 阻塞串行（先反思后观察）；仅主会话生效。
   // 压缩之后再确保提醒在消息列表中：被压缩遮蔽则补发。
