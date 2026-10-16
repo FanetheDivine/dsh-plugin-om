@@ -63,7 +63,7 @@ export function apply(ctx: Context, config?: unknown): void {
     logger.warn('tools 服务未挂载，recall 暂不可用');
   }
   if (ctx.get('commands') === undefined) {
-    logger.warn('commands 服务未挂载，重压缩命令暂不可用');
+    logger.warn('commands 服务未挂载，重压缩与 OM 结果评估命令暂不可用');
   }
 
   // recall 是可选能力：tools 服务可用时才注册，服务缺失不影响压缩；

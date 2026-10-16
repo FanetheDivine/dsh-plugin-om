@@ -8,7 +8,7 @@ import { renderPackagedSkill, SKILL_SCRIPTS } from '../scripts/build-skill.mjs';
 const SOURCE = [
   '# compaction-eval',
   '',
-  '- 输入为本地会话 id 或 DSH 导出的 zip，未指明时向用户确认。',
+  '- 输入为本地会话 id 或 DSH 导出的 zip，未指明时向用户确认。zip 导出时需包含 subagents。',
   '<!-- dev-only -->',
   '- 源码版脚本是 TS，先在仓库根 `pnpm install`，再用 `node` 直接运行。',
   '<!-- /dev-only -->',
@@ -38,7 +38,9 @@ describe('renderPackagedSkill', () => {
 
   it('运行器与非脚本行原样保留', () => {
     const out = renderPackagedSkill(SOURCE);
-    expect(out).toContain('- 输入为本地会话 id 或 DSH 导出的 zip，未指明时向用户确认。');
+    expect(out).toContain(
+      '- 输入为本地会话 id 或 DSH 导出的 zip，未指明时向用户确认。zip 导出时需包含 subagents。',
+    );
     expect(out).toContain('- 盲评完成前不读 `_blind_key.json`。');
     expect(out).toContain('[rules.md](references/rules.md)');
     // 脚本行仍以 node 开头，改写只动扩展名
@@ -52,7 +54,9 @@ describe('renderPackagedSkill', () => {
     // 标记之间的行全部消失，前后两行直接相邻
     const lines = out.split('\n');
     expect(lines.indexOf('- 盲评完成前不读 `_blind_key.json`。')).toBe(
-      lines.indexOf('- 输入为本地会话 id 或 DSH 导出的 zip，未指明时向用户确认。') + 1,
+      lines.indexOf(
+        '- 输入为本地会话 id 或 DSH 导出的 zip，未指明时向用户确认。zip 导出时需包含 subagents。',
+      ) + 1,
     );
   });
 
