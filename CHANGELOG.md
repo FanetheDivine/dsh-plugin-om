@@ -2,6 +2,7 @@
 
 ## Changes
 
+- compaction-eval 文档统一称原始压缩与重压缩为“候选”，不再把原始压缩叫“变体”；重压缩前须先向用户确认模型与 effort。
 - 新增 `/om-compaction-eval` 命令：在被分析会话所属工作区新建会话，投递首条消息让新会话按评估文档分析该会话的 OM 压缩结果，浏览器监听到命令成功后自动跳转。命令无参数，仅主会话可用，宿主缺 `sessionController` 或会话无 `cwd` 时返回原因；与重压缩命令一样依赖 `commands` 服务，缺失时一并停用并输出 warning。
 - compaction-eval skill 随 npm 包发布到 `dist/skill/compaction-eval`：四个脚本打成自包含 `.mjs`，只把宿主提供的 `@deepseek-ai/*` 与 `zod` 留作外部依赖，`fflate`、`fzstd`、`yaml` 与插件源码全部内联；SKILL.md 构建时渲染为发布版，脚本名改 `.mjs`、源码版说明删除。用户环境运行脚本不需要 `pnpm install`。
 - 修复 OM 压缩后 Claude 请求偶发 400 `Invalid signature in thinking block`：新增前置 `llm/stream` 中间件，以表层最后一条 OM 消息为分界，剥离其后生成于压缩前的 assistant 消息中的 Anthropic 签名 reasoning 与 `replayState`，仅匹配 Anthropic 协议且模型名含 `claude-` 的消息，其他模型不受影响。
