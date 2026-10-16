@@ -37,7 +37,17 @@ function setup(extra: Record<string, unknown> = {}) {
       listeners.push({ type, fn });
       return () => {};
     },
-    locale: { register: () => () => {} },
+    locale: {
+      register: () => () => {},
+      bind: () => (key: string, params?: Record<string, string>) =>
+        params === undefined ? key : `${key}:${JSON.stringify(params)}`,
+    },
+    // 与 Cordis 一致：依赖服务都就绪时才执行回调，scope 提供这些服务
+    inject: (names: string[], callback: (scope: Record<string, unknown>) => void) => {
+      if (names.every((name) => extra[name] !== undefined)) {
+        callback({ ...base, ...extra, get: (name: string) => extra[name] });
+      }
+    },
     uiConversation: { events: { register: () => () => {} } },
     uiWorkspace: { openSession },
     configForms: {
@@ -59,6 +69,9 @@ function setup(extra: Record<string, unknown> = {}) {
   const ctx = new Proxy(base as Record<string, unknown>, {
     get: (target, prop) => {
       if (prop === 'get') return (name: string) => extra[name];
+      if (prop === 'commandUi' || prop === 'modelDirectories') {
+        throw new Error(`cannot get property "${prop}" without inject`);
+      }
       if (prop === 'modelDirectories' || prop === 'remote' || prop === 'remote.commands') {
         throw new Error(`cannot get property "${prop}" without inject`);
       }
@@ -140,5 +153,45 @@ describe('client apply', () => {
     listener?.('s-1', 'om-compaction-eval', { kind: 'success', text: '重压缩完成' });
     listener?.('s-1', 'om-compaction-eval', { kind: 'success' });
     expect(openSession).not.toHaveBeenCalled();
+  });
+
+  describe('/om-compaction-eval 模型面板', () => {
+    interface Decoration {
+      name: string;
+      available: (session: { sessionId: string }) => boolean;
+      ui: { kind: string; run?: (session: { sessionId: string }) => void };
+    }
+
+    /** 构造带 commandUi 与模型目录的宿主，返回收集到的装饰。 */
+    function panel() {
+      const decorations: Decoration[] = [];
+      const host = setup({
+        commandUi: {
+          decorate: (decoration: Decoration) => {
+            decorations.push(decoration);
+            return () => {};
+          },
+        },
+        modelDirectories: { directoryFor: vi.fn() },
+        'remote.commands': { execute: vi.fn() },
+      });
+      return { decorations, ...host };
+    }
+
+    it('commandUi 与模型目录就绪时给评估命令挂 action 装饰', () => {
+      const { decorations } = panel();
+      expect(decorations).toHaveLength(1);
+      expect(decorations[0]?.name).toBe('om-compaction-eval');
+      expect(decorations[0]?.ui.kind).toBe('action');
+      expect(decorations[0]?.available({ sessionId: 's-1' })).toBe(true);
+    });
+
+    it('缺少 commandUi 或模型目录时不挂面板也不抛错', () => {
+      expect(() => setup()).not.toThrow();
+      expect(() => setup({ commandUi: { decorate: vi.fn() } })).not.toThrow();
+      const decorate = vi.fn();
+      setup({ commandUi: { decorate } });
+      expect(decorate).not.toHaveBeenCalled();
+    });
   });
 });

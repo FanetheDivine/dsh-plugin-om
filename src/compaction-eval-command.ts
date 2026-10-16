@@ -2,8 +2,9 @@
  * /om-compaction-eval 命令：在被分析会话所属工作区新建一个会话，由它按随包发布的
  * compaction-eval 文档分析当前会话的 OM 压缩结果，本会话上下文不受影响。
  * 文档路径由本模块自身位置推出：发布产物优先，仓库源码兜底。
- * 导出 skillDocCandidates / skillDocPath / StartEvalResult / startEvalSession /
- * buildCompactionEvalCommand。
+ * 新会话的模型与思考等级默认沿用当前会话，可由命令参数 `provider/model [思考等级]` 指定。
+ * 导出 skillDocCandidates / skillDocPath / EvalModel / parseEvalModelInput /
+ * StartEvalResult / startEvalSession / buildCompactionEvalCommand。
  */
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +23,54 @@ import {
 } from './eval-session-text.ts';
 import type { Agent, Context } from './types.ts';
 import { isMainSession, uuid } from './utils.ts';
+
+/** 新会话使用的模型选择；缺 reasoningEffort 表示用模型默认等级。 */
+export interface EvalModel {
+  readonly provider: string;
+  readonly model: string;
+  readonly reasoningEffort?: string;
+}
+
+const MODEL_USAGE = '用法：/om-compaction-eval [provider/model [思考等级]]';
+
+/**
+ * 解析命令参数 `provider/model [思考等级]`：以第一个 `/` 切分 provider 与 model，空白分隔等级。
+ * @returns 无参数时 model 为 undefined（沿用当前会话）；格式错误返回用法说明。
+ */
+export function parseEvalModelInput(
+  rawInput: string,
+): { ok: true; model: EvalModel | undefined } | { ok: false; error: string } {
+  const parts = rawInput.split(/\s+/).filter((part) => part !== '');
+  if (parts.length === 0) return { ok: true, model: undefined };
+  const [route, reasoningEffort] = parts;
+  const slash = route?.indexOf('/') ?? -1;
+  if (route === undefined || slash <= 0 || slash === route.length - 1 || parts.length > 2) {
+    return { ok: false, error: MODEL_USAGE };
+  }
+  return {
+    ok: true,
+    model: {
+      provider: route.slice(0, slash),
+      model: route.slice(slash + 1),
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+    },
+  };
+}
+
+/** 当前会话最近一次请求使用的模型与思考等级；尚未请求过时 undefined。 */
+function currentModel(session: Agent['session']): EvalModel | undefined {
+  try {
+    const config = session.requestHeader()?.config;
+    if (!config?.provider || !config.model) return undefined;
+    return {
+      provider: config.provider,
+      model: config.model,
+      ...(config.reasoningEffort === undefined ? {} : { reasoningEffort: config.reasoningEffort }),
+    };
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * skill 文档候选绝对路径，按优先级排列：
@@ -64,11 +113,13 @@ function workspaceOf(ctx: Context, sessionId: SessionId): WorkspaceId | undefine
  * @param ctx - 宿主上下文（经 ctx.get 容错读取 sessionController 与 workspaceRegistry）。
  * @param agent - 命令所针对的会话，其 id 与 cwd 决定分析目标与新会话位置。
  * @param signal - 命令取消信号，透传给投递。
+ * @param model - 新会话模型；缺省沿用当前会话，当前会话尚未请求过时用宿主默认。
  */
 export async function startEvalSession(
   ctx: Context,
   agent: Agent,
   signal: AbortSignal,
+  model?: EvalModel,
 ): Promise<StartEvalResult> {
   const session = agent.session;
   if (!isMainSession(session)) return { ok: false, error: 'OM 结果分析仅支持主会话' };
@@ -86,6 +137,10 @@ export async function startEvalSession(
       ...(workspaceId === undefined ? { cwd } : { workspaceId }),
       ...(preset === undefined ? {} : { agentPreset: preset }),
     });
+    const selected = model ?? currentModel(session);
+    if (selected !== undefined) {
+      await controller.selectModel({ sessionId: created.sessionId, ...selected });
+    }
     await controller.prompt(
       {
         requestId: brandString<SessionRequestId>(uuid()),
@@ -111,13 +166,16 @@ export async function startEvalSession(
   }
 }
 
-/** 构造 /om-compaction-eval 命令定义：无参数，裸调用即在宿主执行。 */
+/** 构造 /om-compaction-eval 命令定义：可选参数指定新会话的模型与思考等级。 */
 export function buildCompactionEvalCommand(ctx: Context): CommandDefinition {
   return {
     name: EVAL_COMMAND_NAME,
     description: EVAL_COMMAND_DESCRIPTION,
-    handler: async ({ agent, signal }) => {
-      const result = await startEvalSession(ctx, agent, signal);
+    input: { hint: '[provider/model [思考等级]]' },
+    handler: async ({ agent, rawInput, signal }) => {
+      const parsed = parseEvalModelInput(rawInput);
+      if (!parsed.ok) return { kind: 'error', text: parsed.error };
+      const result = await startEvalSession(ctx, agent, signal, parsed.model);
       return result.ok
         ? { kind: 'success', text: result.text }
         : { kind: 'error', text: result.error };

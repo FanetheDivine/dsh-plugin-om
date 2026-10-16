@@ -104,7 +104,7 @@ interface MockSessionOptions {
   events?: SessionEvent[];
   surfaceNodes?: number[];
   requestHeaderValue?: {
-    config: { provider: string; model: string };
+    config: { provider: string; model: string; reasoningEffort?: string };
     system?: string;
     tools?: unknown[];
   };
@@ -313,6 +313,8 @@ interface MockCtxOptions {
   createdSessionId?: string;
   /** sessionController.create 抛错（模拟宿主拒绝建会话）。 */
   createThrows?: Error;
+  /** sessionController.selectModel 抛错（模拟宿主拒绝该模型）。 */
+  selectThrows?: Error;
   /** sessionController.prompt 抛错（模拟首条消息投递失败）。 */
   promptThrows?: Error;
   /** workspaceRegistry.list() 返回的工作区；缺省未挂载（ctx.get 返回 undefined）。 */
@@ -344,6 +346,7 @@ export function makeCtx({
   sessionControllerMounted = false,
   createdSessionId = 'session-eval-child',
   createThrows,
+  selectThrows,
   promptThrows,
   workspaces,
   toolsMounted = true,
@@ -442,6 +445,8 @@ export function makeCtx({
   const registeredCommands: RegisteredCommand[] = [];
   /** sessionController.create 的调用记录（请求原样入列）。 */
   const sessionCreations: unknown[] = [];
+  /** sessionController.selectModel 的调用记录（请求原样入列）。 */
+  const modelSelections: unknown[] = [];
   /** sessionController.prompt 的调用记录（请求原样入列）。 */
   const sessionPrompts: unknown[] = [];
   /** sessionController 服务桩：记录建会话与投递首条消息的入参，可按选项抛错。 */
@@ -450,6 +455,11 @@ export function makeCtx({
       sessionCreations.push(request);
       if (createThrows !== undefined) throw createThrows;
       return { sessionId: createdSessionId };
+    },
+    selectModel: async (request: unknown) => {
+      modelSelections.push(request);
+      if (selectThrows !== undefined) throw selectThrows;
+      return { selected: request };
     },
     prompt: async (request: unknown) => {
       sessionPrompts.push(request);
@@ -545,6 +555,7 @@ export function makeCtx({
     _registeredCommands: registeredCommands,
     _sessionCreations: sessionCreations,
     _sessionPrompts: sessionPrompts,
+    _modelSelections: modelSelections,
     _sections: sections,
     _assembleCalls: assembleCalls,
     _llmCalls: llmCalls,
@@ -573,6 +584,7 @@ export function makeCtx({
     _registeredCommands: RegisteredCommand[];
     _sessionCreations: unknown[];
     _sessionPrompts: unknown[];
+    _modelSelections: unknown[];
     _sections: Array<{ name?: string }>;
     _assembleCalls: unknown[];
     _llmCalls: Array<{ options: unknown }>;

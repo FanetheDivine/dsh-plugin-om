@@ -67,7 +67,11 @@ interface BrowserPlugin {
     effect(register: () => (() => void) | undefined, label: string): void;
     on(type: string, listener: ExecutedListener): () => void;
     uiWorkspace: { openSession(target: string): void };
-    locale: { register(namespace: string, dictionaries: object): void };
+    locale: {
+      register(namespace: string, dictionaries: object): void;
+      bind(namespace: string): (key: string) => string;
+    };
+    inject(names: string[], callback: (scope: object) => void): void;
     uiConversation: { events: { register(definition: { kind: string }): void } };
     configForms: {
       get(id: string): object;
@@ -239,7 +243,10 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
           namespaces.push(namespace);
           return () => {};
         },
+        bind: () => (key: string) => key,
       },
+      // 宿主没有 commandUi / modelDirectories：模型面板依赖不就绪，不触发回调
+      inject: () => {},
       uiConversation: {
         events: {
           register: (definition) => {

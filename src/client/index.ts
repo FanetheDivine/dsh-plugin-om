@@ -23,6 +23,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-workspace/client';
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client';
 import { registerCompactionEvalJump } from './compaction-eval-jump.ts';
 import { omCompactionDefinition, omWarningDefinition } from './definition.ts';
+import { registerEvalModelPanel } from './eval-model-register.tsx';
 import { en, NS, zh } from './locales.ts';
 import { OmCompactionCard } from './OmCompactionCard.tsx';
 import { OmConfigCard } from './OmConfigCard.tsx';
@@ -49,6 +50,8 @@ export function apply(ctx: Context): void {
   );
   // /om-compaction-eval 由宿主执行；本浏览器监听执行结果后跳转到新会话
   ctx.effect(() => registerCompactionEvalJump(ctx), 'dsh-plugin-om: compaction eval jump');
+  // 裸调用 /om-compaction-eval 时弹出模型面板；带参数调用仍由宿主直接执行
+  registerEvalModelPanel(ctx);
   ctx.slots.inject('conversation.chat.node', () =>
     ctx.slots.register(
       {
