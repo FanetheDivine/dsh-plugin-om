@@ -374,6 +374,13 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
       // 能因参数缺失失败，说明 bundle 与 external（@deepseek-ai/*、zod）都解析成功
       expect(res.status, output).not.toBe(0);
       expect(output.trim().length, rel).toBeGreaterThan(0);
+      // 只运行自身 main：view/prepare 报会话来源缺失，输出中不出现 compress 的 parseArgs 报错
+      if (rel.endsWith('view.mjs') || rel.endsWith('prepare.mjs'))
+        expect(output, rel).toContain('需指定 --session 或 --zip');
+      if (rel.endsWith('view.mjs')) {
+        expect(output).not.toContain('Unknown option');
+        expect(output).not.toContain('用法：compress.mjs');
+      }
     }
     const usage = spawnSync(process.execPath, [path.join(SKILL_DIST, 'scripts', 'compress.mjs')], {
       cwd: ROOT,
