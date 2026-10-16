@@ -191,6 +191,12 @@ function loadLocal(prefix: string): SessionBundle {
   return { main: loadLog(logFile(mainDir)), logs };
 }
 
+/** 按 --session 前缀或 --zip 路径读取会话，二者恰选其一。 */
+export function loadBundle(source: { session?: string; zip?: string }): SessionBundle {
+  if (!source.session === !source.zip) throw new Error('需指定 --session 或 --zip 之一');
+  return source.zip ? readZip(resolve(source.zip)) : loadLocal(source.session ?? '');
+}
+
 /** 拼接消息 content 中的文本。 */
 function textOf(content: Content[] | undefined): string {
   return (content ?? []).map((c) => c.text ?? '').join('');
@@ -440,10 +446,8 @@ function main(): void {
       'after-max': { type: 'string', default: '60000' },
     },
   });
-  if (!values.session === !values.zip) throw new Error('需指定 --session 或 --zip 之一');
-
   const zip = values.zip ? resolve(values.zip) : undefined;
-  const bundle = zip ? readZip(zip) : loadLocal(values.session ?? '');
+  const bundle = loadBundle(values);
   const mainEv = bundle.main;
   const mainHead = mainEv[0];
   if (!mainHead?.id) throw new Error('主会话缺少会话头');

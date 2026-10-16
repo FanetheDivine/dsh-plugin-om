@@ -213,7 +213,9 @@ describe('compactionView：重建压缩输入', () => {
     const replay = compactionView(session, compactionId, false);
     if ('error' in replay) throw new Error(replay.error);
     expect(replay.phase).toBe('observe');
-    const indices = replay.view.entries.map((entry) => entry.lo);
+    const indices = replay.view.entries.flatMap((entry) =>
+      entry.lo === undefined ? [] : [entry.lo],
+    );
     expect(replay.view.minIndex).toBe(Math.min(...indices));
     expect(replay.view.maxIndex).toBeGreaterThanOrEqual(replay.view.minIndex);
     expect(replay.originalChars).toBeGreaterThan(0);
