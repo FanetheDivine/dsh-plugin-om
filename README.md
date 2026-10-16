@@ -12,6 +12,7 @@
 - 最近真实用户消息、非空模型文本、`ask_user_question` 调用或进度提醒之后，开启 `progressReminderIdleEnabled` 且表层活动累计至少 `progressReminderIdleSteps`（默认 4）个已结束模型 step、工具调用超过 `progressReminderIdleToolCalls`（默认 10）次时重发，并要求立刻输出记录
 - 完整消息定义写在 history 块顶注释和 recall 工具描述中
 - 通过工具循环生成摘要，保留用户消息和未压缩内容；手动加载的 skill 计入完整消息，其余系统消息不占 index
+- 压缩循环中 `getHistory` 返回当前状态，本次已压缩的区间显示为摘要条目
 - 保留工具加载与手动加载的 skill 原文，并在压缩前再次确认
 - 有效提问首次直接压缩需再次确认，保留时查看选项后在下一轮重写问答并展开选项引用
 - 中断或错误的提问作为普通工具调用处理

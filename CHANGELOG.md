@@ -2,6 +2,7 @@
 
 ## Changes
 
+- 修复压缩循环中 `getHistory` 始终返回压缩前原文，模型误以为压缩未生效而反复查看、原样重交或用单条 index 试探重叠报错：`getHistory` 返回当前状态，本次已压缩区间显示为一条摘要条目，被替换条目及其 reasoning 不再出现，注释头列出本次已压缩区间，最终 `<history>` 块复用同一投影；重写的提问仍显示原题、选项和回答。工具说明与压缩提示词写明 `compressHistory` 返回成功即生效、修改摘要用相同或更大的区间重新提交、不要用单条 index 试探，与已有替换区间部分重叠的报错补充修改方法。compaction-eval 原文视图只取首次成功压缩前的 `getHistory` 结果。
 - 压缩视图（观察视图、getHistory、最终 `<history>` 块）与 recall 输出的 toolcall 条目不再携带 `callId` 属性：callId 是 provider 随机串，对模型无语义，纯占 token；历史块中旧格式的 `callId` 属性解析时忽略、重新渲染后消失，压缩提示词与块首格式说明注释同步更新，消息层内部关联（ask 配对、压缩记录、语义检索排除自身）不受影响。
 
 - 修复发布版 `view.mjs` 运行时连带执行 `prepare` 与 `compress` 入口、写出多余评估目录并报 `Unknown option`：compaction-eval 脚本拆出共享模块 `profile.ts`（profile 读取）与 `session-source.ts`（会话来源读取），四个发布入口之间不再互相导入运行时代码，每个 `.mjs` 只内联自身 main 守卫；新增入口隔离静态测试，集成测试断言 `view`/`prepare` 无参调用只报会话来源缺失。
