@@ -118,7 +118,7 @@ Claude 的 thinking 签名绑定其前全部内容，宿主也未开放 `drop_bl
       name: file:///<repo>/dist/index.mjs
 ```
 
-开启热更新时，在同一文件启用 `hmr` 并监听 `dist`。仓库路径含 `.dsh`（如 worktree）时去掉默认忽略的 `**/.*`。改动补丁后重启 DSH，之后 `pnpm dev` 重建 `dist` 会自动重载插件：
+开启热更新时，在同一文件启用 `hmr` 并监听 `dist`。仓库路径含 `.dsh`（如 worktree）时去掉默认忽略的 `**/.*`：
 
 ```yaml
 - id: hmr
@@ -127,6 +127,14 @@ Claude 的 thinking 签名绑定其前全部内容，宿主也未开放 `drop_bl
     root: ["<repo>/dist"]
     ignored: ["**/node_modules"]
 ```
+
+热更新说明：
+
+- 改动补丁后无需重启 DSH，运行中的 profile 会重新协调补丁。
+- `pnpm dev` 重建 `dist` 后，服务端命令和浏览器端面板都会自动更新，已打开的页面无需刷新。
+- 插件行指向新路径时同时改 `id`，确保重新加载新路径的模块。
+- 重载不改写会话历史，可能改变后续请求前缀，影响 KV Cache。
+- 排查时检查命令首条消息里的评估文档路径，应位于当前仓库的 `dist/skill`。
 
 语义增强首次使用时自动下载嵌入模型，也可运行 `pnpm run download:model` 预下载。
 
