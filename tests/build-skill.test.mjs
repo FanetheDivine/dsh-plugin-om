@@ -18,7 +18,7 @@ const SOURCE = [
   '',
   '```sh',
   'node $S/view.ts --session <id>                  # 列出已有压缩',
-  'node $S/compress.ts v.json <provider/model> --out <变体目录>',
+  'node $S/compress.ts v.json <provider/model> --out <重压缩目录>',
   'node $S/prepare.ts --session <id> [--range A..B]',
   '```',
   '',
@@ -31,7 +31,7 @@ describe('renderPackagedSkill', () => {
       expect(out).not.toContain(`${name}.ts`);
     }
     expect(out).toContain('node $S/view.mjs --session <id>                  # 列出已有压缩');
-    expect(out).toContain('node $S/compress.mjs v.json <provider/model> --out <变体目录>');
+    expect(out).toContain('node $S/compress.mjs v.json <provider/model> --out <重压缩目录>');
     expect(out).toContain('node $S/prepare.mjs --session <id> [--range A..B]');
     expect(out).toContain('计分由 `aggregate.mjs` 完成');
   });
