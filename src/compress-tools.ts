@@ -329,7 +329,7 @@ export class CompressionState {
     for (const rep of this.replacements) {
       if (rep.lo <= hi && rep.hi >= lo && !(rep.lo >= lo && rep.hi <= hi)) {
         return {
-          text: `${CompressionState.spanLabel(lo, hi)} 与已有替换区间 [${rep.lo}..${rep.hi}] 部分重叠，只能完全包含或不相交`,
+          text: `${CompressionState.spanLabel(lo, hi)} 与已有替换区间 [${rep.lo}..${rep.hi}] 部分重叠，只能完全包含或不相交。[${rep.lo}..${rep.hi}] 已生效，修改其摘要时用相同或更大的区间重新提交`,
           isError: true,
         };
       }
@@ -598,7 +598,7 @@ export const COMPRESSION_TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'getHistory',
     description:
-      '查看压缩区间内的历史条目。返回压缩视图：已被压缩的内容以摘要条目呈现，区间切入已压缩块时返回该块全部条目。start/end 缺省为要求区间的第一个/最后一个完整消息 index，必须在要求区间内。',
+      '查看压缩区间内的历史条目，返回当前状态：本次已压缩的区间显示为摘要条目，注释头列出这些区间；区间切入已有 <history> 块时返回该块全部条目。start/end 缺省为要求区间的第一个/最后一个完整消息 index，必须在要求区间内。',
     parameters: {
       type: 'object',
       properties: {
@@ -610,7 +610,7 @@ export const COMPRESSION_TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'compressHistory',
     description:
-      '把 index 单条或 start..end 连续区间的 assistant 类条目（模型输出文本、工具调用）替换为 content 摘要。index 与 start/end 二选一，start 与 end 成对提供且 start==end 等同 index。区间不得覆盖用户消息，不得与已有替换区间部分重叠（完全包含则覆盖）。用户消息保持原样，无需处理。',
+      '把 index 单条或 start..end 连续区间的 assistant 类条目（模型输出文本、工具调用）替换为 content 摘要。index 与 start/end 二选一，start 与 end 成对提供且 start==end 等同 index。区间不得覆盖用户消息，不得与已有替换区间部分重叠（完全包含则覆盖）。返回成功即已生效，无需查看验证，不要用单条 index 试探；修改已提交的摘要时用相同或更大的区间重新提交。用户消息保持原样，无需处理。',
     parameters: {
       type: 'object',
       properties: {

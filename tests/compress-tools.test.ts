@@ -601,20 +601,26 @@ describe('compressHistory 替换与重叠规则', () => {
     expect(state.replacementCount).toBe(1);
   });
 
-  it('与已有替换区间部分重叠报错（1-3 后 2-4），完全包含不报错（1-3 后 1-4）', () => {
+  it('与已有替换区间部分重叠报错并指出该区间，相同或更大的区间覆盖成功', () => {
     const state = new CompressionState(observeView());
-    expect(state.compressHistory({ start: 2, end: 4, content: 'A' }).isError).toBe(false);
-    // 2-4 已压缩，2-5 部分重叠（2-4 未被完全包含）→ 报错
-    expect(state.compressHistory({ start: 3, end: 5, content: 'B' }).isError).toBe(true);
-    // 1-4 完全包含 2-4 → 不报错并覆盖
-    expect(state.compressHistory({ start: 2, end: 4, content: 'C' }).isError).toBe(false);
+    expect(state.compressHistory({ start: 2, end: 3, content: 'A' }).isError).toBe(false);
+    // [1..2] 与 [2..3] 部分重叠 → 报错并指出已有区间；落在区间内的单条 index 同样报错
+    const crossed = state.compressHistory({ start: 1, end: 2, content: 'B' });
+    expect(crossed.isError).toBe(true);
+    expect(crossed.text).toContain('[2..3]');
+    expect(state.compressHistory({ index: 3, content: 'probe' }).isError).toBe(true);
+    // 相同区间重复提交 → 覆盖自身
+    expect(state.compressHistory({ start: 2, end: 3, content: 'C' }).isError).toBe(false);
     expect(state.replacementCount).toBe(1);
-    // 相同区间重复提交 → 完全覆盖自身，允许
-    expect(state.compressHistory({ start: 2, end: 4, content: 'D' }).isError).toBe(false);
+    // [1..4] 完全包含 [2..3] → 覆盖
+    expect(state.compressHistory({ start: 1, end: 4, content: 'D' }).isError).toBe(false);
     expect(state.replacementCount).toBe(1);
     // 不相交区间正常追加
     expect(state.compressHistory({ start: 6, end: 7, content: 'E' }).isError).toBe(false);
     expect(state.replacementCount).toBe(2);
+    const block = state.buildFinalBlock();
+    expect(block).toContain('<assistant start="1" end="4"><![CDATA[D]]></assistant>');
+    expect(block).not.toContain('probe');
   });
 
   it('skill 块首次覆盖被拒绝并要求重新思考，再次覆盖直接执行', () => {
