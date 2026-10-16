@@ -2,6 +2,7 @@
 
 ## Changes
 
+- 修复压缩会话记录子会话在新会话视图中缺失系统提示词、任务指令显示为上下文注入：压缩循环的系统提示词随任务指令 step 落盘为 system/message 事件，任务指令 source 改写为用户来源，轮间提醒保持插件来源。
 - 压缩视图（观察视图、getHistory、最终 `<history>` 块）与 recall 输出的 toolcall 条目不再携带 `callId` 属性：callId 是 provider 随机串，对模型无语义，纯占 token；历史块中旧格式的 `callId` 属性解析时忽略、重新渲染后消失，压缩提示词与块首格式说明注释同步更新，消息层内部关联（ask 配对、压缩记录、语义检索排除自身）不受影响。
 
 - 修复发布版 `view.mjs` 运行时连带执行 `prepare` 与 `compress` 入口、写出多余评估目录并报 `Unknown option`：compaction-eval 脚本拆出共享模块 `profile.ts`（profile 读取）与 `session-source.ts`（会话来源读取），四个发布入口之间不再互相导入运行时代码，每个 `.mjs` 只内联自身 main 守卫；新增入口隔离静态测试，集成测试断言 `view`/`prepare` 无参调用只报会话来源缺失。

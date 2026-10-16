@@ -538,6 +538,25 @@ describe('runCompressionLoop', () => {
     expect(options.messages?.[0]?.content?.[0]?.text).toBe('压缩完整消息区间 [0..2]');
   });
 
+  it('会话记录：压缩系统提示词落盘为 system/message，任务指令为用户来源', async () => {
+    const ctx = makeCtx({
+      llmStreamFactory: () => roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] }),
+    });
+    await runCompressionLoop(ctx, makeSession(), loopOptions());
+    const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
+    const sysData = events.find((e) => e.type === 'system/message')?.data as {
+      turn?: number;
+      step?: number;
+      message?: { content?: unknown };
+    };
+    expect(sysData).toMatchObject({ turn: 1, step: 1 });
+    expect(JSON.stringify(sysData.message?.content)).toContain('compressHistory');
+    const userSource = events
+      .filter((e) => e.type === 'user/message')
+      .map((e) => (e.data as { source?: { kind?: string } }).source)[0];
+    expect(userSource).toEqual({ kind: 'user' });
+  });
+
   it('反思 pass 在 system 追加反思合并约束，观察 pass 不追加', async () => {
     const systemOf = async (phase: 'observe' | 'reflect') => {
       const ctx = makeCtx({

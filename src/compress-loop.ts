@@ -15,8 +15,8 @@
  *   dsh 运行时重试，插件不做整体重试，错误直接判失败
  * - signal 中止标记 aborted；token usage 汇总全部轮次；统计循环起止时间戳、总耗时
  *   与逐轮请求统计（CompressionStats），随结果返回并随会话记录落盘
- * - 成功与失败均把循环消息组原样落盘为子会话（recordCompressionSession），成功记
- *   录 sessionId 于日志，失败记录作为诊断子会话 id 向上传播
+ * - 成功与失败均把循环消息组落盘为子会话（recordCompressionSession，system 一并落盘
+ *   为 system/message），成功记录 sessionId 于日志，失败记录作为诊断子会话 id 向上传播
  */
 
 import {
@@ -315,6 +315,7 @@ export async function runCompressionLoop(
       phase: options.phase,
       messages,
       stats,
+      system,
       success,
       debug: options.debug,
       info: compressionInfo({
