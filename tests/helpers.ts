@@ -2,7 +2,7 @@
 // 含节点 0 的 system/message 头部保护校验），以及一个可编程的 ctx 模拟；另含跨测试文件
 // 共享的断言辅助（latestHistoryText / compactionLifecycle / checkpointSourceOf /
 // historyMessage / twoCallFlow / textOf / hostLog）。测试目标是 src 的纯函数与 apply 接线。
-import type { SessionEvent as LogEvent } from '../.agents/skills/compaction-eval/scripts/prepare.ts';
+import type { SessionEvent as LogEvent } from '../.agents/skills/compaction-eval/scripts/session-source.ts';
 import { HISTORY_TAG, HISTORY_TIP, PLUGIN_SOURCE_KIND } from '../src/constants.ts';
 import type { Context, Session, SessionEvent } from '../src/types.ts';
 

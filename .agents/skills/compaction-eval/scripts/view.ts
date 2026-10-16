@@ -32,8 +32,8 @@ import type {
   CompactionStartPayload,
   CompactionSummaryPayload,
 } from '../../../../src/types.ts';
-import { loadProfile } from './compress.ts';
-import { loadBundle, type SessionEvent } from './prepare.ts';
+import { loadProfile } from './profile.ts';
+import { loadBundle, type SessionEvent } from './session-source.ts';
 
 /** view.json：压缩输入视图与来源。 */
 export interface ViewFile {

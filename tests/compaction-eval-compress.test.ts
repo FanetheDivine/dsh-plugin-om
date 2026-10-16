@@ -1,6 +1,6 @@
 // compaction-eval compress.ts 单元测试：目标解析、profile 中 pi-ai providers 与插件配置的读取、
 // 凭据解析顺序，以及经真实 LlmRuntime / SessionStore / jsonl 落盘跑一次压缩，
-// 产出的日志可被 prepare.ts 解析为重压缩变体。
+// 产出的日志可被读取并解析为重压缩变体。
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -18,11 +18,12 @@ import {
   compressView,
   createRuntime,
   describeOutcome,
-  loadProfile,
   parseTarget,
   resolveSecret,
 } from '../.agents/skills/compaction-eval/scripts/compress.ts';
-import { loadVariants, parseLog } from '../.agents/skills/compaction-eval/scripts/prepare.ts';
+import { parseLog } from '../.agents/skills/compaction-eval/scripts/prepare.ts';
+import { loadProfile } from '../.agents/skills/compaction-eval/scripts/profile.ts';
+import { loadVariants } from '../.agents/skills/compaction-eval/scripts/session-source.ts';
 import { buildViewFile } from '../.agents/skills/compaction-eval/scripts/view.ts';
 import { resolveConfig } from '../src/config.ts';
 import { hostLog, type RoundScript, roundChunks, twoCallFlow } from './helpers.ts';

@@ -17,21 +17,23 @@ import {
   weightedRatio,
 } from '../.agents/skills/compaction-eval/scripts/aggregate.ts';
 import {
-  bareId,
   blindProduct,
   buckets,
   buildAfter,
   type CompactionLog,
   evalDirName,
-  loadLog,
   type Phase,
   parseLog,
   pickSource,
-  readZip,
-  type SessionEvent,
   selectGroup,
   shuffle,
 } from '../.agents/skills/compaction-eval/scripts/prepare.ts';
+import {
+  bareId,
+  loadLog,
+  readZip,
+  type SessionEvent,
+} from '../.agents/skills/compaction-eval/scripts/session-source.ts';
 
 /** 测试用临时目录。 */
 const dirs: string[] = [];

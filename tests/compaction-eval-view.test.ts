@@ -5,7 +5,7 @@
 import type { SessionEvent } from '@deepseek-ai/dsh-session';
 import { describe, expect, it } from 'vitest';
 
-import type { SessionEvent as LogEvent } from '../.agents/skills/compaction-eval/scripts/prepare.ts';
+import type { SessionEvent as LogEvent } from '../.agents/skills/compaction-eval/scripts/session-source.ts';
 import {
   buildViewFile,
   listCompactions,
