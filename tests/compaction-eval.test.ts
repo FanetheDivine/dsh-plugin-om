@@ -1,4 +1,4 @@
-// compaction-eval skill 脚本单元测试：多帧 zstd 日志读取、压缩日志解析（阶段、区间、模型、
+// compaction-eval skill 脚本单元测试：多帧 zstd 日志读取、会话日志 zip 读取、压缩日志解析（阶段、区间、模型、
 // 失败标记、逐轮模型耗时、token、completeCompression 产物、原文视图）、分组选择、原文视图
 // 选择、盲化产物、后续轨迹定位与截断、区间三等分、可复现洗牌，
 // 以及 aggregate 的双评审均值、保留/精简/无关/耗时四维评分、评审校验报错与按模型汇总。
@@ -7,6 +7,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
+import { strToU8, zipSync } from 'fflate';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -26,6 +27,7 @@ import {
   type Phase,
   parseLog,
   pickSource,
+  readZip,
   type SessionEvent,
   selectGroup,
   shuffle,
@@ -128,6 +130,47 @@ describe('prepare', () => {
     );
     writeFileSync(f, Buffer.concat(frames));
     expect(loadLog(f).map((e) => e.type)).toEqual(['a', 'b', 'c']);
+  });
+
+  /** 写出会话日志 zip，内容为 路径 → 事件列表或原始文本。 */
+  function writeZip(entries: Record<string, SessionEvent[] | string>): string {
+    const f = join(tmp(), 'dsh-session-x.zip');
+    const files = Object.fromEntries(
+      Object.entries(entries).map(([name, v]) => [
+        name,
+        strToU8(typeof v === 'string' ? v : v.map((e) => JSON.stringify(e)).join('\n')),
+      ]),
+    );
+    writeFileSync(f, zipSync(files));
+    return f;
+  }
+
+  it('readZip 取根日志为主会话，只收 subagents 下的压缩日志', () => {
+    const log = (id: string): SessionEvent[] => [
+      { ...compactionEvents()[0], type: 'session', id },
+      ...compactionEvents().slice(1),
+    ];
+    const f = writeZip({
+      'session.v4.jsonl': [{ type: 'session', id: 'session-main' }, { type: 'user/message' }],
+      'subagents/om-compaction-log-a/session.v4.jsonl': log('om-compaction-log-a'),
+      'subagents/om-compaction-log-b/session.v4.jsonl': log('om-compaction-log-b'),
+      'subagents/session-helper/session.v4.jsonl': [{ type: 'session', id: 'session-helper' }],
+      'media/img.png': 'binary',
+    });
+    const { main, logs } = readZip(f);
+    expect(main.map((e) => e.type)).toEqual(['session', 'user/message']);
+    const parsed = logs.map(parseLog);
+    expect(parsed.map((x) => x.id).sort()).toEqual(['om-compaction-log-a', 'om-compaction-log-b']);
+    expect(parsed[0]).toMatchObject({ parent: 'session-main', phase: 'reflect', range: [0, 9] });
+  });
+
+  it('readZip 缺压缩日志或根日志时报错', () => {
+    const noLogs = writeZip({ 'session.v4.jsonl': [{ type: 'session', id: 'session-main' }] });
+    expect(() => readZip(noLogs)).toThrow('subagents');
+    const noMain = writeZip({
+      'subagents/om-compaction-log-a/session.v4.jsonl': compactionEvents(),
+    });
+    expect(() => readZip(noMain)).toThrow('根会话日志');
   });
 
   it('parseLog 提取阶段、区间、模型、耗时、token、产物与视图', () => {
