@@ -100,6 +100,8 @@ function setup(
       register: () => () => {},
       bind: () => (key: string) => key,
     },
+    // 入口还会为评估命令挂模型面板，本桩没有 commandUi，依赖服务不就绪故不触发回调
+    inject: () => {},
     uiConversation: { events: { register: () => () => {} } },
     configForms: {
       get: () => host,

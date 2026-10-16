@@ -2,6 +2,7 @@
 
 ## Changes
 
+- 裸调用 `/om-compaction-eval` 时弹出与 `/model` 同源的模型面板：按供应商分组、可模糊搜索，加载失败的供应商只展示不可选；选中后提交 `/om-compaction-eval <provider>/<model>`（不带思考等级）并跳转到新会话。带参数调用仍由宿主直接执行；`commandUi`、`modelDirectories` 或 `remote.commands` 缺失时不挂面板，命令退回手敲参数。
 - `/om-compaction-eval` 新增可选参数 `provider/model [思考等级]`：新会话默认沿用当前会话最近一次请求的 provider、model 与思考等级，参数可覆盖，只给模型时思考等级用模型默认；模型在投递首条消息前选定，被宿主拒绝时返回原因且不投递。
 - 新增 `/om-compaction-eval` 命令：在被分析会话所属工作区新建会话，投递首条消息让新会话按评估文档分析该会话的 OM 压缩结果，浏览器监听到命令成功后自动跳转。命令无参数，仅主会话可用，宿主缺 `sessionController` 或会话无 `cwd` 时返回原因；与重压缩命令一样依赖 `commands` 服务，缺失时一并停用并输出 warning。
 - compaction-eval skill 随 npm 包发布到 `dist/skill/compaction-eval`：四个脚本打成自包含 `.mjs`，只把宿主提供的 `@deepseek-ai/*` 与 `zod` 留作外部依赖，`fflate`、`fzstd`、`yaml` 与插件源码全部内联；SKILL.md 构建时渲染为发布版，脚本名改 `.mjs`、源码版说明删除。用户环境运行脚本不需要 `pnpm install`。
