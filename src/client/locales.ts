@@ -57,9 +57,11 @@ export const zh = {
   'config.reset': '恢复默认',
   'config.invalidInteger': '请输入整数；留空使用默认值。',
   'config.observeThresholdTokens': '观察阈值',
-  'config.observeThresholdTokens.hint': '上下文压力达到此 token 数时触发观察压缩。',
+  'config.observeThresholdTokens.hint':
+    '未压缩上下文达到此真实 token 数时触发观察压缩，按主模型用量换算。',
   'config.reflectThresholdTokens': '摘要合并阈值',
-  'config.reflectThresholdTokens.hint': '摘要累计达到此 token 数时触发反思合并。',
+  'config.reflectThresholdTokens.hint':
+    '摘要累计达到此真实 token 数时触发反思合并，按主模型用量换算。',
   'config.tailMessageCount': '保留消息数',
   'config.tailMessageCount.hint': '触发观察后保留的完整消息条数。',
   'config.compressMaxTokens': '单次生成上限',
@@ -149,9 +151,11 @@ export const en: Record<keyof typeof zh, string> = {
   'config.reset': 'Reset to default',
   'config.invalidInteger': 'Enter an integer; leave blank to use the default.',
   'config.observeThresholdTokens': 'Observation threshold',
-  'config.observeThresholdTokens.hint': 'Context pressure in tokens that triggers observation.',
+  'config.observeThresholdTokens.hint':
+    'Uncompressed context in real main-model tokens that triggers observation.',
   'config.reflectThresholdTokens': 'Reflection threshold',
-  'config.reflectThresholdTokens.hint': 'Total summary tokens that trigger reflection.',
+  'config.reflectThresholdTokens.hint':
+    'Summary total in real main-model tokens that triggers reflection.',
   'config.tailMessageCount': 'Retained message count',
   'config.tailMessageCount.hint': 'Full messages retained after observation is triggered.',
   'config.compressMaxTokens': 'Generation limit',

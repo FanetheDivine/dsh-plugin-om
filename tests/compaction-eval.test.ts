@@ -196,6 +196,43 @@ describe('prepare', () => {
     expect(log.views.map(([, v]) => v)).toEqual(['part', 'full']);
   });
 
+  it('parseLog 只收集首次成功 compressHistory 之前的视图，压缩后视图不作原文', () => {
+    const call = (callId: string, name: string, args: string): SessionEvent => ({
+      type: 'tool/call',
+      time: 1450,
+      data: { callId, name, arguments: args },
+    });
+    const result = (callId: string, text: string, isError = false): SessionEvent => ({
+      type: 'tool/result',
+      time: 1450,
+      data: { callId, message: { content: txt(text), isError } },
+    });
+    const indexAfter = (ev: SessionEvent[], callId: string): number =>
+      ev.findIndex((e) => e.type === 'tool/result' && e.data?.callId === callId) + 1;
+    const ev = compactionEvents();
+    // 失败的压缩不改变状态，其后的视图仍是原文
+    ev.splice(
+      indexAfter(ev, 'c1'),
+      0,
+      call('x1', 'compressHistory', '{"start":5,"end":4,"content":"x"}'),
+      result('x1', 'start 5 不能大于 end 4', true),
+    );
+    // 成功压缩后的视图显示本次摘要
+    ev.splice(
+      indexAfter(ev, 'c2'),
+      0,
+      call('x2', 'compressHistory', '{"start":1,"end":4,"content":"摘要"}'),
+      result('x2', '已压缩'),
+      call('x3', 'getHistory', '{}'),
+      result('x3', 'after'),
+    );
+    expect(parseLog(ev).views.map(([, v]) => v)).toEqual(['part', 'full']);
+    // 压缩前只有部分视图：压缩后的全区间视图也不作原文
+    const log = parseLog(ev.filter((e) => e.data?.callId !== 'c2'));
+    expect(log.views.map(([, v]) => v)).toEqual(['part']);
+    expect(pickSource([log], 0, 9)).toBe('part');
+  });
+
   it('parseLog 识别默认思考等级、失败日志与缺失产物', () => {
     const ev = compactionEvents();
     ev[1] = {

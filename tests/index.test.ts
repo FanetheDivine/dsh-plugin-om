@@ -1809,9 +1809,10 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
       ],
       surfaceNodes: [6], // flow 表层节点已被 seq 6 的替换块遮蔽
     });
-    // 表层仅剩压缩后的历史块：注入真实 usage 锚定压力，扣除已压缩块后仍达阈值
+    // 表层仅剩压缩后的历史块：注入真实 usage 基线与表层估算，换算扣除已压缩块后仍达阈值
     const ctx = makeCtx({
       meterTotalTokens: 100000,
+      meterSurfaceTokens: 1000,
       llmStreamFactory: (index) => {
         if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
         return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });

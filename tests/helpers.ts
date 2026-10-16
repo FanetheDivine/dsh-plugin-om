@@ -245,7 +245,16 @@ export function estimateTextTokens(text: unknown) {
   return Math.ceil(String(text ?? '').length / 4);
 }
 
-export function makeMeter(opts: { totalTokens?: number | undefined } = {}) {
+export function makeMeter(
+  opts: {
+    /** 真实用量基线 tokens（模拟 provider usage 锚点；缺省为估算基线，换算系数 1）。 */
+    totalTokens?: number | undefined;
+    /** 注入表层估算 tokens（覆盖按表层节点计算的值，便于精确构造换算系数与净压力）。 */
+    surfaceTokens?: number | undefined;
+    /** 表层增量 tokens（有符号，模拟锚点请求后的表层变化；缺省 0）。 */
+    surfaceDeltaTokens?: number | undefined;
+  } = {},
+) {
   return {
     estimateMessage(message: unknown) {
       const m = message as { content?: unknown[] } | null | undefined;
@@ -258,17 +267,29 @@ export function makeMeter(opts: { totalTokens?: number | undefined } = {}) {
       return estimateTextTokens(text);
     },
     measure(session: Session) {
-      let surfaceTokens = 0;
+      let computedSurfaceTokens = 0;
       const nodes = [];
       for (const seq of session.surface.nodes) {
         const event = session.snapshotEvents()[seq];
         const message = event ? session.deriveEventMessage(event) : null;
         const tokens = message ? this.estimateMessage(message) : 0;
-        surfaceTokens += tokens;
+        computedSurfaceTokens += tokens;
         nodes.push({ seq, tokens });
       }
-      // totalTokens 可注入固定值模拟 provider 真实 usage 锚定；缺省回退表层启发式
-      return { totalTokens: opts.totalTokens ?? surfaceTokens, surfaceTokens, nodes };
+      const surfaceTokens = opts.surfaceTokens ?? computedSurfaceTokens;
+      const surfaceDeltaTokens = opts.surfaceDeltaTokens ?? 0;
+      // 注入 totalTokens 模拟真实用量基线（baseline.kind='usage'）；缺省为估算基线（换算系数 1）
+      const baseline =
+        opts.totalTokens === undefined
+          ? { kind: 'estimated' as const, tokens: surfaceTokens }
+          : { kind: 'usage' as const, tokens: opts.totalTokens };
+      return {
+        totalTokens: Math.max(0, baseline.tokens + surfaceDeltaTokens),
+        surfaceTokens,
+        surfaceDeltaTokens,
+        baseline,
+        nodes,
+      };
     },
   };
 }
@@ -293,8 +314,12 @@ interface MockCtxOptions {
   ) => Iterable<unknown> | AsyncIterable<unknown>;
   resolveModelInfo?: (provider: string, model: string) => Promise<unknown>;
   pruner?: unknown;
-  /** meter.measure 返回的固定 totalTokens（模拟 provider 真实 usage；缺省回退表层启发式）。 */
+  /** meter.measure 的真实用量基线 tokens（模拟 provider usage 锚点，换算系数 = 基线 ÷（工具估算 + 表层 − 增量）；缺省为估算基线，系数 1）。 */
   meterTotalTokens?: number;
+  /** meter.measure 返回的表层估算 tokens（覆盖按表层节点计算的值，便于精确构造换算系数与净压力）。 */
+  meterSurfaceTokens?: number;
+  /** meter.measure 返回的表层增量 tokens（有符号，模拟锚点请求后的表层变化；缺省 0）。 */
+  meterSurfaceDeltaTokens?: number;
   /** systemPrompt.assemble 桩（注入后压缩会调用它估算系统提示词 tokens 并记录到 _assembleCalls；缺省无 assemble，模拟旧宿主）。 */
   systemPromptAssemble?: (context: unknown) => Promise<unknown>;
   /**
@@ -339,6 +364,8 @@ export function makeCtx({
   resolveModelInfo,
   pruner,
   meterTotalTokens,
+  meterSurfaceTokens,
+  meterSurfaceDeltaTokens,
   systemPromptAssemble,
   systemPromptMounted = true,
   meterThrows,
@@ -374,7 +401,11 @@ export function makeCtx({
       loggerCalls.push({ level: 'warn', args });
     },
   };
-  const meter = makeMeter({ totalTokens: meterTotalTokens });
+  const meter = makeMeter({
+    totalTokens: meterTotalTokens,
+    surfaceTokens: meterSurfaceTokens,
+    surfaceDeltaTokens: meterSurfaceDeltaTokens,
+  });
   if (meterThrows !== undefined)
     meter.measure = () => {
       throw meterThrows;

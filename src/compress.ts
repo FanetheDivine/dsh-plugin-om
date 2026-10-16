@@ -8,17 +8,20 @@
  *   消息仅含压缩指令与 start/end 区间，模型经 getHistory / compressHistory /
  *   completeCompression 工具完成压缩；最终 <history> 块由插件从视图与替换记录构建，
  *   全程无需整块校验
- * - 反思：全部 <history> 块 token 合计 ≥ reflectThresholdTokens 时，把全部块条目作为
- *   压缩视图重新压缩合并（视图无条目时跳过，如全部为不可解析的历史遗留块）
- * - 观察（打标记 → 对账 → 到期注入）：净压力（上下文压力 − 已压缩块 token 合计 − 系统
- *   提示词 token 估算 − 工具定义 token 估算）首次 ≥ observeThresholdTokens 时记录待定
- *   标记（触发点 = 当时的最后一条完整消息 index），并立即开始后台预压缩（precompress.ts，
+ * - 反思：全部 <history> 块 token 合计（估算 × 换算系数）≥ reflectThresholdTokens 时，
+ *   把全部块条目作为压缩视图重新压缩合并（视图无条目时跳过，如全部为不可解析的历史
+ *   遗留块）
+ * - 观察（打标记 → 对账 → 到期注入）：净压力（换算系数 × 未压缩表层估算，未压缩 =
+ *   表层 − 已压缩块 − 系统提示词估算）首次 ≥ observeThresholdTokens 时记录待定标记
+ *   （触发点 = 当时的最后一条完整消息 index），并立即开始后台预压缩（precompress.ts，
  *   结果写 om/observe-summary 信封、不做替换）；每个 pre-step 对账保证活跃标记对应任务
  *   或持久化结果（重启恢复直接采纳信封、不重压缩；失败任务丢弃重启）；新增完整消息数 ≥
  *   tailMessageCount 时到期，把压缩边界至触发点的全部消息作为压缩视图注入为新 <history>
  *   块（旧块保留），等待期间的新消息成为下一轮未压缩尾部（延迟窗口内压力允许短暂超
  *   阈值）；到期未完成时阻塞等待后台任务（turn 取消则放行不注入，任务继续后台）；
  *   tailMessageCount=0 时触发当轮即到期，阻塞等待注入
+ * - 两个阈值都按主模型真实 token 计；换算系数 = 上次请求真实用量基线 ÷ 锚点估算
+ *   （工具定义估算 + 锚点表层），无真实用量基线或计量失败按 1 计
  * - 待定标记与压缩结果以 log-only om 信封事件（借用 feedback/record，kind 为
  *   om/observe-pending / om/observe-invalidate / om/observe-summary，见 om-event.ts）
  *   持久化在会话日志中（重启后从日志恢复）；压缩失败保留待定，下个 pre-step 重启任务重试
@@ -38,8 +41,8 @@
  * - 挂载失败类问题（systemPrompt/tokenMeter 服务异常）始终 console 到外部进程，并追加
  *   log-only om 警告事件（借用 feedback/record，客户端渲染功能降级警告行，每会话同一
  *   问题至多一次）；
- *   辅助估算的普通运行时报错仅记日志。降级与报错都不阻塞压缩（tokenMeter 压力数据
- *   缺失时本轮跳过观察）
+ *   辅助估算的普通运行时报错仅记日志。降级与报错都不阻塞压缩（tokenMeter 计量失败时
+ *   本轮跳过观察，反思换算系数按 1 计）
  */
 import { CompactionId } from '@deepseek-ai/dsh-compaction';
 import { createUserMessage, type ReasoningEffortId } from '@deepseek-ai/dsh-llm';
@@ -500,17 +503,29 @@ export async function reflectPass(
     return { failed: false };
   }
   const threshold = config.reflectThresholdTokens;
-  const tokens = blocks.reduce((total, block) => total + estimateTextTokens(block.text), 0);
+  const estimatedTokens = blocks.reduce(
+    (total, block) => total + estimateTextTokens(block.text),
+    0,
+  );
+  // 阈值按主模型真实 token 计：估算 × 换算系数（计量失败按系数 1 继续，降级已在内部报告）
+  const measurement = measurePressure(ctx, session, logger);
+  const ratio =
+    measurement === undefined
+      ? 1
+      : conversionRatio(measurement, estimateToolsTokens(session, logger));
+  const tokens = Math.round(ratio * estimatedTokens);
   const shadowedCharCount = blocks.reduce(
     (total, block) => total + historyInnerText(block.text).length,
     0,
   );
   if (tokens < threshold) {
-    logger.step(`反思：摘要 ${tokens} tokens < 阈值 ${threshold}，跳过`);
+    logger.step(
+      `反思：摘要 ${tokens} tokens（估算 ${estimatedTokens} × 换算系数 ${ratio.toFixed(2)}）< 阈值 ${threshold}，跳过`,
+    );
     return { failed: false };
   }
   logger.step(
-    `反思：摘要 ${tokens} tokens ≥ 阈值 ${threshold}，触发精简合并（${blocks.length} 个块）`,
+    `反思：摘要 ${tokens} tokens（估算 ${estimatedTokens} × 换算系数 ${ratio.toFixed(2)}）≥ 阈值 ${threshold}，触发精简合并（${blocks.length} 个块）`,
   );
   const first = blocks[0];
   const last = blocks[blocks.length - 1];
@@ -574,7 +589,8 @@ export async function reflectPass(
       summary: report,
       shadowedRange: { start: first.seq, end: last.seq },
       shadowedSeqs: blockSeqs,
-      shadowedTokenCount: tokens,
+      // 影子价格为宿主计价协议，保持字符/4 估算单位（不乘换算系数）
+      shadowedTokenCount: estimatedTokens,
       shadowedCharCount,
       provider: target.provider,
       model: target.model,
@@ -664,21 +680,37 @@ function estimateToolsTokens(session: Session, logger: PluginLogger): number {
   }
 }
 
+/** tokenMeter.measure 结果中计算净压力与换算系数所需的字段。 */
+interface PressureMeasurement {
+  /** 当前表层路由计价 token 合计（不含工具定义）。 */
+  surfaceTokens: number;
+  /** 当前表层相对锚点请求表层的有符号重计价差。 */
+  surfaceDeltaTokens: number;
+  /** 基线为真实用量时的 usage tokens；估算基线或无基线为 undefined。 */
+  baselineUsageTokens: number | undefined;
+}
+
 /**
- * 读取上下文压力 tokens（tokenMeter.measure 的 totalTokens）。tokenMeter 调用异常时
- * 记日志并报告降级（console 外部 + om 警告事件每会话一次），返回 undefined——本轮
- * 跳过观察压缩（无压力数据不触发），不阻塞 turn。
+ * 读取压力计量（tokenMeter.measure）。调用异常时记日志并报告降级（console 外部 +
+ * om 警告事件每会话一次），返回 undefined——观察本轮跳过（无压力数据不触发），
+ * 反思换算系数按 1 计；都不阻塞 turn。
  */
-function measurePressureTokens(
+function measurePressure(
   ctx: Context,
   session: Session,
   logger: PluginLogger,
-): number | undefined {
+): PressureMeasurement | undefined {
   try {
-    return ctx.tokenMeter.measure(session).totalTokens;
+    const measurement = ctx.tokenMeter.measure(session);
+    return {
+      surfaceTokens: measurement.surfaceTokens,
+      surfaceDeltaTokens: measurement.surfaceDeltaTokens,
+      baselineUsageTokens:
+        measurement.baseline.kind === 'usage' ? measurement.baseline.tokens : undefined,
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    logger.warn(`上下文压力读取失败（tokenMeter.measure 抛错），本轮跳过观察压缩: ${message}`);
+    logger.warn(`上下文压力读取失败（tokenMeter.measure 抛错）: ${message}`);
     reportDegrade(session, logger, 'tokenMeter-unavailable');
     return undefined;
   }
@@ -702,6 +734,18 @@ export type ObservePrepared = {
 export type ObservePrepareResult =
   | { ok: true; prepared: ObservePrepared }
   | { ok: false; reason: string };
+
+/**
+ * 换算系数：上次请求真实用量基线 ÷ 锚点估算量（工具定义估算 + 锚点表层 =
+ * 当前表层 − 表层增量），把字符/4 估算换算为主模型真实 token 单位。无真实用量
+ * 基线或锚点估算量非正时按 1 计；结果恒 ≥ 1（真实用量低于估算时宿主已回退估算基线）。
+ */
+function conversionRatio(measurement: PressureMeasurement, toolsTokens: number): number {
+  if (measurement.baselineUsageTokens === undefined) return 1;
+  const anchorTokens = toolsTokens + measurement.surfaceTokens - measurement.surfaceDeltaTokens;
+  if (anchorTokens <= 0) return 1;
+  return Math.max(1, measurement.baselineUsageTokens / anchorTokens);
+}
 
 /**
  * 准备观察压缩：计算区间 [压缩边界..触发点]、校验可行性并构建压缩视图。
@@ -855,9 +899,9 @@ function signalAbortedRace(signal: AbortSignal | undefined): Promise<void> {
 
 /**
  * 观察（打标记 → 对账 → 到期注入）：每个 pre-step 串行执行三阶段。
- * 打标记：无活跃待定标记时测净压力 tokens（上下文压力 − 已压缩 <history> 块 token 合计 −
- * 系统提示词 token 估算 − 工具定义 token 估算），首次 ≥ observeThresholdTokens 写
- * om/observe-pending（触发点 = 当时的最后一条完整消息 index）。
+ * 打标记：无活跃待定标记时测净压力 tokens（换算系数 × 未压缩表层估算，未压缩 =
+ * 表层 − 已压缩 <history> 块估算合计 − 系统提示词估算），首次 ≥ observeThresholdTokens
+ * 写 om/observe-pending（触发点 = 当时的最后一条完整消息 index）。
  * 对账：活跃标记必须对应后台任务或持久化结果——匹配 pendingSeq 的 om/observe-summary
  * 信封直接采纳（重启恢复，不重压缩）；无结果且无任务（或任务已失败）时启动后台预压缩
  * （无可行区间则失效标记视为完成）；无活跃标记时清理注册表（边界后移使标记过期的运行中
@@ -890,8 +934,8 @@ export async function observePass(
     // 无活跃标记（含边界后移使标记过期、已失效）：清理注册表中可能残留的孤儿任务
     disposePrecompression(session.id);
     const threshold = config.observeThresholdTokens;
-    const pressureTokens = measurePressureTokens(ctx, session, logger);
-    if (pressureTokens === undefined) return { failed: false };
+    const measurement = measurePressure(ctx, session, logger);
+    if (measurement === undefined) return { failed: false };
     const { blocks } = historySection(session);
     const historyTokens = blocks.reduce(
       (total, block) => total + estimateTextTokens(block.text),
@@ -899,16 +943,18 @@ export async function observePass(
     );
     const systemTokens = await estimateSystemPromptTokens(ctx, agent, logger, signal);
     const toolsTokens = estimateToolsTokens(session, logger);
-    const netTokens = pressureTokens - historyTokens - systemTokens - toolsTokens;
+    const ratio = conversionRatio(measurement, toolsTokens);
+    const uncompressedTokens = Math.max(
+      0,
+      measurement.surfaceTokens - historyTokens - systemTokens,
+    );
+    const netTokens = Math.round(ratio * uncompressedTokens);
+    const formula = `换算系数 ${ratio.toFixed(2)} ×（表层 ${measurement.surfaceTokens} − 已压缩块 ${historyTokens} − 系统提示词 ${systemTokens}）`;
     if (netTokens < threshold) {
-      logger.step(
-        `观察：净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens} − 系统提示词 ${systemTokens} − 工具定义 ${toolsTokens}）< 阈值 ${threshold}，跳过`,
-      );
+      logger.step(`观察：净压力 ${netTokens} tokens（${formula}）< 阈值 ${threshold}，跳过`);
       return { failed: false };
     }
-    logger.step(
-      `观察：净压力 ${netTokens} tokens（上下文压力 ${pressureTokens} − 已压缩块 ${historyTokens} − 系统提示词 ${systemTokens} − 工具定义 ${toolsTokens}）≥ 阈值 ${threshold}，触发压缩`,
-    );
+    logger.step(`观察：净压力 ${netTokens} tokens（${formula}）≥ 阈值 ${threshold}，触发压缩`);
     const lastMessageIndex = indexCompleteMessages(session).length - 1;
     if (lastMessageIndex < 0) {
       logger.step('观察：会话尚无完整消息，跳过');
