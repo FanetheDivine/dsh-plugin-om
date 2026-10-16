@@ -338,7 +338,8 @@ describe('/om-recompress 命令：apply 接线', () => {
   it('commands 服务可用时注册命令，缺失时插件照常加载且不注册', () => {
     const mounted = makeCtx({ commandsMounted: true });
     apply(mounted, quietConfig);
-    expect(mounted._registeredCommands.map((c) => c.name)).toEqual(['om-recompress']);
+    // 插件还注册 /om-compaction-eval，完整命令列表由 compaction-eval-command 测试断言
+    expect(mounted._registeredCommands.map((c) => c.name)).toContain('om-recompress');
 
     const missing = makeCtx();
     expect(() => apply(missing, quietConfig)).not.toThrow();

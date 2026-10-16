@@ -1,6 +1,8 @@
-// 客户端入口注册测试：压缩卡片槽注入宿主 openSession，并转发到 uiWorkspace。
+// 客户端入口注册测试：压缩卡片槽注入宿主 openSession 并转发到 uiWorkspace，
+// 以及 command/executed 监听把 /om-compaction-eval 的新会话跳转接到 uiWorkspace。
 
 import type { Context } from '@deepseek-ai/cordis';
+import type { CommandResult } from '@deepseek-ai/dsh-commands/types';
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client';
 import { describe, expect, it, vi } from 'vitest';
 import { apply, inject } from '../../src/client/index.ts';
@@ -15,12 +17,26 @@ interface Registration {
   };
 }
 
+/** command/executed 监听回调的形状（会话 id、命令名、宿主命令结果）。 */
+type ExecutedListener = (sessionId: string, name: string, result: CommandResult) => void;
+
+/** 客户端事件监听记录。 */
+interface Listener {
+  type: string;
+  fn: ExecutedListener;
+}
+
 /** 构造只实现入口实际读取服务的宿主桩，并收集所有槽注册。 */
 function setup(extra: Record<string, unknown> = {}) {
   const registrations: Registration[] = [];
+  const listeners: Listener[] = [];
   const openSession = vi.fn();
   const base = {
     effect: (factory: () => (() => void) | undefined) => factory(),
+    on: (type: string, fn: ExecutedListener) => {
+      listeners.push({ type, fn });
+      return () => {};
+    },
     locale: { register: () => () => {} },
     uiConversation: { events: { register: () => () => {} } },
     uiWorkspace: { openSession },
@@ -50,7 +66,7 @@ function setup(extra: Record<string, unknown> = {}) {
     },
   });
   apply(ctx as unknown as Context);
-  return { registrations, openSession };
+  return { registrations, openSession, listeners };
 }
 
 describe('client apply', () => {
@@ -102,5 +118,27 @@ describe('client apply', () => {
       '/om-recompress om:1 alt big-1 high',
       [],
     );
+  });
+
+  it('监听 command/executed：本命令成功时跳转到新会话', () => {
+    const { openSession, listeners } = setup();
+    const listener = listeners.find((item) => item.type === 'command/executed')?.fn;
+    expect(listener).toBeTypeOf('function');
+    listener?.('s-1', 'om-compaction-eval', {
+      kind: 'success',
+      text: '已启动 OM 结果分析会话 session-new',
+    });
+    expect(openSession).toHaveBeenCalledExactlyOnceWith('session-new');
+  });
+
+  it('其他命令、失败结果与无法反解的文本都不跳转', () => {
+    const { openSession, listeners } = setup();
+    const listener = listeners.find((item) => item.type === 'command/executed')?.fn;
+    const started = { kind: 'success', text: '已启动 OM 结果分析会话 session-new' } as const;
+    listener?.('s-1', 'om-recompress', started);
+    listener?.('s-1', 'om-compaction-eval', { kind: 'error', text: '仅支持主会话' });
+    listener?.('s-1', 'om-compaction-eval', { kind: 'success', text: '重压缩完成' });
+    listener?.('s-1', 'om-compaction-eval', { kind: 'success' });
+    expect(openSession).not.toHaveBeenCalled();
   });
 });

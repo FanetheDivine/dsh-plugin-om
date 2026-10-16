@@ -22,12 +22,14 @@ disable-model-invocation: true
 ## 约定
 
 - 输入为本地会话 id 或 DSH 导出的 zip，未指明时向用户确认。zip 导出时需包含 subagents。
-- 先 `pnpm install`，脚本用 `node` 直接运行。
+<!-- dev-only -->
+- 源码版脚本是 TS，先在仓库根 `pnpm install`，再用 `node` 直接运行。
+<!-- /dev-only -->
 - 盲评完成前不读 `_blind_key.json`，subagent 提示词中不写模型名。
 
 ## 步骤
 
-脚本目录 `S=.agents/skills/compaction-eval/scripts`，`--session` 均可换成 `--zip`。
+脚本目录 `S=<skill 目录>/scripts`，`<skill 目录>` 指本文件所在目录。`--session` 均可换成 `--zip`。
 
 ### 1. 生成变体（可选）
 
