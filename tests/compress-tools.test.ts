@@ -106,13 +106,12 @@ describe('原始 ask 的直接压缩', () => {
       hi: 1,
       text: '失败的调用',
       toolName: 'ask_user_question',
-      callId: 'failed-ask',
       toolArgs: '{"questions":[{"id":"q","question":"继续吗"}]}',
       toolResult: 'Error: ask_user_question was aborted before the user answered',
     };
     const state = new CompressionState(viewOf([entry]));
     const before = state.buildFinalBlock();
-    expect(before).toContain('type="toolcall" tool-name="ask_user_question" callId="failed-ask"');
+    expect(before).toContain('type="toolcall" tool-name="ask_user_question"');
     expect(before).not.toContain('表示向用户提问');
     expect(state.compressHistory({ index: 1, content: '用户中止提问' }).isError).toBe(false);
     expect(state.complete().isError).toBe(false);
@@ -674,15 +673,14 @@ describe('buildFinalBlock', () => {
         hi: 1,
         text: '[tool-call run_code id=c1]\n{"code":"x"}\n\n[result]\n执行结果',
         toolName: 'run_code',
-        callId: 'c1',
         toolArgs: '{"code":"x"}',
         toolResult: '执行结果',
       },
     ]);
     const state = new CompressionState(view);
-    // getHistory 与最终块中 toolcall 条目均为结构化形态（与 recall 一致）
+    // getHistory 与最终块中 toolcall 条目均为结构化形态（与 recall 一致），不含 callId
     const structured =
-      '<assistant index="1" type="toolcall" tool-name="run_code" callId="c1"><tool-args><![CDATA[{"code":"x"}]]></tool-args><tool-result><![CDATA[执行结果]]></tool-result></assistant>';
+      '<assistant index="1" type="toolcall" tool-name="run_code"><tool-args><![CDATA[{"code":"x"}]]></tool-args><tool-result><![CDATA[执行结果]]></tool-result></assistant>';
     expect(state.getHistory({}).text).toContain(structured);
     expect(state.buildFinalBlock()).toContain(structured);
     // 压缩该条目后变为常规摘要条目，结构化形态消失
