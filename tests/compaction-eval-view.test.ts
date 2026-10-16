@@ -14,48 +14,15 @@ import {
 import { observePass } from '../src/compress.ts';
 import { resolveConfig } from '../src/config.ts';
 import { indexCompleteMessages } from '../src/log-index.ts';
-import type { SessionEvent } from '../src/types.ts';
 import {
   buildToolCallFlow,
+  hostLog,
   makeCtx,
   makeSession,
   type RoundScript,
   roundChunks,
   twoCallFlow,
 } from './helpers.ts';
-
-/** 可进入表层的消息事件类型。 */
-const SURFACE_TYPES = new Set([
-  'system/message',
-  'user/message',
-  'assistant/message',
-  'tool/result',
-]);
-/** 宿主事件信封允许的字段。 */
-const ENVELOPE_KEYS = new Set(['type', 'seq', 'time', 'data', 'surfaceOp', 'sourceEventSeqs']);
-
-/** 把桩事件规整为宿主落盘格式：补 time/surfaceOp/结算字段、去掉信封外字段，并加会话头。 */
-function hostLog(events: SessionEvent[]): LogEvent[] {
-  const body = events.map((event, seq) => {
-    const out: LogEvent & Record<string, unknown> = { type: event.type, time: seq };
-    for (const [key, value] of Object.entries(event)) if (ENVELOPE_KEYS.has(key)) out[key] = value;
-    out.seq = seq;
-    if (SURFACE_TYPES.has(event.type) && out.surfaceOp === undefined) out.surfaceOp = 'append';
-    if (event.type === 'assistant/message')
-      out.data = { turn: 1, step: 1, stream: [], ...(event.data as object) } as NonNullable<
-        LogEvent['data']
-      >;
-    return out;
-  });
-  const head: LogEvent = {
-    type: 'session',
-    id: 'session-view-test',
-    createdAt: 1,
-    cwd: '/work',
-    ...{ version: 4, isSeeded: false, depth: 0 },
-  };
-  return [head, ...body];
-}
 
 /** 观察压缩脚本：getHistory → 把助手条目改写为摘要 → completeCompression。 */
 function observeScript(index: number): unknown[] {

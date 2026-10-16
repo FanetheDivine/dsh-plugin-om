@@ -1,7 +1,8 @@
 // 单元测试公共设施：极简 Session/Surface 模拟（复刻 surface 的 append/replace 语义，
 // 含节点 0 的 system/message 头部保护校验），以及一个可编程的 ctx 模拟；另含跨测试文件
 // 共享的断言辅助（latestHistoryText / compactionLifecycle / checkpointSourceOf /
-// historyMessage / twoCallFlow / textOf）。测试目标是 src 的纯函数与 apply 接线。
+// historyMessage / twoCallFlow / textOf / hostLog）。测试目标是 src 的纯函数与 apply 接线。
+import type { SessionEvent as LogEvent } from '../.agents/skills/compaction-eval/scripts/prepare.ts';
 import { HISTORY_TAG, HISTORY_TIP, PLUGIN_SOURCE_KIND } from '../src/constants.ts';
 import type { Context, Session, SessionEvent } from '../src/types.ts';
 
@@ -760,4 +761,37 @@ export function isOmKind(event: SessionEvent, kind: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** 可进入表层的消息事件类型。 */
+const SURFACE_TYPES = new Set([
+  'system/message',
+  'user/message',
+  'assistant/message',
+  'tool/result',
+]);
+/** 宿主事件信封允许的字段。 */
+const ENVELOPE_KEYS = new Set(['type', 'seq', 'time', 'data', 'surfaceOp', 'sourceEventSeqs']);
+
+/** 把桩事件规整为宿主落盘格式：补 time/surfaceOp/结算字段、去掉信封外字段，并加会话头。 */
+export function hostLog(events: SessionEvent[]): LogEvent[] {
+  const body = events.map((event, seq) => {
+    const out: LogEvent & Record<string, unknown> = { type: event.type, time: seq };
+    for (const [key, value] of Object.entries(event)) if (ENVELOPE_KEYS.has(key)) out[key] = value;
+    out.seq = seq;
+    if (SURFACE_TYPES.has(event.type) && out.surfaceOp === undefined) out.surfaceOp = 'append';
+    if (event.type === 'assistant/message')
+      out.data = { turn: 1, step: 1, stream: [], ...(event.data as object) } as NonNullable<
+        LogEvent['data']
+      >;
+    return out;
+  });
+  const head: LogEvent = {
+    type: 'session',
+    id: 'session-view-test',
+    createdAt: 1,
+    cwd: '/work',
+    ...{ version: 4, isSeeded: false, depth: 0 },
+  };
+  return [head, ...body];
 }
