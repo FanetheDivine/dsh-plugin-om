@@ -9,6 +9,9 @@
  *   （turn 边界取循环起止、第 k 个 assistant 取第 k 轮起止、工具调用与结果与其
  *   assistant 同刻），并把逐轮 usage 附加到 assistant/message，使宿主原生 UI 直接
  *   渲染 turn 时长、逐轮 LLM 延迟、消息时钟与 Turn usage 面板
+ * - 压缩系统提示词落盘为 system/message（随任务指令 step 开启时先行落盘，宿主 UI
+ *   呈现「系统提示词」）；任务指令 source 改写为用户来源（宿主呈现为用户消息），
+ *   轮间提醒保持插件来源
  * - 循环消息组按宿主 turn/step 生命周期重建；未执行的工具调用补齐失败结果
  * - 失败时的子会话 id 由调用方写入主会话日志与 compaction/end 载荷（compress.ts /
  *   index.ts）
@@ -22,7 +25,11 @@ import type {
   ToolResultMessage,
   UserMessage,
 } from '@deepseek-ai/dsh-llm';
-import { createAssistantMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm';
+import {
+  createAssistantMessage,
+  createSystemMessage,
+  createToolResultMessage,
+} from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-session-persistence';
 import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent';
@@ -121,6 +128,7 @@ function buildCompressionSeed(
   stats: CompressionStats,
   label: string,
   info?: CompressionInfo,
+  system?: string,
 ): SessionEvent[] {
   const seed: SessionEvent[] = [];
   const push = <K extends keyof SessionEventMap>(
@@ -152,13 +160,14 @@ function buildCompressionSeed(
   });
   push('turn/start', at(stats.startedAt), { turn: 1 });
 
-  let step = 0;
+  let step = 1;
   let assistantIndex = 0;
   let stepTime = stats.startedAt; // 当前开放 step 的 assistant 完成时刻
+  let stepOpen = false;
   let pending: ToolCallBlock[] = [];
 
   const closeStep = (): void => {
-    if (step === 0) return;
+    if (!stepOpen) return;
     for (const call of pending) {
       if (executed.has(call.id)) continue;
       const repair = createToolResultMessage({
@@ -183,6 +192,7 @@ function buildCompressionSeed(
     }
     push('step/end', at(stepTime), { turn: 1, step });
     pending = [];
+    stepOpen = false;
   };
 
   for (const message of messages) {
@@ -195,6 +205,7 @@ function buildCompressionSeed(
       const completedAt =
         round === undefined ? stats.completedAt : round.startedAt + round.durationMs;
       push('step/start', at(startAt), { turn: 1, step });
+      stepOpen = true;
       const assistant = message as AssistantMessage;
       const assistantTime = at(completedAt);
       push(
@@ -230,14 +241,31 @@ function buildCompressionSeed(
         { turn: 1, step, message: message as ToolResultMessage },
         'append',
       );
-    } else {
-      // 任务指令（step 0）或轮间提醒（开放 step）：与当前时刻同刻
+    } else if (!stepOpen) {
+      const user = message as UserMessage;
+      // 任务指令所属 step 与宿主时序一致（step/start → system/message → user/message），
+      // 压缩系统提示词随该 step 落盘（宿主 UI 呈现「系统提示词」），指令 source 改写为
+      // 用户来源（宿主呈现为用户消息）
+      push('step/start', at(stats.startedAt), { turn: 1, step });
+      stepOpen = true;
+      if (system !== undefined && system !== '') {
+        push(
+          'system/message',
+          at(stats.startedAt),
+          { turn: 1, step, message: createSystemMessage(system) },
+          'append',
+        );
+      }
       push(
         'user/message',
-        at(step === 0 ? stats.startedAt : stepTime),
-        message as UserMessage,
+        at(stats.startedAt),
+        { ...user, source: { kind: 'user' as const } },
         'append',
       );
+    } else {
+      const user = message as UserMessage;
+      // 轮间提醒（开放 step）：与当前时刻同刻，保持插件来源（宿主呈现为上下文注入）
+      push('user/message', at(stepTime), user, 'append');
     }
   }
   closeStep();
@@ -283,6 +311,8 @@ export async function recordCompressionSession(
     messages: readonly Message[];
     /** 循环统计（label 轮数、时间线重建与逐轮 usage 来源）。 */
     stats: CompressionStats;
+    /** 循环实际发送的压缩系统提示词；存在且非空时落盘为 system/message（表层节点 0）。 */
+    system?: string;
     /** 是否成功完成（label 区分会话记录/失败日志）。 */
     success: boolean;
     /** 插件 debug 开关（落盘失败的 warn 是否带步骤细节）。 */
@@ -302,7 +332,13 @@ export async function recordCompressionSession(
       options.success,
       options.retryTarget,
     );
-    const seed = buildCompressionSeed(options.messages, options.stats, label, options.info);
+    const seed = buildCompressionSeed(
+      options.messages,
+      options.stats,
+      label,
+      options.info,
+      options.system,
+    );
     const sessions = ctx.get('sessions');
     if (sessions === undefined) {
       logger.warn('sessions 服务未挂载，跳过压缩会话记录落盘');

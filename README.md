@@ -174,7 +174,7 @@ src/
 ├── compress-view.ts             # 压缩视图：观察与反思投影、有效提问配对与选项展示
 ├── compress-tools.ts            # 压缩工具状态机：查看、压缩、问答重写、完成门禁与最终块构建
 ├── compress-loop.ts             # 工具压缩循环：条件提示、多轮请求、工具执行、限流、失败判定与统计
-├── compaction-log.ts            # 压缩会话记录落盘：seed 重建时间线与逐轮 usage 的诊断子会话
+├── compaction-log.ts            # 压缩会话记录落盘：seed 重建系统提示词、时间线与逐轮 usage 的诊断子会话
 ├── compress.ts                  # 两级自动压缩：观察、反思、失败传播与生命周期事件
 ├── recompress.ts                # 换模型重压缩：按压缩 id 重放视图并落盘记录，附内部命令
 ├── recompress-gate.ts           # 重压缩并发信号量：按配置上限排队许可

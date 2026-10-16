@@ -287,14 +287,17 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       | { turn?: number; step?: number; message?: Record<string, unknown> }
       | undefined;
     expect(toolData?.turn).toBe(1);
-    expect(toolData?.step).toBe(1);
+    expect(toolData?.step).toBe(2);
     expect(toolData?.message?.role).toBe('tool');
     expect(toolData?.message?.toolCallId).toBe('c1');
     expect(JSON.stringify(toolData?.message)).toContain('历史条目');
     expect(child?.snapshotEvents().map((event) => event.type)).toEqual([
       'subagent/descriptor',
       'turn/start',
+      // 任务指令占用 step 1（与压缩系统提示词同 step），首个 assistant 为 step 2
+      'step/start',
       'user/message',
+      'step/end',
       'step/start',
       'assistant/message',
       'tool/call',
@@ -320,8 +323,9 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     // turn 边界取自循环起止（而非落盘时刻）
     expect(times(child, 'turn/start')).toEqual([1_000]);
     expect(times(child, 'turn/end')).toEqual([6_000]);
-    // 第 k 个 step/start = 第 k 轮 startedAt；assistant/message = startedAt + durationMs
-    expect(times(child, 'step/start')).toEqual([1_000, 1_100]);
+    // 第 1 个 step/start 为任务指令 step（与循环开始同刻），第 k+1 个 = 第 k 轮 startedAt；
+    // assistant/message = startedAt + durationMs
+    expect(times(child, 'step/start')).toEqual([1_000, 1_000, 1_100]);
     expect(times(child, 'assistant/message')).toEqual([1_100, 1_300]);
     // 工具调用与结果与其所属 assistant 同刻（内存工具瞬时执行）
     expect(times(child, 'tool/call')).toEqual([1_100, 1_300]);
@@ -344,7 +348,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     });
     const child = ctx._createdSessions[0]?.session;
     // 第二个 assistant 无对应轮次：起于上一轮结束，止于循环结束
-    expect(times(child, 'step/start')).toEqual([1_000, 1_100]);
+    expect(times(child, 'step/start')).toEqual([1_000, 1_000, 1_100]);
     expect(times(child, 'assistant/message')).toEqual([1_100, 6_000]);
     expect(times(child, 'tool/result')).toEqual([1_100, 6_000]);
     expect(times(child, 'turn/end')).toEqual([6_000]);
@@ -379,9 +383,67 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       debug: false,
     });
     const child = ctx._createdSessions[0]?.session;
+    // 任务指令 source 改写为用户来源（宿主渲染为用户消息）；轮间提醒保持插件来源
+    const sources = (child?.snapshotEvents() ?? [])
+      .filter((e) => e.type === 'user/message')
+      .map((e) => (e.data as { source?: { kind?: string } }).source);
+    expect(sources[0]).toEqual({ kind: 'user' });
+    expect(sources[1]).toEqual({ kind: PLUGIN_SOURCE_KIND });
     expect(times(child, 'user/message')).toEqual([1_000, 1_100]);
-    expect(times(child, 'step/start')).toEqual([1_000, 1_100]);
+    // 任务指令 step 与首个 assistant step 同刻起点
+    expect(times(child, 'step/start')).toEqual([1_000, 1_000, 1_100]);
     expect(times(child, 'assistant/message')).toEqual([1_100, 1_300]);
+  });
+
+  it('system 传入时先于首条消息落盘 system/message，任务指令 source 改写为用户来源', async () => {
+    const ctx = makeCtx();
+    await recordCompressionSession(ctx, makeSession(), {
+      phase: 'observe',
+      messages: loopMessages(),
+      stats: makeStats([{ durationMs: 100 }]),
+      success: true,
+      debug: false,
+      system: '# 压缩提示词\n正文',
+    });
+    const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
+    const sysIndex = events.findIndex((e) => e.type === 'system/message');
+    // descriptor + turn/start + step/start 之后、首条 user/message 之前，与宿主 step 内时序一致
+    expect(events.slice(0, sysIndex).map((e) => e.type)).toEqual([
+      'subagent/descriptor',
+      'turn/start',
+      'step/start',
+    ]);
+    const sysData = events[sysIndex]?.data as {
+      turn?: number;
+      step?: number;
+      message?: { content?: unknown };
+    };
+    expect(sysData).toMatchObject({ turn: 1, step: 1 });
+    expect(events[sysIndex]?.surfaceOp).toBe('append');
+    expect(JSON.stringify(sysData.message?.content)).toContain('压缩提示词');
+    // 任务指令呈现为用户消息
+    const userSource = events
+      .filter((e) => e.type === 'user/message')
+      .map((e) => (e.data as { source?: { kind?: string } }).source)[0];
+    expect(userSource).toEqual({ kind: 'user' });
+    // 与循环开始同刻，时间单调不减
+    expect(times(ctx._createdSessions[0]?.session, 'system/message')).toEqual([1_000]);
+  });
+
+  it('system 缺省或为空字符串时不落盘 system/message', async () => {
+    for (const system of [undefined, ''] as const) {
+      const ctx = makeCtx();
+      await recordCompressionSession(ctx, makeSession(), {
+        phase: 'observe',
+        messages: loopMessages(),
+        stats: makeStats([{ durationMs: 100 }]),
+        success: true,
+        debug: false,
+        ...(system === undefined ? {} : { system }),
+      });
+      const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
+      expect(events.some((e) => e.type === 'system/message')).toBe(false);
+    }
   });
 
   it('逐轮 usage 附加到对应 assistant/message；缺 usage 的轮次不写该字段', async () => {
@@ -589,11 +651,17 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       stats: makeStats([{ durationMs: 100, usage: { inputTokens: 10, outputTokens: 5 } }]),
       success: true,
       debug: false,
+      system: '# 压缩提示词\n正文',
     });
     // seed 若被宿主拒绝，create 抛错被吞、id 为 undefined：此断言即失败
     expect(id).toBeDefined();
     expect(id).toBe(realChild?.id);
     const events = realChild?.snapshotEvents() ?? [];
+    // system/message seed 被真实宿主接受并原样保留文本
+    const sysData = events.find((e) => e.type === 'system/message')?.data as {
+      message?: { content?: unknown };
+    };
+    expect(JSON.stringify(sysData?.message?.content)).toContain('压缩提示词');
     const assistant = events.filter((e) => e.type === 'assistant/message');
     expect(assistant).toHaveLength(1);
     expect((assistant[0]?.data as { stream?: unknown })?.stream).toEqual([]);
