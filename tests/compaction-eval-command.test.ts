@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildCompactionEvalCommand,
+  parseEvalModelInput,
   skillDocCandidates,
   skillDocPath,
 } from '../src/compaction-eval-command.ts';
@@ -43,14 +44,14 @@ function invoke(ctx: ReturnType<typeof makeCtx>, session: Session, rawInput = ''
 }
 
 describe('命令定义', () => {
-  it('无参数、描述为 ai分析OM结果', () => {
+  it('可选参数 provider/model [思考等级]、描述为 ai分析OM结果', () => {
     const ctx = makeCtx();
     const command = buildCompactionEvalCommand(ctx);
     expect(command.name).toBe(EVAL_COMMAND_NAME);
     expect(command.name).toBe('om-compaction-eval');
     expect(command.description).toBe(EVAL_COMMAND_DESCRIPTION);
     expect(command.description).toBe('ai分析OM结果');
-    expect(command.input).toBeUndefined();
+    expect(command.input).toEqual({ hint: '[provider/model [思考等级]]' });
   });
 
   it('apply 在 commands 服务可用时注册两个命令，缺失时不注册也不抛', async () => {
@@ -122,6 +123,32 @@ describe('新会话首条消息文本', () => {
   });
 });
 
+describe('parseEvalModelInput', () => {
+  it('无参数沿用当前会话', () => {
+    expect(parseEvalModelInput('')).toEqual({ ok: true, model: undefined });
+    expect(parseEvalModelInput('  ')).toEqual({ ok: true, model: undefined });
+  });
+
+  it('按第一个斜杠切分 provider 与 model，可带思考等级', () => {
+    expect(parseEvalModelInput('anthropic/claude-sonnet-4')).toEqual({
+      ok: true,
+      model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+    });
+    expect(parseEvalModelInput(' openrouter/anthropic/claude  high ')).toEqual({
+      ok: true,
+      model: { provider: 'openrouter', model: 'anthropic/claude', reasoningEffort: 'high' },
+    });
+  });
+
+  it('缺斜杠、provider 或 model 为空、多余参数时返回用法', () => {
+    for (const raw of ['gpt-5', '/gpt-5', 'openai/', 'openai/gpt-5 high extra']) {
+      const parsed = parseEvalModelInput(raw);
+      expect(parsed.ok).toBe(false);
+      expect(parsed.ok ? '' : parsed.error).toContain('用法');
+    }
+  });
+});
+
 describe('命令处理：建会话并投递首条消息', () => {
   it('当前会话属于某工作区时按 workspaceId 建会话，并继承 agentPreset', async () => {
     const cwd = path.join(ROOT, 'workspace-a');
@@ -162,6 +189,75 @@ describe('命令处理：建会话并投递首条消息', () => {
         }),
       },
     ]);
+  });
+
+  it('无参数时新会话沿用当前会话的 provider、model 与思考等级，先选模型再投递', async () => {
+    const session = makeSession({
+      header: { cwd: ROOT },
+      requestHeaderValue: {
+        config: { provider: 'anthropic', model: 'claude-x', reasoningEffort: 'high' },
+      },
+    });
+    const ctx = makeCtx({ sessionControllerMounted: true, createdSessionId: 'session-child' });
+    const result = await invoke(ctx, session);
+    expect(result?.kind).toBe('success');
+    expect(ctx._modelSelections).toEqual([
+      {
+        sessionId: 'session-child',
+        provider: 'anthropic',
+        model: 'claude-x',
+        reasoningEffort: 'high',
+      },
+    ]);
+    expect(ctx._sessionPrompts).toHaveLength(1);
+  });
+
+  it('当前会话无思考等级时选择不带等级', async () => {
+    const ctx = makeCtx({ sessionControllerMounted: true });
+    await invoke(ctx, mainSession());
+    expect(ctx._modelSelections).toEqual([
+      { sessionId: 'session-eval-child', provider: 'test', model: 'test-model' },
+    ]);
+  });
+
+  it('参数指定模型时覆盖当前会话，不带等级则用模型默认', async () => {
+    const session = makeSession({
+      header: { cwd: ROOT },
+      requestHeaderValue: {
+        config: { provider: 'anthropic', model: 'claude-x', reasoningEffort: 'high' },
+      },
+    });
+    const ctx = makeCtx({ sessionControllerMounted: true });
+    await invoke(ctx, session, 'openai/gpt-5');
+    await invoke(ctx, session, 'openai/gpt-5 low');
+    expect(ctx._modelSelections).toEqual([
+      { sessionId: 'session-eval-child', provider: 'openai', model: 'gpt-5' },
+      {
+        sessionId: 'session-eval-child',
+        provider: 'openai',
+        model: 'gpt-5',
+        reasoningEffort: 'low',
+      },
+    ]);
+  });
+
+  it('参数格式错误时返回用法，不建会话', async () => {
+    const ctx = makeCtx({ sessionControllerMounted: true });
+    const result = await invoke(ctx, mainSession(), 'gpt-5');
+    expect(result?.kind).toBe('error');
+    expect(result?.text).toContain('用法');
+    expect(ctx._sessionCreations).toEqual([]);
+  });
+
+  it('宿主拒绝所选模型时返回 error 且不投递首条消息', async () => {
+    const ctx = makeCtx({
+      sessionControllerMounted: true,
+      selectThrows: new Error('model/not-found'),
+    });
+    const result = await invoke(ctx, mainSession(), 'openai/nope');
+    expect(result?.kind).toBe('error');
+    expect(result?.text).toContain('model/not-found');
+    expect(ctx._sessionPrompts).toEqual([]);
   });
 
   it('宿主无 workspaceRegistry 或会话不属于任何工作区时按 cwd 建会话', async () => {
