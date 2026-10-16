@@ -41,6 +41,31 @@ describe('recall 工具', () => {
     );
   });
 
+  it('手动加载的 skill 输出 skill_content 条目，其余系统消息不出现', async () => {
+    const skillEvent = (text: string, source: object, id: string) =>
+      ({
+        type: 'user/message',
+        data: makeMessage({ content: [textBlock(text)], source, id }),
+      }) as unknown as SessionEvent;
+    const session = makeSession({
+      events: [
+        skillEvent('技能目录正文', { kind: 'skill-catalog', form: 'catalog' }, 'cat'),
+        skillEvent(
+          '<skill_content name="lark-im">步骤</skill_content>',
+          { kind: 'skill-invocation', name: 'lark-im', form: 'instructions' },
+          'inv',
+        ),
+      ],
+    });
+    const tool = buildRecallTool();
+    const text = String(
+      textOf(await tool.execute({ start: 0, end: 0 }, { agent: { session } } as never)),
+    );
+    expect(text).toContain('<skill_content index="0" name="lark-im">');
+    expect(text).toContain('步骤');
+    expect(text).not.toContain('技能目录正文');
+  });
+
   it('toolcall 条目输出 tool-args/tool-result CDATA（args 为合法 JSON 且仅一层转义）', async () => {
     const flow = buildToolCallFlow({
       code: 'a()\nb()',

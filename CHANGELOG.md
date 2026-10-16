@@ -2,6 +2,7 @@
 
 ## Changes
 
+- 手动加载的 skill（`skill-invocation` 系统消息）重新计入完整消息：占 index，recall 输出 `<skill_content>`，压缩视图与工具加载的 skill 一致保留原文；其余系统消息仍不占 index。
 - compaction-eval 的 SKILL.md 只保留主流程，评分维度只在一处说明，规则与提示词不再重复判定和计分；脚本直接用 `node` 运行。
 - compaction-eval 可自行生成变体：`view.ts` 列出会话已有压缩，按压缩 id 或完整消息区间复现压缩输入视图；`compress.ts` 读 DSH profile 的模型与凭据直连模型跑压缩，产出重压缩日志且不改原会话；`prepare.ts --variants` 并入这些日志。重复次数与模型、思考等级组合由调用方组合脚本实现。
 - compaction-eval 的 SKILL.md、规则与评审提示词按输入、任务、输出重新组织，语言更简洁。

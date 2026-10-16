@@ -3,6 +3,7 @@
  * 每条完整消息渲染为一个 XML 元素，正文统一以 CDATA 包裹（逐字原样，不做实体转义与
  * 再次序列化），从构建源头避免多层转义：
  * - user → <user_message index>，正文 CDATA，图片等非文本块为 XML 注释
+ * - skill（手动加载）→ <skill_content index name>，正文 CDATA
  * - assistant 文本 → <assistant index type="text">，正文 CDATA
  * - toolcall → <assistant index type="toolcall" tool-name callId>，内嵌 <tool-args>
  *   （合法 JSON，仅一层 JSON 转义）与 <tool-result>（工具返回正文）两个 CDATA 子元素
@@ -84,7 +85,7 @@ function toolcallElement(
   return el;
 }
 
-/** 按完整消息类别构建元素（user / assistant 文本条目复用 parts 渲染）。 */
+/** 按完整消息类别构建元素（user / skill / assistant 文本条目复用 parts 渲染）。 */
 function buildElement(
   doc: Document,
   session: Session,
@@ -95,8 +96,11 @@ function buildElement(
   if (cm.type === 'toolcall') return toolcallElement(doc, session, cm, pruner, images);
   const parts = renderCompleteMessageParts(session, cm, pruner);
   images.push(...parts.images);
-  const el = doc.createElement(cm.type === 'user' ? 'user_message' : 'assistant');
+  const el = doc.createElement(
+    cm.type === 'user' ? 'user_message' : cm.type === 'skill' ? 'skill_content' : 'assistant',
+  );
   el.setAttribute('index', String(cm.index));
+  if (cm.type === 'skill' && cm.skillName !== undefined) el.setAttribute('name', cm.skillName);
   if (cm.type === 'assistant') el.setAttribute('type', 'text');
   appendBodyText(doc, el, parts.text);
   appendImageComments(doc, el, parts.images);
@@ -105,6 +109,13 @@ function buildElement(
 
 /** 主渲染失败时的回退元素：按完整消息类别输出最简形态，正文为回退文本。 */
 function fallbackElement(doc: Document, cm: CompleteMessage, text: string): Element {
+  if (cm.type === 'skill') {
+    const el = doc.createElement('skill_content');
+    el.setAttribute('index', String(cm.index));
+    if (cm.skillName !== undefined) el.setAttribute('name', cm.skillName);
+    appendBodyText(doc, el, text);
+    return el;
+  }
   const el = doc.createElement(cm.type === 'user' ? 'user_message' : 'assistant');
   el.setAttribute('index', String(cm.index));
   if (cm.type !== 'user') el.setAttribute('type', cm.type === 'toolcall' ? 'toolcall' : 'text');
