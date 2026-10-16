@@ -1,7 +1,8 @@
 /**
  * 两级自动压缩（观察/反思）与 compaction 生命周期提交。
  * 导出 estimateTextTokens / isPairBalancedAfter / computeCompressRange / historySection /
- * historyTextOf / findObservePending / reflectPass / observePass / maybeCompress。
+ * historyTextOf / findObservePending / prepareObserveCompression / commitObserveCompression /
+ * reflectPass / observePass / maybeCompress。
  *
  * - 摘要生成走工具驱动的压缩循环（compress-loop.ts runCompressionLoop）：首条 user
  *   消息仅含压缩指令与 start/end 区间，模型经 getHistory / compressHistory /
@@ -47,9 +48,10 @@ import {
   type CompressionLoopOptions,
   type CompressionOutcome,
   type CompressionStats,
+  type CompressionSuccess,
   runCompressionLoop,
 } from './compress-loop.ts';
-import { buildObserveView, buildReflectView } from './compress-view.ts';
+import { buildObserveView, buildReflectView, type CompressionView } from './compress-view.ts';
 import { HISTORY_TAG, isPluginOwnedSource, omSource } from './constants.ts';
 import { reportDegrade } from './degrade.ts';
 import { indexCompleteMessages, surfaceIndexOf } from './log-index.ts';
@@ -671,6 +673,158 @@ function measurePressureTokens(
   }
 }
 
+/** 观察压缩准备产物：区间、替换 seq 列表、字符统计与压缩视图。 */
+export type ObservePrepared = {
+  /** 压缩区间（start/end 为表层 seq，含端点）。 */
+  range: { start: number; end: number; shadowedSeqs: number[] };
+  /** 被替换的表层 seq 列表（= range.shadowedSeqs）。 */
+  replaceSeqs: number[];
+  /** 替换区间起点（replaceSeqs 首项）。 */
+  replaceStart: number;
+  /** 被遮蔽区间字符数（压缩循环 originalChars）。 */
+  shadowedCharCount: number;
+  /** 压缩视图（压缩循环的输入；准备成功后 min/max 必可定位）。 */
+  view: CompressionView & { minIndex: number; maxIndex: number };
+};
+
+/** 观察压缩准备结果：ok=false 时 reason 说明无可行区间原因（调用方清除待定标记视为完成）。 */
+export type ObservePrepareResult =
+  | { ok: true; prepared: ObservePrepared }
+  | { ok: false; reason: string };
+
+/**
+ * 准备观察压缩：计算区间 [压缩边界..触发点]、校验可行性并构建压缩视图。
+ * 不写任何事件；供延迟执行与后台预压缩共用。
+ */
+export function prepareObserveCompression(
+  session: Session,
+  triggerMessageIndex: number,
+  config: Readonly<PluginConfig>,
+): ObservePrepareResult {
+  const range = computeCompressRange(session, triggerMessageIndex);
+  if (!range) {
+    return {
+      ok: false,
+      reason: '无可行压缩区间（边界后无消息、触发点已被压缩或配对无法平衡）',
+    };
+  }
+  const replaceSeqs = range.shadowedSeqs;
+  const replaceStart = replaceSeqs[0];
+  if (replaceStart === undefined) {
+    return { ok: false, reason: '区间内无新消息（全部为压缩日志块）' };
+  }
+  const shadowedSet = new Set(replaceSeqs);
+  const inRangeCms = indexCompleteMessages(session).filter((cm) =>
+    cm.seqs.every((seq) => shadowedSet.has(seq)),
+  );
+  if (inRangeCms.length === 0) {
+    return { ok: false, reason: '区间内无完整消息' };
+  }
+  const shadowedCharCount = seqsCharCount(session, replaceSeqs);
+  const view = buildObserveView(session, replaceSeqs, {
+    skipReasoning: config.compressSkipReasoning,
+  });
+  if (view.minIndex === undefined || view.maxIndex === undefined) {
+    return { ok: false, reason: '区间内无可定位条目' };
+  }
+  const preparedView = { ...view, minIndex: view.minIndex, maxIndex: view.maxIndex };
+  return {
+    ok: true,
+    prepared: { range, replaceSeqs, replaceStart, shadowedCharCount, view: preparedView },
+  };
+}
+
+/** 观察压缩提交选项（目标、模型信息、日志与待定标记清理回调）。 */
+type ObserveCommitOptions = {
+  target: RoutedTarget;
+  maxTokens: number | undefined;
+  reasoningEffort: ReasoningEffortId | undefined;
+  triggerNote: string;
+  logger: PluginLogger;
+  clearPending: () => void;
+};
+
+/**
+ * 提交观察压缩结果：compaction/summary（影子价格认领）→ 替换被压缩区间为 <history>
+ * 块（旧块保留）→ compaction/end → 清除待定标记。调用前须已追加 compaction/start
+ * （同一开放 turn 内满足宿主括号不变量）。提交失败为局部异常（压缩已成功）：记日志、
+ * 补 end(error) 后返回不失败结果，不中断 turn；待定标记保留，边界后移后由
+ * findObservePending 判定过期。
+ */
+export function commitObserveCompression(
+  ctx: Context,
+  session: Session,
+  lifecycle: CompactionLifecycle,
+  prepared: ObservePrepared,
+  summaryResult: CompressionSuccess,
+  opts: ObserveCommitOptions,
+): CompressPassResult {
+  const { logger, clearPending, target, triggerNote } = opts;
+  const { range, replaceSeqs, replaceStart, shadowedCharCount } = prepared;
+  const report = summaryResult.text;
+  const usage = summaryResult.usage;
+  // 单条消息计价失败按 0 计（tokenMeter 异常属挂载类降级：console 外部 + om 警告事件每会话一次）
+  const shadowedTokenCount = replaceSeqs.reduce((total, seq) => {
+    const event = session.snapshotEvents()[seq];
+    const message = event ? session.deriveEventMessage(event) : null;
+    let tokens = 0;
+    if (message) {
+      try {
+        tokens = ctx.tokenMeter.estimateMessage(message);
+      } catch {
+        reportDegrade(session, logger, 'tokenMeter-unavailable');
+      }
+    }
+    return total + tokens;
+  }, 0);
+  try {
+    logger.step('观察提交：追加 compaction/summary（影子价格认领）');
+    const summarySeq = appendCompactionSummary(session, {
+      lifecycle,
+      summary: report,
+      shadowedRange: { start: replaceStart, end: range.end },
+      shadowedSeqs: replaceSeqs,
+      shadowedTokenCount,
+      shadowedCharCount,
+      provider: target.provider,
+      model: target.model,
+      maxTokens: opts.maxTokens,
+      stats: summaryResult.stats,
+      ...(usage === undefined ? {} : { usage }),
+      ...(opts.reasoningEffort === undefined ? {} : { reasoningEffort: opts.reasoningEffort }),
+    });
+    logger.step('观察提交：替换被压缩新消息区间为 <history>（旧块保留）');
+    appendHistoryMessage(
+      session,
+      report,
+      [summarySeq, ...replaceSeqs],
+      {
+        op: 'replace',
+        startSeq: replaceStart,
+        endSeq: range.end,
+      },
+      lifecycle.compactionId,
+    );
+    logger.step('观察提交：追加 compaction/end');
+    appendCompactionEnd(session, lifecycle, undefined, summaryResult.recordSessionId);
+    // 压缩成功提交后写待定失效标记（提交失败则保留待定，边界后移使其自然过期）
+    clearPending();
+    logger.info(
+      `观察压缩完成（替换 ${replaceSeqs.length} 个表层节点，约 ${shadowedTokenCount} tokens，压缩至${triggerNote}）`,
+    );
+    return { failed: false };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`观察压缩提交失败: ${message}`);
+    try {
+      appendCompactionEnd(session, lifecycle, message, undefined, summaryResult.stats.durationMs);
+    } catch {
+      /* end 追加失败忽略（start 已记录，日志仍可诊断） */
+    }
+    return { failed: false };
+  }
+}
+
 /**
  * 观察（触发 → 待定 → 延迟执行）：无活跃待定标记时测净压力 tokens（上下文压力 − 已压缩
  * <history> 块 token 合计 − 系统提示词 token 估算 − 工具定义 token 估算），首次 ≥
@@ -766,42 +920,17 @@ export async function observePass(
       logger.warn(`观察：待定失效标记追加失败: ${message}`);
     }
   };
-  const range = computeCompressRange(session, triggerMessageIndex);
-  if (!range) {
-    logger.step(
-      '观察：无可行压缩区间（边界后无消息、触发点已被压缩或配对无法平衡），清除待定标记视为完成',
-    );
+  const prepare = prepareObserveCompression(session, triggerMessageIndex, config);
+  if (!prepare.ok) {
+    logger.step(`观察：${prepare.reason}，清除待定标记视为完成`);
     clearPending();
     return { failed: false };
   }
+  const { prepared } = prepare;
+  const { range, replaceSeqs, replaceStart, shadowedCharCount, view } = prepared;
   logger.step(
-    `观察：压缩区间 [${range.start}..${range.end}]，遮蔽 ${range.shadowedSeqs.length} 个表层节点`,
+    `观察：压缩区间 [${range.start}..${range.end}]，遮蔽 ${replaceSeqs.length} 个表层节点`,
   );
-  const replaceSeqs = range.shadowedSeqs;
-  const replaceStart = replaceSeqs[0];
-  if (replaceStart === undefined) {
-    logger.step('观察：区间内无新消息（全部为压缩日志块），清除待定标记视为完成');
-    clearPending();
-    return { failed: false };
-  }
-  const shadowedSet = new Set(replaceSeqs);
-  const inRangeCms = indexCompleteMessages(session).filter((cm) =>
-    cm.seqs.every((seq) => shadowedSet.has(seq)),
-  );
-  if (inRangeCms.length === 0) {
-    logger.step('观察：区间内无完整消息，清除待定标记视为完成');
-    clearPending();
-    return { failed: false };
-  }
-  const shadowedCharCount = seqsCharCount(session, replaceSeqs);
-  const view = buildObserveView(session, replaceSeqs, {
-    skipReasoning: config.compressSkipReasoning,
-  });
-  if (view.minIndex === undefined || view.maxIndex === undefined) {
-    logger.step('观察：区间内无可定位条目，清除待定标记视为完成');
-    clearPending();
-    return { failed: false };
-  }
   logger.step(
     `观察：保留旧块 ${blocks.length} 条，替换 [${replaceStart}..${range.end}]（${replaceSeqs.length} 个表层节点，压缩至${triggerNote}），视图区间 ${view.minIndex}..${view.maxIndex}`,
   );
@@ -848,70 +977,14 @@ export async function observePass(
         : { diagnosticSessionId: summaryResult.recordSessionId }),
     };
   }
-  const report = summaryResult.text;
-  const usage = summaryResult.usage;
-  // 单条消息计价失败按 0 计（tokenMeter 异常属挂载类降级：console 外部 + om 警告事件每会话一次）
-  const shadowedTokenCount = replaceSeqs.reduce((total, seq) => {
-    const event = session.snapshotEvents()[seq];
-    const message = event ? session.deriveEventMessage(event) : null;
-    let tokens = 0;
-    if (message) {
-      try {
-        tokens = ctx.tokenMeter.estimateMessage(message);
-      } catch {
-        reportDegrade(session, logger, 'tokenMeter-unavailable');
-      }
-    }
-    return total + tokens;
-  }, 0);
-  try {
-    logger.step('观察提交：追加 compaction/summary（影子价格认领）');
-    const summarySeq = appendCompactionSummary(session, {
-      lifecycle,
-      summary: report,
-      shadowedRange: { start: replaceStart, end: range.end },
-      shadowedSeqs: replaceSeqs,
-      shadowedTokenCount,
-      shadowedCharCount,
-      provider: target.provider,
-      model: target.model,
-      maxTokens: config.compressMaxTokens,
-      stats: summaryResult.stats,
-      ...(usage === undefined ? {} : { usage }),
-      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-    });
-    logger.step('观察提交：替换被压缩新消息区间为 <history>（旧块保留）');
-    appendHistoryMessage(
-      session,
-      report,
-      [summarySeq, ...replaceSeqs],
-      {
-        op: 'replace',
-        startSeq: replaceStart,
-        endSeq: range.end,
-      },
-      lifecycle.compactionId,
-    );
-    logger.step('观察提交：追加 compaction/end');
-    appendCompactionEnd(session, lifecycle, undefined, summaryResult.recordSessionId);
-    // 压缩成功提交后写待定失效标记（提交失败则保留待定，边界后移使其自然过期）
-    clearPending();
-    logger.info(
-      `观察压缩完成（替换 ${replaceSeqs.length} 个表层节点，约 ${shadowedTokenCount} tokens，压缩至${triggerNote}）`,
-    );
-    return { failed: false };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.warn(`观察压缩提交失败: ${message}`);
-    try {
-      appendCompactionEnd(session, lifecycle, message, undefined, summaryResult.stats.durationMs);
-    } catch {
-      /* end 追加失败忽略（start 已记录，日志仍可诊断） */
-    }
-    // 提交失败为局部异常（压缩已成功）：记日志后继续本轮，不中断 turn；
-    // 待定标记保留，边界后移后由 findObservePending 判定为过期（兜底崩溃窗口）
-    return { failed: false };
-  }
+  return commitObserveCompression(ctx, session, lifecycle, prepared, summaryResult, {
+    target,
+    maxTokens: config.compressMaxTokens,
+    reasoningEffort,
+    triggerNote,
+    logger,
+    clearPending,
+  });
 }
 
 /**
