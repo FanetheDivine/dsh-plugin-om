@@ -587,7 +587,9 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
 
 describe('集成：只有 llm 和 tokenMeter 的最小堆叠', () => {
   /** 只挂 llm、tokenMeter（及其前置 sessionProjections）与 mock adapter，捕获全部日志。 */
-  async function minimalStack() {
+  async function minimalStack(
+    configOverrides: { observeThresholdTokens?: number; debug?: boolean } = {},
+  ) {
     const app = new Context();
     const logs: LogMessage[] = [];
     // default 取最大等级，捕获 error/warn/info/debug 全部输出
@@ -606,6 +608,7 @@ describe('集成：只有 llm 和 tokenMeter 的最小堆叠', () => {
         rateLimitWaitMs: 0,
         semanticRecallEnabled: false,
         debug: false,
+        ...configOverrides,
       },
     );
     // 脱离 SessionStore 的真实会话（sessions 服务不在堆叠中）
@@ -648,5 +651,62 @@ describe('集成：只有 llm 和 tokenMeter 的最小堆叠', () => {
     expect(logs.filter((m) => m.type === 'error')).toEqual([]);
     const warns = logs.filter((m) => m.type === 'warn').map((m) => String(m.args[0]));
     expect(warns.some((w) => w.includes('sessions 服务未挂载'))).toBe(true);
+  });
+
+  it('真实 tokenMeter 换算触发时序：同阈值下 2 倍用量锚点触发、无锚点跳过', async () => {
+    // 探针堆叠测得确定性表层估算 S（与正式堆叠同种子、同启发式计价）
+    const probe = await minimalStack();
+    seedUserMessages(probe.session, 4);
+    const seeded = probe.app.tokenMeter.measure(probe.session).surfaceTokens;
+    // 阈值卡在启发式净压力（≈S，系数 1）与换算净压力（≈2S，系数 2）之间
+    const threshold = Math.floor(seeded * 1.5);
+
+    // 对照：无用量锚点 → 估算基线、换算系数 1，净压力低于阈值，跳过压缩
+    const control = await minimalStack({ observeThresholdTokens: threshold });
+    seedUserMessages(control.session, 4);
+    await runPreStep(control.app, control.session);
+    expect(control.adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(0);
+    expect(control.session.snapshotEvents().some((e) => e.type === 'compaction/summary')).toBe(
+      false,
+    );
+
+    // 触发：助手结算携带 2 倍表层真实用量 → 换算系数 2.00，换算净压力达阈值
+    const { app, adapter, logs, session } = await minimalStack({
+      observeThresholdTokens: threshold,
+      debug: true,
+    });
+    seedUserMessages(session, 4);
+    const anchorSurface = app.tokenMeter.measure(session).surfaceTokens;
+    expect(anchorSurface).toBe(seeded);
+    session.append('step/start', { turn: 0, step: 0 });
+    session.append(
+      'assistant/message',
+      {
+        turn: 0,
+        step: 0,
+        message: {
+          id: 'assistant-anchor' as MessageId,
+          role: 'assistant',
+          content: [{ type: 'text', text: 'ok' }],
+          source: { kind: 'model', provider: 'mock', model: 'mock-model' },
+        },
+        stream: [],
+        usage: { inputTokens: 2 * anchorSurface, outputTokens: 0 },
+      },
+      { surfaceOp: 'append' },
+    );
+    session.append('step/end', { turn: 0, step: 0 });
+    const measurement = app.tokenMeter.measure(session);
+    expect(measurement.baseline.kind).toBe('usage'); // 真实用量锚点生效
+
+    await runPreStep(app, session);
+
+    expect(adapter.calls.filter((c) => c.purpose === 'compaction').length).toBeGreaterThanOrEqual(
+      2,
+    );
+    expect(session.snapshotEvents().some((e) => e.type === 'compaction/summary')).toBe(true);
+    const steps = logs.filter((m) => m.type === 'debug').map((m) => String(m.args[0]));
+    expect(steps.some((s) => s.includes('换算系数 2.00'))).toBe(true);
+    expect(logs.filter((m) => m.type === 'error')).toEqual([]);
   });
 });

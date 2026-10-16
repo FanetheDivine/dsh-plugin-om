@@ -14,7 +14,7 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
 import { apply } from '../src/index.ts';
 import { findOmEvents } from '../src/om-event.ts';
 import type { Session } from '../src/types.ts';
-import { buildToolCallFlow, makeCtx, makeSession, roundChunks } from './helpers.ts';
+import { buildToolCallFlow, historyMessage, makeCtx, makeSession, roundChunks } from './helpers.ts';
 
 describe('挂载失败降级（om 警告事件 + console 外部输出，不阻塞压缩）', () => {
   /** 运行 pre-step 监听器。 */
@@ -122,6 +122,7 @@ describe('挂载失败降级（om 警告事件 + console 外部输出，不阻�
     });
     const ctx = makeCtx({
       meterTotalTokens: 50,
+      meterSurfaceTokens: 50,
       systemPromptAssemble: async () => {
         throw new Error('boom');
       },
@@ -139,7 +140,13 @@ describe('挂载失败降级（om 警告事件 + console 外部输出，不阻�
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
     expect(warns.some((s) => s.includes('系统提示词 tokens 估算失败，按 0 计: boom'))).toBe(true);
     const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
-    expect(steps.some((s) => s.includes('− 系统提示词 0 − 工具定义 0）< 阈值 100000'))).toBe(true);
+    expect(
+      steps.some((s) =>
+        s.includes(
+          '净压力 50 tokens（换算系数 1.00 ×（表层 50 − 已压缩块 0 − 系统提示词 0））< 阈值 100000',
+        ),
+      ),
+    ).toBe(true);
     expect(warningsOf(session)).toHaveLength(0);
     expect(consoleText).not.toContain('dsh-plugin-om');
   });
@@ -211,6 +218,47 @@ describe('挂载失败降级（om 警告事件 + console 外部输出，不阻�
     expect(consoleText).toContain('dsh-plugin-om: token 计量服务异常');
   });
 
+  it('tokenMeter.measure 抛错：反思按系数 1 照常继续、观察本轮跳过、om/warning 追加一次', async () => {
+    const session = makeSession({
+      events: [
+        historyMessage('<user_message index="0">旧内容</user_message>'),
+        ...buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+          withTurnEnd: true,
+        }),
+      ],
+    });
+    const ctx = makeCtx({
+      meterThrows: new Error('meter offline'),
+      llmStreamFactory: () =>
+        roundChunks({
+          calls: [
+            { id: 'view', name: 'getHistory' },
+            { id: 'done', name: 'completeCompression' },
+          ],
+        }),
+    });
+    apply(ctx, { observeThresholdTokens: 1, reflectThresholdTokens: 1, tailMessageCount: 0 });
+    let consoleText = '';
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runPreStep(ctx, session);
+      consoleText = consoleSpy.mock.calls.map((args) => args.join(' ')).join('\n');
+    } finally {
+      consoleSpy.mockRestore();
+    }
+    // 反思按系数 1 继续合并（一轮摘要调用）；观察因计量失败本轮跳过
+    expect(ctx._llmCalls).toHaveLength(1);
+    const types = session.snapshotEvents().map((e) => e.type);
+    expect(types).toContain('compaction/summary');
+    expect(warningsOf(session)).toHaveLength(1); // 反思与观察同轮失败只报一次
+    expect(warningsOf(session)[0]?.problem).toBe('tokenMeter-unavailable');
+    expect(consoleText).toContain('dsh-plugin-om: token 计量服务异常');
+  });
+
   it('tokenMeter.estimateMessage 抛错：该消息按 0 计，压缩提交照常完成、om/warning 追加一次', async () => {
     const session = makeSession({
       events: buildToolCallFlow({
@@ -230,12 +278,24 @@ describe('挂载失败降级（om 警告事件 + console 外部输出，不阻�
       }),
       llmStreamFactory: successFactory(),
     });
-    // measure 正常（压力注入 500000），仅 commit 阶段的 estimateMessage 抛错
+    // measure 正常（真实用量基线与表层估算均注入 500000），仅 commit 阶段的 estimateMessage 抛错
     const meter = ctx.tokenMeter as unknown as {
-      measure: (s: Session) => { totalTokens: number };
+      measure: (s: Session) => {
+        totalTokens: number;
+        surfaceTokens: number;
+        surfaceDeltaTokens: number;
+        baseline: { kind: string; tokens: number };
+        nodes: unknown[];
+      };
       estimateMessage: (m: unknown) => number;
     };
-    meter.measure = () => ({ totalTokens: 500000 });
+    meter.measure = () => ({
+      totalTokens: 500000,
+      surfaceTokens: 500000,
+      surfaceDeltaTokens: 0,
+      baseline: { kind: 'usage', tokens: 500000 },
+      nodes: [],
+    });
     meter.estimateMessage = () => {
       throw new Error('estimate offline');
     };
