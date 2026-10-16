@@ -410,9 +410,7 @@ describe('recall 语义增强', () => {
       callId: 'tc-other',
     } as never)) as RecallOutputValue;
     expect(other.text).toContain('3 条可嵌入');
-    expect(other.text).toContain(
-      '<assistant index="1" type="toolcall" tool-name="recall" callId="tc-self">',
-    );
+    expect(other.text).toContain('<assistant index="1" type="toolcall" tool-name="recall">');
   });
 
   it('纯图片消息（无可渲染文本）不进候选池，无法被语义命中', async () => {

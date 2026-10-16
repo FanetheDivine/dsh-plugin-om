@@ -72,7 +72,7 @@ export function buildCompressionPrompt(skipReasoning: boolean): string {
     '  - 不可再生的信息不论早晚都要保留：用户提出的约束与偏好、做出的决策、报错原文、外部返回的关键数据、验证过的结论。',
     '  - 可以低成本重新获取的内容（文件内容、命令输出、搜索结果）只记来源与要点。',
     '- <history> 条目正文以 CDATA 包裹，CDATA 内为逐字原样内容。',
-    '- 工具调用条目为 <assistant index="N" type="toolcall" tool-name="…" callId="…">，内含 <tool-args>（调用参数 JSON）与 <tool-result>（工具返回内容）两个 CDATA 子元素。',
+    '- 工具调用条目为 <assistant index="N" type="toolcall" tool-name="…">，内含 <tool-args>（调用参数 JSON）与 <tool-result>（工具返回内容）两个 CDATA 子元素。',
     '- 加载的 skill 以 <skill_content name="…" index="N"> 条目呈现，内含 <skill_resources> 与 <skill_instructions> 两段，内文为加载的 skill 内容，属于关键信息。仅在你明确判断该 skill 与后续任务无关时，压缩它；如果该 skill 与后续任务相关，或者你无法判断，不要压缩，**保持原文**。',
     '- 已有 <history> 块中的 ask_user_question 以 <ask-user-question index="N"> 呈现，CDATA 内为逐题成对的 q:（问题文本）与 a:（用户回答）行，未作答的题记为 a:(未回答)。这些提问已经处理；仅在明确判断与后续任务无关时压缩，否则保持原样。原始提问按本会话的专用处理规则执行。',
     '- 除原始提问外，未压缩的条目将原样保留；宁可保留也不要强行压缩不确定的内容。',

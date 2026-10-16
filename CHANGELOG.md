@@ -2,7 +2,9 @@
 
 ## Changes
 
-- 修复压缩会话记录子会话在新会话视图中缺失系统提示词、任务指令显示为上下文注入：压缩循环的系统提示词落盘为 system/message 表层节点，任务指令 source 改写为用户来源，轮间提醒保持插件来源。
+- 修复压缩会话记录子会话在新会话视图中缺失系统提示词、任务指令显示为上下文注入：压缩循环的系统提示词随任务指令 step 落盘为 system/message 事件，任务指令 source 改写为用户来源，轮间提醒保持插件来源。
+- 压缩视图（观察视图、getHistory、最终 `<history>` 块）与 recall 输出的 toolcall 条目不再携带 `callId` 属性：callId 是 provider 随机串，对模型无语义，纯占 token；历史块中旧格式的 `callId` 属性解析时忽略、重新渲染后消失，压缩提示词与块首格式说明注释同步更新，消息层内部关联（ask 配对、压缩记录、语义检索排除自身）不受影响。
+
 - 修复发布版 `view.mjs` 运行时连带执行 `prepare` 与 `compress` 入口、写出多余评估目录并报 `Unknown option`：compaction-eval 脚本拆出共享模块 `profile.ts`（profile 读取）与 `session-source.ts`（会话来源读取），四个发布入口之间不再互相导入运行时代码，每个 `.mjs` 只内联自身 main 守卫；新增入口隔离静态测试，集成测试断言 `view`/`prepare` 无参调用只报会话来源缺失。
 - 裸调用 `/om-compaction-eval` 时弹出两栏模型面板：左栏按供应商分组选模型（可搜索，加载失败的供应商只展示不可选），右栏选该模型的思考等级，默认 max，模型不支持 max 则用模型默认；点“开始分析”后提交 `/om-compaction-eval <provider>/<model> [思考等级]` 并跳转到新会话，失败原因显示在面板内。带参数调用仍由宿主直接执行；`commandUi`、`modelDirectories` 或 `remote.commands` 缺失时不挂面板，命令退回手敲参数。
 - `/om-compaction-eval` 新增可选参数 `provider/model [思考等级]`：新会话默认沿用当前会话最近一次请求的 provider、model 与思考等级，参数可覆盖，只给模型时思考等级用模型默认；模型在投递首条消息前选定，被宿主拒绝时返回原因且不投递。

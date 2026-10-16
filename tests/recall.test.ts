@@ -33,12 +33,9 @@ describe('recall 工具', () => {
     expect(span).toContain('out1');
     expect(span).toContain('out2');
     expect(String(span)).toContain('<user_message index="0">');
-    expect(String(span)).toContain(
-      '<assistant index="2" type="toolcall" tool-name="run_code" callId="c1">',
-    );
-    expect(String(span)).toContain(
-      '<assistant index="5" type="toolcall" tool-name="run_code" callId="c2">',
-    );
+    expect(String(span)).toContain('<assistant index="2" type="toolcall" tool-name="run_code">');
+    expect(String(span)).toContain('<assistant index="5" type="toolcall" tool-name="run_code">');
+    expect(String(span)).not.toContain('callId');
   });
 
   it('手动加载的 skill 输出 skill_content 条目，其余系统消息不出现', async () => {
@@ -118,9 +115,7 @@ describe('recall 工具', () => {
     expect(span).not.toContain('宿主注入的工作区指令');
     expect(span).not.toContain('<sys');
     expect(span).toContain('<user_message index="0">');
-    expect(span).toContain(
-      '<assistant index="5" type="toolcall" tool-name="run_code" callId="c2">',
-    );
+    expect(span).toContain('<assistant index="5" type="toolcall" tool-name="run_code">');
   });
 
   it('offset 正数从 start 向后延伸', async () => {
@@ -347,9 +342,7 @@ describe('recall 工具', () => {
     const value = (await buildRecallTool().execute({ start: 0, offset: 0 }, {
       agent: { session },
     } as never)) as RecallOutputValue;
-    expect(value.text).toContain(
-      '<assistant index="0" type="toolcall" tool-name="run_code" callId="c9">',
-    );
+    expect(value.text).toContain('<assistant index="0" type="toolcall" tool-name="run_code">');
     expect(value.text).toContain('r1');
     expect(value.text).toContain('[图片附件（image/png 800×600，1024 bytes）]');
     expect(value.images).toEqual([

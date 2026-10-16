@@ -5,7 +5,7 @@
  * - user → <user_message index>，正文 CDATA，图片等非文本块为 XML 注释
  * - skill（手动加载）→ <skill_content index name>，正文 CDATA
  * - assistant 文本 → <assistant index type="text">，正文 CDATA
- * - toolcall → <assistant index type="toolcall" tool-name callId>，内嵌 <tool-args>
+ * - toolcall → <assistant index type="toolcall" tool-name>，内嵌 <tool-args>
  *   （合法 JSON，仅一层 JSON 转义）与 <tool-result>（工具返回正文）两个 CDATA 子元素
  * 导出 RenderCompleteMessageXmlOptions / renderCompleteMessageXml / xmlCommentText。
  */
@@ -65,7 +65,7 @@ function toolcallElement(
   const call = toolCallBlockOf(session, cm);
   const toolName = call === undefined ? '' : String(call.name ?? '');
   if (toolName !== '') el.setAttribute('tool-name', toolName);
-  if (cm.callId) el.setAttribute('callId', cm.callId);
+  // callId 是 provider 随机串，对模型无语义，不渲染进条目
   if (call) {
     const args = doc.createElement('tool-args');
     appendCdataText(doc, args, toolArgsJson(call.arguments));
