@@ -21,6 +21,7 @@
 - 压缩会话记录显示在子智能体列表，随父会话 Session 日志一起下载
 - 在浏览器中显示压缩结果、错误和降级警告
 - 压缩卡片可换模型重压缩，可多选模型和思考等级，一次提交按组合并行运行，超出并发上限的排队，进行中显示所用模型，结果只写入压缩会话记录，用于对比不同模型的压缩效果
+- 提供 `/om-compaction-eval` 命令，在同工作区新建会话，由新会话按随包发布的评估文档分析本会话的压缩结果
 
 ## 安装
 
@@ -83,6 +84,16 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 - 宿主把 `feedback/record` 视为用户反馈。遥测为默认的 `FEEDBACK_ONLY` 模式时，含这类记录的会话日志会上传到 DeepSeek 遥测服务。
 - 不希望上传时，设置环境变量 `DSH_TELEMETRY_MODE=DISABLED` 后启动 DSH。
 
+## 命令
+
+| 命令 | 作用 |
+| --- | --- |
+| `/om-compaction-eval` | ai分析OM结果 |
+
+在会话中执行后，插件按 `workspaceId` 在同工作区新建会话，找不到工作区时按 `cwd` 新建，再投递首条消息。消息只给评估文档路径、工作区路径与工作区 id、被分析会话 id，评估步骤由文档决定。浏览器监听到命令成功后跳转到新会话，其他客户端在会话列表中打开它。
+
+评估文档与脚本随包发布在 `dist/skill/compaction-eval`。脚本是自包含 `.mjs`，用户环境只需 Node，不需要安装插件依赖。
+
 ## 开发
 
 运行 `pnpm dev` 自动构建，并在 `cordis.patch.yml` 中加载本地 bundle：
@@ -133,6 +144,8 @@ src/
 ├── compress.ts                  # 两级自动压缩：观察、反思、失败传播与生命周期事件
 ├── recompress.ts                # 换模型重压缩：按压缩 id 重放视图并落盘记录，附内部命令
 ├── recompress-gate.ts           # 重压缩并发信号量：按配置上限排队许可
+├── compaction-eval-command.ts   # OM 结果评估命令：定位评估文档、新建同工作区会话并投递首条消息
+├── eval-session-text.ts         # 评估命令文本契约：命令名与描述、首条消息、成功文本与其反解
 └── client/                      # 浏览器客户端 bundle：压缩卡片与插件行配置
     ├── index.ts                 # 注册卡片、渲染器与行配置槽
     ├── om-config-controller.ts  # 宿主配置表单、草稿和原子保存
@@ -142,18 +155,19 @@ src/
     ├── OmRecompressMenu.tsx     # 重压缩模型多选菜单，复用宿主会话模型目录
     ├── recompress-inject.ts     # 装配模型目录与命令通道
     ├── recompress-run.ts        # 重压缩命令行拼装、组合展开与结果归一化
+    ├── compaction-eval-jump.ts  # 监听命令执行结果，跳转到评估命令新建的会话
     ├── OmWarningCard.tsx        # 功能降级警告行
     ├── format.ts                # 统计数字紧凑格式化
     └── locales.ts               # 中英文文案
 models/                          # 嵌入模型目录
-scripts/                         # 下载和发布脚本
+scripts/                         # 下载、发布与 skill 打包脚本
 tests/                           # 服务端、客户端与集成测试
 web/                             # 机制说明与成本计算器站点
     ├── src/model.ts             # 成本模型
     └── src/components/          # 页面组件与 UI 原语
 .agents/skills/agent-workflow/SKILL.md # 仓库开发工作流
 .agents/skills/clear-branch/SKILL.md   # 手动清空除 main 外的分支与 worktree
-.agents/skills/compaction-eval/         # 压缩质量盲评打分：视图复现与变体生成、数据准备、事实清单、评审提示词与汇总脚本
+.agents/skills/compaction-eval/         # 压缩质量盲评打分：视图复现与变体生成、数据准备、事实清单、评审提示词与汇总脚本；构建时渲染为发布版写入 dist/skill
 .agents/skills/release/SKILL.md        # 手动发布并跟踪 CI 与 npm
 .github/workflows/web-deploy.yml # GitHub Pages 部署工作流
 ```
