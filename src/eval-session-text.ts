@@ -25,9 +25,8 @@ export interface EvalPromptInput {
 
 /** 新会话首条消息：只给文档路径与会话标识，评估步骤全部由文档决定。 */
 export function buildEvalPrompt(input: EvalPromptInput): string {
-  const workspace =
-    input.workspaceId === undefined ? input.cwd : `${input.cwd}（${input.workspaceId}）`;
-  return `按照 ${input.docPath} 分析 ${workspace}/${input.sessionId}`;
+  const workspaceId = input.workspaceId === undefined ? '' : ` workspace_id ${input.workspaceId}`;
+  return `按照 ${input.docPath} 分析会话。workspace ${input.cwd}${workspaceId} session_id ${input.sessionId}`;
 }
 
 /** 成功文本前缀；客户端按同一格式反解新会话 id 用于跳转。 */

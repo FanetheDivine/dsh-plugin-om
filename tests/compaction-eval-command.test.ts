@@ -102,12 +102,14 @@ describe('新会话首条消息文本', () => {
         workspaceId: 'ws-1',
         sessionId: 'session-abc',
       }),
-    ).toBe('按照 /pkg/dist/skill/compaction-eval/SKILL.md 分析 D:/ws/demo（ws-1）/session-abc');
+    ).toBe(
+      '按照 /pkg/dist/skill/compaction-eval/SKILL.md 分析会话。workspace D:/ws/demo workspace_id ws-1 session_id session-abc',
+    );
   });
 
-  it('没有工作区 id 时省略括号段', () => {
+  it('没有工作区 id 时省略 workspace_id 段', () => {
     expect(buildEvalPrompt({ docPath: '/d/SKILL.md', cwd: '/ws', sessionId: 'session-abc' })).toBe(
-      '按照 /d/SKILL.md 分析 /ws/session-abc',
+      '按照 /d/SKILL.md 分析会话。workspace /ws session_id session-abc',
     );
   });
 
@@ -175,7 +177,7 @@ describe('命令处理：建会话并投递首条消息', () => {
     await invoke(unmatched, mainSession(cwd));
     expect(unmatched._sessionCreations).toEqual([{ cwd }]);
     const prompt = unmatched._sessionPrompts[0] as { content: Array<{ text: string }> };
-    expect(prompt.content[0]?.text).not.toContain('（');
+    expect(prompt.content[0]?.text).not.toContain('workspace_id');
   });
 
   it('非主会话与缺 cwd 时返回 error，不建会话', async () => {
