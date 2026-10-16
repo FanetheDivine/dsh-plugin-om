@@ -2,6 +2,7 @@
 
 ## Changes
 
+- 修复 OM 压缩后 Claude 请求偶发 400 `Invalid signature in thinking block`：新增前置 `llm/stream` 中间件，以表层最后一条 OM 消息为分界，剥离其后生成于压缩前的 assistant 消息中的 Anthropic 签名 reasoning 与 `replayState`，仅匹配 Anthropic 协议且模型名含 `claude-` 的消息，其他模型不受影响。
 - 服务端只强依赖 `llm` 和 `tokenMeter`：`tools` 缺失时不注册 `recall`，`sessions` 缺失时跳过压缩会话记录落盘，`commands` 缺失时不注册重压缩命令，三者缺失都只输出 warning，压缩与日志替换照常运行；新增只挂载 `llm` 和 `tokenMeter` 的集成测试。
 - 手动加载的 skill（`skill-invocation` 系统消息）重新计入完整消息：占 index，recall 输出 `<skill_content>`，压缩视图与工具加载的 skill 一致保留原文；其余系统消息仍不占 index。
 - compaction-eval 的 SKILL.md 只保留主流程，评分维度只在一处说明，规则与提示词不再重复判定和计分；脚本直接用 `node` 运行。

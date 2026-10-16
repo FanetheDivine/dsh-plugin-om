@@ -15,6 +15,7 @@
 - 保留工具加载与手动加载的 skill 原文，并在压缩前再次确认
 - 有效提问首次直接压缩需再次确认，保留时查看选项后在下一轮重写问答并展开选项引用
 - 中断或错误的提问作为普通工具调用处理
+- 压缩后发给 Claude 的请求剥离保留尾部中压缩前生成的 thinking 签名，避免前缀变化导致签名校验失败
 - 使用 `recall` 按消息序号回看原文，启用语义增强后还可按含义检索
 - 压缩会话记录落盘完整循环，以宿主原生时间线展示逐轮耗时与 token 用量
 - 压缩会话记录尾部追加模型文本：压缩模型、思考等级、原始与产物字符数（k/w/M 单位，与卡片一致）
@@ -112,6 +113,7 @@ cordis.patch.yml                 # bundle patch，dsh plugin add 后作为组合
 src/
 ├── index.ts                     # 打包入口：注册 recall 工具并接线自动压缩和提醒补发
 ├── system-reminder.ts           # 进度提醒：system-reminder 消息的构造与缺失时补发
+├── thinking-binding.ts          # llm/stream 中间件：剥离 OM 压缩前生成的 Claude thinking 签名
 ├── config.ts                    # 配置默认值与宽松合并，未知键忽略、非法值回退默认
 ├── constants.ts                 # 共享常量：插件标识、history 标签、完整消息定义、格式说明注释
 ├── degrade.ts                   # 挂载失败降级上报：console 外部输出与 om/warning 会话事件
