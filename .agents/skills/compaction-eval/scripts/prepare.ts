@@ -47,6 +47,7 @@ export interface CompactionLog {
   tokens_in: number;
   tokens_out: number;
   product: string;
+  /** 首次成功 compressHistory 之前的 getHistory 参数与结果。 */
   views: [HistoryArgs, string][];
   created: number;
 }
@@ -132,11 +133,14 @@ export function parseLog(events: SessionEvent[]): CompactionLog {
   );
   const ccRes = cc?.data?.callId ? res.get(cc.data.callId) : undefined;
   const product = ccRes && !ccRes.message?.isError ? textOf(ccRes.message?.content) : '';
+  // 原文视图只取首次成功 compressHistory 之前的 getHistory：之后的视图显示本次摘要
   const views: [HistoryArgs, string][] = [];
   for (const e of body) {
-    if (e.type !== 'tool/call' || e.data?.name !== 'getHistory' || !e.data.callId) continue;
+    if (e.type !== 'tool/call' || !e.data?.callId) continue;
     const r = res.get(e.data.callId);
-    if (r && !r.message?.isError)
+    if (!r || r.message?.isError) continue;
+    if (e.data.name === 'compressHistory') break;
+    if (e.data.name === 'getHistory')
       views.push([JSON.parse(e.data.arguments || '{}') as HistoryArgs, textOf(r.message?.content)]);
   }
   return {
