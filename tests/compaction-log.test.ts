@@ -467,6 +467,25 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     ).toBe(true);
   });
 
+  it('没有 sessions 服务时跳过落盘并 warn，不抛错也不写父会话目录', async () => {
+    const ctx = makeCtx({ sessionsMounted: false });
+    const parent = makeSession({ events: twoCallFlow() });
+    const before = parent.snapshotEvents().length;
+    const id = await recordCompressionSession(ctx, parent, {
+      phase: 'observe',
+      messages: loopMessages(),
+      stats: makeStats([{ durationMs: 100 }]),
+      success: true,
+      debug: false,
+    });
+    expect(id).toBeUndefined();
+    expect(ctx._createdSessions).toHaveLength(0);
+    expect(parent.snapshotEvents()).toHaveLength(before);
+    expect(
+      ctx._loggerCalls.some((c) => c.level === 'warn' && c.args.join('').includes('sessions')),
+    ).toBe(true);
+  });
+
   it('没有持久化服务时不报告已落盘子会话', async () => {
     const ctx = makeCtx();
     const originalGet = (ctx as { get: (name: string) => object | undefined }).get.bind(ctx);
