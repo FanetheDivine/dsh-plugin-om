@@ -8,7 +8,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Context } from '@deepseek-ai/cordis';
+import { Context, type Message as LogMessage } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type {
   DeveloperMessage,
@@ -18,8 +18,12 @@ import type {
   ToolCallId,
 } from '@deepseek-ai/dsh-llm';
 import { LlmAdapter, LlmRuntime } from '@deepseek-ai/dsh-llm';
-import type { Session, SessionId } from '@deepseek-ai/dsh-session';
-import { KNOWN_SESSION_EVENT_TYPES, SessionStore } from '@deepseek-ai/dsh-session';
+import {
+  KNOWN_SESSION_EVENT_TYPES,
+  Session,
+  SessionId,
+  SessionStore,
+} from '@deepseek-ai/dsh-session';
 import {
   assertV4RowAdmission,
   releasedV4SessionFormatCodec,
@@ -579,4 +583,70 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(app.tools.get('recall-semantic')).toBeUndefined();
     expect(warmup).not.toHaveBeenCalled();
   }, 30000);
+});
+
+describe('集成：只有 llm 和 tokenMeter 的最小堆叠', () => {
+  /** 只挂 llm、tokenMeter（及其前置 sessionProjections）与 mock adapter，捕获全部日志。 */
+  async function minimalStack() {
+    const app = new Context();
+    const logs: LogMessage[] = [];
+    // default 取最大等级，捕获 error/warn/info/debug 全部输出
+    app.logger.exporter({ levels: { default: 3 }, export: (message) => logs.push(message) });
+    await app.plugin(SessionProjectionRegistry);
+    await app.plugin(LlmRuntime);
+    await app.plugin(TokenMeter);
+    const adapter = new MockAdapter(toolRoundChunks());
+    app.llm.registerAdapter(['mock'], adapter);
+    await app.plugin(
+      { name, inject, apply },
+      {
+        observeThresholdTokens: 100,
+        reflectThresholdTokens: 1000000,
+        tailMessageCount: 0,
+        rateLimitWaitMs: 0,
+        semanticRecallEnabled: false,
+        debug: false,
+      },
+    );
+    // 脱离 SessionStore 的真实会话（sessions 服务不在堆叠中）
+    const session = Session.create(SessionId('it-om-minimal'));
+    session.append('request/header', {
+      header: { config: { provider: 'mock', model: 'mock-model' } },
+      reason: 'initial',
+    });
+    return { app, adapter, logs, session };
+  }
+
+  it('加载不报错，缺失的 tools 和 commands 只产生 warning，recall 不注册', async () => {
+    const { app, logs } = await minimalStack();
+    expect(app.get('tools')).toBeUndefined();
+    expect(logs.filter((m) => m.type === 'error')).toEqual([]);
+    const warns = logs.filter((m) => m.type === 'warn').map((m) => String(m.args[0]));
+    expect(warns.some((w) => w.includes('tools 服务未挂载'))).toBe(true);
+    expect(warns.some((w) => w.includes('commands 服务未挂载'))).toBe(true);
+  });
+
+  it('pre-step 完成压缩，缺失 sessions 只产生 warning，不落盘压缩会话记录', async () => {
+    const { app, adapter, logs, session } = await minimalStack();
+    seedUserMessages(session, 6);
+    expect(app.tokenMeter.measure(session).totalTokens).toBeGreaterThanOrEqual(100);
+
+    const decision = await runPreStep(app, session);
+
+    expect(decision).toMatchObject({ kind: 'enter' });
+    expect(adapter.calls.filter((c) => c.purpose === 'compaction').length).toBeGreaterThanOrEqual(
+      2,
+    );
+    const events = session.snapshotEvents();
+    expect(events.some((e) => e.type === 'compaction/summary')).toBe(true);
+    const end = events.find((e) => e.type === 'compaction/end');
+    expect((end?.data as { error?: string } | undefined)?.error).toBeUndefined();
+    expect((end?.data as { diagnosticSessionId?: string } | undefined)?.diagnosticSessionId).toBe(
+      undefined,
+    );
+    expect(events.some((e) => e.type === 'subagent/catalog')).toBe(false);
+    expect(logs.filter((m) => m.type === 'error')).toEqual([]);
+    const warns = logs.filter((m) => m.type === 'warn').map((m) => String(m.args[0]));
+    expect(warns.some((w) => w.includes('sessions 服务未挂载'))).toBe(true);
+  });
 });
