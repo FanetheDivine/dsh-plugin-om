@@ -85,6 +85,10 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 - 因此观察待定标记和降级警告借用宿主已知的 `feedback/record` 事件写入会话日志。
 - 宿主把 `feedback/record` 视为用户反馈。遥测为默认的 `FEEDBACK_ONLY` 模式时，含这类记录的会话日志会上传到 DeepSeek 遥测服务。
 - 不希望上传时，设置环境变量 `DSH_TELEMETRY_MODE=DISABLED` 后启动 DSH。
+- Claude 的 thinking 签名绑定其前全部内容，宿主也未开放 `drop_block`，因此插件在 `llm/stream` 中改写请求，剥离压缩前生成的签名。
+- 改写后的请求仍由会话日志确定，但宿主请求查看显示的是改写前的内容。
+- 插件与宿主加载的 `dsh-llm` 不是同一份时，改写后的请求会丢失 agent loop 标记，这次请求不触发会话标题生成。
+- 未强制校验签名的旧账号同样会剥离，压缩后尾部的 reasoning 不再发给 Claude。
 
 ## 开发
 
