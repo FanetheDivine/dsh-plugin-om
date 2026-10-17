@@ -602,7 +602,7 @@ describe('真实 agent loop + mock AI', () => {
           expect.objectContaining({
             id: childId,
             mode: 'one-shot',
-            label: expect.stringContaining(mode === 'success' ? '会话记录' : '失败日志'),
+            label: expect.stringContaining(mode === 'success' ? '-观察' : '-失败'),
           }),
         );
         const lineage = await app.sessionQuery.traceSession(parentId);

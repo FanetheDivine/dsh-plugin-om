@@ -164,8 +164,8 @@ export type CompressionLoopOptions = {
   reasoningEffort?: ReasoningEffortId;
   /** 原始消息字符数（与 OM 卡片口径一致）；缺省按视图条目估算。 */
   originalChars?: number;
-  /** 换模型重压缩的目标模型（仅标记会话记录标题）；常规压缩缺省。 */
-  retryTarget?: RoutedTarget;
+  /** 是否重压缩（仅标记会话记录标题）；常规压缩缺省。 */
+  retry?: boolean;
   /** 取消信号。 */
   signal?: AbortSignal;
 };
@@ -313,6 +313,10 @@ export async function runCompressionLoop(
   ): Promise<string | undefined> =>
     recordCompressionSession(ctx, session, {
       phase: options.phase,
+      range: {
+        ...(view.minIndex === undefined ? {} : { min: view.minIndex }),
+        ...(view.maxIndex === undefined ? {} : { max: view.maxIndex }),
+      },
       messages,
       stats,
       system,
@@ -326,7 +330,7 @@ export async function runCompressionLoop(
           : { reasoningEffort: options.reasoningEffort }),
         ...(resultChars === undefined ? {} : { resultChars }),
       }),
-      ...(options.retryTarget === undefined ? {} : { retryTarget: options.retryTarget }),
+      ...(options.retry === undefined ? {} : { retry: options.retry }),
     });
   const failWith = async (error: string, aborted: boolean): Promise<CompressionFailure> => {
     const stats = buildStats();

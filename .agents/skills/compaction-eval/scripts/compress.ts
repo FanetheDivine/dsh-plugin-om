@@ -139,7 +139,7 @@ export async function compressView(
     rateLimitWaitMs: config.rateLimitWaitMs,
     skipReasoning: config.compressSkipReasoning,
     debug: config.debug,
-    retryTarget: routed,
+    retry: true,
     ...(target.reasoningEffort === undefined ? {} : { reasoningEffort: target.reasoningEffort }),
   });
 }
