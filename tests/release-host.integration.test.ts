@@ -343,7 +343,7 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
   it('发布的 skill 文档改为发布版写法，references 原样复制', () => {
     const doc = readFileSync(path.join(SKILL_DIST, 'SKILL.md'), 'utf8');
     // 发布版脚本是自包含 .mjs：文档若残留 .ts 或类型转换标志，用户会照文档跑不存在的源码
-    for (const name of ['prepare', 'view', 'compress', 'aggregate']) {
+    for (const name of ['prepare', 'view', 'compress', 'aggregate', 'merge']) {
       expect(doc, `${name}.ts`).not.toContain(`${name}.ts`);
       expect(doc, `${name}.mjs`).toContain(`${name}.mjs`);
     }
