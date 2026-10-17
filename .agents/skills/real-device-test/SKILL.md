@@ -70,10 +70,10 @@ client 下发断言：GUI 启动后抓 Network，combo URL 含 `dsh-plugin-om/cl
 
 ## 阶段 4 前端实机（类别 C）
 
-基础设施（scripts 提供）：
+基础设施（scripts 提供，启动 dsh 一律带 `--no-open`，避免在浏览器打开网页）：
 
 - `bash scripts/chrome-up.sh [端口] [userDataDir]`：专用 Chrome 实例 + CDP。假死（CDP 命令超时）就杀掉重启新实例，不复用旧实例。本环境 headless 不稳定，用普通模式。
-- `bash scripts/gui-up.sh <profile名> [端口]`：后台起 GUI，从日志提取 token，导出 `OM_GUI_TOKEN`/`OM_GUI_URL`。
+- `bash scripts/gui-up.sh <profile名> [端口]`：后台起 GUI（`--no-open`），从日志提取 token，导出 `OM_GUI_TOKEN`/`OM_GUI_URL`。
 - `node scripts/register-workspace.mjs <profile目录> <仓库绝对路径>`：手工注册工作区（schema 约束见 `references/pitfalls.md`）。
 
 交互配方按 UI 元素类型（`scripts/cdp-ui.mjs` 提供 step 示例）：
