@@ -18,7 +18,7 @@ disable-model-invocation: true
 ## 阶段 0 环境对齐
 
 1. 读插件 `package.json` 的 `@deepseek-ai/dsh-llm` 依赖版本（各 `dsh-*` 包版本一致），作为期望宿主版本。
-2. `dsh --version` 比对：未安装或版本不符，先 `npm i -g @deepseek-ai/dsh@<期望版本>`；一致则继续。不要假定测试环境已有 dsh。
+2. `dsh --version` 比对：一致用全局；未安装或不一致，在 `~/.dsh-local/dsh-<期望版本>` 本地安装，不改全局。本地宿主下跑驱动、起 GUI 前 export `OM_DSH_PKG` 并前置本地 bin 到 PATH，setup-env.sh 会输出这两行。不要假定测试环境已有 dsh。
 3. 仓库内 `pnpm i && pnpm check`（含 build），确保 `dist/` 对应当前 HEAD。
 4. 确认本机有 Chrome。Windows 默认路径见 `scripts/chrome-up.sh`。
 
@@ -72,18 +72,19 @@ client 下发断言：GUI 启动后抓 Network，combo URL 含 `dsh-plugin-om/cl
 
 基础设施（scripts 提供，启动 dsh 一律带 `--no-open`，避免在浏览器打开网页）：
 
-- `bash scripts/chrome-up.sh [端口] [userDataDir]`：专用 Chrome 实例 + CDP。假死（CDP 命令超时）就杀掉重启新实例，不复用旧实例。本环境 headless 不稳定，用普通模式。
+- `bash scripts/chrome-up.sh [端口] [userDataDir]`：专用 Chrome 实例 + CDP。假死（CDP 命令超时）先清 `/json/list` 积压 tab，无效再杀掉重启新实例。本环境 headless 不稳定，用普通模式。
 - `bash scripts/gui-up.sh <profile名> [端口]`：后台起 GUI（`--no-open`），从日志提取 token，导出 `OM_GUI_TOKEN`/`OM_GUI_URL`。
 - `node scripts/register-workspace.mjs <profile目录> <仓库绝对路径>`：手工注册工作区（schema 约束见 `references/pitfalls.md`）。
 
 交互配方按 UI 元素类型（`scripts/cdp-ui.mjs` 提供 step 示例）：
 
 - 侧边栏按钮：折叠态只有 aria-label，用 `button[aria-label=...]` 定位。
-- 会话搜索：按会话标题搜（不是 sessionId）；输入框先清空（Ctrl+A + Backspace）再 `Input.insertText`。
+- 会话搜索：按会话标题搜（不是 sessionId）；输入框先清空（Ctrl+A + Backspace）再 `Input.insertText`；结果行在 `[class*="searchTree"]` 内。
 - 命令面板：必须真实键击 `/`（keyDown + char + keyUp），`insertText` 不触发；选项用 Enter 提交，DOM `el.click()` 无效。
 - 聊天节点卡片：三级展开——turn 披露行（button 文本含「用时」）→ 组标题（`O_Ebla_title`）→ 卡片行（`[data-disclosure-row]`）。外层容器 click 无效。
+- 卡片按钮：文案以插件 `src/client/locales.ts` 的 `card.*` 为准，按单个 button 文本全等匹配。
 - 卡片内菜单与面板：用 `data-*` 属性定位（`data-om-recompress-model/effort/start`、`.om-eval-panel`、`.om-eval-start`）；effort 文本匹配大小写不敏感。
-- 配置表单：插件管理器（侧边栏「插件」）→ 已安装区 → `button[aria-label="配置 <插件名>"]`；输入框用原生 value setter + input 事件；「撤销修改」不写盘。
+- 配置表单：侧边栏 `button[aria-label="插件"]` → 已安装区为空时点「刷新」→ 列表卡片「查看 <插件名>」进详情页 → 组件行 `button[aria-label="配置 <插件名>"]`；输入框用原生 value setter + input 事件；「撤销修改」不写盘。
 - 虚拟列表滚动：容器无原生滚动条，用 CDP `Input.dispatchMouseEvent` 的 `mouseWheel` 把目标带入视口再操作。
 
 证据：每个流程 `Page.captureScreenshot` 存 `shots/`，关键断言配截图。
@@ -93,7 +94,8 @@ client 下发断言：GUI 启动后抓 Network，combo URL 含 `dsh-plugin-om/cl
 - 写断言前以宿主为事实源：读 `node_modules/@deepseek-ai/*/lib/types/*.d.ts` 与 lib 源码，确认事件载荷形状、surfaceOp 规则、插槽契约、chunk 协议。
 - 断言失败先区分「插件缺陷」与「驱动假设过期」：dump 会话落盘 jsonl 与 `requests.jsonl` 核对真实形状。
 - 宿主升级后先跑类别 A 装载用例与 D 契约探针，再跑 B、C。
-- 本轮踩到的漂移点清单见 `references/pitfalls.md`。
+- 服务挂载不报错但 ctx 属性为 undefined，按 `static inject` 递归核对依赖。
+- 漂移点清单见 `references/pitfalls.md`。
 
 ## 阶段 6 报告与清理
 
@@ -107,4 +109,4 @@ client 下发断言：GUI 启动后抓 Network，combo URL 含 `dsh-plugin-om/cl
 - `references/pitfalls.md`：坑清单与恢复手段。
 - `scripts/`：参考实现。setup-env.sh 会把四个 mjs 复制到 profile 目录；mjs 默认自定位（脚本所在目录即 profile 目录）。
 
-脚本统一 env 约定（均可缺省）：`OM_PROFILE_DIR`（profile 目录，默认脚本所在目录）、`OM_PROFILE`（默认目录名）、`OM_REPO`（插件仓库绝对路径，Windows 风格，warm 驱动必填）、`OM_DSH_PKG`（宿主 dsh 的 package.json，默认 `npm root -g` 推导）、`OM_CDP_PORT`（默认 9334）、`OM_GUI_PORT`/`OM_GUI_TOKEN`/`OM_GUI_URL`、`OM_SHOT_DIR`（默认 `<profile>/shots`）。
+脚本统一 env 约定（均可缺省）：`OM_PROFILE_DIR`（profile 目录，默认脚本所在目录）、`OM_PROFILE`（默认目录名）、`OM_REPO`（插件仓库绝对路径，Windows 风格，warm 驱动必填）、`OM_DSH_PKG`（宿主 dsh 的 package.json，默认 `npm root -g` 推导）、`OM_CDP_PORT`（默认 9334）、`OM_GUI_PORT`/`OM_GUI_TOKEN`/`OM_GUI_URL`、`OM_GUI_WAIT`（gui-up 等 token 秒数，默认 90）、`OM_SHOT_DIR`（默认 `<profile>/shots`）。

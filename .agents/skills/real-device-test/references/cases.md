@@ -38,7 +38,7 @@
 | ask 重写回归 | 基线 | rewrite | rewriteAskUserQuestion 守卫错误文案、TOOL_NOT_STARTED、特殊字面值保真 |
 | 手动 skill 计数 | #99 | 手工 append skill-invocation | 视图 skill_content 条目、index 正确 |
 
-## 示例：前端 5 流程
+## 示例：前端 6 流程
 
 | 流程 | 断言 |
 |---|---|
@@ -46,7 +46,8 @@
 | 压缩卡片 | 三级展开后摘要行文本（字符 A → B、耗时、provider/model）、展开体 history 摘要、actions 三项 |
 | 换模型重压缩 | 菜单模型列表、effort 选择、提交后出现「重压缩完成」新记录 |
 | 评估面板 | 真实键击 `/` 唤起 palette、Enter 进面板、选模型与 effort、提交跳转新会话且 composer 绑定所选模型 |
-| 配置面板 | 插件管理器行按钮进表单、19 字段标签、编辑触发「撤销修改」、撤销恢复且不写盘 |
+| 配置面板 | 列表卡片「查看」进详情页、组件行「配置」进表单、字段标签与 `src/config.ts` 的 volatile 字段一致、编辑触发「撤销修改」、撤销恢复且不写盘 |
+| 诊断日志 | 搜索标题打开会话、三级展开卡片、点「诊断日志」打开诊断子会话 |
 
 ## 报告结构
 
