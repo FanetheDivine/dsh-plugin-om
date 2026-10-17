@@ -779,9 +779,7 @@ try {
   const dump = app.sessions.list().map((s) => ({
     id: s.id,
     origin: s.header.origin,
-    events: s
-      .snapshotEvents()
-      .map((e) => e.type),
+    events: s.snapshotEvents().map((e) => e.type),
   }));
   writeFileSync(`${root}/warm-sessions.json`, JSON.stringify(dump, null, 1));
   console.log(
