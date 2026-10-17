@@ -149,17 +149,17 @@ describe('recompress：观察压缩重放', () => {
     // 视图与原压缩一致：getHistory 返回的条目来自原遮蔽区间
     const firstRound = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
     expect(JSON.stringify(firstRound)).toContain('请帮我完成一个任务');
-    // 子会话 label 带重压缩标记，父会话仅多一条 subagent/catalog
+    // 子会话 label 带重压缩后缀，父会话仅多一条 subagent/catalog
     const descriptor = firstRound.find((e) => e.type === 'subagent/descriptor');
     expect(descriptor?.data).toMatchObject({
-      label: expect.stringContaining('重压缩 alt/vendor/big-1'),
+      label: 'OM会话(0-5)-观察-重压缩',
     });
     const appended = session.snapshotEvents().slice(before);
     expect(appended.map((e) => e.type)).toEqual(['subagent/catalog']);
     expect([...session.surface.nodes]).toEqual(surfaceBefore);
   });
 
-  it('重压缩失败：返回错误与诊断子会话 id，日志标题为失败日志', async () => {
+  it('重压缩失败：返回错误与诊断子会话 id，日志标题追加失败后缀', async () => {
     const { session, compactionId } = await observedSession();
     const ctx = makeCtx({ llmStreamFactory: () => roundChunks({ text: '纯文本不调工具' }) });
     const result = await run(ctx, session, compactionId);
@@ -171,7 +171,7 @@ describe('recompress：观察压缩重放', () => {
       .snapshotEvents()
       .find((e) => e.type === 'subagent/descriptor');
     expect(descriptor?.data).toMatchObject({
-      label: expect.stringMatching(/失败日志.*重压缩 alt\/vendor\/big-1/),
+      label: 'OM会话(0-5)-观察-重压缩-失败',
     });
   });
 });

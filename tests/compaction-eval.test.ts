@@ -77,7 +77,7 @@ function compactionEvents(): SessionEvent[] {
     {
       type: 'subagent/descriptor',
       time: 1000,
-      data: { label: 'OM 压缩会话记录（反思 · 2 轮 · 重压缩 p/glm-5）' },
+      data: { label: 'OM会话(0-9)-反思-重压缩' },
     },
     { type: 'user/message', time: 1000, data: { content: txt('压缩 区间 [0..9] 的消息') } },
     { type: 'step/start', time: 1000 },
@@ -248,12 +248,12 @@ describe('prepare', () => {
     expect(pickSource([log], 0, 9)).toBe('part');
   });
 
-  it('parseLog 识别默认思考等级、失败日志与缺失产物', () => {
+  it('parseLog 识别默认思考等级、失败后缀与缺失产物', () => {
     const ev = compactionEvents();
     ev[1] = {
       type: 'subagent/descriptor',
       time: 1000,
-      data: { label: 'OM 压缩失败日志（观察 · 1 轮）' },
+      data: { label: 'OM会话-观察-失败' },
     };
     const info = ev.findLast((e) => e.type === 'assistant/message');
     if (info?.data?.message)

@@ -1,0 +1,72 @@
+// om 私有事件信封（om-event.ts）单元测试：om/observe-summary 载荷的编码往返、
+// 可选字段缺省、严格校验拒绝与类别过滤。
+import { describe, expect, it } from 'vitest';
+import { appendOmEvent, findOmEvents } from '../src/om-event.ts';
+import { makeOmEvent, makeSession } from './helpers.ts';
+
+const fullData = {
+  pendingSeq: 4,
+  report: '<history>摘要</history>',
+  provider: 'deepseek',
+  model: 'deepseek-chat',
+  startedAt: 1000,
+  completedAt: 5000,
+  durationMs: 4000,
+  recordSessionId: 'om-compaction-log-x',
+  usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+  reasoningEffort: 'high',
+};
+
+describe('om/observe-summary 信封', () => {
+  it('完整载荷编码往返（findOmEvents 按类别返回数据与 seq）', () => {
+    const session = makeSession();
+    const seq = appendOmEvent(session, 'om/observe-summary', fullData);
+    expect(seq).toBe(0);
+    expect(findOmEvents(session, 'om/observe-summary')).toEqual([
+      { kind: 'om/observe-summary', data: fullData, seq: 0 },
+    ]);
+  });
+
+  it('可选字段可缺省（往返结果不携带缺省键）', () => {
+    const minimal = {
+      pendingSeq: 7,
+      report: 'r',
+      provider: 'p',
+      model: 'm',
+      startedAt: 1,
+      completedAt: 2,
+      durationMs: 1,
+    };
+    const session = makeSession();
+    appendOmEvent(session, 'om/observe-summary', minimal);
+    const [event] = findOmEvents(session, 'om/observe-summary');
+    expect(event?.data).toEqual(minimal);
+  });
+
+  it('非法载荷被拒绝（readOmEvent 返回 undefined，不进 findOmEvents）', () => {
+    const invalid: Record<string, unknown>[] = [
+      { ...fullData, report: 123 },
+      { ...fullData, pendingSeq: 1.5 },
+      { ...fullData, provider: 1 },
+      { ...fullData, startedAt: 'x' },
+      { ...fullData, durationMs: Number.NaN },
+      { ...fullData, recordSessionId: 42 },
+      { ...fullData, reasoningEffort: true },
+      { ...fullData, usage: { outputTokens: 1 } },
+      { ...fullData, usage: { inputTokens: 1, outputTokens: 2, totalTokens: 'x' } },
+      { ...fullData, usage: 'lots' },
+    ];
+    for (const data of invalid) {
+      const session = makeSession({ events: [makeOmEvent('om/observe-summary', data)] });
+      expect(findOmEvents(session, 'om/observe-summary')).toEqual([]);
+    }
+  });
+
+  it('findOmEvents 类别过滤只返回 observe-summary，缺省返回全部', () => {
+    const session = makeSession();
+    appendOmEvent(session, 'om/observe-pending', { triggerMessageIndex: 2 });
+    appendOmEvent(session, 'om/observe-summary', fullData);
+    expect(findOmEvents(session, 'om/observe-summary')).toHaveLength(1);
+    expect(findOmEvents(session)).toHaveLength(2);
+  });
+});

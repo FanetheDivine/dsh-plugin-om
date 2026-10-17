@@ -61,7 +61,8 @@ async function runPreStepWithDelay(
   const listeners = ctx._onCallbacks.get('agent/pre-step');
   const run = () =>
     listeners?.[0]?.({ agent: { session }, signal: new AbortController().signal }, () => {});
-  await run(); // 第一步：触发观察，记录待定标记（无摘要调用）
+  await run(); // 第一步：触发观察，记录待定标记并开始后台预压缩
+  await new Promise((resolve) => setTimeout(resolve, 0)); // 冲刷微任务：后台任务落定，对账状态确定
   session.append(
     'user/message',
     makeMessage({
@@ -70,7 +71,7 @@ async function runPreStepWithDelay(
     }) as unknown as UserMessage,
     { surfaceOp: 'append' },
   );
-  await run(); // 第二步：新增完整消息数达到 tailMessageCount → 执行压缩
+  await run(); // 第二步：新增完整消息数达到 tailMessageCount → 到期注入
 }
 
 /** 构造 om/observe-pending 信封事件（seq 由 makeSession 按日志下标补齐）。 */
@@ -338,13 +339,17 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(historyText).toContain(historyFormatNote({ user: true })); // 块首格式说明注释（仅含 user 说明）
     // 遮蔽后表层 = 仅 <history> 块（tailCount=0 全部压缩）
     expect(session.surface.nodes.length).toBe(1);
-    // compaction 生命周期：start → summary → 替换消息 → end（同 compactionId）
+    // compaction 生命周期：start → summary → 替换消息 → end（同 compactionId，注入时一次写出）
     const { start, summary, end, replace } = compactionLifecycle(session);
     expect(start).not.toBe(-1);
-    expect(session.snapshotEvents()[start + 1]?.type).toBe('subagent/catalog');
-    expect(summary).toBe(start + 2);
+    expect(summary).toBe(start + 1);
     expect(replace).toBe(summary + 1);
     expect(end).toBe(replace + 1);
+    // 后台压缩的诊断子会话目录与结果信封先于注入落盘
+    const catalogSeq = session.snapshotEvents().findIndex((e) => e.type === 'subagent/catalog');
+    expect(catalogSeq).toBeGreaterThanOrEqual(0);
+    expect(catalogSeq).toBeLessThan(start);
+    expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-summary'))).toBe(true);
     // 不再单独发 compaction/prune（summary 承担影子价格认领）
     expect(session.snapshotEvents().some((e) => e.type === 'compaction/prune')).toBe(false);
     const startEvent = session.snapshotEvents()[start];
@@ -386,12 +391,12 @@ describe('apply 接线（OM 观察压缩）', () => {
     // 统计载荷：遮蔽节点 = 整条工具流（user/assistant/tool-result）；压缩前字符数 = 9+6+4（递归计入 tool-result 内嵌文本）
     expect(summaryEvent.data.shadowedSeqs).toEqual([0, 1, 3]);
     expect((summaryEvent.data as CompactionSummaryPayload).shadowedCharCount).toBe(19);
-    // 成功落盘压缩会话记录子会话（label 为会话记录）
+    // 成功落盘压缩会话记录子会话（label 含观察阶段）
     expect(ctx._createdSessions).toHaveLength(1);
     const descriptor = ctx._createdSessions[0]?.session
       .snapshotEvents()
       .find((e) => e.type === 'subagent/descriptor');
-    expect((descriptor?.data as { label?: string })?.label).toContain('会话记录');
+    expect((descriptor?.data as { label?: string })?.label).toContain('-观察');
   });
 
   it('compressSkipReasoning=false：压缩指令携带 <reasoning> 说明行，getHistory 输出含参考条目', async () => {
@@ -575,7 +580,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(session.surface.nodes.length).toBe(3);
   });
 
-  it('模型输出纯文本（无工具调用）：追加提醒继续，连续 2 轮判失败不产生替换', async () => {
+  it('模型输出纯文本（无工具调用）：追加提醒继续，连续 3 轮判失败不产生替换', async () => {
     const session = makeSession({
       events: buildToolCallFlow({
         code: 'a()',
@@ -590,24 +595,22 @@ describe('apply 接线（OM 观察压缩）', () => {
     });
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStepWithDelay(ctx, session);
-    // 第 1 轮纯文本 → 提醒；第 2 轮仍纯文本 → 判失败（共 2 次请求）
-    expect(ctx._llmCalls).toHaveLength(2);
-    // 压缩失败保留待定标记（无失效标记）：下个 pre-step 直接重试执行
+    // 触发即后台压缩：两次任务各 3 轮（纯文本 → 提醒 → 仍纯文本 → 判失败）
+    expect(ctx._llmCalls).toHaveLength(6);
+    // 压缩失败保留待定标记（无失效标记）：下个 pre-step 丢弃失败任务重启重试
     expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-pending'))).toBe(true);
     expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
-    // 压缩失败：start 在循环前已开启（UI 压缩中提示），end(error) 关闭生命周期；
-    // 无 summary、无部分替换
-    expect(session.snapshotEvents().some((e) => e.type === 'compaction/start')).toBe(true);
+    // 失败不写 compaction 生命周期（start/summary/end 仅成功注入时写出）、无部分替换
+    expect(session.snapshotEvents().some((e) => e.type === 'compaction/start')).toBe(false);
     expect(session.snapshotEvents().some((e) => e.type === 'compaction/summary')).toBe(false);
-    const failEnd = session.snapshotEvents().findLast((e) => e.type === 'compaction/end');
-    if (failEnd?.type !== 'compaction/end') throw new Error('缺 end');
-    expect((failEnd.data as { error?: string }).error).toContain('未调用压缩工具');
+    expect(session.snapshotEvents().some((e) => e.type === 'compaction/end')).toBe(false);
     expect(latestHistoryText(session)).toBe(''); // 无部分替换
-    // 失败也落盘会话记录（label 为失败日志）
+    // 失败任务各落盘一份会话记录（label 追加失败后缀）
+    expect(ctx._createdSessions).toHaveLength(2);
     const descriptor = ctx._createdSessions[0]?.session
       .snapshotEvents()
       .find((e) => e.type === 'subagent/descriptor');
-    expect((descriptor?.data as { label?: string })?.label).toContain('失败日志');
+    expect((descriptor?.data as { label?: string })?.label).toContain('-失败');
   });
 
   it('请求级错误：流以 error 终态结束视为失败，不产生替换', async () => {
@@ -626,15 +629,18 @@ describe('apply 接线（OM 观察压缩）', () => {
     });
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStepWithDelay(ctx, session);
-    // 请求级错误不重试：仅 1 次请求即失败
-    expect(ctx._llmCalls).toHaveLength(1);
-    expect(session.snapshotEvents().some((e) => e.type === 'compaction/start')).toBe(true);
-    expect(session.snapshotEvents().some((e) => e.type === 'compaction/end')).toBe(true);
+    // 请求级错误不重试：两次任务各 1 次请求即失败
+    expect(ctx._llmCalls).toHaveLength(2);
+    // 失败不写 compaction 生命周期；待定标记保留（无失效标记）
+    expect(session.snapshotEvents().some((e) => e.type === 'compaction/start')).toBe(false);
+    expect(session.snapshotEvents().some((e) => e.type === 'compaction/end')).toBe(false);
     expect(session.snapshotEvents().some((e) => e.type === 'compaction/summary')).toBe(false);
+    expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-pending'))).toBe(true);
+    expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
     expect(latestHistoryText(session)).toBe('');
   });
 
-  it('压缩循环失败：pre-step 返回 reject 中断当前 turn（不调用 next），end(error) 携带实际报错', async () => {
+  it('压缩循环失败：pre-step 返回 reject 中断当前 turn（不调用 next），失败任务到期重启重试', async () => {
     const session = makeSession({
       events: buildToolCallFlow({
         code: 'a()',
@@ -656,7 +662,8 @@ describe('apply 接线（OM 观察压缩）', () => {
         nextCalled = true;
         return undefined;
       });
-    await run(); // 第一步：触发观察，记录待定标记（正常放行）
+    await run(); // 第一步：触发观察，记录待定标记并开始后台压缩（正常放行）
+    await new Promise((resolve) => setTimeout(resolve, 0)); // 后台任务落定为失败
     nextCalled = false;
     session.append(
       'user/message',
@@ -666,18 +673,17 @@ describe('apply 接线（OM 观察压缩）', () => {
       }) as unknown as UserMessage,
       { surfaceOp: 'append' },
     );
-    const decision = await run(); // 第二步：延迟到期执行，压缩失败拒绝本 step
+    const decision = await run(); // 第二步：到期对账丢弃失败任务重启，仍失败 → 拒绝本 step
     expect(decision).toEqual({ kind: 'reject' }); // 拒绝本 step，当前 turn 以 blocked 结束
     expect(nextCalled).toBe(false); // 不放行、不再继续 AI 会话
-    expect(ctx._llmCalls).toHaveLength(1);
-    const failEnd = session.snapshotEvents().findLast((e) => e.type === 'compaction/end');
-    if (failEnd?.type !== 'compaction/end') throw new Error('缺 end');
-    expect((failEnd.data as { error?: string }).error).toContain('额度不足'); // 实际报错写入 end
-    // 诊断子会话（失败日志）id 随 end 载荷传播；失败路径同样记录压缩循环总耗时
-    expect((failEnd.data as { diagnosticSessionId?: string }).diagnosticSessionId).toBe(
-      ctx._createdSessions[0]?.id,
-    );
-    expect((failEnd.data as { durationMs?: number }).durationMs).toBeGreaterThanOrEqual(0);
+    expect(ctx._llmCalls).toHaveLength(2); // 两次后台任务各 1 次请求
+    // 失败不写 compaction 生命周期；待定标记保留（无失效标记）供下轮重试
+    expect(session.snapshotEvents().some((e) => e.type === 'compaction/start')).toBe(false);
+    expect(session.snapshotEvents().some((e) => e.type === 'compaction/end')).toBe(false);
+    expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-pending'))).toBe(true);
+    expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
+    // 每次失败任务各落盘一份诊断子会话（失败日志）
+    expect(ctx._createdSessions).toHaveLength(2);
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
     expect(
       warns.some((w) => w.includes('上下文压缩失败，拒绝本 step 中断当前 turn：额度不足')),
@@ -1562,11 +1568,12 @@ describe('apply 接线（recallEnabled / semanticRecallEnabled）', () => {
   });
 });
 
-// apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行）：净压力首次达阈值时记录
-// om/observe-pending 待定标记（触发点 = 最后一条完整消息 index）本次不压缩；待定后
-// 新增完整消息数 ≥ tailMessageCount 时执行压缩（区间截至触发点）并写 om/observe-invalidate
-// 失效标记；摘要失败保留待定直接重试；标记以 om 信封事件（借用 feedback/record）
-// 持久化在会话日志中，重启后从日志恢复。
+// apply 接线（延迟观察压缩：触发 → 后台预压缩 → 到期注入）：净压力首次达阈值时记录
+// om/observe-pending 待定标记（触发点 = 最后一条完整消息 index）并立即开始后台预压缩，
+// 结果写 om/observe-summary 信封、不替换表层；每个 pre-step 对账标记与任务/结果；
+// 待定后新增完整消息数 ≥ tailMessageCount 时注入（区间截至触发点）并写
+// om/observe-invalidate 失效标记；失败任务到期重启重试；标记与结果以 om 信封事件
+// （借用 feedback/record）持久化在会话日志中，重启后对账恢复。
 describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行）', () => {
   /** 运行一次 pre-step 监听器，返回 next 是否被调用。 */
   async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
@@ -1576,6 +1583,11 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
       nextCalled = true;
     });
     return nextCalled;
+  }
+
+  /** 冲刷微任务队列：让后台预压缩任务落定（done/failed），对账状态确定。 */
+  async function flushBackground(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
   }
 
   /** 追加一条等待期用户消息（完整消息 index +1）。 */
@@ -1623,41 +1635,55 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     });
   }
 
-  it('触发即待定：达阈值记录 om/observe-pending（触发点 = 最后完整消息 index），本次不压缩', async () => {
+  it('触发即后台预压缩：达阈值记录待定标记并立即压缩，结果写信封不替换表层', async () => {
     const session = singleFlowSession();
     const ctx = observeCtx();
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     const nextCalled = await runPreStep(ctx, session);
     expect(nextCalled).toBe(true); // 触发不中断，正常放行
-    expect(ctx._llmCalls).toHaveLength(0); // 延迟执行：本次无压缩请求
+    await flushBackground(); // 后台任务落定
+    expect(ctx._llmCalls).toHaveLength(3); // 触发即压缩：getHistory → compressHistory → completeCompression
     const pendingEvents = findOmEvents(session, 'om/observe-pending');
     expect(pendingEvents).toHaveLength(1);
     expect(pendingEvents[0]?.data).toEqual({ triggerMessageIndex: 2 });
     expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
-    expect(session.surface.nodes.length).toBe(3); // 表层不变
+    // 压缩结果持久化为 om/observe-summary 信封（pendingSeq 指向待定标记），不写 compaction 生命周期
+    const summaries = findOmEvents(session, 'om/observe-summary');
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.data.pendingSeq).toBe(pendingEvents[0]?.seq);
+    expect(session.snapshotEvents().some((e) => e.type === 'compaction/start')).toBe(false);
+    expect(session.snapshotEvents().some((e) => e.type === 'compaction/summary')).toBe(false);
+    expect(session.surface.nodes.length).toBe(3); // 表层不变：注入留给到期 pre-step
+    expect(latestHistoryText(session)).toBe('');
   });
 
-  it('活跃待定期间不重复添加：连续 pre-step 仅一条 pending', async () => {
+  it('活跃待定期间不重复压缩：结果已持久化，连续 pre-step 仅一条 pending 与一份结果', async () => {
     const session = singleFlowSession();
     const ctx = observeCtx();
     apply(ctx, { tailMessageCount: 3, observeThresholdTokens: 1 });
     await runPreStep(ctx, session);
-    await runPreStep(ctx, session); // 未满 K，等待中
+    await flushBackground(); // 后台任务完成，结果已写信封
+    await runPreStep(ctx, session); // 未满 K：对账采纳持久化结果，等待
     expect(findOmEvents(session, 'om/observe-pending')).toHaveLength(1);
-    expect(ctx._llmCalls).toHaveLength(0);
+    expect(findOmEvents(session, 'om/observe-summary')).toHaveLength(1); // 不重复压缩
+    expect(ctx._llmCalls).toHaveLength(3);
   });
 
-  it('未满 K 等待：新增完整消息数不足时不执行', async () => {
+  it('未满 K 等待：新增完整消息数不足时不注入', async () => {
     const session = singleFlowSession();
     const ctx = observeCtx();
     apply(ctx, { tailMessageCount: 2, observeThresholdTokens: 1 });
-    await runPreStep(ctx, session); // 触发
+    await runPreStep(ctx, session); // 触发并开始后台压缩
+    await flushBackground();
     appendWaitingMessage(session, 'wait-1'); // 新增 1 < 2
     await runPreStep(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(0);
+    expect(ctx._llmCalls).toHaveLength(3); // 仅触发时的一次后台压缩
+    expect(session.snapshotEvents().some((e) => e.type === 'compaction/summary')).toBe(false);
     const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
     expect(
-      steps.some((s) => s.includes('待定标记等待中（触发点完整消息 index 2，新增 1/2 条）')),
+      steps.some((s) =>
+        s.includes('待定标记等待中（触发点完整消息 index 2，新增 1/2），后台已有持久化结果待注入'),
+      ),
     ).toBe(true);
   });
 
@@ -1665,9 +1691,10 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     const session = singleFlowSession();
     const ctx = observeCtx();
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
-    await runPreStep(ctx, session); // 触发：triggerMessageIndex = 2
+    await runPreStep(ctx, session); // 触发：triggerMessageIndex = 2，立即后台压缩
+    await flushBackground(); // 后台任务完成，结果已持久化
     appendWaitingMessage(session, 'wait-exec'); // 新增 1 ≥ 1
-    await runPreStep(ctx, session);
+    await runPreStep(ctx, session); // 到期：采纳持久化结果注入
     expect(ctx._llmCalls).toHaveLength(3); // getHistory → compressHistory → completeCompression
     // 压缩区间 [0..3]（触发点完整消息 index 2 = toolcall，最后事件 seq 3 平衡）
     const { summary } = compactionLifecycle(session);
@@ -1691,26 +1718,32 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     expect(invalidates[0]?.data.pendingSeq).toBe(pendings[0]?.seq);
   });
 
-  it('K=0：触发当轮立即执行（无待定/失效标记）', async () => {
+  it('K=0：触发当轮即到期，等待后台完成后当轮注入（统一标记路径）', async () => {
     const session = singleFlowSession();
     const ctx = observeCtx();
     apply(ctx, { tailMessageCount: 0, observeThresholdTokens: 1 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3);
-    expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-pending'))).toBe(false);
-    expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
+    // K=0 同样走标记路径：pending 与 invalidate 成对出现
+    const pendings = findOmEvents(session, 'om/observe-pending');
+    const invalidates = findOmEvents(session, 'om/observe-invalidate');
+    expect(pendings).toHaveLength(1);
+    expect(invalidates).toHaveLength(1);
+    expect(invalidates[0]?.data.pendingSeq).toBe(pendings[0]?.seq);
     expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
   });
 
-  it('压缩失败保留待定：下个 pre-step 到期直接重试执行并成功', async () => {
+  it('压缩失败保留待定：到期 pre-step 丢弃失败任务重启，重试成功后注入', async () => {
     const session = singleFlowSession();
     let failed = true;
+    let successRound = 0;
     const ctx = makeCtx({
-      llmStreamFactory: (index) => {
-        if (failed) return roundChunks({ text: '不调用工具' }); // 连续 2 轮纯文本 → 失败
-        // 重试执行走完整三轮（getHistory → compressHistory → completeCompression）
-        if (index === 2) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
-        if (index === 3)
+      llmStreamFactory: () => {
+        if (failed) return roundChunks({ text: '不调用工具' }); // 连续 3 轮纯文本 → 失败
+        // 成功任务走完整三轮（getHistory → compressHistory → completeCompression）
+        successRound += 1;
+        if (successRound === 1) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+        if (successRound === 2)
           return roundChunks({
             calls: [
               {
@@ -1724,28 +1757,33 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
       },
     });
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
-    await runPreStep(ctx, session); // 触发
+    await runPreStep(ctx, session); // 触发并开始后台压缩
+    await flushBackground();
+    expect(ctx._llmCalls).toHaveLength(3); // 后台任务 3 轮纯文本判失败
     appendWaitingMessage(session, 'wait-fail');
-    await runPreStep(ctx, session); // 执行：2 轮纯文本判失败
-    expect(ctx._llmCalls).toHaveLength(2);
+    await runPreStep(ctx, session); // 到期：对账发现失败任务 → 丢弃重启 → 仍失败 → 拒绝本 step
+    expect(ctx._llmCalls).toHaveLength(6);
     expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
+    expect(latestHistoryText(session)).toBe('');
     appendWaitingMessage(session, 'wait-retry');
     failed = false;
-    await runPreStep(ctx, session); // 待定仍在、到期条件仍满足 → 直接重试执行
-    expect(ctx._llmCalls).toHaveLength(5); // 失败 2 轮 + 重试成功 3 轮
+    await runPreStep(ctx, session); // 待定仍在、到期条件仍满足 → 再次重启任务 → 成功注入
+    expect(ctx._llmCalls).toHaveLength(9); // 失败 3+3 轮 + 重试成功 3 轮
     expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(true);
     expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
   });
 
-  it('重启恢复：待定标记从会话日志恢复（新会话对象含 pending 事件即可续跑）', async () => {
-    // 模拟重启：pending 事件已持久化在日志中，重建的会话对象直接带上它
+  it('重启恢复：待定标记从日志恢复，对账自动重启压缩，到期采纳持久化结果注入', async () => {
+    // 模拟重启：pending 事件已持久化在日志中（无进程内任务、无结果信封），重建会话对象直接带上它
     const session = singleFlowSession([pendingEvent(2)]);
     const ctx = observeCtx();
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
-    await runPreStep(ctx, session); // 未满 K：等待（新增 0 < 1）
-    expect(ctx._llmCalls).toHaveLength(0);
+    await runPreStep(ctx, session); // 未满 K：对账发现标记无任务 → 重启后台压缩
+    await flushBackground();
+    expect(ctx._llmCalls).toHaveLength(3);
+    expect(findOmEvents(session, 'om/observe-summary')).toHaveLength(1); // 结果已持久化
     appendWaitingMessage(session, 'wait-resume'); // 新增 1 ≥ 1
-    await runPreStep(ctx, session);
+    await runPreStep(ctx, session); // 到期：采纳持久化结果直接注入，不再发起请求
     expect(ctx._llmCalls).toHaveLength(3);
     expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
     const invalidateEvent = session
@@ -1781,13 +1819,18 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
       },
     });
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
-    await runPreStep(ctx, session); // 过期 → 重新触发：新一轮 pending（seq 7，触发点仍为 index 2）
+    await runPreStep(ctx, session); // 过期 → 重新触发：边界后无内容，新标记因无可行区间被立即失效
     expect(ctx._llmCalls).toHaveLength(0);
     expect(findOmEvents(session, 'om/observe-pending')).toHaveLength(2);
-    appendWaitingMessage(session, 'wait-expired'); // 新增 1 ≥ 1
-    await runPreStep(ctx, session); // 触发点内容已被压缩 → 无可行区间 → 清除标记视为完成
-    expect(ctx._llmCalls).toHaveLength(0); // 不对已压缩内容发起压缩
-    expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(true); // 新标记已失效
-    expect(latestHistoryText(session)).toContain('压缩后的块'); // 无新增替换
+    expect(findOmEvents(session, 'om/observe-invalidate')).toHaveLength(1);
+    appendWaitingMessage(session, 'wait-expired'); // 边界后出现新内容
+    await runPreStep(ctx, session); // 再触发：新标记有可行区间（仅覆盖边界后的新内容），开始后台压缩
+    expect(findOmEvents(session, 'om/observe-pending')).toHaveLength(3);
+    expect(findOmEvents(session, 'om/observe-invalidate')).toHaveLength(1); // 新标记活跃，未失效
+    expect(ctx._llmCalls.length).toBeGreaterThanOrEqual(1); // 对新内容发起压缩
+    await flushBackground();
+    expect(ctx._llmCalls).toHaveLength(2); // getHistory → completeCompression
+    expect(findOmEvents(session, 'om/observe-summary')).toHaveLength(1); // 结果持久化，未到期不注入
+    expect(latestHistoryText(session)).toContain('压缩后的块'); // 旧块保留：已压缩内容不被重复替换
   });
 });

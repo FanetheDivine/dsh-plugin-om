@@ -221,7 +221,7 @@ export async function recompress(
     rateLimitWaitMs: config.rateLimitWaitMs,
     skipReasoning: config.compressSkipReasoning,
     debug: config.debug,
-    retryTarget: target,
+    retry: true,
     ...(request.reasoningEffort === undefined
       ? {}
       : { reasoningEffort: request.reasoningEffort as ReasoningEffortId }),

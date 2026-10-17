@@ -163,7 +163,7 @@ export class CompressionState {
    * getHistory：返回 [start..end] 区间内的当前条目（无 <history> 包裹）。
    * start/end 缺省为要求区间首尾；越界或 start > end 返回错误。本次替换的区间显示为
    * 摘要条目，与查询区间相交即整条返回；区间切入已有压缩块（反思视图）时返回该块当前
-   * 全部条目，跨块摘要连带展开其覆盖的块。注释头列出返回内容中本次已压缩的区间。
+   * 全部条目，跨块摘要连带展开其覆盖的块。
    */
   getHistory(args: Record<string, unknown>): ToolCallResult {
     const { minIndex, maxIndex } = this.view;
@@ -216,13 +216,7 @@ export class CompressionState {
     if (selected.length === 0) {
       return { text: `区间 [${start}..${end}] 没有条目`, isError: false };
     }
-    const done = selected.flatMap(({ replacement: rep }) =>
-      rep === undefined ? [] : [rep.lo === rep.hi ? `[${rep.lo}]` : `[${rep.lo}..${rep.hi}]`],
-    );
-    const header = `完整消息区间 [${start}..${end}]，共 ${selected.length} 条${
-      done.length === 0 ? '' : `；本次已压缩 ${done.join('、')}`
-    }`;
-    const text = `<!-- ${header} -->\n${renderEntriesXml(selected.map((item) => item.entry))}`;
+    const text = renderEntriesXml(selected.map((item) => item.entry));
     for (const { entry } of selected) {
       if (entry.ask !== undefined && entry.lo !== undefined) this.undeliveredAsks.add(entry.lo);
     }
@@ -598,7 +592,7 @@ export const COMPRESSION_TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'getHistory',
     description:
-      '查看压缩区间内的历史条目，返回当前状态：本次已压缩的区间显示为摘要条目，注释头列出这些区间；区间切入已有 <history> 块时返回该块全部条目。start/end 缺省为要求区间的第一个/最后一个完整消息 index，必须在要求区间内。',
+      '查看压缩区间内的历史条目，返回当前状态：本次已压缩的区间显示为摘要条目；区间切入已有 <history> 块时返回该块全部条目。start/end 缺省为要求区间的第一个/最后一个完整消息 index，必须在要求区间内。',
     parameters: {
       type: 'object',
       properties: {

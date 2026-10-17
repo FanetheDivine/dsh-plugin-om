@@ -9,6 +9,7 @@ import {
   type CompressionLoopOptions,
   REFLECT_COMPRESSION_PROMPT,
   runCompressionLoop,
+  TRUNCATION_NUDGE_TEXT,
   withoutReasoning,
 } from '../src/compress-loop.ts';
 import { buildReflectView, type CompressionView, type ViewEntry } from '../src/compress-view.ts';
@@ -397,7 +398,7 @@ describe('runCompressionLoop', () => {
     expect(result.text).toContain('<user_message index="0"><![CDATA[用户消息]]></user_message>');
     expect(result.text).toContain('<assistant index="1"><![CDATA[B的摘要]]></assistant>');
     expect(result.text).toContain('<assistant index="2"><![CDATA[C的摘要]]></assistant>');
-    // 会话记录子会话：label 含阶段与轮数，消息组原样落盘并 flush
+    // 会话记录子会话：label 含区间与阶段（testView 区间 0-2），消息组原样落盘并 flush
     expect(ctx._createdSessions).toHaveLength(1);
     const record = ctx._createdSessions[0];
     expect(
@@ -405,8 +406,7 @@ describe('runCompressionLoop', () => {
     ).toBe(session.id);
     const events = record?.session.snapshotEvents() ?? [];
     const descriptor = events.find((e) => e.type === 'subagent/descriptor');
-    expect((descriptor?.data as { label?: string })?.label).toContain('会话记录');
-    expect((descriptor?.data as { label?: string })?.label).toContain('3 轮');
+    expect((descriptor?.data as { label?: string })?.label).toBe('OM会话(0-2)-观察');
     // 消息组：user 指令为唯一 user/message，工具结果（getHistory、
     // 两次 compressHistory、completeCompression 共 4 条）为 tool/result；
     // assistant/message 为 3 轮模型输出 + 尾部 1 条模型信息
@@ -477,11 +477,30 @@ describe('runCompressionLoop', () => {
     const failed = await runCompressionLoop(failCtx, makeSession(), loopOptions());
     expect(failed.ok).toBe(false);
     expect(tailOf(failCtx).text).toContain('原始消息 10 字符');
-    expect(tailOf(failCtx).text).toContain('压缩产物 无（压缩失败）');
+    expect(tailOf(failCtx).text).toContain(
+      '压缩产物 无（压缩失败：模型连续 3 轮未调用压缩工具，放弃本次压缩；最后一轮 finish=stop',
+    );
   });
 
-  it('retryTarget 透传到会话记录标题：成功与失败日志均带重压缩标记', async () => {
-    const retryTarget = { provider: 'alt', model: 'big-1' };
+  it('截断失败：失败日志尾部记录 finish=max-tokens 与输出 token 数', async () => {
+    const ctx = makeCtx({
+      llmStreamFactory: () =>
+        roundChunks({
+          reasoning: '长思考',
+          usage: { inputTokens: 10, outputTokens: 32768 },
+          finish: { kind: 'max-tokens' },
+        }),
+    });
+    const failed = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(failed.ok).toBe(false);
+    const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
+    const last = events.filter((e) => e.type === 'assistant/message').at(-1);
+    expect(JSON.stringify(last?.data)).toContain(
+      '压缩失败：模型连续 3 轮输出被 max-tokens 截断，放弃本次压缩；最后一轮 finish=max-tokens，输出 32768 tokens）',
+    );
+  });
+
+  it('retry 透传到会话记录标题：成功与失败均带重压缩后缀', async () => {
     /** 读取首个落盘子会话的 descriptor label。 */
     const labelOf = (ctx: ReturnType<typeof makeCtx>): string | undefined => {
       const data = ctx._createdSessions[0]?.session
@@ -495,23 +514,21 @@ describe('runCompressionLoop', () => {
       });
 
     const okCtx = completing();
-    const ok = await runCompressionLoop(okCtx, makeSession(), { ...loopOptions(), retryTarget });
+    const ok = await runCompressionLoop(okCtx, makeSession(), { ...loopOptions(), retry: true });
     expect(ok.ok).toBe(true);
-    expect(labelOf(okCtx)).toContain('会话记录');
-    expect(labelOf(okCtx)).toContain('重压缩 alt/big-1');
+    expect(labelOf(okCtx)).toBe('OM会话(0-2)-观察-重压缩');
 
     const failCtx = makeCtx({ llmStreamFactory: () => roundChunks({ text: '纯文本' }) });
     const failed = await runCompressionLoop(failCtx, makeSession(), {
       ...loopOptions(),
-      retryTarget,
+      retry: true,
     });
     expect(failed.ok).toBe(false);
-    expect(labelOf(failCtx)).toContain('失败日志');
-    expect(labelOf(failCtx)).toContain('重压缩 alt/big-1');
+    expect(labelOf(failCtx)).toBe('OM会话(0-2)-观察-重压缩-失败');
 
     const plainCtx = completing();
     await runCompressionLoop(plainCtx, makeSession(), loopOptions());
-    expect(labelOf(plainCtx)).not.toContain('重压缩');
+    expect(labelOf(plainCtx)).toBe('OM会话(0-2)-观察');
   });
 
   it('请求选项：system 为共享提示词、携带压缩工具、purpose=compaction、首条消息为任务文本', async () => {
@@ -646,7 +663,7 @@ describe('runCompressionLoop', () => {
     expect(JSON.stringify(messages)).toContain('未知工具 badTool');
   });
 
-  it('纯文本输出：追加提醒继续，连续 2 轮仍无工具调用判失败并落盘失败日志', async () => {
+  it('纯文本输出：追加提醒继续，连续 3 轮仍无工具调用判失败并落盘失败日志', async () => {
     const ctx = makeCtx({
       llmStreamFactory: () => roundChunks({ text: '我认为不需要压缩' }),
     });
@@ -654,19 +671,91 @@ describe('runCompressionLoop', () => {
     const result = await runCompressionLoop(ctx, session, loopOptions());
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain('未调用压缩工具');
+    expect(result.error).toBe('模型连续 3 轮未调用压缩工具，放弃本次压缩');
     expect(result.aborted).toBe(false);
-    expect(ctx._llmCalls).toHaveLength(2);
+    expect(ctx._llmCalls).toHaveLength(3);
     // 第二轮请求末尾追加了提醒消息
     const second = ctx._llmCalls[1];
     const messages = second ? (second.options as { messages?: unknown[] }).messages : undefined;
     expect(JSON.stringify(messages)).toContain(COMPRESSION_NUDGE_TEXT);
-    // 失败也落盘会话记录，label 为失败日志
+    expect(JSON.stringify(messages)).not.toContain(TRUNCATION_NUDGE_TEXT);
+    // 失败也落盘会话记录，label 追加失败后缀
     const descriptor = ctx._createdSessions[0]?.session
       .snapshotEvents()
       .find((e) => e.type === 'subagent/descriptor');
-    expect((descriptor?.data as { label?: string })?.label).toContain('失败日志');
+    expect((descriptor?.data as { label?: string })?.label).toBe('OM会话(0-2)-观察-失败');
     expect(result.recordSessionId).toBe(ctx._createdSessions[0]?.id);
+  });
+
+  it('纯文本两轮后正常调用工具：计数清零，之后再来两轮纯文本仍可继续', async () => {
+    const ctx = makeCtx({
+      llmStreamFactory: (index) => {
+        if (index === 2) return roundChunks({ calls: [{ id: 'v', name: 'getHistory' }] });
+        if (index === 5) return roundChunks({ calls: [{ id: 'c', name: 'completeCompression' }] });
+        return roundChunks({ text: '纯文本' });
+      },
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(true);
+    expect(ctx._llmCalls).toHaveLength(6);
+  });
+
+  it('max-tokens 截断：连续 3 轮判失败，错误指明截断而非未调用工具', async () => {
+    const ctx = makeCtx({
+      llmStreamFactory: () =>
+        roundChunks({
+          reasoning: '很长的思考'.repeat(100),
+          usage: { inputTokens: 100, outputTokens: 32768 },
+          finish: { kind: 'max-tokens' },
+        }),
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('模型连续 3 轮输出被 max-tokens 截断，放弃本次压缩');
+    expect(result.aborted).toBe(false);
+    expect(ctx._llmCalls).toHaveLength(3);
+  });
+
+  it('截断轮的 assistant 消息不进入后续请求，改用截断专用提醒，会话记录仍保留', async () => {
+    const ctx = makeCtx({
+      llmStreamFactory: (index) =>
+        index === 0
+          ? roundChunks({ reasoning: '巨型思考内容', finish: { kind: 'max-tokens' } })
+          : roundChunks({ calls: [{ id: 'c', name: 'completeCompression' }] }),
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(true);
+    const second = ctx._llmCalls[1];
+    const sent = JSON.stringify(
+      (second ? (second.options as { messages?: unknown[] }) : {}).messages,
+    );
+    expect(sent).toContain(TRUNCATION_NUDGE_TEXT);
+    expect(sent).not.toContain('巨型思考内容');
+    expect(sent).not.toContain(COMPRESSION_NUDGE_TEXT);
+    const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
+    expect(JSON.stringify(events)).toContain('巨型思考内容');
+    expect(JSON.stringify(events)).toContain(TRUNCATION_NUDGE_TEXT);
+  });
+
+  it('截断与纯文本各自计数、互不累加；正常调用工具后全部清零', async () => {
+    // 截断、纯文本、截断、纯文本：两个计数都只到 2，不应失败
+    const rounds = [
+      { finish: { kind: 'max-tokens' }, reasoning: '思' },
+      { text: '纯文本' },
+      { finish: { kind: 'max-tokens' }, reasoning: '思' },
+      { text: '纯文本' },
+    ];
+    const ctx = makeCtx({
+      llmStreamFactory: (index) => {
+        const scripted = rounds[index];
+        if (scripted !== undefined) return roundChunks(scripted);
+        return roundChunks({ calls: [{ id: 'c', name: 'completeCompression' }] });
+      },
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(true);
+    expect(ctx._llmCalls).toHaveLength(5);
   });
 
   it('请求抛 429 限流：记录限流后重试同一会话', async () => {
@@ -682,6 +771,112 @@ describe('runCompressionLoop', () => {
     if (!result.ok) return;
     expect(result.rounds).toBe(1); // 429 轮不计入
     expect(ctx._llmCalls).toHaveLength(2);
+  });
+
+  it('抛出 503：有限次重试后成功，重试轮不计入 rounds', async () => {
+    resetRateLimitGate();
+    const ctx = makeCtx({
+      llmStreamFactory: (index) => {
+        if (index < 2) return throwingStream('503 service unavailable');
+        return roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] });
+      },
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.rounds).toBe(1);
+    expect(ctx._llmCalls).toHaveLength(3);
+    resetRateLimitGate();
+  });
+
+  it('finish=error 且 status=503：重试后成功', async () => {
+    resetRateLimitGate();
+    const ctx = makeCtx({
+      llmStreamFactory: (index) =>
+        index === 0
+          ? roundChunks({
+              finish: { kind: 'error', failure: { message: 'upstream', status: 503 } },
+            })
+          : roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] }),
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(true);
+    expect(ctx._llmCalls).toHaveLength(2);
+    resetRateLimitGate();
+  });
+
+  it('网络类错误（ECONNRESET）同样重试', async () => {
+    resetRateLimitGate();
+    const ctx = makeCtx({
+      llmStreamFactory: (index) =>
+        index === 0
+          ? throwingStream('read ECONNRESET')
+          : roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] }),
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(true);
+    expect(ctx._llmCalls).toHaveLength(2);
+    resetRateLimitGate();
+  });
+
+  it('503 持续出现：重试 3 次后（共 4 次请求）按原错误判失败', async () => {
+    resetRateLimitGate();
+    const ctx = makeCtx({ llmStreamFactory: () => throwingStream('503 service unavailable') });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('503 service unavailable');
+    expect(result.aborted).toBe(false);
+    expect(ctx._llmCalls).toHaveLength(4);
+    resetRateLimitGate();
+  });
+
+  it('成功响应后重试计数清零：间隔出现的 503 各自拥有完整重试额度', async () => {
+    resetRateLimitGate();
+    // 请求序列：503×3、纯文本、503×3、完成
+    const ctx = makeCtx({
+      llmStreamFactory: (index) => {
+        if (index === 3) return roundChunks({ text: '纯文本' });
+        if (index === 7) return roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] });
+        return throwingStream('503 service unavailable');
+      },
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(true);
+    expect(ctx._llmCalls).toHaveLength(8);
+    resetRateLimitGate();
+  });
+
+  it.each([
+    ['抛出', () => throwingStream('400 bad request')],
+    [
+      'finish=error',
+      () => roundChunks({ finish: { kind: 'error', failure: { message: 'bad', status: 400 } } }),
+    ],
+  ])('4xx 不重试（%s）：直接失败', async (_name, factory) => {
+    resetRateLimitGate();
+    const ctx = makeCtx({ llmStreamFactory: factory });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(false);
+    expect(ctx._llmCalls).toHaveLength(1);
+  });
+
+  it('重试等待期间 signal 中止：立即判 aborted', async () => {
+    resetRateLimitGate();
+    const controller = new AbortController();
+    const ctx = makeCtx({ llmStreamFactory: () => throwingStream('503 service unavailable') });
+    setTimeout(() => controller.abort(), 20);
+    const result = await runCompressionLoop(
+      ctx,
+      makeSession(),
+      loopOptions({ rateLimitWaitMs: 60000, signal: controller.signal }),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.aborted).toBe(true);
+    expect(result.error).toBe(COMPACTION_ABORTED_ERROR);
+    expect(ctx._llmCalls).toHaveLength(1);
+    resetRateLimitGate();
   });
 
   it('流以非 429 的 error 终态结束：判失败并携带错误信息', async () => {

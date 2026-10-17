@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   COMPACTION_LOG_PROVIDER,
+  compressionInfo,
   compressionRecordLabel,
   recordCompressionSession,
 } from '../src/compaction-log.ts';
@@ -126,26 +127,29 @@ function times(child: Session | undefined, type: string): number[] {
 }
 
 describe('recordCompressionSession：压缩会话记录落盘', () => {
-  it('重压缩目标写入标题与父会话目录，普通压缩标题保持原样', async () => {
-    const retryTarget = { provider: 'alt', model: 'vendor/big-1' };
-    expect(compressionRecordLabel('observe', 3, true, retryTarget)).toBe(
-      'OM 压缩会话记录（观察 · 3 轮 · 重压缩 alt/vendor/big-1）',
+  it('重压缩与失败写入标题后缀，普通压缩标题保持原样', async () => {
+    expect(compressionRecordLabel('observe', { min: 3, max: 18 }, true, true)).toBe(
+      'OM会话(3-18)-观察-重压缩',
     );
-    expect(compressionRecordLabel('reflect', 1, false, retryTarget)).toBe(
-      'OM 压缩失败日志（反思 · 1 轮 · 重压缩 alt/vendor/big-1）',
+    expect(compressionRecordLabel('reflect', { min: 0, max: 12 }, false, true)).toBe(
+      'OM会话(0-12)-反思-重压缩-失败',
     );
-    expect(compressionRecordLabel('observe', 3, true)).toBe('OM 压缩会话记录（观察 · 3 轮）');
+    expect(compressionRecordLabel('observe', { min: 3, max: 18 }, true, false)).toBe(
+      'OM会话(3-18)-观察',
+    );
+    expect(compressionRecordLabel('observe', {}, true, false)).toBe('OM会话-观察');
     const ctx = makeCtx();
     const parent = makeSession({ events: twoCallFlow() });
     await recordCompressionSession(ctx, parent, {
       phase: 'observe',
+      range: { min: 3, max: 18 },
       messages: loopMessages(),
       stats: makeStats([{ durationMs: 100 }]),
       success: true,
       debug: false,
-      retryTarget,
+      retry: true,
     });
-    const label = compressionRecordLabel('observe', 1, true, retryTarget);
+    const label = compressionRecordLabel('observe', { min: 3, max: 18 }, true, true);
     expect(parent.snapshotEvents().at(-1)).toMatchObject({
       type: 'subagent/catalog',
       data: { label },
@@ -233,7 +237,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
         childId: id,
         childCreatedAt: created?.session.header.createdAt,
         mode: 'one-shot',
-        label: compressionRecordLabel('observe', 1, true),
+        label: compressionRecordLabel('observe', {}, true, false),
       },
     });
     // 父会话目录写入宿主活跃会话后进入持久化屏障。
@@ -253,6 +257,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     const parent = makeSession({ events: twoCallFlow() });
     const id = await recordCompressionSession(ctx, parent, {
       phase: 'reflect',
+      range: { min: 0, max: 12 },
       messages: loopMessages(),
       stats: makeStats([
         { durationMs: 100, usage: { inputTokens: 10, outputTokens: 5 } },
@@ -269,11 +274,11 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
       version: SUBAGENT_DESCRIPTOR_VERSION,
       mode: 'one-shot',
       provider: COMPACTION_LOG_PROVIDER,
-      // label 轮数取自统计的逐轮数组长度
-      label: compressionRecordLabel('reflect', 2, true),
+      // label 取自压缩阶段与成功标记
+      label: compressionRecordLabel('reflect', { min: 0, max: 12 }, true, false),
     });
-    expect(compressionRecordLabel('reflect', 2, true)).toContain('会话记录');
-    expect(compressionRecordLabel('observe', 1, false)).toContain('失败日志');
+    expect(compressionRecordLabel('reflect', { min: 0, max: 12 }, true, false)).toContain('-反思');
+    expect(compressionRecordLabel('observe', {}, false, false)).toContain('-失败');
     // 消息组原样：user 指令 + assistant（含 tool-call 块）+ tool 结果消息
     const { user, assistant, tool } = child
       ? messageEvents(child)
@@ -489,7 +494,7 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     expect(events.at(-1)?.type).toBe('turn/end');
   });
 
-  it('失败：label 为失败日志，消息组同样原样落盘', async () => {
+  it('失败：label 追加失败后缀，消息组同样原样落盘', async () => {
     const ctx = makeCtx();
     const parent = makeSession();
     await recordCompressionSession(ctx, parent, {
@@ -501,12 +506,12 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     });
     const child = ctx._createdSessions[0]?.session;
     const descriptor = child?.snapshotEvents().find((e) => e.type === 'subagent/descriptor');
-    expect((descriptor?.data as { label?: string })?.label).toContain('失败日志');
+    expect((descriptor?.data as { label?: string })?.label).toContain('-失败');
     expect(parent.snapshotEvents().at(-1)).toMatchObject({
       type: 'subagent/catalog',
       data: {
         childId: child?.id,
-        label: compressionRecordLabel('observe', 1, false),
+        label: compressionRecordLabel('observe', {}, false, false),
       },
     });
   });
@@ -680,5 +685,42 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     // 真实宿主保留 seed 的重建时间戳：turn/start 取自循环统计而非落盘时刻
     expect(events.find((e) => e.type === 'turn/start')?.time).toBe(1_000);
     expect(events.find((e) => e.type === 'turn/end')?.time).toBe(6_000);
+  });
+});
+
+describe('compressionInfo：失败原因', () => {
+  const base = { target: { provider: 'p', model: 'm' }, originalChars: 1000 };
+
+  it('成功：显示压缩产物字符数，不含失败信息', () => {
+    const { text } = compressionInfo({ ...base, resultChars: 2000 });
+    expect(text).toContain('压缩产物 2k 字符');
+    expect(text).not.toContain('失败');
+  });
+
+  it('失败无详情：保持“无（压缩失败）”', () => {
+    expect(compressionInfo(base).text).toContain('压缩产物 无（压缩失败）');
+  });
+
+  it('失败带原因、finish 与 outputTokens', () => {
+    const { text } = compressionInfo({
+      ...base,
+      failure: {
+        reason: '模型连续 3 轮输出被 max-tokens 截断',
+        finish: 'max-tokens',
+        outputTokens: 32768,
+      },
+    });
+    expect(text).toContain(
+      '压缩产物 无（压缩失败：模型连续 3 轮输出被 max-tokens 截断；最后一轮 finish=max-tokens，输出 32768 tokens）',
+    );
+  });
+
+  it('失败无 usage：省略 token 部分；无 finish 则省略整段', () => {
+    expect(compressionInfo({ ...base, failure: { reason: 'x', finish: 'stop' } }).text).toContain(
+      '无（压缩失败：x；最后一轮 finish=stop）',
+    );
+    expect(compressionInfo({ ...base, failure: { reason: 'x' } }).text).toContain(
+      '无（压缩失败：x）',
+    );
   });
 });
