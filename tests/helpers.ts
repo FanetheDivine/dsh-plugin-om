@@ -184,6 +184,7 @@ export function makeSession({
         time: Date.now(),
         data: JSON.parse(JSON.stringify(data)),
       };
+      if (opts.ignorable === true) event.ignorable = true;
       const surfaceOp = opts.surfaceOp as
         | string
         | { op?: string; startSeq?: number; endSeq?: number }
@@ -863,25 +864,21 @@ export function throwingStream(message: string): AsyncIterable<unknown> {
   };
 }
 
-/** 构造 om 信封事件（借用 feedback/record；seq 由 makeSession 按日志下标补齐）。 */
+/** 构造 om plugin record 事件（ignorable；seq 由 makeSession 按日志下标补齐）。 */
 export function makeOmEvent(kind: string, data: Record<string, unknown>): SessionEvent {
   return {
-    type: 'feedback/record',
-    data: { text: `om:1:${JSON.stringify({ kind, ...data })}` },
+    type: `plugin:dsh-plugin-om/${kind.replace(/^om\//, '')}`,
+    data,
+    ignorable: true,
   } as unknown as SessionEvent;
 }
 
-/** 判定事件是否为指定类别的 om 信封事件（断言 om 事件存在性/数量用）。 */
+/** 判定事件是否为指定类别的 om plugin record（断言 om 事件存在性/数量用）。 */
 export function isOmKind(event: SessionEvent, kind: string): boolean {
-  if (event?.type !== 'feedback/record') return false;
-  const text = (event.data as { text?: unknown } | undefined)?.text;
-  if (typeof text !== 'string' || !text.startsWith('om:1:')) return false;
-  try {
-    const envelope = JSON.parse(text.slice('om:1:'.length)) as { kind?: unknown };
-    return envelope.kind === kind;
-  } catch {
-    return false;
-  }
+  return (
+    (event as { ignorable?: unknown } | undefined)?.ignorable === true &&
+    event.type === `plugin:dsh-plugin-om/${kind.replace(/^om\//, '')}`
+  );
 }
 
 /** 可进入表层的消息事件类型。 */

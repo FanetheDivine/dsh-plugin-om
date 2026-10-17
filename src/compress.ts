@@ -22,7 +22,7 @@
  *   tailMessageCount=0 时触发当轮即到期，阻塞等待注入
  * - 两个阈值都按主模型真实 token 计；换算系数 = 上次请求真实用量基线 ÷ 锚点估算
  *   （工具定义估算 + 锚点表层），无真实用量基线或计量失败按 1 计
- * - 待定标记与压缩结果以 log-only om 信封事件（借用 feedback/record，kind 为
+ * - 待定标记与压缩结果以 ignorable 的 plugin record（kind 为
  *   om/observe-pending / om/observe-invalidate / om/observe-summary，见 om-event.ts）
  *   持久化在会话日志中（重启后从日志恢复）；压缩失败保留待定，下个 pre-step 重启任务重试
  * - 两级在 pre-step 串行执行（先反思后观察；观察的压缩主体在后台运行，pre-step 仅在
@@ -39,7 +39,7 @@
  * - 提交走宿主 compaction/* 生命周期事件（start 带 phase → summary → 替换消息 → end），
  *   失败补 end(error，实际报错 + 诊断子会话 sessionId)；替换消息 source 标记插件标识供 UI 认领
  * - 挂载失败类问题（systemPrompt/tokenMeter 服务异常）始终 console 到外部进程，并追加
- *   log-only om 警告事件（借用 feedback/record，客户端渲染功能降级警告行，每会话同一
+ *   ignorable 的 om 警告 plugin record（客户端渲染功能降级警告行，每会话同一
  *   问题至多一次）；
  *   辅助估算的普通运行时报错仅记日志。降级与报错都不阻塞压缩（tokenMeter 计量失败时
  *   本轮跳过观察，反思换算系数按 1 计）
@@ -64,7 +64,8 @@ import { reportDegrade } from './degrade.ts';
 import { indexCompleteMessages, surfaceIndexOf } from './log-index.ts';
 import type { PluginLogger } from './logger.ts';
 import { makeLogger } from './logger.ts';
-import { appendOmEvent, findOmEvents, readOmEvent } from './om-event.ts';
+import { findOmEvents, readOmEvent } from './om-event.ts';
+import { appendOmEvent } from './om-event-append.ts';
 import {
   type AdoptedSummary,
   adoptPersistedSummary,

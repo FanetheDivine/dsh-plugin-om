@@ -5,7 +5,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { findObservePending } from '../src/compress.ts';
 import { resolveConfig } from '../src/config.ts';
 import { indexCompleteMessages } from '../src/log-index.ts';
-import { appendOmEvent, findOmEvents } from '../src/om-event.ts';
+import { findOmEvents } from '../src/om-event.ts';
+import { appendOmEvent } from '../src/om-event-append.ts';
 import {
   adoptPersistedSummary,
   disposeAllPrecompressions,

@@ -24,6 +24,7 @@ import type { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import type { TokenMeter } from '@deepseek-ai/dsh-token-meter';
 import type { JsonSchemaNode, ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools';
 import type { OmMessageSource } from './constants.ts';
+import type { OmEventPayloadMap } from './om-event.ts';
 import type { ProgressReminderSource } from './system-reminder.ts';
 
 /** 插件配置类型（来自 config.ts）。 */
@@ -43,15 +44,15 @@ declare module '@deepseek-ai/dsh-llm' {
 }
 
 declare module '@deepseek-ai/dsh-session/types' {
-  interface SessionEventMap {
-    /**
-     * 借用通道（log-only，不进 surface）：dsh-command-feedback 声明的用户反馈
-     * 审计事件（{ text: string }），位于宿主 KNOWN_SESSION_EVENT_TYPES 目录内，
-     * 历史会话加载不受读取路径的未知类型拒绝影响。本插件以 `om:1:` 前缀 JSON
-     * 信封在其 text 字段承载私有事件（编解码见 om-event.ts）。声明与所有者一致，
-     * 所有者类型包加入编译依赖后此处移除。
-     */
-    'feedback/record': { text: string };
+  /**
+   * 本插件的 plugin record（ignorable，不进 surface）：类型名与载荷见 om-event.ts。
+   * 键必须与 OM_RECORD_TYPES 一致。
+   */
+  interface PluginRecordMap {
+    'plugin:dsh-plugin-om/warning': OmEventPayloadMap['om/warning'];
+    'plugin:dsh-plugin-om/observe-pending': OmEventPayloadMap['om/observe-pending'];
+    'plugin:dsh-plugin-om/observe-invalidate': OmEventPayloadMap['om/observe-invalidate'];
+    'plugin:dsh-plugin-om/observe-summary': OmEventPayloadMap['om/observe-summary'];
   }
 }
 

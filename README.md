@@ -30,7 +30,7 @@
 
 ## 安装
 
-要求 DSH 0.2.0-rc.2 或更高版本。
+要求 DSH 0.2.1-rc.2 或更高版本。
 
 服务端必需 `llm` 和 `tokenMeter`。`tools`、`sessions` 和 `commands` 缺失时，对应的 `recall`、压缩会话记录和两个命令停用并输出 warning，压缩照常运行。
 
@@ -86,11 +86,14 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 
 ## 已知风险
 
-### 借用 feedback/record 事件
+### 写入 plugin record
 
-宿主会拒绝加载含未知事件类型的会话，插件也无法为事件标记 `ignorable`。因此观察待定标记、预压缩结果和降级警告借用宿主已知的 `feedback/record` 事件写入会话日志。
+观察待定标记、预压缩结果和降级警告经宿主 `appendPluginRecord` 写入会话日志，类型为 `plugin:dsh-plugin-om/*` 的 ignorable 记录。该 API 属宿主实验性接口，格式迁移时记录只尽力保留，丢失后预压缩结果重新压缩，待定标记重新触发。
 
-宿主把 `feedback/record` 视为用户反馈。遥测为默认的 `FEEDBACK_ONLY` 模式时，含这类记录的会话日志会上传到 DeepSeek 遥测服务。不希望上传时，设置环境变量 `DSH_TELEMETRY_MODE=DISABLED` 后启动 DSH。
+从下个版本开始：
+
+- om 事件不向后兼容。旧版本写入 `feedback/record` 的 `om:1:` 信封不再识别，旧会话里未完成的观察待定、预压缩结果和降级警告行失效。
+- DSH 需要 0.2.1-rc.2 或更高版本，更低版本没有 `appendPluginRecord`。
 
 ### 改写 Claude 请求
 
@@ -161,7 +164,8 @@ src/
 ├── config.ts                    # 配置默认值与宽松合并，未知键忽略、非法值回退默认
 ├── constants.ts                 # 共享常量：插件标识、history 标签、完整消息定义、格式说明注释
 ├── degrade.ts                   # 挂载失败降级上报：console 外部输出与 om/warning 会话事件
-├── om-event.ts                  # om 事件借用通道：feedback/record 信封的编解码与读写
+├── om-event.ts                  # om 事件读取：plugin record 的类型名、载荷校验与日志查找
+├── om-event-append.ts           # om 事件写入：经 appendPluginRecord 追加 ignorable 记录
 ├── types.ts                     # type-only：宿主类型再导出与领域类型
 ├── utils.ts                     # 零依赖工具函数：文本渲染、主会话判定、路由解析
 ├── json-schema.ts               # zod schema 到工具 wire 参数 JSON Schema 的转换
