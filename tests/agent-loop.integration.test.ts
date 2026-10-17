@@ -14,7 +14,12 @@ import {
   type StreamChunk,
   type ToolCallId,
 } from '@deepseek-ai/dsh-llm';
-import { type SessionEvent, type SessionId, SessionStore } from '@deepseek-ai/dsh-session';
+import {
+  type Session,
+  type SessionEvent,
+  type SessionId,
+  SessionStore,
+} from '@deepseek-ai/dsh-session';
 import {
   apply as applySessionLogExport,
   inject as exportInject,
@@ -33,10 +38,26 @@ import { unzipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import { PLUGIN_SOURCE_KIND } from '../src/constants.ts';
 import { apply, inject, name } from '../src/index.ts';
+import { findOmEvents } from '../src/om-event.ts';
 import { PROGRESS_REMINDER } from '../src/system-reminder.ts';
 
 const ORIGINAL = `原始助手长文本标记：${'用于压缩的真实会话历史。'.repeat(600)}`;
 const SUMMARY = '助手摘要标记';
+
+/** 定位压缩记录子会话 id：成功注入从 compaction/end 载荷取，失败路径从会话注册表取。 */
+function recordChildId(app: Context, session: Session, mode: 'success' | 'failure'): SessionId {
+  if (mode === 'success') {
+    const compaction = session.snapshotEvents().find((event) => event.type === 'compaction/end');
+    if (compaction?.type !== 'compaction/end') throw new Error('缺少真实压缩回合');
+    const childId =
+      'diagnosticSessionId' in compaction.data ? compaction.data.diagnosticSessionId : undefined;
+    if (typeof childId !== 'string') throw new Error('缺少压缩子会话 id');
+    return childId as SessionId;
+  }
+  const children = app.sessions.list().filter((s) => s.header.origin === 'subagent');
+  if (children.length !== 1) throw new Error('缺少压缩失败日志子会话');
+  return children[0]!.id;
+}
 
 /** 创建一个真实用户输入，交给 Agent inbox 驱动整轮对话。 */
 function prompt(text: string) {
@@ -427,15 +448,15 @@ describe('真实 agent loop + mock AI', () => {
       await handle.agent.whenIdle();
 
       const events = session.snapshotEvents();
-      const compaction = events.find((event) => event.type === 'compaction/end');
-      expect(compaction?.type).toBe('compaction/end');
-      if (compaction?.type !== 'compaction/end') throw new Error('缺少 compaction/end');
-      expect(compaction.data.error).toContain('mock 压缩失败');
-      const diagnosticId =
-        'diagnosticSessionId' in compaction.data ? compaction.data.diagnosticSessionId : undefined;
-      expect(typeof diagnosticId).toBe('string');
-      if (typeof diagnosticId !== 'string') throw new Error('缺少诊断子会话 id');
-      const diagnostic = app.sessions.get(diagnosticId as SessionId);
+      // 后台任务失败：不写 compaction 括号（生命周期只在注入成功时出现），待定标记保留
+      expect(events.some((event) => event.type === 'compaction/end')).toBe(false);
+      expect(events.some((event) => event.type === 'compaction/start')).toBe(false);
+      expect(findOmEvents(session, 'om/observe-pending')).toHaveLength(1);
+      expect(findOmEvents(session, 'om/observe-invalidate')).toHaveLength(0);
+      // 诊断子会话仍落盘：从会话注册表定位（失败路径无 compaction/end 载荷可取）
+      const children = app.sessions.list().filter((s) => s.header.origin === 'subagent');
+      expect(children).toHaveLength(1);
+      const diagnostic = children[0];
       expect(diagnostic?.header.parentSession).toBe(session.id);
       expect(diagnostic?.snapshotEvents()[0]).toMatchObject({
         type: 'subagent/descriptor',
@@ -475,15 +496,7 @@ describe('真实 agent loop + mock AI', () => {
         handle.agent.followup(prompt('次轮：自动压缩后继续。'));
         await handle.agent.whenIdle();
 
-        const compaction = session
-          .snapshotEvents()
-          .find((event) => event.type === 'compaction/end');
-        if (compaction?.type !== 'compaction/end') throw new Error('缺少真实压缩回合');
-        const childId =
-          'diagnosticSessionId' in compaction.data
-            ? compaction.data.diagnosticSessionId
-            : undefined;
-        if (typeof childId !== 'string') throw new Error('缺少压缩子会话 id');
+        const childId = recordChildId(app, session, mode);
 
         expect(exportRoute.path).toBe(SESSION_LOG_EXPORT_PATH);
         expect(exportRoute.methods).toEqual(expect.arrayContaining(['HEAD', 'GET']));
@@ -514,12 +527,24 @@ describe('真实 agent loop + mock AI', () => {
           type: 'subagent/descriptor',
           data: { provider: 'om-compaction-log' },
         });
-        expect(parent.events).toContainEqual(
-          expect.objectContaining({
-            type: 'compaction/end',
-            data: expect.objectContaining({ diagnosticSessionId: childId }),
-          }),
-        );
+        if (mode === 'success') {
+          // 成功注入：compaction/end 载荷携带记录子会话 id（UI 与导出可循此定位）
+          expect(parent.events).toContainEqual(
+            expect.objectContaining({
+              type: 'compaction/end',
+              data: expect.objectContaining({ diagnosticSessionId: childId }),
+            }),
+          );
+        } else {
+          // 失败路径不写 compaction 括号；子会话经 subagent/catalog 挂到父会话
+          expect(parent.events.some((event) => event.type.startsWith('compaction/'))).toBe(false);
+          expect(parent.events).toContainEqual(
+            expect.objectContaining({
+              type: 'subagent/catalog',
+              data: expect.objectContaining({ childId }),
+            }),
+          );
+        }
         expect(JSON.stringify(parent.events)).toContain(ORIGINAL);
         // 循环以 seed 重建时间线：turn 边界与任务指令在，且无统计文本消息
         expect(JSON.stringify(child.events)).not.toContain('【压缩统计】');
@@ -530,9 +555,7 @@ describe('真实 agent loop + mock AI', () => {
           expect(JSON.stringify(child.events)).toContain(ORIGINAL);
           expect(JSON.stringify(parent.events)).toContain(SUMMARY);
         } else {
-          expect(JSON.stringify(parent.events)).toContain('mock 压缩失败');
           expect(JSON.stringify(child.events)).toContain('失败');
-          expect(parent.events.some((event) => event.type === 'compaction/summary')).toBe(false);
         }
         expect(await app.sessionPersistence.stat(childId as SessionId)).toBeDefined();
       } finally {
@@ -560,17 +583,9 @@ describe('真实 agent loop + mock AI', () => {
             await live.handle.agent.whenIdle();
             live.handle.agent.followup(prompt('次轮：自动压缩后继续。'));
             await live.handle.agent.whenIdle();
-            const compaction = session
-              .snapshotEvents()
-              .find((event) => event.type === 'compaction/end');
-            if (compaction?.type !== 'compaction/end') throw new Error('缺少真实压缩回合');
-            const childId =
-              'diagnosticSessionId' in compaction.data
-                ? compaction.data.diagnosticSessionId
-                : undefined;
-            if (typeof childId !== 'string') throw new Error('缺少压缩子会话 id');
+            const childId = recordChildId(live.app, session, mode);
             await live.app.sessions.flush(session);
-            return { parentId: session.id, childId: childId as SessionId };
+            return { parentId: session.id, childId };
           } finally {
             await live.handle.dispose();
             await live.app.fiber.dispose();
@@ -637,7 +652,10 @@ describe('真实 agent loop + mock AI', () => {
           expect(archivedChild.events.some((event) => event.type === 'tool/result')).toBe(true);
         } else {
           expect(JSON.stringify(archivedChild.events)).toContain('失败');
-          expect(JSON.stringify(archivedParent.events)).toContain('mock 压缩失败');
+          // 失败路径不写 compaction 括号
+          expect(archivedParent.events.some((event) => event.type.startsWith('compaction/'))).toBe(
+            false,
+          );
         }
       } finally {
         await cold?.app.fiber.dispose();

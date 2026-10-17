@@ -7,6 +7,7 @@
 ## 功能
 
 - 自动压缩主会话历史，并在摘要过大时再次合并
+- 观察压缩触发时立即开始后台预压缩，结果持久化到会话日志，新增完整消息达到 `tailMessageCount` 后注入，重启后直接采纳已有结果
 - OM 启用时以 system-reminder 消息要求模型在本会话中用 1-2 句话记录中间结论与下一步规划，记录后继续任务，最终输出另行构建
 - 表层缺少同 kind 进度提醒时补发，不比较文本内容
 - 最近真实用户消息、非空模型文本、`ask_user_question` 调用或进度提醒之后，开启 `progressReminderIdleEnabled` 且表层活动累计至少 `progressReminderIdleSteps`（默认 4）个已结束模型 step、工具调用超过 `progressReminderIdleToolCalls`（默认 10）次时重发，并要求立刻输出记录
@@ -85,7 +86,7 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 
 ### 借用 feedback/record 事件
 
-宿主会拒绝加载含未知事件类型的会话，插件也无法为事件标记 `ignorable`。因此观察待定标记和降级警告借用宿主已知的 `feedback/record` 事件写入会话日志。
+宿主会拒绝加载含未知事件类型的会话，插件也无法为事件标记 `ignorable`。因此观察待定标记、预压缩结果和降级警告借用宿主已知的 `feedback/record` 事件写入会话日志。
 
 宿主把 `feedback/record` 视为用户反馈。遥测为默认的 `FEEDBACK_ONLY` 模式时，含这类记录的会话日志会上传到 DeepSeek 遥测服务。不希望上传时，设置环境变量 `DSH_TELEMETRY_MODE=DISABLED` 后启动 DSH。
 
@@ -175,7 +176,8 @@ src/
 ├── compress-tools.ts            # 压缩工具状态机：查看、压缩、问答重写、完成门禁与最终块构建
 ├── compress-loop.ts             # 工具压缩循环：条件提示、多轮请求、工具执行、限流、失败判定与统计
 ├── compaction-log.ts            # 压缩会话记录落盘：seed 重建系统提示词、时间线与逐轮 usage 的诊断子会话
-├── compress.ts                  # 两级自动压缩：观察、反思、失败传播与生命周期事件
+├── compress.ts                  # 两级自动压缩：观察打标记与到期注入、反思、失败传播与生命周期事件
+├── precompress.ts               # 后台预压缩：进程内任务注册表、结果信封持久化与重启采纳
 ├── recompress.ts                # 换模型重压缩：按压缩 id 重放视图并落盘记录，附内部命令
 ├── recompress-gate.ts           # 重压缩并发信号量：按配置上限排队许可
 ├── compaction-eval-command.ts   # OM 结果评估命令：定位评估文档、新建同工作区会话并投递首条消息

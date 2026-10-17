@@ -11,7 +11,7 @@
  * 类型：插件数据以 `om:1:` 前缀 + JSON 信封写入其 text 字段，解码失败按非 om
  * 记录处理（含用户自写的真实反馈记录）。
  */
-import type { Session, SessionEvent } from './types.ts';
+import type { Session, SessionEvent, TokenUsage } from './types.ts';
 
 /** om 信封 text 前缀：标识该 feedback/record 记录由本插件写入。 */
 export const OM_EVENT_PREFIX = 'om:1:';
@@ -23,7 +23,9 @@ export type OmEventKind =
   /** 观察压缩待定标记（compress.ts 观察触发时追加）。 */
   | 'om/observe-pending'
   /** 观察压缩待定失效标记（压缩执行完成后追加，声明待定可重新触发）。 */
-  | 'om/observe-invalidate';
+  | 'om/observe-invalidate'
+  /** 观察预压缩结果（后台压缩任务成功时写入，注入前崩溃可恢复：按 pendingSeq 匹配活跃标记采纳）。 */
+  | 'om/observe-summary';
 
 /** 各类别信封载荷（kind 之外的 JSON 字段）。 */
 export type OmEventPayloadMap = {
@@ -40,6 +42,28 @@ export type OmEventPayloadMap = {
   'om/observe-invalidate': {
     /** 被失效的 om/observe-pending 事件 seq。 */
     pendingSeq: number;
+  };
+  'om/observe-summary': {
+    /** 所属 om/observe-pending 事件 seq（与活跃标记匹配方可采纳）。 */
+    pendingSeq: number;
+    /** 最终 <history> 块文本（压缩结果）。 */
+    report: string;
+    /** 压缩实际使用的路由 provider。 */
+    provider: string;
+    /** 压缩实际使用的路由 model。 */
+    model: string;
+    /** 压缩循环开始时间（epoch 毫秒）。 */
+    startedAt: number;
+    /** 压缩循环结束时间（epoch 毫秒）。 */
+    completedAt: number;
+    /** 压缩循环总耗时（毫秒）。 */
+    durationMs: number;
+    /** 压缩会话记录子会话 id（落盘失败时缺省）。 */
+    recordSessionId?: string;
+    /** 全部轮次 token usage 合计（无 usage 数据时缺省）。 */
+    usage?: TokenUsage;
+    /** 压缩实际使用的思考等级 id（用模型默认时缺省；品牌类型由使用处校验担保）。 */
+    reasoningEffort?: string;
   };
 };
 
@@ -82,9 +106,72 @@ export function readOmEvent(event: SessionEvent | undefined | null): OmEvent | u
       if (typeof pendingSeq !== 'number' || !Number.isSafeInteger(pendingSeq)) return undefined;
       return { kind, data: { pendingSeq }, seq: event.seq };
     }
+    case 'om/observe-summary': {
+      const {
+        pendingSeq,
+        report,
+        provider,
+        model,
+        startedAt,
+        completedAt,
+        durationMs,
+        recordSessionId,
+        usage,
+        reasoningEffort,
+      } = rest;
+      if (typeof pendingSeq !== 'number' || !Number.isSafeInteger(pendingSeq)) return undefined;
+      if (typeof report !== 'string') return undefined;
+      if (typeof provider !== 'string' || typeof model !== 'string') return undefined;
+      if (!isFiniteNumber(startedAt) || !isFiniteNumber(completedAt) || !isFiniteNumber(durationMs))
+        return undefined;
+      if (recordSessionId !== undefined && typeof recordSessionId !== 'string') return undefined;
+      if (reasoningEffort !== undefined && typeof reasoningEffort !== 'string') return undefined;
+      const parsedUsage = readTokenUsage(usage);
+      if (parsedUsage === null) return undefined;
+      const data: OmEventPayloadMap['om/observe-summary'] = {
+        pendingSeq,
+        report,
+        provider,
+        model,
+        startedAt,
+        completedAt,
+        durationMs,
+        ...(recordSessionId === undefined ? {} : { recordSessionId }),
+        ...(parsedUsage === undefined ? {} : { usage: parsedUsage }),
+        ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+      };
+      return { kind, data, seq: event.seq };
+    }
     default:
       return undefined;
   }
+}
+
+/** 校验有限数值字段（时间戳/耗时）。 */
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+/** 校验可选 token usage 字段：缺省返回 undefined，非法返回 null，合法返回仅含已知数值字段的对象。 */
+function readTokenUsage(value: unknown): TokenUsage | undefined | null {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const usage = value as Record<string, unknown>;
+  const { inputTokens, outputTokens } = usage;
+  if (!isFiniteNumber(inputTokens) || !isFiniteNumber(outputTokens)) return null;
+  const result: TokenUsage = { inputTokens, outputTokens };
+  for (const key of [
+    'totalTokens',
+    'cacheReadTokens',
+    'cacheWriteTokens',
+    'reasoningTokens',
+  ] as const) {
+    const field = usage[key];
+    if (field === undefined) continue;
+    if (!isFiniteNumber(field)) return null;
+    result[key] = field;
+  }
+  return result;
 }
 
 /** 编码一条 om 私有事件为 feedback/record 的 text 信封。 */

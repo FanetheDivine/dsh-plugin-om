@@ -1,7 +1,8 @@
 /**
  * dsh-plugin-om 入口（tsdown 打包入口）：导出 name / inject / Config / apply。
  * apply 在 tools 服务可用时维护 recall 工具（含语义增强）并处理 Loader volatile 配置提交，
- * 并接线 agent/pre-step 自动压缩（先反思后观察，仅主会话生效）与提醒补发
+ * 并接线 agent/pre-step 自动压缩（先反思后观察，仅主会话生效；观察压缩触发后在后台
+ * 预压缩、到期注入，见 precompress.ts）与提醒补发
  * （进度提醒的 system-reminder 用户消息，见 system-reminder.ts），
  * commands 服务可用时注册换模型重压缩命令（见 recompress.ts）与 OM 结果评估命令
  * （见 compaction-eval-command.ts），sessions 服务可用时注册
@@ -19,6 +20,7 @@ import { type CompressPassResult, maybeCompress } from './compress.ts';
 import { Config, currentConfig } from './config.ts';
 import { ensureModelReady, getEmbedder } from './embedding.ts';
 import { makeLogger } from './logger.ts';
+import { disposeAllPrecompressions, disposePrecompression } from './precompress.ts';
 import { buildRecallTool } from './recall.ts';
 import { buildRecompressCommand } from './recompress.ts';
 import {
@@ -134,6 +136,10 @@ export function apply(ctx: Context, config?: unknown): void {
 
   // Claude thinking 签名绑定前缀：sessions 服务可用时在请求发出前剥离 OM 压缩前生成的签名。
   ctx.inject(['sessions'], (inner) => registerThinkingBinding(inner, logger));
+
+  // 会话销毁与插件卸载时中止后台预压缩任务（待定标记与持久化结果仍在日志中，重启后由对账恢复）。
+  ctx.on('session/disposed', (session) => disposePrecompression(session.id));
+  ctx.effect(() => () => disposeAllPrecompressions(), 'dsh-plugin-om: precompression registry');
 
   // 两级自动压缩：pre-step 阻塞串行（先反思后观察）；仅主会话生效。
   // 压缩之后再确保提醒在消息列表中：被压缩遮蔽则补发。
