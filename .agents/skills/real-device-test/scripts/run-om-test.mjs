@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -15,6 +15,18 @@ const dshPkg =
   process.env.OM_DSH_PKG ??
   join(execSync('npm root -g', { encoding: 'utf8' }).trim(), '@deepseek-ai', 'dsh', 'package.json');
 const REPO = process.env.OM_REPO;
+// warm 是整套电池的起点：先清上一轮残留（固定 sessionId 会与落盘会话冲突）。cold 依赖 warm 产物，不清理。
+for (const f of [
+  'test-sessions',
+  'test-storage',
+  'requests.jsonl',
+  'warm-results.json',
+  'warm-sessions.json',
+  'cold-results.json',
+  'fatal.txt',
+  'cold-fatal.txt',
+])
+  rmSync(join(root, f), { recursive: true, force: true });
 if (!REPO) throw new Error('OM_REPO 必填：插件仓库绝对路径，如 D:/Git/self/dsh-plugin-om');
 const require = createRequire(dshPkg);
 const { createUserMessage } = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-llm')));
@@ -176,6 +188,8 @@ try {
       commands: names.filter((n) => n.startsWith('om-')),
     };
   });
+  // 装载是后续全部用例的前提，失败即中止，避免连带出一串 undefined 误报
+  if (results.at(-1)?.status !== 'PASS') throw new Error('installed dist plugin loads 失败，中止');
   await check('immediate observe + record seed + labels (#111/#108/#112)', async () => {
     await config();
     adapter.modes.set('omtest-imm', 'normal');

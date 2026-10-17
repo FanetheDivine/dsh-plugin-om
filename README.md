@@ -90,10 +90,10 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 
 观察待定标记、预压缩结果和降级警告经宿主 `appendPluginRecord` 写入会话日志，类型为 `plugin:dsh-plugin-om/*` 的 ignorable 记录。该 API 属宿主实验性接口，格式迁移时记录只尽力保留，丢失后预压缩结果重新压缩，待定标记重新触发。
 
-从下个版本开始：
+从 0.0.59 起，插件不再借用 `feedback/record` 事件：
 
 - om 事件不向后兼容。旧版本写入 `feedback/record` 的 `om:1:` 信封不再识别，旧会话里未完成的观察待定、预压缩结果和降级警告行失效。
-- DSH 需要 0.2.1-rc.2 或更高版本，更低版本没有 `appendPluginRecord`。
+- 要求 DSH 0.2.1-rc.2 或更高版本，更低版本没有 `appendPluginRecord`。
 
 ### 改写 Claude 请求
 

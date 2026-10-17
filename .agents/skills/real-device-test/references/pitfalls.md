@@ -15,7 +15,7 @@
 
 ## 后端驱动（类别 B）
 
-9. **会话目录残留**：固定 sessionId 与残留的 `test-sessions/` 目录冲突。重跑前清理 `test-sessions`、`test-storage`、`requests.jsonl` 与结果文件。
+9. **会话目录残留**：固定 sessionId 与残留的 `test-sessions/` 目录冲突，表现为一串 `SessionAlreadyExistsError`。warm 驱动启动时自动清理 `test-sessions`、`test-storage`、`requests.jsonl` 与结果文件；cold 依赖 warm 产物，不清理，只能紧跟 warm 运行。装载检查失败时 warm 直接中止，避免后续用例连带 `undefined` 误报。装载断言里的插件版本取自仓库 `package.json`，不要写死。
 10. **阈值换算**：mock 的 usage chunk `inputTokens = ceil(字符/4) × usageMultiplier`。换算比用例靠调 multiplier 触发，不要调阈值以外的东西。
 11. **后台预压缩与注入时机**：到期判定是「已落盘完整消息 + 本轮新增 ≥ tailMessageCount」。注入可能发生在比预期早一轮，断言用「≥ 某轮出现」而非钉死轮次。
 12. **cold 驱动内存态**：重启后 `adapter.calls` 清零，「零重压缩」断言用 cold 进程自身的 compCalls==0，不要读 warm 计数。
@@ -41,4 +41,4 @@
 26. **本地宿主解析**：全局 dsh 与期望版本不一致时走本地宿主（`~/.dsh-local/dsh-<版本>`）。驱动与 mock-provider 默认按 `npm root -g` 解析宿主包，未设 `OM_DSH_PKG` 会静默加载全局版本，表现为 `readEnv`、`reading 'session'` 等 TypeError。跑驱动、起 GUI 前都要 export `OM_DSH_PKG` 并前置本地 bin 到 PATH。
 27. **pnpm 忽略 build scripts**：profile 安装后 `onnxruntime-node`、`sharp` 等被 ignored，语义检索不可用。测试默认 `semanticRecallEnabled: false`；需要时 `pnpm approve-builds`。
 28. **端口占用**：GUI 端口残留进程导致 `EADDRINUSE`、连锁多插件不激活。netstat 找 PID taskkill 后重启；启动日志出现 `did not activate` 先查端口。
-29. **sessionController 偶发缺失**：全新 profile 首跑 `/om-compaction-eval` 报「宿主未提供 sessionController 服务」，而配置与已验证 profile 完全一致——bundle 激活偶发。处置：清理 `test-sessions`、`test-storage` 与结果文件后重跑（实测恢复 19/19）；仍复现则查 runProfile 启动日志中 webserver 与 remotes 是否激活。
+29. **sessionController 偶发缺失**：全新 profile 首跑 `/om-compaction-eval` 报「宿主未提供 sessionController 服务」，而配置与已验证 profile 完全一致——bundle 激活偶发。处置：直接重跑 warm（启动时自动清残留，实测恢复 19/19）；仍复现则查 runProfile 启动日志中 webserver 与 remotes 是否激活。
