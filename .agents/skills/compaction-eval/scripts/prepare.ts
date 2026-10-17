@@ -2,17 +2,23 @@
  * 准备压缩质量评估数据：定位主会话的压缩日志，按区间分组，导出盲化变体、原文、后续轨迹与规则。
  *
  * 用法：node prepare.ts (--session <主会话 id 或前缀> | --zip <会话日志 zip>)
- *       [--variants 目录]... [--range A..B] [--phase observe|reflect] [--out 目录] [--seed N] [--after-max N]
+ *       [--variants 目录]... [--range A..B] [--phase observe|reflect] [--out 目录] [--seed N]
+ *       [--after-max N] [--list]
  * 输入：本地 ~/.dsh/sessions，或 DSH 导出的会话日志 zip，需含 subagents；
  *       --variants 可重复，并入 compress.ts 产出目录中的压缩日志。
+ * --list 只列出各区间的候选与 token，不写评估目录；正常运行也先打印同一列表。
  * 产出：V*.xml、source.xml、after.md、rules.md、_blind_key.json、meta.json；
- *       缺省写入系统临时目录下的 om-compaction-eval/eval-<会话 id 前 8 位>-<阶段>-<A>-<B>/。
+ *       after.md 为区间终点完整消息之后的轨迹，只含用户消息、手动加载的 skill、
+ *       助手正文、工具调用与压缩标记；缺省写入系统临时目录下的
+ *       om-compaction-eval/eval-<会话 id 前 8 位>-<阶段>-<A>-<B>/。
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { SKILL_INVOCATION_KIND } from '../../../../src/constants.ts';
+import { indexCompleteMessages } from '../../../../src/log-index.ts';
 import { bareId, evalPath } from './paths.ts';
 import {
   type Content,
@@ -20,6 +26,7 @@ import {
   loadBundle,
   loadVariants,
   type SessionEvent,
+  toSession,
 } from './session-source.ts';
 
 /** getHistory 的区间参数。 */
@@ -45,7 +52,10 @@ export interface CompactionLog {
   /** 逐轮模型请求耗时之和（秒），不含限流等待。 */
   model_sec: number;
   requests: number;
+  /** 计费输入 token：未缓存输入 + 缓存读 + 缓存写，逐轮求和。 */
   tokens_in: number;
+  tokens_cache_read: number;
+  tokens_cache_write: number;
   tokens_out: number;
   product: string;
   /** 首次成功 compressHistory 之前的 getHistory 参数与结果。 */
@@ -64,6 +74,8 @@ export type BlindEntry = Pick<
   | 'model_sec'
   | 'requests'
   | 'tokens_in'
+  | 'tokens_cache_read'
+  | 'tokens_cache_write'
   | 'tokens_out'
 >;
 
@@ -167,7 +179,12 @@ export function parseLog(events: SessionEvent[]): CompactionLog {
     wall_sec: times.length ? Math.round((Math.max(...times) - Math.min(...times)) / 100) / 10 : 0,
     model_sec: modelSeconds(body),
     requests: usage.length,
-    tokens_in: usage.reduce((s, u) => s + (u.inputTokens ?? 0), 0),
+    tokens_in: usage.reduce(
+      (s, u) => s + (u.inputTokens ?? 0) + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0),
+      0,
+    ),
+    tokens_cache_read: usage.reduce((s, u) => s + (u.cacheReadTokens ?? 0), 0),
+    tokens_cache_write: usage.reduce((s, u) => s + (u.cacheWriteTokens ?? 0), 0),
     tokens_out: usage.reduce((s, u) => s + (u.outputTokens ?? 0), 0),
     product,
     views,
@@ -185,7 +202,7 @@ export function pickSource(logs: CompactionLog[], lo: number, hi: number): strin
   }
   const size = (l: CompactionLog) => l.views.reduce((s, [, v]) => s + v.length, 0);
   const best = ordered.reduce((a, b) => (size(b) > size(a) ? b : a));
-  return best.views.map(([, v]) => v).join('');
+  return best.views.map(([, v]) => v).join('\n');
 }
 
 /** 去掉注释，省略逐字保留的 skill 原文。 */
@@ -198,28 +215,34 @@ export function blindProduct(text: string): string {
     );
 }
 
-/** 主会话中自区间最后一个工具调用起的后续轨迹，超过 limit 字符截断。 */
+/** 主会话中区间终点完整消息之后的真实轨迹，超过 limit 字符截断。 */
 export function buildAfter(
   main: SessionEvent[],
-  source: string,
+  hi: number,
   limit: number,
 ): { text: string; start: number } {
-  const lastCall = [...source.matchAll(/callId="([^"]+)"/g)].at(-1)?.[1];
-  if (!lastCall) throw new Error('source.xml 中没有 callId，无法定位后续轨迹起点');
-  const start = main.findIndex((e) => e.type === 'tool/call' && e.data?.callId === lastCall);
-  if (start < 0) throw new Error(`主会话中找不到区间末尾的工具调用 ${lastCall}`);
+  const cms = indexCompleteMessages(toSession(main));
+  const target = cms[hi];
+  if (!target) throw new Error(`主会话中找不到完整消息 ${hi}，无法定位后续轨迹起点`);
+  const start = Math.max(...target.seqs) + 1;
   const res = resultsByCall(main);
   const out: string[] = [];
   let size = 0;
-  for (const e of main.slice(start)) {
+  // seq 与去掉会话头后的日志下标一致，故从 main[start + 1] 起遍历
+  for (const e of main.slice(start + 1)) {
     const d = e.data;
     let line = '';
     if (e.type === 'user/message') {
-      const txt = textOf(d?.content);
-      if (!txt.includes('<system-reminder>') && !txt.startsWith('## MCP'))
-        line = `[USER] ${txt.slice(0, 1500)}`;
+      const txt = textOf(d?.content).slice(0, 1500);
+      if (d?.source?.kind === 'user') line = `[USER] ${txt}`;
+      else if (d?.source?.kind === SKILL_INVOCATION_KIND && d.source.name)
+        line = `[SKILL ${d.source.name}] ${txt}`;
     } else if (e.type === 'assistant/message') {
-      const txt = textOf(d?.message?.content).trim();
+      const txt = (d?.message?.content ?? [])
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text ?? '')
+        .join('')
+        .trim();
       if (txt) line = `[ASSISTANT] ${txt.slice(0, 2500)}`;
     } else if (e.type === 'tool/call' && d?.callId) {
       const rt = textOf(res.get(d.callId)?.message?.content);
@@ -236,6 +259,67 @@ export function buildAfter(
     }
   }
   return { text: out.join('\n'), start };
+}
+
+/** 各位置分段在 source.xml 中的行区间（1 起、含端点）；分段无条目时为 null。 */
+export function segmentLines(
+  source: string,
+  bk: Buckets,
+): Record<Position, [number, number] | null> {
+  const lines = source.split('\n');
+  const bucketOf = (index: number): Position =>
+    index <= bk.head[1] ? 'head' : index <= bk.mid[1] ? 'mid' : 'tail';
+  const entries: { line: number; index: number | undefined }[] = [];
+  let inCdata = false;
+  lines.forEach((line, i) => {
+    if (!inCdata) {
+      const tag = /^<([a-zA-Z_-]+)[^>]*>/.exec(line);
+      if (tag) {
+        const idx = /\b(?:index|start)="(\d+)"/.exec(tag[0]);
+        entries.push({ line: i + 1, index: idx ? Number(idx[1]) : undefined });
+      }
+    }
+    for (const m of line.matchAll(/<!\[CDATA\[|\]\]>/g)) inCdata = m[0] === '<![CDATA[';
+  });
+  // 无 index 条目（reasoning 等）随其后第一个有 index 的条目分段；其后没有时沿用前一个
+  const bucketsArr: (Position | undefined)[] = new Array(entries.length);
+  let carry: Position | undefined;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const index = entries[i]?.index;
+    if (index !== undefined) carry = bucketOf(index);
+    bucketsArr[i] = carry;
+  }
+  carry = 'head';
+  for (let i = 0; i < entries.length; i++) {
+    const b = bucketsArr[i];
+    if (b === undefined) bucketsArr[i] = carry;
+    else carry = b;
+  }
+  const firsts = new Map<Position, number>();
+  entries.forEach((e, i) => {
+    const b = bucketsArr[i];
+    if (b && !firsts.has(b)) firsts.set(b, e.line);
+  });
+  const order: Position[] = ['head', 'mid', 'tail'];
+  const lastLine = lines.length - (lines.at(-1) === '' ? 1 : 0);
+  const out = {} as Record<Position, [number, number] | null>;
+  order.forEach((p, i) => {
+    const first = firsts.get(p);
+    if (first === undefined) {
+      out[p] = null;
+      return;
+    }
+    let end = lastLine;
+    for (const q of order.slice(i + 1)) {
+      const nf = firsts.get(q);
+      if (nf !== undefined) {
+        end = nf - 1;
+        break;
+      }
+    }
+    out[p] = [first, end];
+  });
+  return out;
 }
 
 /** 把区间按 index 三等分为 head/mid/tail。 */
@@ -273,6 +357,26 @@ export function groupLogs(logs: CompactionLog[]): Map<string, CompactionLog[]> {
     groups.set(k, [...(groups.get(k) ?? []), x]);
   }
   return groups;
+}
+
+/** 候选列表文本：每组一行标题，组内每候选一行（来源、模型、等级、token、耗时、产物长度）。 */
+export function formatCandidates(logs: CompactionLog[]): string[] {
+  const lines: string[] = [];
+  for (const g of groupLogs(logs).values()) {
+    const head = g.at(0);
+    if (!head?.range) continue;
+    lines.push(`区间 [${head.range.join('..')}] ${head.phase}：${g.length} 个候选`);
+    for (const x of g) {
+      const cache =
+        x.tokens_cache_read || x.tokens_cache_write
+          ? `（缓存读 ${x.tokens_cache_read}/写 ${x.tokens_cache_write}）`
+          : '';
+      lines.push(
+        `  ${x.recompress ? '重压缩' : '原始'} ${x.model}（${x.effort}）in=${x.tokens_in}${cache} out=${x.tokens_out} 模型 ${x.model_sec}s 产物 ${x.product.length} 字符`,
+      );
+    }
+  }
+  return lines;
 }
 
 /** 选中的评估组。 */
@@ -345,6 +449,7 @@ function main(): void {
       out: { type: 'string' },
       seed: { type: 'string', default: '20261015' },
       'after-max': { type: 'string', default: '60000' },
+      list: { type: 'boolean' },
     },
   });
   const bundle = loadBundle(values);
@@ -356,13 +461,8 @@ function main(): void {
     .map(parseLog)
     .filter((x) => !x.failed && bareId(x.parent ?? '') === mainId && x.range);
   if (!logs.length) throw new Error('该会话没有可用的压缩日志');
-  for (const g of groupLogs(logs).values()) {
-    const head = g.at(0);
-    if (!head) continue;
-    console.log(
-      `区间 [${head.range?.join('..')}] ${head.phase}：${g.length} 个变体 ${g.map((x) => `${x.model}(${x.effort})`).join('、')}`,
-    );
-  }
+  for (const line of formatCandidates(logs)) console.log(line);
+  if (values.list) return;
   const sel = selectGroup(logs, values.range, values.phase);
   const { lo, hi, logs: group } = sel;
   for (const x of group) {
@@ -378,8 +478,19 @@ function main(): void {
   shuffle(group, Number(values.seed)).forEach((x, i) => {
     const v = `V${i + 1}`;
     write(out, `${v}.xml`, blindProduct(x.product));
-    const { id, model, effort, recompress, wall_sec, model_sec, requests, tokens_in, tokens_out } =
-      x;
+    const {
+      id,
+      model,
+      effort,
+      recompress,
+      wall_sec,
+      model_sec,
+      requests,
+      tokens_in,
+      tokens_cache_read,
+      tokens_cache_write,
+      tokens_out,
+    } = x;
     key[v] = {
       id,
       model,
@@ -389,15 +500,19 @@ function main(): void {
       model_sec,
       requests,
       tokens_in,
+      tokens_cache_read,
+      tokens_cache_write,
       tokens_out,
     };
   });
   write(out, '_blind_key.json', JSON.stringify(key, null, 1));
 
-  const after = buildAfter(mainEv, source, Number(values['after-max']));
+  const after = buildAfter(mainEv, hi, Number(values['after-max']));
   write(out, 'after.md', after.text);
 
   const bk = buckets(lo, hi);
+  const seg = segmentLines(source, bk);
+  const lineRange = (r: [number, number] | null): string => (r ? `${r[0]}–${r[1]}` : '-');
   const task = /<user_message[^>]*><!\[CDATA\[([\s\S]*?)\]\]>/
     .exec(source)?.[1]
     ?.trim()
@@ -412,6 +527,9 @@ function main(): void {
     head: bk.head.join('–'),
     mid: bk.mid.join('–'),
     tail: bk.tail.join('–'),
+    head_lines: lineRange(seg.head),
+    mid_lines: lineRange(seg.mid),
+    tail_lines: lineRange(seg.tail),
   };
   write(
     out,
@@ -423,8 +541,9 @@ function main(): void {
     phase: sel.phase,
     range: [lo, hi],
     buckets: bk,
+    segment_lines: seg,
     variants: Object.keys(key),
-    after_start_event: after.start,
+    after_start_seq: after.start,
   };
   write(out, 'meta.json', JSON.stringify(meta, null, 1));
   console.log(`输出目录：${out}`);

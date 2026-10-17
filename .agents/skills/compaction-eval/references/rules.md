@@ -36,9 +36,9 @@
 
 只用于分段诊断，不影响得分。
 
-- head：index {head}
-- mid：index {mid}
-- tail：index {tail}
+- head：index {head}，source.xml 行 {head_lines}
+- mid：index {mid}，source.xml 行 {mid_lines}
+- tail：index {tail}，source.xml 行 {tail_lines}
 
 ## 判定
 

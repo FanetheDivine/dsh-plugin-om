@@ -5,19 +5,14 @@
  *       [--compaction <id> | --range A..B] [--out view.json]
  * 无选区：列出会话已有压缩。有选区：写 view.json，供 compress.ts 读取；
  *       缺省写入系统临时目录下的 om-compaction-eval/view-<会话 id 前 8 位>-<阶段>-<A>-<B>.json。
- * 导出 toSession / listCompactions / rangeView / buildViewFile 与 ViewFile 类型。
+ * 导出 listCompactions / rangeView / buildViewFile 与 ViewFile / CompactionBrief 类型。
  */
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import {
-  type SessionEvent as HostEvent,
-  Session,
-  type SessionHeader,
-  SessionId,
-} from '@deepseek-ai/dsh-session';
+import type { Session, SessionHeader } from '@deepseek-ai/dsh-session';
 import { historyTextOf } from '../../../../src/compress.ts';
 import { viewCharCount } from '../../../../src/compress-loop.ts';
 import {
@@ -35,7 +30,7 @@ import type {
 } from '../../../../src/types.ts';
 import { viewPath } from './paths.ts';
 import { loadProfile } from './profile.ts';
-import { loadBundle, type SessionEvent } from './session-source.ts';
+import { loadBundle, type SessionEvent, toSession } from './session-source.ts';
 
 /** view.json：压缩输入视图与来源。 */
 export interface ViewFile {
@@ -56,22 +51,6 @@ export interface CompactionBrief {
   ok: boolean;
   error: string | undefined;
   model: string | undefined;
-}
-
-/**
- * 由会话日志重建会话；可截到某个 seq（含）为止，得到当时的表层。
- * 日志来自 DSH 落盘的 jsonl，首行为会话头、其后 seq 与下标一致；Session.create 会校验事件与头字段。
- */
-export function toSession(events: SessionEvent[], lastSeq?: number): Session {
-  const [head, ...body] = events;
-  if (!head?.id) throw new Error('日志缺少会话头');
-  const { type: _type, ...header } = head;
-  const seed = lastSeq === undefined ? body : body.slice(0, lastSeq + 1);
-  return Session.create(
-    SessionId(head.id),
-    seed as unknown as HostEvent[],
-    header as unknown as SessionHeader,
-  );
 }
 
 /** 列出会话已有压缩：阶段、区间、成败与模型。 */

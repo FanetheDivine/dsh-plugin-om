@@ -1,7 +1,7 @@
 // compaction-eval skill 脚本单元测试：多帧 zstd 日志读取、会话日志 zip 读取、压缩日志解析（阶段、区间、模型、
-// 失败标记、逐轮模型耗时、token、completeCompression 产物、原文视图）、分组选择、原文视图
-// 选择、盲化产物、后续轨迹定位与截断、区间三等分、可复现洗牌，
-// 以及 aggregate 的双评审均值、保留/精简/无关/耗时四维评分、评审校验报错与按模型汇总。
+// 失败标记、逐轮模型耗时、含缓存的 token、completeCompression 产物、原文视图）、分组选择、原文视图
+// 选择、候选列表、盲化产物、按区间终点定位的后续轨迹（过滤系统注入、只取正文）、分段行号、
+// 区间三等分、可复现洗牌，以及 aggregate 的双评审均值、四维评分、评审校验报错与按模型汇总。
 
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -21,10 +21,12 @@ import {
   buckets,
   buildAfter,
   type CompactionLog,
+  formatCandidates,
   type Phase,
   parseLog,
   pickSource,
   prepareEvalDir,
+  segmentLines,
   selectGroup,
   shuffle,
 } from '../.agents/skills/compaction-eval/scripts/prepare.ts';
@@ -33,6 +35,16 @@ import {
   readZip,
   type SessionEvent,
 } from '../.agents/skills/compaction-eval/scripts/session-source.ts';
+import { SKILL_INVOCATION_KIND } from '../src/constants.ts';
+import type { SessionEvent as SrcEvent } from '../src/types.ts';
+import {
+  buildToolCallFlow,
+  historyMessage,
+  hostLog,
+  makeMessage,
+  textBlock,
+  twoCallFlow,
+} from './helpers.ts';
 
 /** 测试用临时目录。 */
 const dirs: string[] = [];
@@ -116,7 +128,7 @@ function compactionEvents(): SessionEvent[] {
       time: 3500,
       data: {
         message: { content: txt('压缩使用模型 p/glm-5（max），原始消息 100 字符') },
-        usage: { inputTokens: 20, outputTokens: 3 },
+        usage: { inputTokens: 20, outputTokens: 3, cacheReadTokens: 200, cacheWriteTokens: 100 },
       },
     },
   ];
@@ -188,7 +200,9 @@ describe('prepare', () => {
       wall_sec: 2.5,
       model_sec: 1.5,
       requests: 2,
-      tokens_in: 30,
+      tokens_in: 330,
+      tokens_cache_read: 200,
+      tokens_cache_write: 100,
       tokens_out: 5,
       product: '<history>产物</history>',
     });
@@ -321,27 +335,122 @@ describe('prepare', () => {
     expect(out).toBe('<skill_content name="s">[skill 原文逐字保留，已省略]</skill_content>摘要');
   });
 
-  it('buildAfter 从区间最后一个工具调用开始并按上限截断', () => {
-    const main: SessionEvent[] = [
-      { type: 'session', id: 'm' },
-      { type: 'user/message', data: { content: txt('早期') } },
-      { type: 'tool/call', data: { callId: 'k1', name: 'click', arguments: '{}' } },
-      { type: 'tool/result', data: { callId: 'k1', message: { content: txt('done') } } },
-      { type: 'assistant/message', data: { message: { content: txt('x'.repeat(50)) } } },
-      { type: 'assistant/message', data: { message: { content: txt('不应出现') } } },
+  it('buildAfter 从区间终点完整消息之后截取，过滤系统注入且只取助手正文', () => {
+    const extra: SrcEvent[] = [
+      historyMessage('旧摘要'),
+      {
+        type: 'user/message',
+        data: makeMessage({
+          content: [textBlock('真实指令')],
+          source: { kind: SKILL_INVOCATION_KIND, name: 'grilling' },
+        }),
+      } as unknown as SrcEvent,
+      {
+        type: 'user/message',
+        data: makeMessage({
+          content: [textBlock('运行时注入')],
+          source: { kind: 'runtime-context' },
+        }),
+      } as unknown as SrcEvent,
+      {
+        type: 'assistant/message',
+        data: {
+          message: makeMessage({
+            role: 'assistant',
+            content: [{ type: 'reasoning', text: '内心独白' }, textBlock('正文回复')],
+            source: { kind: 'model', provider: 'p', model: 'm' },
+          }),
+        },
+      } as unknown as SrcEvent,
+      ...buildToolCallFlow({
+        code: 'x()',
+        description: '后续调用',
+        callId: 'k9',
+        resultText: 'done',
+      }),
+      { type: 'compaction/start', data: {} } as unknown as SrcEvent,
     ];
-    const { text, start } = buildAfter(main, '<a callId="k1">', 60);
-    expect(start).toBe(2);
-    expect(text).not.toContain('早期');
-    expect(text).toContain('[TOOL click]');
-    expect(text).not.toContain('不应出现');
-    expect(text).toContain('已截断');
+    // twoCallFlow 折叠为完整消息 0..5，终点 5 的最大 seq 为 7
+    const main = hostLog([...twoCallFlow(), ...extra]);
+    const { text, start } = buildAfter(main, 5, 100000);
+    expect(start).toBe(8);
+    expect(text).toContain('[SKILL grilling] 真实指令');
+    expect(text).toContain('[ASSISTANT] 正文回复');
+    expect(text).toContain('[TOOL run_code]');
+    expect(text).toContain('===== compaction/start =====');
+    expect(text).not.toContain('旧摘要');
+    expect(text).not.toContain('运行时注入');
+    expect(text).not.toContain('内心独白');
+    expect(text).not.toContain('[USER] 运行时注入');
+    // 区间内与终点前的内容不进入后续轨迹
+    expect(text).not.toContain('第一次');
+    expect(text).not.toContain('out1');
+    // 截断上限生效
+    expect(buildAfter(main, 5, 60).text).toContain('已截断');
   });
 
-  it('buildAfter 定位不到区间末尾调用时报错', () => {
-    const main: SessionEvent[] = [{ type: 'session', id: 'm' }];
-    expect(() => buildAfter(main, '没有 callId', 60)).toThrow(/callId/);
-    expect(() => buildAfter(main, '<a callId="nope">', 60)).toThrow(/nope/);
+  it('buildAfter 区间终点超出主会话完整消息时报错', () => {
+    expect(() => buildAfter(hostLog(twoCallFlow()), 99, 60)).toThrow(/完整消息 99/);
+  });
+
+  it('buildAfter 支持文本终点与同一 assistant 事件内终点，无后续时为空', () => {
+    const main = hostLog(twoCallFlow());
+    // 终点 1 为 assistant 文本条目：其后同一 assistant 事件的 tool-call 也要进入轨迹
+    const fromText = buildAfter(main, 1, 100000);
+    expect(fromText.start).toBe(2);
+    expect(fromText.text).toContain('第一次');
+    expect(fromText.text).toContain('out2');
+    // 终点 4 为第二条流程的 assistant 文本条目（同一事件还承载 tool-call 条目 5）
+    const midEvent = buildAfter(main, 4, 100000);
+    expect(midEvent.start).toBe(6);
+    expect(midEvent.text).toContain('[TOOL run_code]');
+    expect(midEvent.text).not.toContain('第一次');
+    // 终点 5 为最后一条完整消息，其后无事件
+    const none = buildAfter(main, 5, 100000);
+    expect(none.start).toBe(8);
+    expect(none.text).toBe('');
+  });
+
+  it('segmentLines 给出各分段在 source.xml 中的行区间，空分段为 null', () => {
+    const xml = [
+      '<reasoning><![CDATA[想]]></reasoning>',
+      '<user_message index="0"><![CDATA[u0]]></user_message>',
+      '<assistant index="1"><![CDATA[a1]]></assistant>',
+      '<reasoning><![CDATA[想2]]></reasoning>',
+      '<assistant index="2"><![CDATA[a2]]></assistant>',
+    ].join('\n');
+    // reasoning 无 index，随其后第一个有 index 的条目分段（开头的 reasoning 归 head，行 4 的归 tail）
+    expect(segmentLines(xml, buckets(0, 2))).toEqual({
+      head: [1, 2],
+      mid: [3, 3],
+      tail: [4, 5],
+    });
+    const skipMid = [
+      '<user_message index="0"><![CDATA[u0]]></user_message>',
+      '<user_message index="1"><![CDATA[u1]]></user_message>',
+      '<assistant index="4"><![CDATA[a4]]></assistant>',
+    ].join('\n');
+    expect(segmentLines(skipMid, buckets(0, 4))).toEqual({
+      head: [1, 2],
+      mid: null,
+      tail: [3, 3],
+    });
+    // CDATA 内伪造的 index 标签不计入条目
+    const fake = '<user_message index="0"><![CDATA[<assistant index="9">内]]></user_message>';
+    expect(segmentLines(fake, buckets(0, 2)).tail).toBeNull();
+  });
+
+  it('formatCandidates 按区间列出候选与含缓存的 token', () => {
+    const base = parseLog(compactionEvents());
+    const logs: CompactionLog[] = [
+      { ...base, model: 'p/glm-5', effort: 'max', recompress: false },
+      { ...base, model: 'q/m-1', effort: 'high', recompress: true },
+    ];
+    const lines = formatCandidates(logs).join('\n');
+    expect(lines).toContain('区间 [0..9] reflect：2 个候选');
+    expect(lines).toContain('原始 p/glm-5（max）in=330');
+    expect(lines).toContain('缓存读 200/写 100');
+    expect(lines).toContain('重压缩 q/m-1（high）in=330');
   });
 
   it('buckets 三等分区间且首尾相接', () => {
