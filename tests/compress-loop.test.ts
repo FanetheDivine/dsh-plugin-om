@@ -753,6 +753,112 @@ describe('runCompressionLoop', () => {
     expect(ctx._llmCalls).toHaveLength(2);
   });
 
+  it('抛出 503：有限次重试后成功，重试轮不计入 rounds', async () => {
+    resetRateLimitGate();
+    const ctx = makeCtx({
+      llmStreamFactory: (index) => {
+        if (index < 2) return throwingStream('503 service unavailable');
+        return roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] });
+      },
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.rounds).toBe(1);
+    expect(ctx._llmCalls).toHaveLength(3);
+    resetRateLimitGate();
+  });
+
+  it('finish=error 且 status=503：重试后成功', async () => {
+    resetRateLimitGate();
+    const ctx = makeCtx({
+      llmStreamFactory: (index) =>
+        index === 0
+          ? roundChunks({
+              finish: { kind: 'error', failure: { message: 'upstream', status: 503 } },
+            })
+          : roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] }),
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(true);
+    expect(ctx._llmCalls).toHaveLength(2);
+    resetRateLimitGate();
+  });
+
+  it('网络类错误（ECONNRESET）同样重试', async () => {
+    resetRateLimitGate();
+    const ctx = makeCtx({
+      llmStreamFactory: (index) =>
+        index === 0
+          ? throwingStream('read ECONNRESET')
+          : roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] }),
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(true);
+    expect(ctx._llmCalls).toHaveLength(2);
+    resetRateLimitGate();
+  });
+
+  it('503 持续出现：重试 3 次后（共 4 次请求）按原错误判失败', async () => {
+    resetRateLimitGate();
+    const ctx = makeCtx({ llmStreamFactory: () => throwingStream('503 service unavailable') });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('503 service unavailable');
+    expect(result.aborted).toBe(false);
+    expect(ctx._llmCalls).toHaveLength(4);
+    resetRateLimitGate();
+  });
+
+  it('成功响应后重试计数清零：间隔出现的 503 各自拥有完整重试额度', async () => {
+    resetRateLimitGate();
+    // 请求序列：503×3、纯文本、503×3、完成
+    const ctx = makeCtx({
+      llmStreamFactory: (index) => {
+        if (index === 3) return roundChunks({ text: '纯文本' });
+        if (index === 7) return roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] });
+        return throwingStream('503 service unavailable');
+      },
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(true);
+    expect(ctx._llmCalls).toHaveLength(8);
+    resetRateLimitGate();
+  });
+
+  it.each([
+    ['抛出', () => throwingStream('400 bad request')],
+    [
+      'finish=error',
+      () => roundChunks({ finish: { kind: 'error', failure: { message: 'bad', status: 400 } } }),
+    ],
+  ])('4xx 不重试（%s）：直接失败', async (_name, factory) => {
+    resetRateLimitGate();
+    const ctx = makeCtx({ llmStreamFactory: factory });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(false);
+    expect(ctx._llmCalls).toHaveLength(1);
+  });
+
+  it('重试等待期间 signal 中止：立即判 aborted', async () => {
+    resetRateLimitGate();
+    const controller = new AbortController();
+    const ctx = makeCtx({ llmStreamFactory: () => throwingStream('503 service unavailable') });
+    setTimeout(() => controller.abort(), 20);
+    const result = await runCompressionLoop(
+      ctx,
+      makeSession(),
+      loopOptions({ rateLimitWaitMs: 60000, signal: controller.signal }),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.aborted).toBe(true);
+    expect(result.error).toBe(COMPACTION_ABORTED_ERROR);
+    expect(ctx._llmCalls).toHaveLength(1);
+    resetRateLimitGate();
+  });
+
   it('流以非 429 的 error 终态结束：判失败并携带错误信息', async () => {
     const ctx = makeCtx({
       llmStreamFactory: () =>

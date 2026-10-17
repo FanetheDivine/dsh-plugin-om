@@ -13,8 +13,9 @@
  * - 模型输出纯文本（无工具调用）时追加提醒消息继续，连续 3 轮仍无工具调用判失败
  * - 输出被 max-tokens 截断且无工具调用时单独计数：该轮 assistant 消息仅落盘、不进入后续
  *   请求，追加截断专用提醒，连续 3 轮截断判失败；任一轮有工具调用则两个计数清零
- * - 429 限流走全局限流等待门（gateRateLimit / noteRateLimit）；其余请求级错误依赖
- *   dsh 运行时重试，插件不做整体重试，错误直接判失败
+ * - 429 限流走全局限流等待门（gateRateLimit / noteRateLimit）；瞬时错误（5xx、网络类）
+ *   同样经限流门等待后重试，连续最多重试 3 次，任一轮成功响应后清零；重试轮不计入轮数；
+ *   其余请求级错误（含 4xx）直接判失败
  * - signal 中止标记 aborted；token usage 汇总全部轮次；统计循环起止时间戳、总耗时
  *   与逐轮请求统计（CompressionStats），随结果返回并随会话记录落盘
  * - 成功与失败均把循环消息组落盘为子会话（recordCompressionSession，system 一并落盘
@@ -126,6 +127,9 @@ export const TRUNCATION_NUDGE_TEXT =
 
 /** 连续无工具调用、连续截断各自允许的最大轮数。 */
 const MAX_CONSECUTIVE_FAILURES = 3;
+
+/** 瞬时请求错误的连续最大重试次数。 */
+const MAX_TRANSIENT_RETRIES = 3;
 
 /** 逐轮请求统计：轮次（1 起）、该轮起止时间戳与耗时、该轮 token usage。 */
 export type CompressionRoundStat = {
@@ -278,6 +282,14 @@ function isRateLimitFailure(message: string, status?: number): boolean {
   return status === 429 || isRateLimitError(message);
 }
 
+/** 是否为可重试的瞬时失败：有 status 时按 5xx 判定，否则匹配 5xx 状态码或常见网络类错误文案。 */
+export function isTransientFailure(message: string, status?: number): boolean {
+  if (status !== undefined) return status >= 500 && status <= 599;
+  return /\b5\d{2}\b|econnreset|etimedout|econnrefused|epipe|socket hang up|fetch failed|network|overloaded|timed? ?out/i.test(
+    message,
+  );
+}
+
 /** skipReasoning=true 时去掉视图中的 reasoning 条目（兑现 getHistory 不输出 reasoning 的契约）；否则原样返回。 */
 export function withoutReasoning(view: CompressionView, skipReasoning: boolean): CompressionView {
   if (!skipReasoning) return view;
@@ -308,6 +320,7 @@ export async function runCompressionLoop(
   let rounds = 0;
   let nudges = 0;
   let truncations = 0;
+  let transientRetries = 0;
   /** 仅落盘、不进入后续请求的消息（截断轮的 assistant 消息）。 */
   const omitted = new Set<Message>();
   let usage: TokenUsage | undefined;
@@ -360,6 +373,18 @@ export async function runCompressionLoop(
       options.maxTokens === undefined ? '未设置' : String(options.maxTokens)
     }）`,
   );
+  /** 瞬时失败且未超重试额度时记入限流门并返回 true（调用方 continue 重试）。 */
+  const retryTransient = (message: string, status?: number): boolean => {
+    if (!isTransientFailure(message, status) || transientRetries >= MAX_TRANSIENT_RETRIES) {
+      return false;
+    }
+    transientRetries += 1;
+    noteRateLimit();
+    logger.warn(
+      `压缩循环请求瞬时失败（${message}），等待 ${options.rateLimitWaitMs}ms 后重试（${transientRetries}/${MAX_TRANSIENT_RETRIES}）`,
+    );
+    return true;
+  };
   for (;;) {
     if (options.signal?.aborted) {
       logger.warn('压缩循环中止（signal 已中止），放弃本次压缩');
@@ -397,6 +422,7 @@ export async function runCompressionLoop(
         logger.warn(`压缩循环触发限流（429），等待 ${options.rateLimitWaitMs}ms 后重试`);
         continue;
       }
+      if (retryTransient(message)) continue;
       logger.warn(`压缩循环请求失败: ${message}`);
       return await failWith(message, false);
     }
@@ -418,11 +444,13 @@ export async function runCompressionLoop(
         logger.warn(`压缩循环触发限流（429），等待 ${options.rateLimitWaitMs}ms 后重试`);
         continue;
       }
+      if (retryTransient(failureMessage, failureStatus)) continue;
       logger.warn(`压缩循环请求失败: ${failureMessage}`);
       // 已收集的部分输出（文本/工具调用）计入会话记录（诊断价值）
       pushPartialAssistant(assembler, messages, options.target);
       return await failWith(failureMessage, false);
     }
+    transientRetries = 0;
     rounds += 1;
     if (assembler.usage !== undefined) usage = addUsage(usage, assembler.usage);
     roundStats.push({
