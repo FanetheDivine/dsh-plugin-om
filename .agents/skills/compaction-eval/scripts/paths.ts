@@ -1,10 +1,10 @@
 /**
  * compaction-eval 的文件位置：评估根目录，以及按会话、阶段、区间命名的视图文件、重压缩目录与评估目录。
  * 各入口共用；不含命令行入口。
- * 导出 bareId / evalRoot / rangeSlug / evalPath / viewPath / recompressPath 与 RangeKey 类型。
+ * 导出 bareId / evalRoot / rangeSlug / evalPath / viewPath / recompressPath / selfName 与 RangeKey 类型。
  */
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 /** 命名用到的视图字段：会话头 id、阶段与区间。 */
 export interface RangeKey {
@@ -21,6 +21,12 @@ export function bareId(id: string): string {
 /** 评估根目录：系统临时目录下的 om-compaction-eval，每次调用按当前环境解析。 */
 export function evalRoot(): string {
   return join(tmpdir(), 'om-compaction-eval');
+}
+
+/** 用法行中的脚本名：取实际入口文件名，源码版为 .ts，发布版为 .mjs。 */
+export function selfName(fallback: string): string {
+  const entry = process.argv[1];
+  return entry === undefined ? fallback : basename(entry);
 }
 
 /** 区间标识：<会话 id 前 8 位>-<阶段>-<A>-<B>。 */

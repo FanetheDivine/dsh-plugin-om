@@ -25,6 +25,7 @@ import {
   type JudgeItem,
   judgeProblems,
 } from './judging.ts';
+import { selfName } from './paths.ts';
 import type { Position } from './prepare.ts';
 
 /** facts 建议条数范围，超出仅告警。 */
@@ -40,13 +41,18 @@ function readJson<T>(p: string): T {
 /** 按 <base>.json、<base>-2.json… 顺序读取分段文件；一个都没有返回 null。 */
 function readParts<T>(dir: string, base: string): T[] | null {
   if (!existsSync(dir)) return null;
+  const partNo = (n: string): number | null => {
+    const m = /-(\d+)\.json$/.exec(n);
+    if (m === null) return 1;
+    const v = Number(m[1]);
+    return v >= 2 ? v : null;
+  };
   const names = readdirSync(dir)
     .filter((n) => n === `${base}.json` || new RegExp(`^${base}-\\d+\\.json$`).test(n))
-    .sort((a, b) => {
-      const na = Number(/-(\d+)\.json$/.exec(a)?.[1] ?? 1);
-      const nb = Number(/-(\d+)\.json$/.exec(b)?.[1] ?? 1);
-      return na - nb;
-    });
+    .map((n) => ({ n, no: partNo(n) }))
+    .filter((x): x is { n: string; no: number } => x.no !== null)
+    .sort((a, b) => a.no - b.no)
+    .map((x) => x.n);
   if (!names.length) return null;
   return names.map((n) => readJson<T>(join(dir, n)));
 }
@@ -87,7 +93,10 @@ interface RestData {
 
 /** 合并 facts 分段为 facts.json。校验失败时列出全部问题、置非零退出码且不写文件。 */
 export function mergeFacts(dir: string): void {
-  const meta = readJson<{ range: [number, number] }>(join(dir, 'meta.json'));
+  const metaPath = join(dir, 'meta.json');
+  if (!existsSync(metaPath))
+    throw new Error(`评估目录缺少 meta.json（${dir} 不是 prepare 产出的评估目录）`);
+  const meta = readJson<{ range: [number, number] }>(metaPath);
   const [lo, hi] = meta.range;
   const partsDir = join(dir, 'parts', 'facts');
   const problems: string[] = [];
@@ -266,7 +275,8 @@ function main(): void {
     mergeJudge(resolve(dir), v, n);
     return;
   }
-  console.error('用法：node merge.ts facts <评估目录> | merge.ts judge <评估目录> <V> <N>');
+  const me = selfName('merge.ts');
+  console.error(`用法：node ${me} facts <评估目录> | ${me} judge <评估目录> <V> <N>`);
   process.exitCode = 2;
 }
 

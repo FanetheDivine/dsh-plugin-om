@@ -69,7 +69,6 @@ export const POSITIONS: Position[] = ['head', 'mid', 'tail'];
  */
 export function judgeProblems(judge: Judge, fj: FactList, name: string): string[] {
   const problems: string[] = [];
-  const seen = new Set<string>();
   for (const [items, words, label, all] of [
     [judge.facts, VERDICT, '事实', fj.facts] as const,
     [judge.irrelevant, D_VERDICT, '无关信息', fj.irrelevant] as const,
@@ -78,7 +77,6 @@ export function judgeProblems(judge: Judge, fj: FactList, name: string): string[
     for (const x of items ?? []) {
       if (byId.has(x.id)) problems.push(`${name} ${label} ${x.id} 重复判定`);
       else byId.set(x.id, x);
-      seen.add(x.id);
     }
     for (const f of all) {
       const x = byId.get(f.id);

@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -97,6 +98,25 @@ describe('merge facts', () => {
 
     const fj: FactList = JSON.parse(readFileSync(join(dir, 'facts.json'), 'utf8'));
     expect(fj.facts.map((f) => f.category)).toEqual(['A', 'B']);
+  });
+
+  test('head-1.json 不是合法分段名，与缺 head.json 同样报错', () => {
+    const p = join(dir, 'parts', 'facts');
+    writeFileSync(join(p, 'head-1.json'), JSON.stringify([fact()]));
+    writeFileSync(join(p, 'mid.json'), JSON.stringify([]));
+    writeFileSync(join(p, 'tail.json'), JSON.stringify([]));
+    writeFileSync(join(p, 'irrelevant.json'), JSON.stringify([]));
+
+    mergeFacts(dir);
+
+    const errs = vi.mocked(console.error).mock.calls.flat().join('\n');
+    expect(errs).toMatch(/缺少分段文件 head\.json/);
+    expect(existsSync(join(dir, 'facts.json'))).toBe(false);
+  });
+
+  test('评估目录缺 meta.json 时给出可操作报错', () => {
+    rmSync(join(dir, 'meta.json'));
+    expect(() => mergeFacts(dir)).toThrow(/缺少 meta\.json/);
   });
 
   test('校验失败列出全部问题、不写文件', () => {

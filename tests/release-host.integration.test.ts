@@ -399,6 +399,6 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
         timeout: 60_000,
       },
     );
-    expect(mergeUsage.stderr).toContain('用法：node merge.ts');
+    expect(mergeUsage.stderr).toContain('用法：node merge.mjs');
   }, 120_000);
 });

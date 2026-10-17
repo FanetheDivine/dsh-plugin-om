@@ -23,6 +23,7 @@ import {
   VERDICT,
   W,
 } from './judging.ts';
+import { selfName } from './paths.ts';
 import type { BlindEntry, Buckets, Position } from './prepare.ts';
 
 /** meta.json 内容。 */
@@ -394,8 +395,7 @@ function renderMarkdown(dir: string, result: ReturnType<typeof scoreAll>): strin
 
 /** 命令行入口。 */
 function main(): void {
-  const usage =
-    '用法：node aggregate.ts <评估目录> [--reference original|provider/model[:effort]]...';
+  const usage = `用法：node ${selfName('aggregate.ts')} <评估目录> [--reference original|provider/model[:effort]]...`;
   const args = process.argv.slice(2);
   const refs: string[] = [];
   const positional: string[] = [];
