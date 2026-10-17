@@ -1,5 +1,5 @@
 #!/bin/bash
-# 一键搭建 OM 实机测试环境：dsh 版本对齐 → 建 profile → 安装 dist 插件 → 写隔离配置 → 复制驱动脚本 → 注册工作区。
+# 一键搭建 OM 实机测试环境：选宿主（全局版本一致用全局，否则本地安装，不改全局）→ 建 profile → 安装 dist 插件 → 写隔离配置 → 复制驱动脚本 → 注册工作区。
 # 用法：bash setup-env.sh <插件仓库绝对路径> [profile名]（默认 om-test-<日期>）
 # 前置：仓库已 pnpm i && pnpm check（需要 dist/index.mjs）。
 # 产物：profile 目录内 cordis.patch.yml / mock-provider.mjs / run-om-test.mjs / run-om-cold.mjs / cdp-ui.mjs / test-sessions / test-storage。
@@ -17,13 +17,24 @@ echo "== 1/6 dsh 版本对齐"
 WANT=$(node -e "process.stdout.write(require(process.argv[1]).devDependencies['@deepseek-ai/dsh-llm']??'')" "$REPO/package.json")
 [ -n "$WANT" ] || { echo "无法从 $REPO/package.json 读出 @deepseek-ai/dsh-llm 版本"; exit 1; }
 HAVE=$(dsh --version 2>/dev/null || echo "")
-if [ "$HAVE" != "$WANT" ]; then
-  echo "dsh 当前 ${HAVE:-未安装}，插件要求 $WANT，安装 @deepseek-ai/dsh@$WANT ..."
-  npm i -g "@deepseek-ai/dsh@$WANT"
+HOST_ENV=""
+if [ "$HAVE" = "$WANT" ]; then
+  echo "全局 dsh $HAVE 与插件要求一致，使用全局宿主"
+else
+  # 全局不一致：本地安装到 ~/.dsh-local/dsh-<版本>，PATH 前置本地 bin，驱动经 OM_DSH_PKG 解析宿主包
+  LOCAL_U="$HOME/.dsh-local/dsh-$WANT"
+  if [ "$("$LOCAL_U/node_modules/.bin/dsh" --version 2>/dev/null)" != "$WANT" ]; then
+    echo "全局 dsh ${HAVE:-未安装}，插件要求 $WANT，本地安装到 $LOCAL_U ..."
+    mkdir -p "$LOCAL_U"
+    (cd "$LOCAL_U" && { [ -f package.json ] || npm init -y >/dev/null; } && npm i "@deepseek-ai/dsh@$WANT")
+  fi
+  export PATH="$LOCAL_U/node_modules/.bin:$PATH"
+  export OM_DSH_PKG="$(cygpath -m "$LOCAL_U")/node_modules/@deepseek-ai/dsh/package.json"
   HAVE=$(dsh --version)
-  [ "$HAVE" = "$WANT" ] || { echo "安装后仍不一致（$HAVE != $WANT）"; exit 1; }
+  [ "$HAVE" = "$WANT" ] || { echo "本地宿主版本不一致（$HAVE != $WANT）"; exit 1; }
+  HOST_ENV="export PATH=\"$LOCAL_U/node_modules/.bin:\$PATH\" OM_DSH_PKG=$OM_DSH_PKG"
+  echo "使用本地宿主 dsh $HAVE"
 fi
-echo "dsh $HAVE 与插件要求一致"
 
 echo "== 2/6 检查 dist 产物"
 [ -f "$REPO_U/dist/index.mjs" ] || { echo "缺 $REPO/dist/index.mjs，先在仓库跑 pnpm check"; exit 1; }
@@ -95,7 +106,8 @@ node "$SCRIPTS_DIR/register-workspace.mjs" "$PDIR_U" "$REPO"
 
 cat <<EOF
 
-环境就绪。后续步骤（env 覆盖脚本默认值）：
+环境就绪。后续步骤（env 覆盖脚本默认值；本地宿主行须在跑驱动与起 GUI 前执行）：
+  ${HOST_ENV:-# 全局宿主，无需额外 env}
   export OM_PROFILE=$PROFILE OM_PROFILE_DIR=$PDIR OM_REPO=$REPO
   cd $PDIR_U
   OM_REPO=\$OM_REPO node run-om-test.mjs        # warm 电池

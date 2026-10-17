@@ -71,12 +71,13 @@ async function connect(url) {
   const log = (m) => process.stderr.write(`[connect] ${m}\n`);
   const tabs = await listTabs();
   log(`tabs=${tabs.length}`);
-  for (const t of tabs.filter((x) => x.type === 'page'))
-    await fetch(`${CDP_HTTP}/json/close?${t.id}`, { method: 'PUT' }).catch(() => {});
-  log('closed');
-  await new Promise((r) => setTimeout(r, 500));
+  // 先开新 tab 再关旧 page：关光所有 page 会让 Chrome 退出；不关则积压 tab 拖慢 CDP
   const tab = await newTab('about:blank');
   log(`newTab id=${tab.id}`);
+  for (const t of tabs.filter((x) => x.type === 'page' && x.id !== tab.id))
+    await fetch(`${CDP_HTTP}/json/close/${t.id}`).catch(() => {});
+  log('closed');
+  await new Promise((r) => setTimeout(r, 500));
   let target;
   for (let i = 0; i < 40; i++) {
     const all = await listTabs();
@@ -1169,36 +1170,35 @@ async function cardcheck() {
   process.exit(0);
 }
 
-// —— 诊断：console / 网络失败 / 卡片标记 ——
+// —— 诊断日志：打开压缩卡片 → 点「诊断日志」→ 断言切到诊断子会话，并汇总 console / 网络错误 ——
 async function diag() {
-  const needle = process.argv[3] || '首轮详细背景';
   const page = await connect(GUI);
   await page.send('Network.enable');
   await page.send('Log.enable');
-  await waitLoad(page);
-  await new Promise((r) => setTimeout(r, 2500));
-  console.log('ws:', await selectWs(page));
-  await page.ev(clickByText('button', '打开侧边栏'));
-  await new Promise((r) => setTimeout(r, 1200));
-  const box = await page.ev(`(() => {
-    const els = [...document.querySelectorAll('aside *')].filter(el => (el.textContent || '').includes(${JSON.stringify(needle)}) && el.children.length <= 2 && el.getBoundingClientRect().height > 10 && el.getBoundingClientRect().height < 60);
-    if (!els.length) return null;
-    const r = els[0].getBoundingClientRect();
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  await openCard(page);
+  const before = await page.ev(
+    `(() => JSON.stringify({ href: location.href, header: (document.querySelector('header')?.textContent || '').slice(0, 120) }))()`,
+  );
+  console.log('before:', before);
+  // 按钮文案见 src/client/locales.ts card.inspect；按 data 属性定位，不依赖文案
+  const btn = await page.ev(`(() => {
+    const b = document.querySelector('[data-om-compaction-inspect]');
+    if (!b) return 'NO_INSPECT';
+    b.scrollIntoView({ block: 'center' });
+    const text = (b.textContent || '').trim();
+    b.click();
+    return 'CLICKED:' + text;
   })()`);
-  console.log('row:', JSON.stringify(box));
-  if (box) {
-    for (const type of ['mousePressed', 'mouseReleased']) {
-      await page.send('Input.dispatchMouseEvent', {
-        type,
-        x: box.x,
-        y: box.y,
-        button: 'left',
-        clickCount: 1,
-      });
-    }
-  }
-  await new Promise((r) => setTimeout(r, 5000));
+  console.log('inspect:', btn);
+  await new Promise((r) => setTimeout(r, 3500));
+  const after = await page.ev(
+    `(() => JSON.stringify({ href: location.href, header: (document.querySelector('header')?.textContent || '').slice(0, 120), body: document.body.innerText.slice(0, 600) }))()`,
+  );
+  console.log('after:', after);
+  const b = JSON.parse(before);
+  const a = JSON.parse(after);
+  const switched = btn.startsWith('CLICKED') && (a.href !== b.href || a.header !== b.header);
+  console.log('switched:', switched);
   const cons = page.events
     .filter(
       (m) =>
@@ -1210,35 +1210,22 @@ async function diag() {
         m.params.type +
         ': ' +
         (m.params.args || [])
-          .map((a) => a.value || a.description || '')
+          .map((x) => x.value || x.description || '')
           .join(' ')
           .slice(0, 200),
     );
   console.log('console:', JSON.stringify(cons, null, 1));
-  const logs = page.events
-    .filter((m) => m.method === 'Log.entryAdded' && m.params.entry.level === 'error')
-    .slice(0, 10)
-    .map((m) => m.params.entry.text.slice(0, 200));
-  console.log('logerr:', JSON.stringify(logs, null, 1));
   const bad = page.events
     .filter((m) => m.method === 'Network.responseReceived' && m.params.response.status >= 400)
     .map((m) => `${m.params.response.status} ${m.params.response.url.slice(0, 120)}`);
-  const failed = page.events
-    .filter((m) => m.method === 'Network.loadingFailed')
-    .slice(0, 10)
-    .map((m) => m.params.errorText);
-  console.log('netbad:', JSON.stringify(bad.concat(failed), null, 1));
-  const marks = await page.ev(
-    `(() => { const t = document.body.innerText; const keys = ['上下文已压缩','点击查看压缩摘要','正在压缩','压缩失败','尝试其他模型']; return JSON.stringify(keys.map(k => k + '=' + t.includes(k))); })()`,
-  );
-  console.log('marks:', marks);
+  console.log('netbad:', JSON.stringify(bad, null, 1));
   await page.shot('diag');
-  process.exit(0);
+  process.exit(switched ? 0 : 1);
 }
 
 // —— 设置页检查客户端插件是否加载 ——
-async function cfgprobe() {
-  const page = await connect(GUI);
+// —— 插件管理器进配置表单：侧边栏「插件」→ 刷新 → 列表卡片「查看」进详情页 → 组件行「配置」 ——
+async function openPluginConfig(page, name = 'dsh-plugin-om') {
   await waitLoad(page);
   await new Promise((r) => setTimeout(r, 2500));
   const t0 = await page.ev(`(() => document.body.innerText.includes('正在加载工作区'))()`);
@@ -1248,20 +1235,37 @@ async function cfgprobe() {
   }
   const clickA = (label) =>
     page.ev(
-      `((label) => { const b = [...document.querySelectorAll('button[aria-label]')].find(x => x.getAttribute('aria-label') === label); if (!b) return 'NO_BTN'; b.click(); return 'CLICKED'; })( ${JSON.stringify(label)} )`,
+      `((label) => { const b = [...document.querySelectorAll('button[aria-label]')].find(x => x.getAttribute('aria-label') === label); if (!b) return 'NO_BTN'; b.scrollIntoView({ block: 'center' }); b.click(); return 'CLICKED'; })( ${JSON.stringify(label)} )`,
     );
-  await clickA('打开侧边栏');
+  const waitA = async (label, ms = 8000) => {
+    for (let t = 0; t < ms; t += 500) {
+      const r = await clickA(label);
+      if (r === 'CLICKED') return r;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return 'NO_BTN';
+  };
+  console.log('sidebar:', await clickA('打开侧边栏'));
   await new Promise((r) => setTimeout(r, 700));
-  await page.ev(
-    `(() => { const el = [...document.querySelectorAll('button,[role=button],span,div')].find(x => (x.textContent || '').trim() === '插件' && x.getBoundingClientRect().height > 4 && x.getBoundingClientRect().height < 60); if (!el) return 'NO_PM'; el.click(); return 1; })()`,
-  );
-  await new Promise((r) => setTimeout(r, 2500));
-  await page.ev(`(() => {
-    const panel = [...document.querySelectorAll('div,section,aside')].find(x => (x.innerText || '').includes('安装、启用和配置插件') && x.getBoundingClientRect().height > 200);
-    const el = [...panel.querySelectorAll('button,[role=button],div,span')].filter(x => (x.textContent || '').trim() === 'dsh-plugin-om' && x.getBoundingClientRect().height > 4).pop();
-    el.scrollIntoView({ block: 'center' }); el.click(); return 1;
-  })()`);
+  console.log('plugin manager:', await waitA('插件'));
   await new Promise((r) => setTimeout(r, 2000));
+  // 已安装区为空时刷新一次
+  let detail = await waitA(`查看 ${name}`, 3000);
+  if (detail !== 'CLICKED') {
+    console.log('refresh:', await clickA('刷新'));
+    detail = await waitA(`查看 ${name}`);
+  }
+  console.log('open detail:', detail);
+  await new Promise((r) => setTimeout(r, 1500));
+  const cfg = await waitA(`配置 ${name}`);
+  console.log('open config:', cfg);
+  await new Promise((r) => setTimeout(r, 2000));
+  return cfg === 'CLICKED';
+}
+
+async function cfgprobe() {
+  const page = await connect(GUI);
+  console.log('config opened:', await openPluginConfig(page));
   const dump = await page.ev(`(() => {
     const cfg = document.querySelector('[data-plugin-config]');
     const rowline = document.querySelector('.X_2TxG_rowLine');
@@ -1281,50 +1285,15 @@ async function cfgprobe() {
 
 async function cfgpanel() {
   const page = await connect(GUI);
-  await waitLoad(page);
-  await new Promise((r) => setTimeout(r, 2500));
-  const t0 = await page.ev(`(() => document.body.innerText.includes('正在加载工作区'))()`);
-  if (t0) {
-    await selectWs(page);
-    await new Promise((r) => setTimeout(r, 1500));
-  }
-  // open sidebar then plugin manager (plugins.row.config renders there)
-  const clickA = (label) =>
-    page.ev(
-      `((label) => { const b = [...document.querySelectorAll('button[aria-label]')].find(x => x.getAttribute('aria-label') === label); if (!b) return 'NO_BTN'; b.click(); return 'CLICKED'; })( ${JSON.stringify(label)} )`,
-    );
-  console.log('sidebar:', await clickA('打开侧边栏'));
-  await new Promise((r) => setTimeout(r, 700));
-  const pm = await page.ev(
-    `(() => { const el = [...document.querySelectorAll('button,[role=button],span,div')].find(x => (x.textContent || '').trim() === '插件' && x.getBoundingClientRect().height > 4 && x.getBoundingClientRect().height < 60); if (!el) return 'NO_PM'; el.click(); return 'CLICKED:' + el.tagName; })()`,
-  );
-  console.log('plugin manager:', pm);
-  await new Promise((r) => setTimeout(r, 2500));
-  const openInstalled = await page.ev(`(() => {
-    const panel = [...document.querySelectorAll('div,section,aside')].find(x => (x.innerText || '').includes('安装、启用和配置插件') && x.getBoundingClientRect().height > 200);
-    if (!panel) return 'NO_PANEL';
-    const el = [...panel.querySelectorAll('button,[role=button],div,span')].filter(x => (x.textContent || '').trim() === 'dsh-plugin-om' && x.getBoundingClientRect().height > 4).pop();
-    if (!el) return 'NO_ENTRY';
-    el.scrollIntoView({ block: 'center' });
-    el.click();
-    return 'CLICKED:' + el.tagName + ':' + (el.className || '').toString().slice(0, 40);
-  })()`);
-  console.log('open installed:', openInstalled);
-  await new Promise((r) => setTimeout(r, 2000));
-  const openRowPage = await page.ev(`(() => {
-    const btn = document.querySelector('button[aria-label="配置 dsh-plugin-om"]') || [...document.querySelectorAll('button.X_2TxG_rowOpen')].find(b => (b.getAttribute('aria-label') || '').includes('dsh-plugin-om'));
-    if (!btn) return 'NO_ROW_BTN';
-    btn.scrollIntoView({ block: 'center' });
-    btn.click();
-    return 'CLICKED:' + btn.getAttribute('aria-label');
-  })()`);
-  console.log('open row page:', openRowPage);
+  console.log('config opened:', await openPluginConfig(page));
   await new Promise((r) => setTimeout(r, 2000));
   const dump = await page.ev(`(() => {
     const txt = document.body.innerText;
-    const labels = ['观察阈值','摘要合并阈值','保留消息数','单次生成上限','压缩 Provider','压缩模型','思考等级','忽略思考内容','限流等待毫秒数','重压缩并发数','嵌入模型目录','自动压缩','进度提醒','长期无记录时重发','召回','语义','调试','保存修改','撤销修改','恢复默认'];
+    // 常显字段标签取自 src/client/locales.ts 的 config.*；嵌入模型目录随语义增强、重发阈值随长期无记录重发条件显示
+    const labels = ['观察阈值','摘要合并阈值','保留消息数','单次生成上限','压缩 Provider','压缩模型','思考等级','忽略思考内容','限流等待毫秒数','重压缩并发数','自动压缩','进度提醒','长期无记录时重发','原文召回','步骤日志','保存修改','恢复默认'];
     const found = {};
     for (const l of labels) found[l] = txt.includes(l);
+    found.missing = labels.filter((l) => !found[l]);
     // locate the plugin config card region
     const idx = txt.indexOf('配置上下文压缩');
     const pmIdx = txt.indexOf('安装、启用和配置插件');
@@ -1453,8 +1422,9 @@ async function openCard(page) {
   const t0 = await page.ev(`(() => document.body.innerText.includes('正在加载工作区'))()`);
   if (t0) await selectWs(page);
   await new Promise((r) => setTimeout(r, 1200));
+  // GUI 会恢复上次路由；子会话面包屑也含父标题，须排除「OM会话」子会话
   const already = await page.ev(
-    `(() => { const h = document.querySelector('header'); return !!h && (h.textContent || '').includes('首轮详细背景'); })()`,
+    `(() => { const h = document.querySelector('header'); const t = (h && h.textContent) || ''; return t.includes('首轮详细背景') && !t.includes('OM会话'); })()`,
   );
   console.log('already open:', already);
   if (!already) {
@@ -1534,7 +1504,7 @@ async function openCard(page) {
       await new Promise((r) => setTimeout(r, 2500));
     }
     const row = await page.ev(`(() => {
-    const els = [...document.querySelectorAll('aside *, [class*=sidebar] *')].filter(e => e.children.length <= 2 && (e.textContent || '').includes('首轮详细背景'));
+    const els = [...document.querySelectorAll('[class*="searchTree"] *, aside *, [class*=sidebar] *')].filter(e => e.children.length <= 2 && (e.textContent || '').includes('首轮详细背景'));
     const el = els.find(e => { const r = e.getBoundingClientRect(); return r.height > 10 && r.height < 120; });
     if (!el) return null;
     const r = el.getBoundingClientRect();
