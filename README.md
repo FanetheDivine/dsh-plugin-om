@@ -30,7 +30,7 @@
 
 ## 安装
 
-要求 DSH 0.2.1-rc.1 或更高版本。
+要求 DSH 0.2.0-rc.2 或更高版本。
 
 服务端必需 `llm` 和 `tokenMeter`。`tools`、`sessions` 和 `commands` 缺失时，对应的 `recall`、压缩会话记录和两个命令停用并输出 warning，压缩照常运行。
 

@@ -18,7 +18,7 @@ import { Context } from '@deepseek-ai/cordis';
 import LlmRuntime, { type ReasoningEffortId } from '@deepseek-ai/dsh-llm';
 import * as piAi from '@deepseek-ai/dsh-llm-pi-ai';
 import { SessionId, SessionStore } from '@deepseek-ai/dsh-session';
-import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl';
+import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl';
 import { parse } from 'yaml';
 import {
   buildCompressionTaskText,

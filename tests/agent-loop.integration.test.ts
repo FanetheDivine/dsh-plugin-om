@@ -27,14 +27,13 @@ import {
   SESSION_LOG_EXPORT_PATH,
   SESSION_LOG_FILENAME,
 } from '@deepseek-ai/dsh-session-log-export';
-import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl';
+import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl';
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection';
 import SqliteSessionQueryEngine from '@deepseek-ai/dsh-session-query-sqlite';
 import { SubagentRuntime } from '@deepseek-ai/dsh-subagent';
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter';
 import { ToolRuntime } from '@deepseek-ai/dsh-tools';
-import type { WorkingDirectoryService } from '@deepseek-ai/dsh-working-directory';
 import { unzipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import { PLUGIN_SOURCE_KIND } from '../src/constants.ts';
@@ -56,9 +55,8 @@ function recordChildId(app: Context, session: Session, mode: 'success' | 'failur
     return childId as SessionId;
   }
   const children = app.sessions.list().filter((s) => s.header.origin === 'subagent');
-  const child = children.at(0);
-  if (children.length !== 1 || !child) throw new Error('缺少压缩失败日志子会话');
-  return child.id;
+  if (children.length !== 1) throw new Error('缺少压缩失败日志子会话');
+  return children[0]!.id;
 }
 
 /** 创建一个真实用户输入，交给 Agent inbox 驱动整轮对话。 */
@@ -227,13 +225,6 @@ async function stackColdExport(storageRoot: string) {
     });
     await app.plugin(SessionStore);
     await app.plugin(SessionProjectionRegistry);
-    // SubagentRuntime 硬注入 workingDirectory；本栈只验证日志导出与子会话发现，
-    // 不会触发目录操作，提供最小 stub 避免引入完整的目录服务依赖链。
-    // 服务类含私有字段，字面量只能经 unknown 中转断言。
-    app.provide('workingDirectory', {
-      ensure: async () => storageRoot,
-      set: async () => {},
-    } as unknown as WorkingDirectoryService);
     await app.plugin(SubagentRuntime);
     await app.plugin(SqliteSessionQueryEngine, { path: ':memory:', openAt: 'never' });
     await app.plugin(LocalAttachmentStore, { dshHome: storageRoot });
