@@ -36,3 +36,4 @@
 
 22. **pnpm 忽略 build scripts**：profile 安装后 `onnxruntime-node`、`sharp` 等被 ignored，语义检索不可用。测试默认 `semanticRecallEnabled: false`；需要时 `pnpm approve-builds`。
 23. **端口占用**：GUI 端口残留进程导致 `EADDRINUSE`、连锁多插件不激活。netstat 找 PID taskkill 后重启；启动日志出现 `did not activate` 先查端口。
+24. **sessionController 偶发缺失**：全新 profile 首跑 `/om-compaction-eval` 报「宿主未提供 sessionController 服务」，而配置与已验证 profile 完全一致——bundle 激活偶发。处置：清理 `test-sessions`、`test-storage` 与结果文件后重跑（实测恢复 19/19）；仍复现则查 runProfile 启动日志中 webserver 与 remotes 是否激活。

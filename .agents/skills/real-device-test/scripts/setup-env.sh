@@ -36,13 +36,15 @@ else
 fi
 
 echo "== 4/6 安装插件（pnpm pack + dsh plugin add）"
-TGZ=$(cd "$REPO_U" && pnpm pack --pack-destination /tmp | tail -1)
+# tgz 必须留在 profile 目录内：package.json 的 file: 依赖指向它，删除会导致重跑安装失败
+TGZ=$(cd "$REPO_U" && pnpm pack --pack-destination "$PDIR_U" | tail -1)
 TGZ_M=$(cygpath -m "$TGZ" 2>/dev/null || echo "$TGZ")
 dsh plugin --profile "$PROFILE" add "$TGZ_M"
 
 echo "== 5/6 写隔离配置 + 复制驱动脚本"
-if [ -s "$PDIR_U/cordis.patch.yml" ]; then
-  echo "cordis.patch.yml 已存在，保留不覆盖"
+# --dump-config 生成的 patch 是非空空壳（注释 + []），须按内容判断是否已配置过
+if grep -q "om-test-mock" "$PDIR_U/cordis.patch.yml" 2>/dev/null; then
+  echo "cordis.patch.yml 已含测试配置，保留不覆盖"
 else
   cat > "$PDIR_U/cordis.patch.yml" <<EOF
 # OM 实机测试隔离配置：无真实模型，mock provider 由文件尾部 insert 加载。
