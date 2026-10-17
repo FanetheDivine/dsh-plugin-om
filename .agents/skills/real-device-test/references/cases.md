@@ -5,7 +5,7 @@
 ## 推导方法
 
 1. **列交互面**：`git log <上个tag>..HEAD --oneline` + CHANGELOG 逐条过。对每个 commit 判断是否触碰宿主交互面：
-   - 会话事件读写（append、surfaceOp、feedback/record 信封）
+   - 会话事件读写（append、surfaceOp、ignorable plugin record）
    - turn 生命周期（pre-step 拦截、whenIdle、reason blocked）
    - 宿主服务（llm.stream、tokenMeter、sessions、sessionPersistence、commands、sessionController）
    - 持久化与重启（冷启动采纳、诊断子会话落盘）
@@ -20,7 +20,7 @@
 | 用例 | commit | mock mode | 断言事实源 |
 |---|---|---|---|
 | 装载 + dist 一致性 | — | — | fiber.assertActive、commands.list、requestHeader().tools、sha256 |
-| 立即观察 + 记录 seed + label | #111 #108 #112 | normal | compaction/start(phase=observe)、om:1: 信封、subagent/catalog label、诊断子会话 seed |
+| 立即观察 + 记录 seed + label | #111 #108 #112 | normal | compaction/start(phase=observe)、`plugin:dsh-plugin-om/*` plugin record、subagent/catalog label、诊断子会话 seed |
 | 后台预压缩 + 延迟注入 | #111 | normal, tailMessageCount=3 | observe-summary 先于注入、到期轮 compCalls=0、注入后 history 块 |
 | 冷启动采纳 | #111 | normal（cold 驱动） | 重启后 pending/summary 仍在、注入零重压缩、diagnosticSessionId 复用 |
 | 阈值真实 token 换算 | #109 | usageMultiplier 1/8 | 低倍数不触发、高倍数触发 observe-pending |

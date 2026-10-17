@@ -55,7 +55,7 @@ client 下发断言：GUI 启动后抓 Network，combo URL 含 `dsh-plugin-om/cl
 - `runProfile` 启动 profile（`--no-open --port 0`），取 mock adapter 与插件 loader entry。
 - 配置热更新：`entry.update({config})` → `loader.await()` → `fiber.assertActive()`。
 - 会话：`agents.create/resume`（provider mock），`followup` + `whenIdle` 带超时驱动一轮。
-- 断言以会话落盘事件为事实源：`compaction/start|summary|end`、`feedback/record` 中 `om:1:` 信封、`subagent/catalog`、`turn/end reason`。不信任内存状态。
+- 断言以会话落盘事件为事实源：`compaction/start|summary|end`、`plugin:dsh-plugin-om/*` 的 ignorable plugin record、`subagent/catalog`、`turn/end reason`。不信任内存状态。
 
 用例推导（详细方法与本轮示例见 `references/cases.md`）：
 

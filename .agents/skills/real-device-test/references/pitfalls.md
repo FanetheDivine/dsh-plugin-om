@@ -6,7 +6,7 @@
 
 1. **事件载荷形状**：`user/message` 的消息体在 `e.data`，其余消息事件在 `e.data.message`。驱动统一用 `msgOf(e)` 取值，不要凭记忆。
 2. **surfaceOp 规则**：surface-eligible 事件必须带 `surfaceOp`——`'append'`（字符串）或 `{op:'replace',startSeq,endSeq}`（恰好三键）。`sourceEventSeqs` 需密集、无重复、全部指向更早事件、覆盖每个被遮蔽节点；`assistant/message` 不得携带 `sourceEventSeqs`。手工 append 测试事件违反规则会抛 `invalid replace surfaceOp`。
-3. **OM 信封**：借用 log-only 的 `feedback/record`，text 前缀 `om:1:` + JSON。解码 `text.slice(5)` 后 `JSON.parse`。
+3. **OM 私有事件**：经宿主 `appendPluginRecord` 写入，类型 `plugin:dsh-plugin-om/<名>`（warning、observe-pending、observe-invalidate、observe-summary），`ignorable: true`，载荷即 `e.data`。读侧用 `pluginRecordOf` 或直接按 `type` 过滤。
 4. **getHistory 返回**：不带根标签的条目 XML。mock 识别视图要按 `<assistant` / `<user_message` / `<skill_content` / `<ask-user-question` / `<history` 匹配，不能只找 `<history`。
 5. **mock 模型元数据**：`resolveModel` 不提供 `reasoning.efforts`，思考等级校验会降级并 reportDegrade。给测试模型声明 efforts 列表。
 6. **宿主回放行为**：无签名 reasoning 是否回放由宿主决定且可能变化。先 dump 实际请求再写断言方向，不要假设。
