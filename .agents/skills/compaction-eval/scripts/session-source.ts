@@ -2,13 +2,14 @@
  * 读取压缩评估的会话来源：本地 ~/.dsh/sessions、DSH 导出的会话日志 zip 与重压缩日志目录。
  * prepare 与 view 共用；不含命令行入口。
  * 导出 Content / Usage / EventData / SessionEvent / SessionBundle 类型与
- * loadLog / readZip / bareId / loadVariants / loadBundle。
+ * loadLog / readZip / loadVariants / loadBundle。
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { unzipSync } from 'fflate';
 import { decompress } from 'fzstd';
+import { bareId } from './paths.ts';
 
 /** 消息内容片段。 */
 export interface Content {
@@ -95,11 +96,6 @@ function logFile(sessionDir: string): string {
   const name = readdirSync(sessionDir).find((f) => /^session\..*\.jsonl/.test(f));
   if (!name) throw new Error(`未找到日志文件：${sessionDir}`);
   return join(sessionDir, name);
-}
-
-/** 会话 id 规范化：parentSession 带 session- 前缀，目录名与头 id 为裸 uuid。 */
-export function bareId(id: string): string {
-  return id.replace(/^session-/, '');
 }
 
 /** 在全部工作区中按 id 前缀定位主会话目录。 */

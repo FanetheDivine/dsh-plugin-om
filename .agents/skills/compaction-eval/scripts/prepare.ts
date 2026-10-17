@@ -5,15 +5,16 @@
  *       [--variants 目录]... [--range A..B] [--phase observe|reflect] [--out 目录] [--seed N] [--after-max N]
  * 输入：本地 ~/.dsh/sessions，或 DSH 导出的会话日志 zip，需含 subagents；
  *       --variants 可重复，并入 compress.ts 产出目录中的压缩日志。
- * 产出：V*.xml、source.xml、after.md、rules.md、_blind_key.json、meta.json。
+ * 产出：V*.xml、source.xml、after.md、rules.md、_blind_key.json、meta.json；
+ *       缺省写入系统临时目录下的 om-compaction-eval/eval-<会话 id 前 8 位>-<阶段>-<A>-<B>/。
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, dirname, extname, join, resolve } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { bareId, evalPath } from './paths.ts';
 import {
-  bareId,
   type Content,
   type EventData,
   loadBundle,
@@ -76,10 +77,21 @@ export type Buckets = Record<Position, [number, number]>;
 const RANGE_RE = /区间 \[(\d+)\.\.(\d+)\]/;
 /** 压缩日志尾部的模型说明；思考等级可为中文（如「默认思考等级」）。 */
 const MODEL_RE = /压缩使用模型 (\S+?)（([^）]+)）/;
+/** 评估目录中表明评审已开始的产物：重写候选会让它们对上新的编号。 */
+const REVIEW_RE = /^(facts\.json|judge-.+\.json|parts)$/;
+/** 重写候选前清除的旧产物：候选变少时残留的 V*.xml 与旧评分。 */
+const STALE_RE = /^(V\d+\.xml|scores\.(json|md))$/;
 
-/** 评估目录名：eval-<会话 id 前 8 位>-<阶段>-<A>-<B>。 */
-export function evalDirName(sessionId: string, phase: Phase, lo: number, hi: number): string {
-  return `eval-${bareId(sessionId).slice(0, 8)}-${phase}-${lo}-${hi}`;
+/** 准备评估目录：已有事实清单、评审或分段产物时报错；否则建目录并清除旧候选与评分。 */
+export function prepareEvalDir(dir: string): void {
+  mkdirSync(dir, { recursive: true });
+  const names = readdirSync(dir);
+  const reviewed = names.filter((n) => REVIEW_RE.test(n)).sort();
+  if (reviewed.length)
+    throw new Error(
+      `评估目录已有评审产物 ${reviewed.join('、')}：${dir}。重评同一区间前先删除该目录`,
+    );
+  for (const n of names) if (STALE_RE.test(n)) rmSync(join(dir, n));
 }
 
 /** 拼接消息 content 中的文本。 */
@@ -335,7 +347,6 @@ function main(): void {
       'after-max': { type: 'string', default: '60000' },
     },
   });
-  const zip = values.zip ? resolve(values.zip) : undefined;
   const bundle = loadBundle(values);
   const mainEv = bundle.main;
   const mainHead = mainEv[0];
@@ -358,13 +369,8 @@ function main(): void {
     if (!x.product) throw new Error(`变体 ${x.id} 缺少 completeCompression 产物`);
   }
 
-  const name = evalDirName(mainId, sel.phase, lo, hi);
-  const out =
-    values.out ??
-    (zip
-      ? join(dirname(zip), basename(zip, extname(zip)), name)
-      : join(mainHead.cwd ?? '.', '.session-snapshots', name));
-  mkdirSync(out, { recursive: true });
+  const out = values.out ? resolve(values.out) : evalPath(mainId, sel.phase, lo, hi);
+  prepareEvalDir(out);
   const source = pickSource(group, lo, hi);
   write(out, 'source.xml', source);
 

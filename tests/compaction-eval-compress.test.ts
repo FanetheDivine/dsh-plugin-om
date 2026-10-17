@@ -177,6 +177,26 @@ describe('compressView', () => {
     expect(outcome.ok && log.product).toBe(outcome.ok ? outcome.text : false);
     expect(log.product).toContain('助手摘要');
   });
+
+  it('多次重压缩并发写同一目录，各占一个压缩日志且都能读回', async () => {
+    const out = tempDir();
+    const file = buildViewFile(hostLog(twoCallFlow()), { range: [0, 5] });
+    /** 一次独立运行：各自的运行时与桩模型，输出目录相同。 */
+    const run = async (target: string) => {
+      const ctx = await createRuntime(out);
+      ctx.llm.registerAdapter(['stub'], new ScriptedAdapter());
+      return compressView(ctx, file, parseTarget(target), resolveConfig({ rateLimitWaitMs: 0 }));
+    };
+    const outcomes = await Promise.all([run('stub/m:high'), run('stub/n:high')]);
+    expect(outcomes.map((o) => (o.ok ? '' : o.error))).toEqual(['', '']);
+
+    const logs = loadVariants(out).map((events) => parseLog(events));
+    expect(logs.map((l) => l.id).sort()).toEqual(outcomes.map((o) => o.recordSessionId).sort());
+    expect(logs.map((l) => l.model).sort()).toEqual(['stub/m', 'stub/n']);
+    expect(logs.every((l) => l.recompress && !l.failed && l.product.includes('助手摘要'))).toBe(
+      true,
+    );
+  });
 });
 
 describe('loadVariants', () => {

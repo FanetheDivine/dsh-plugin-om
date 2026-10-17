@@ -3,7 +3,7 @@
 // 选择、盲化产物、后续轨迹定位与截断、区间三等分、可复现洗牌，
 // 以及 aggregate 的双评审均值、保留/精简/无关/耗时四维评分、评审校验报错与按模型汇总。
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
@@ -21,15 +21,14 @@ import {
   buckets,
   buildAfter,
   type CompactionLog,
-  evalDirName,
   type Phase,
   parseLog,
   pickSource,
+  prepareEvalDir,
   selectGroup,
   shuffle,
 } from '../.agents/skills/compaction-eval/scripts/prepare.ts';
 import {
-  bareId,
   loadLog,
   readZip,
   type SessionEvent,
@@ -255,15 +254,25 @@ describe('prepare', () => {
     });
   });
 
-  it('bareId 去除 parentSession 的 session- 前缀', () => {
-    expect(bareId('session-b011-4c92')).toBe('b011-4c92');
-    expect(bareId('b011-4c92')).toBe('b011-4c92');
-  });
+  it('prepareEvalDir 清除旧候选与评分，已有评审产物时拒绝写入', () => {
+    const dir = join(tmp(), 'eval-x');
+    prepareEvalDir(dir);
+    expect(readdirSync(dir)).toEqual([]);
+    for (const n of ['V1.xml', 'V12.xml', 'scores.json', 'scores.md', 'source.xml', 'notes.txt'])
+      writeFileSync(join(dir, n), 'x');
+    prepareEvalDir(dir);
+    // 候选变少时旧 V*.xml 不能残留，旧评分不能对上新编号
+    expect(readdirSync(dir).sort()).toEqual(['notes.txt', 'source.xml']);
 
-  it('evalDirName 取会话 id 前 8 位，带不带 session- 前缀一致', () => {
-    const id = 'dc114f4d-f44b-49f8-b623-11b2edb5927b';
-    expect(evalDirName(id, 'observe', 328, 383)).toBe('eval-dc114f4d-observe-328-383');
-    expect(evalDirName(`session-${id}`, 'reflect', 0, 9)).toBe('eval-dc114f4d-reflect-0-9');
+    for (const review of ['facts.json', 'judge-V1-1.json', 'parts']) {
+      const d = tmp();
+      writeFileSync(join(d, 'V1.xml'), 'x');
+      if (review === 'parts') mkdirSync(join(d, review));
+      else writeFileSync(join(d, review), '{}');
+      expect(() => prepareEvalDir(d)).toThrow(new RegExp(`已有评审产物 ${review}.*先删除该目录`));
+      // 报错时不动任何文件
+      expect(readdirSync(d).sort()).toEqual(['V1.xml', review].sort());
+    }
   });
 
   it('selectGroup 按阶段分组，同区间多阶段需显式指定', () => {

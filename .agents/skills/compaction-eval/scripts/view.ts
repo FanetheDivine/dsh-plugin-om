@@ -3,7 +3,8 @@
  *
  * 用法：node view.ts (--session <主会话 id 或前缀> | --zip <会话日志 zip>)
  *       [--compaction <id> | --range A..B] [--out view.json]
- * 无选区：列出会话已有压缩。有选区：写 view.json，供 compress.ts 读取。
+ * 无选区：列出会话已有压缩。有选区：写 view.json，供 compress.ts 读取；
+ *       缺省写入系统临时目录下的 om-compaction-eval/view-<会话 id 前 8 位>-<阶段>-<A>-<B>.json。
  * 导出 toSession / listCompactions / rangeView / buildViewFile 与 ViewFile 类型。
  */
 
@@ -32,6 +33,7 @@ import type {
   CompactionStartPayload,
   CompactionSummaryPayload,
 } from '../../../../src/types.ts';
+import { viewPath } from './paths.ts';
 import { loadProfile } from './profile.ts';
 import { loadBundle, type SessionEvent } from './session-source.ts';
 
@@ -220,7 +222,6 @@ function main(): void {
   }
   if (values.compaction !== undefined && values.range !== undefined)
     throw new Error('--compaction 与 --range 只能选其一');
-  if (!values.out) throw new Error('需指定 --out');
   const file = buildViewFile(
     events,
     values.compaction !== undefined
@@ -228,11 +229,11 @@ function main(): void {
       : { range: parseRange(values.range ?? '') },
     resolveConfig(loadProfile().plugin).compressSkipReasoning,
   );
-  const outFile = resolve(values.out);
+  const outFile = values.out ? resolve(values.out) : viewPath(file);
   mkdirSync(dirname(outFile), { recursive: true });
   writeFileSync(outFile, JSON.stringify(file, null, 1), 'utf8');
   console.log(
-    `${file.phase} [${file.view.minIndex}..${file.view.maxIndex}] 条目 ${file.view.entries.length}，原文 ${file.originalChars} 字符 → ${values.out}`,
+    `${file.phase} [${file.view.minIndex}..${file.view.maxIndex}] 条目 ${file.view.entries.length}，原文 ${file.originalChars} 字符 → ${outFile}`,
   );
 }
 
