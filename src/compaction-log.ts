@@ -79,6 +79,25 @@ export type CompressionInfo = {
   model: string;
 };
 
+/** 失败详情：原因、最后一轮 finish 类型与输出 token 数（均可缺省）。 */
+export type CompressionFailureInfo = {
+  reason: string;
+  finish?: string;
+  outputTokens?: number;
+};
+
+/** 失败产物文本：`无（压缩失败[：原因[；最后一轮 finish=…[，输出 N tokens]]]）`。 */
+function failureText(failure: CompressionFailureInfo | undefined): string {
+  if (failure === undefined) return '无（压缩失败）';
+  const last =
+    failure.finish === undefined
+      ? ''
+      : `；最后一轮 finish=${failure.finish}${
+          failure.outputTokens === undefined ? '' : `，输出 ${failure.outputTokens} tokens`
+        }`;
+  return `无（压缩失败：${failure.reason}${last}）`;
+}
+
 /** 生成模型信息：压缩模型、思考等级、原始消息与压缩产物的字符数（k 单位）。 */
 export function compressionInfo(info: {
   target: RoutedTarget;
@@ -88,11 +107,13 @@ export function compressionInfo(info: {
   originalChars: number;
   /** 压缩产物字符数；失败时缺省。 */
   resultChars?: number;
+  /** 失败详情；仅失败时有意义。 */
+  failure?: CompressionFailureInfo;
 }): CompressionInfo {
   const effort = info.reasoningEffort ?? '默认思考等级';
   const result =
     info.resultChars === undefined
-      ? '无（压缩失败）'
+      ? failureText(info.failure)
       : `${formatCompactCount(info.resultChars)} 字符`;
   return {
     text: `压缩使用模型 ${info.target.provider}/${info.target.model}（${effort}），原始消息 ${formatCompactCount(info.originalChars)} 字符，压缩产物 ${result}`,

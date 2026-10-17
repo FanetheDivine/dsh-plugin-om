@@ -477,7 +477,27 @@ describe('runCompressionLoop', () => {
     const failed = await runCompressionLoop(failCtx, makeSession(), loopOptions());
     expect(failed.ok).toBe(false);
     expect(tailOf(failCtx).text).toContain('原始消息 10 字符');
-    expect(tailOf(failCtx).text).toContain('压缩产物 无（压缩失败）');
+    expect(tailOf(failCtx).text).toContain(
+      '压缩产物 无（压缩失败：模型连续 3 轮未调用压缩工具，放弃本次压缩；最后一轮 finish=stop',
+    );
+  });
+
+  it('截断失败：失败日志尾部记录 finish=max-tokens 与输出 token 数', async () => {
+    const ctx = makeCtx({
+      llmStreamFactory: () =>
+        roundChunks({
+          reasoning: '长思考',
+          usage: { inputTokens: 10, outputTokens: 32768 },
+          finish: { kind: 'max-tokens' },
+        }),
+    });
+    const failed = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(failed.ok).toBe(false);
+    const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
+    const last = events.filter((e) => e.type === 'assistant/message').at(-1);
+    expect(JSON.stringify(last?.data)).toContain(
+      '压缩失败：模型连续 3 轮输出被 max-tokens 截断，放弃本次压缩；最后一轮 finish=max-tokens，输出 32768 tokens）',
+    );
   });
 
   it('retry 透传到会话记录标题：成功与失败均带重压缩后缀', async () => {

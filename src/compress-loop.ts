@@ -33,7 +33,11 @@ import {
   type ToolCallBlock,
   type UserMessage,
 } from '@deepseek-ai/dsh-llm';
-import { compressionInfo, recordCompressionSession } from './compaction-log.ts';
+import {
+  type CompressionFailureInfo,
+  compressionInfo,
+  recordCompressionSession,
+} from './compaction-log.ts';
 import {
   COMPRESSION_TOOL_SCHEMAS,
   CompressionState,
@@ -321,6 +325,9 @@ export async function runCompressionLoop(
   let nudges = 0;
   let truncations = 0;
   let transientRetries = 0;
+  /** 最后一个收到终态的请求的 finish 类型与输出 token 数（失败日志用）。 */
+  let lastFinish: string | undefined;
+  let lastOutputTokens: number | undefined;
   /** 仅落盘、不进入后续请求的消息（截断轮的 assistant 消息）。 */
   const omitted = new Set<Message>();
   let usage: TokenUsage | undefined;
@@ -335,6 +342,7 @@ export async function runCompressionLoop(
     success: boolean,
     stats: CompressionStats,
     resultChars?: number,
+    failure?: CompressionFailureInfo,
   ): Promise<string | undefined> =>
     recordCompressionSession(ctx, session, {
       phase: options.phase,
@@ -354,12 +362,17 @@ export async function runCompressionLoop(
           ? {}
           : { reasoningEffort: options.reasoningEffort }),
         ...(resultChars === undefined ? {} : { resultChars }),
+        ...(failure === undefined ? {} : { failure }),
       }),
       ...(options.retry === undefined ? {} : { retry: options.retry }),
     });
   const failWith = async (error: string, aborted: boolean): Promise<CompressionFailure> => {
     const stats = buildStats();
-    const id = await recordSessionId(false, stats);
+    const id = await recordSessionId(false, stats, undefined, {
+      reason: error,
+      ...(lastFinish === undefined ? {} : { finish: lastFinish }),
+      ...(lastOutputTokens === undefined ? {} : { outputTokens: lastOutputTokens }),
+    });
     return {
       ok: false,
       error,
@@ -427,6 +440,8 @@ export async function runCompressionLoop(
       return await failWith(message, false);
     }
     const finish = assembler.finish;
+    lastFinish = finish.kind;
+    lastOutputTokens = assembler.usage?.outputTokens;
     if (finish.kind === 'aborted') {
       logger.warn('压缩循环中止（流以 aborted 结束），放弃本次压缩');
       return await failWith(COMPACTION_ABORTED_ERROR, true);
