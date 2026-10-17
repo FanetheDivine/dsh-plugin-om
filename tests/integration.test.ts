@@ -284,12 +284,12 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(callsBefore);
   }, 30000);
 
-  it('压缩循环失败：compaction/end(error) + 诊断子会话落盘 + pre-step 拒绝本 step', async () => {
+  it('压缩循环失败：pre-step 拒绝本 step + 诊断子会话落盘（不写 compaction 生命周期）', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-om-failure-'));
     const { app, session, adapter } = await stackHarness({
       storageRoot: root,
       withSystemPrompt: true,
-      // 适配器输出纯文本（无工具调用）再以 error 终止：两轮无工具调用判失败
+      // 适配器输出纯文本（无工具调用）再以 error 终止：后台任务首轮即失败
       chunksFor: () => [
         { type: 'text-delta', index: 0, text: '模型输出的非日志内容，未通过校验' } as StreamChunk,
         { type: 'finish', reason: { kind: 'error' } } as StreamChunk,
@@ -298,28 +298,26 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     try {
       seedUserMessages(session, 6);
 
+      // K=0：触发当轮即到期，等待后台任务 → 失败 → 拒绝本 step
       const decision = await runPreStep(app, session);
       expect(decision).toEqual({ kind: 'reject' });
       expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(1);
       const types = session.snapshotEvents().map((e) => e.type);
-      expect(types).toContain('compaction/start');
-      expect(types).toContain('compaction/end');
-      const end = session.snapshotEvents().find((e) => e.type === 'compaction/end');
-      const error = (end?.data as { error?: string } | undefined)?.error;
-      expect(typeof error === 'string' && error !== '').toBe(true);
+      // 失败不写 compaction 括号（生命周期只在注入成功时出现）
+      expect(types).not.toContain('compaction/start');
+      expect(types).not.toContain('compaction/end');
       // 失败不产生部分替换：表层仍为 6 条原始消息
       expect(session.surface.nodes).toHaveLength(6);
+      // 待定标记保留（无失效标记），下个 pre-step 对账丢弃失败任务重启
+      expect(findOmEvents(session, 'om/observe-pending')).toHaveLength(1);
+      expect(findOmEvents(session, 'om/observe-invalidate')).toHaveLength(0);
 
-      // 诊断子会话：最终失败即落盘，header 元数据指向主会话
+      // 诊断子会话：任务失败即落盘，header 元数据指向主会话
       const children = app.sessions.list().filter((s) => s.header.origin === 'subagent');
       expect(children).toHaveLength(1);
       const child = children[0];
       expect(child?.header.parentSession).toBe(session.id);
       expect(child?.header.delegationDepth).toBe(1);
-      // compaction/end error 载荷带诊断子会话 sessionId（UI 渲染行为不变）
-      expect((end?.data as { diagnosticSessionId?: string } | undefined)?.diagnosticSessionId).toBe(
-        child?.id,
-      );
       // 首事件 descriptor：one-shot + provider om-compaction-log + label 含阶段与轮数
       const descriptor = child?.snapshotEvents()[0];
       expect(descriptor?.type).toBe('subagent/descriptor');
@@ -506,11 +504,12 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     });
     seedUserMessages(session, 6);
     await runPreStep(app, session);
-    // 全部 om 私有事件类别一并验收：须落在宿主已知类型内，否则会话重载被拒
+    // 自动链路（K=0 触发当轮注入）已写 pending/summary/invalidate 三个信封；
+    // 再手动补齐全部 om 私有事件类别一并验收：须落在宿主已知类型内，否则会话重载被拒
     const pendingSeq = appendOmEvent(session, 'om/observe-pending', { triggerMessageIndex: 0 });
     appendOmEvent(session, 'om/observe-invalidate', { pendingSeq });
     appendOmEvent(session, 'om/warning', { problem: 'systemPrompt-missing', message: 'm' });
-    expect(findOmEvents(session)).toHaveLength(3);
+    expect(findOmEvents(session)).toHaveLength(6);
 
     // 主会话与压缩记录子会话都含插件自产消息，逐一验收宿主持久化边界。
     // 行准入（assertV4RowAdmission）是读路径 scanner 与写路径 encodeEvent 共用的校验，
