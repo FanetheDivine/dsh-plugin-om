@@ -14,7 +14,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const SKILL_NAME = 'compaction-eval';
 
 /** skill 脚本名（不含扩展名）：源码版为 .ts，发布版为 tsdown 产出的 .mjs。 */
-export const SKILL_SCRIPTS = ['prepare', 'view', 'compress', 'aggregate'];
+export const SKILL_SCRIPTS = ['prepare', 'view', 'compress', 'aggregate', 'merge'];
 
 /** 仓库内 skill 源目录。 */
 export const SKILL_SOURCE_DIR = path.join(ROOT, '.agents', 'skills', SKILL_NAME);

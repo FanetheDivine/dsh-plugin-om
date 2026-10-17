@@ -1,9 +1,9 @@
 // compaction-eval skill 脚本单元测试：多帧 zstd 日志读取、会话日志 zip 读取、压缩日志解析（阶段、区间、模型、
-// 失败标记、逐轮模型耗时、token、completeCompression 产物、原文视图）、分组选择、原文视图
-// 选择、盲化产物、后续轨迹定位与截断、区间三等分、可复现洗牌，
-// 以及 aggregate 的双评审均值、保留/精简/无关/耗时四维评分、评审校验报错与按模型汇总。
+// 失败标记、逐轮模型耗时、含缓存的 token、completeCompression 产物、原文视图）、分组选择、原文视图
+// 选择、候选列表、盲化产物、按区间终点定位的后续轨迹（过滤系统注入、只取正文）、分段行号、
+// 区间三等分、可复现洗牌，以及 aggregate 的双评审均值、四维评分、评审校验报错与按模型汇总。
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
@@ -13,27 +13,40 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   modelSummary,
   positionChars,
+  referenceVariants,
   scoreAll,
   weightedRatio,
 } from '../.agents/skills/compaction-eval/scripts/aggregate.ts';
+import { type FactList, factsHash } from '../.agents/skills/compaction-eval/scripts/judging.ts';
 import {
   blindProduct,
   buckets,
   buildAfter,
   type CompactionLog,
-  evalDirName,
+  formatCandidates,
   type Phase,
   parseLog,
   pickSource,
+  prepareEvalDir,
+  segmentLines,
   selectGroup,
   shuffle,
 } from '../.agents/skills/compaction-eval/scripts/prepare.ts';
 import {
-  bareId,
   loadLog,
   readZip,
   type SessionEvent,
 } from '../.agents/skills/compaction-eval/scripts/session-source.ts';
+import { SKILL_INVOCATION_KIND } from '../src/constants.ts';
+import type { SessionEvent as SrcEvent } from '../src/types.ts';
+import {
+  buildToolCallFlow,
+  historyMessage,
+  hostLog,
+  makeMessage,
+  textBlock,
+  twoCallFlow,
+} from './helpers.ts';
 
 /** 测试用临时目录。 */
 const dirs: string[] = [];
@@ -117,7 +130,7 @@ function compactionEvents(): SessionEvent[] {
       time: 3500,
       data: {
         message: { content: txt('压缩使用模型 p/glm-5（max），原始消息 100 字符') },
-        usage: { inputTokens: 20, outputTokens: 3 },
+        usage: { inputTokens: 20, outputTokens: 3, cacheReadTokens: 200, cacheWriteTokens: 100 },
       },
     },
   ];
@@ -189,7 +202,9 @@ describe('prepare', () => {
       wall_sec: 2.5,
       model_sec: 1.5,
       requests: 2,
-      tokens_in: 30,
+      tokens_in: 330,
+      tokens_cache_read: 200,
+      tokens_cache_write: 100,
       tokens_out: 5,
       product: '<history>产物</history>',
     });
@@ -255,15 +270,25 @@ describe('prepare', () => {
     });
   });
 
-  it('bareId 去除 parentSession 的 session- 前缀', () => {
-    expect(bareId('session-b011-4c92')).toBe('b011-4c92');
-    expect(bareId('b011-4c92')).toBe('b011-4c92');
-  });
+  it('prepareEvalDir 清除旧候选与评分，已有评审产物时拒绝写入', () => {
+    const dir = join(tmp(), 'eval-x');
+    prepareEvalDir(dir);
+    expect(readdirSync(dir)).toEqual([]);
+    for (const n of ['V1.xml', 'V12.xml', 'scores.json', 'scores.md', 'source.xml', 'notes.txt'])
+      writeFileSync(join(dir, n), 'x');
+    prepareEvalDir(dir);
+    // 候选变少时旧 V*.xml 不能残留，旧评分不能对上新编号
+    expect(readdirSync(dir).sort()).toEqual(['notes.txt', 'source.xml']);
 
-  it('evalDirName 取会话 id 前 8 位，带不带 session- 前缀一致', () => {
-    const id = 'dc114f4d-f44b-49f8-b623-11b2edb5927b';
-    expect(evalDirName(id, 'observe', 328, 383)).toBe('eval-dc114f4d-observe-328-383');
-    expect(evalDirName(`session-${id}`, 'reflect', 0, 9)).toBe('eval-dc114f4d-reflect-0-9');
+    for (const review of ['facts.json', 'judge-V1-1.json', 'parts']) {
+      const d = tmp();
+      writeFileSync(join(d, 'V1.xml'), 'x');
+      if (review === 'parts') mkdirSync(join(d, review));
+      else writeFileSync(join(d, review), '{}');
+      expect(() => prepareEvalDir(d)).toThrow(new RegExp(`已有评审产物 ${review}.*先删除该目录`));
+      // 报错时不动任何文件
+      expect(readdirSync(d).sort()).toEqual(['V1.xml', review].sort());
+    }
   });
 
   it('selectGroup 按阶段分组，同区间多阶段需显式指定', () => {
@@ -312,27 +337,122 @@ describe('prepare', () => {
     expect(out).toBe('<skill_content name="s">[skill 原文逐字保留，已省略]</skill_content>摘要');
   });
 
-  it('buildAfter 从区间最后一个工具调用开始并按上限截断', () => {
-    const main: SessionEvent[] = [
-      { type: 'session', id: 'm' },
-      { type: 'user/message', data: { content: txt('早期') } },
-      { type: 'tool/call', data: { callId: 'k1', name: 'click', arguments: '{}' } },
-      { type: 'tool/result', data: { callId: 'k1', message: { content: txt('done') } } },
-      { type: 'assistant/message', data: { message: { content: txt('x'.repeat(50)) } } },
-      { type: 'assistant/message', data: { message: { content: txt('不应出现') } } },
+  it('buildAfter 从区间终点完整消息之后截取，过滤系统注入且只取助手正文', () => {
+    const extra: SrcEvent[] = [
+      historyMessage('旧摘要'),
+      {
+        type: 'user/message',
+        data: makeMessage({
+          content: [textBlock('真实指令')],
+          source: { kind: SKILL_INVOCATION_KIND, name: 'grilling' },
+        }),
+      } as unknown as SrcEvent,
+      {
+        type: 'user/message',
+        data: makeMessage({
+          content: [textBlock('运行时注入')],
+          source: { kind: 'runtime-context' },
+        }),
+      } as unknown as SrcEvent,
+      {
+        type: 'assistant/message',
+        data: {
+          message: makeMessage({
+            role: 'assistant',
+            content: [{ type: 'reasoning', text: '内心独白' }, textBlock('正文回复')],
+            source: { kind: 'model', provider: 'p', model: 'm' },
+          }),
+        },
+      } as unknown as SrcEvent,
+      ...buildToolCallFlow({
+        code: 'x()',
+        description: '后续调用',
+        callId: 'k9',
+        resultText: 'done',
+      }),
+      { type: 'compaction/start', data: {} } as unknown as SrcEvent,
     ];
-    const { text, start } = buildAfter(main, '<a callId="k1">', 60);
-    expect(start).toBe(2);
-    expect(text).not.toContain('早期');
-    expect(text).toContain('[TOOL click]');
-    expect(text).not.toContain('不应出现');
-    expect(text).toContain('已截断');
+    // twoCallFlow 折叠为完整消息 0..5，终点 5 的最大 seq 为 7
+    const main = hostLog([...twoCallFlow(), ...extra]);
+    const { text, start } = buildAfter(main, 5, 100000);
+    expect(start).toBe(8);
+    expect(text).toContain('[SKILL grilling] 真实指令');
+    expect(text).toContain('[ASSISTANT] 正文回复');
+    expect(text).toContain('[TOOL run_code]');
+    expect(text).toContain('===== compaction/start =====');
+    expect(text).not.toContain('旧摘要');
+    expect(text).not.toContain('运行时注入');
+    expect(text).not.toContain('内心独白');
+    expect(text).not.toContain('[USER] 运行时注入');
+    // 区间内与终点前的内容不进入后续轨迹
+    expect(text).not.toContain('第一次');
+    expect(text).not.toContain('out1');
+    // 截断上限生效
+    expect(buildAfter(main, 5, 60).text).toContain('已截断');
   });
 
-  it('buildAfter 定位不到区间末尾调用时报错', () => {
-    const main: SessionEvent[] = [{ type: 'session', id: 'm' }];
-    expect(() => buildAfter(main, '没有 callId', 60)).toThrow(/callId/);
-    expect(() => buildAfter(main, '<a callId="nope">', 60)).toThrow(/nope/);
+  it('buildAfter 区间终点超出主会话完整消息时报错', () => {
+    expect(() => buildAfter(hostLog(twoCallFlow()), 99, 60)).toThrow(/完整消息 99/);
+  });
+
+  it('buildAfter 支持文本终点与同一 assistant 事件内终点，无后续时为空', () => {
+    const main = hostLog(twoCallFlow());
+    // 终点 1 为 assistant 文本条目：其后同一 assistant 事件的 tool-call 也要进入轨迹
+    const fromText = buildAfter(main, 1, 100000);
+    expect(fromText.start).toBe(2);
+    expect(fromText.text).toContain('第一次');
+    expect(fromText.text).toContain('out2');
+    // 终点 4 为第二条流程的 assistant 文本条目（同一事件还承载 tool-call 条目 5）
+    const midEvent = buildAfter(main, 4, 100000);
+    expect(midEvent.start).toBe(6);
+    expect(midEvent.text).toContain('[TOOL run_code]');
+    expect(midEvent.text).not.toContain('第一次');
+    // 终点 5 为最后一条完整消息，其后无事件
+    const none = buildAfter(main, 5, 100000);
+    expect(none.start).toBe(8);
+    expect(none.text).toBe('');
+  });
+
+  it('segmentLines 给出各分段在 source.xml 中的行区间，空分段为 null', () => {
+    const xml = [
+      '<reasoning><![CDATA[想]]></reasoning>',
+      '<user_message index="0"><![CDATA[u0]]></user_message>',
+      '<assistant index="1"><![CDATA[a1]]></assistant>',
+      '<reasoning><![CDATA[想2]]></reasoning>',
+      '<assistant index="2"><![CDATA[a2]]></assistant>',
+    ].join('\n');
+    // reasoning 无 index，随其后第一个有 index 的条目分段（开头的 reasoning 归 head，行 4 的归 tail）
+    expect(segmentLines(xml, buckets(0, 2))).toEqual({
+      head: [1, 2],
+      mid: [3, 3],
+      tail: [4, 5],
+    });
+    const skipMid = [
+      '<user_message index="0"><![CDATA[u0]]></user_message>',
+      '<user_message index="1"><![CDATA[u1]]></user_message>',
+      '<assistant index="4"><![CDATA[a4]]></assistant>',
+    ].join('\n');
+    expect(segmentLines(skipMid, buckets(0, 4))).toEqual({
+      head: [1, 2],
+      mid: null,
+      tail: [3, 3],
+    });
+    // CDATA 内伪造的 index 标签不计入条目
+    const fake = '<user_message index="0"><![CDATA[<assistant index="9">内]]></user_message>';
+    expect(segmentLines(fake, buckets(0, 2)).tail).toBeNull();
+  });
+
+  it('formatCandidates 按区间列出候选与含缓存的 token', () => {
+    const base = parseLog(compactionEvents());
+    const logs: CompactionLog[] = [
+      { ...base, model: 'p/glm-5', effort: 'max', recompress: false },
+      { ...base, model: 'q/m-1', effort: 'high', recompress: true },
+    ];
+    const lines = formatCandidates(logs).join('\n');
+    expect(lines).toContain('区间 [0..9] reflect：2 个候选');
+    expect(lines).toContain('原始 p/glm-5（max）in=330');
+    expect(lines).toContain('缓存读 200/写 100');
+    expect(lines).toContain('重压缩 q/m-1（high）in=330');
   });
 
   it('buckets 三等分区间且首尾相接', () => {
@@ -371,23 +491,29 @@ describe('aggregate', () => {
     expect(positionChars(xml, bk, new Set([1, 5]))).toEqual({ head: 3, mid: 0, tail: 6 });
   });
 
-  it('scoreAll 双评审取均值，计算保留、精简、无关、耗时与凭据泄漏', () => {
+  it('scoreAll 双评审取均值，计算保留、精简、无关、耗时、后续依据保留率与凭据泄漏', () => {
     const d = tmp();
     writeEvalDir(d);
     const { variants, disagreements } = scoreAll(d);
     expect(variants.V1).toMatchObject({
       retention: 100,
+      retention_after: 100,
+      after_facts: 1,
       irrelevant: 100,
       conciseness: 100,
       time: 100,
       composite: 100,
       credential_leak: false,
+      by_category: { A: 100, B: null, C: 100 },
+      by_position: { head: 100, mid: null, tail: 100 },
+      tokens_cache_read: 40,
       chars: { head: 0, mid: 0, tail: 4 },
       product_chars: 4,
       compression: { head: 0, mid: null, tail: null },
     });
     expect(variants.V2).toMatchObject({
       retention: -75,
+      retention_after: 50,
       A_failed: ['F1'],
       irrelevant: 0,
       conciseness: 50,
@@ -397,6 +523,65 @@ describe('aggregate', () => {
       unsupported_claims: 1,
     });
     expect(disagreements).toEqual([{ variant: 'V2', id: 'F1', verdicts: ['丢失', '歪曲'] }]);
+  });
+
+  it('referenceVariants 解析 original 与 provider/model[:effort] 选择器', () => {
+    const k = {
+      id: 'x',
+      wall_sec: 1,
+      model_sec: 1,
+      requests: 1,
+      tokens_in: 1,
+      tokens_cache_read: 0,
+      tokens_cache_write: 0,
+      tokens_out: 1,
+    };
+    const key = {
+      V1: { ...k, model: 'p/m', effort: 'high', recompress: false },
+      V2: { ...k, model: 'p/m', effort: 'max', recompress: true },
+      V3: { ...k, model: 'p/n', effort: 'high', recompress: true },
+    };
+    expect(referenceVariants(key, 'original')).toEqual(['V1']);
+    expect(referenceVariants(key, 'p/m')).toEqual(['V1', 'V2']);
+    expect(referenceVariants(key, 'p/m:max')).toEqual(['V2']);
+    expect(referenceVariants(key, 'x/y')).toEqual([]);
+  });
+
+  it('scoreAll 参考候选照常计保留率，精简与耗时按参与候选折算并封顶 100', () => {
+    const d = tmp();
+    writeEvalDir(d);
+    const key = JSON.parse(readFileSync(join(d, '_blind_key.json'), 'utf8')) as Record<
+      string,
+      object
+    >;
+    key.V2 = { ...key.V2, model: 'r', effort: 'high' };
+    writeFileSync(join(d, '_blind_key.json'), JSON.stringify(key));
+    writeFileSync(join(d, 'V2.xml'), '<assistant index="2"><![CDATA[t]]></assistant>');
+    const { variants } = scoreAll(d, ['r:high']);
+    expect(variants.V1?.reference).toBe(false);
+    expect(variants.V2?.reference).toBe(true);
+    expect(variants.V1).toMatchObject({ conciseness: 100, time: 100 });
+    expect(variants.V2).toMatchObject({ conciseness: 100, time: 50, retention: -75 });
+    const pool = Object.fromEntries(Object.entries(variants).filter(([, x]) => !x.reference));
+    expect(modelSummary(pool)).toEqual([]);
+  });
+
+  it('参考选择器未匹配候选或全部候选为参考时报错', () => {
+    const d = tmp();
+    writeEvalDir(d);
+    expect(() => scoreAll(d, ['nope/model'])).toThrow(/参考选择器 nope\/model 未匹配任何候选/);
+    expect(() => scoreAll(d, ['m'])).toThrow(/全部候选都被设为参考/);
+  });
+
+  it('评审文件基于旧版 facts.json 时报错', () => {
+    const d = tmp();
+    writeEvalDir(d);
+    const j = JSON.parse(readFileSync(join(d, 'judge-V1-1.json'), 'utf8')) as {
+      facts_sha?: string;
+    };
+    delete j.facts_sha;
+    writeFileSync(join(d, 'judge-V1-1.json'), JSON.stringify(j));
+    expect(() => scoreAll(d)).toThrow(/基于旧版 facts\.json/);
   });
 
   it('modelSummary 输出同模型多变体的综合分均值与标准差', () => {
@@ -441,22 +626,58 @@ function writeEvalDir(d: string): void {
   w('meta.json', { session: 's', phase: 'observe', range: [0, 2], buckets: buckets(0, 2) });
   const entry = { model: 'm', effort: 'max', recompress: true, requests: 1 };
   w('_blind_key.json', {
-    V1: { ...entry, id: 'a', wall_sec: 10, model_sec: 10, tokens_in: 1, tokens_out: 1 },
-    V2: { ...entry, id: 'b', wall_sec: 20, model_sec: 20, tokens_in: 1, tokens_out: 1 },
+    V1: {
+      ...entry,
+      id: 'a',
+      wall_sec: 10,
+      model_sec: 10,
+      tokens_in: 1,
+      tokens_cache_read: 40,
+      tokens_cache_write: 10,
+      tokens_out: 1,
+    },
+    V2: {
+      ...entry,
+      id: 'b',
+      wall_sec: 20,
+      model_sec: 20,
+      tokens_in: 1,
+      tokens_cache_read: 0,
+      tokens_cache_write: 0,
+      tokens_out: 1,
+    },
   });
-  w('facts.json', {
+  const facts: FactList = {
     facts: [
-      { id: 'F1', fact: 'a', category: 'A', position: 'head' },
-      { id: 'F2', fact: 'b', category: 'C', position: 'tail' },
+      {
+        id: 'F1',
+        fact: 'a',
+        category: 'A',
+        position: 'head',
+        source_indices: [0],
+        check_hint: 'h1',
+      },
+      {
+        id: 'F2',
+        fact: 'b',
+        category: 'C',
+        position: 'tail',
+        source_indices: [1],
+        check_hint: 'h2',
+        evidence_after: 'after.md 第 3 行',
+      },
     ],
-    irrelevant: [{ id: 'D1', is_credential: true }],
-  });
+    irrelevant: [{ id: 'D1', fact: 'd', is_credential: true }],
+  };
+  w('facts.json', facts);
   w('source.xml', '<assistant index="0"><![CDATA[s]]></assistant>');
   w('V1.xml', '<assistant index="2"><![CDATA[tail]]></assistant>');
   w('V2.xml', '<assistant index="2"><![CDATA[tailtail]]></assistant>');
+  const sha = factsHash(facts);
   const judge = (facts: object[], irrelevant: object[], extra?: object) => ({
     facts,
     irrelevant,
+    facts_sha: sha,
     ...extra,
   });
   w(

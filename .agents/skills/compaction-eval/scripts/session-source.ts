@@ -1,14 +1,21 @@
 /**
- * 读取压缩评估的会话来源：本地 ~/.dsh/sessions、DSH 导出的会话日志 zip 与重压缩日志目录。
- * prepare 与 view 共用；不含命令行入口。
+ * 读取压缩评估的会话来源：本地 ~/.dsh/sessions、DSH 导出的会话日志 zip 与重压缩日志目录，
+ * 并由日志重建宿主 Session。prepare 与 view 共用；不含命令行入口。
  * 导出 Content / Usage / EventData / SessionEvent / SessionBundle 类型与
- * loadLog / readZip / bareId / loadVariants / loadBundle。
+ * loadLog / readZip / loadVariants / loadBundle / toSession。
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import {
+  type SessionEvent as HostEvent,
+  Session,
+  type SessionHeader,
+  SessionId,
+} from '@deepseek-ai/dsh-session';
 import { unzipSync } from 'fflate';
 import { decompress } from 'fzstd';
+import { bareId } from './paths.ts';
 
 /** 消息内容片段。 */
 export interface Content {
@@ -16,10 +23,12 @@ export interface Content {
   text?: string;
 }
 
-/** token 用量。 */
+/** token 用量：inputTokens 为未命中缓存的输入，与缓存读、缓存写互斥。 */
 export interface Usage {
   inputTokens?: number;
   outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 }
 
 /** 会话事件 data 中用到的字段。 */
@@ -27,6 +36,8 @@ export interface EventData {
   label?: string;
   content?: Content[];
   message?: { content: Content[]; toolCallId?: string; isError?: boolean };
+  /** user/message 的来源标记：kind 为 user 是真实用户消息，skill-invocation 带 name 是手动加载的 skill。 */
+  source?: { kind?: string; name?: string };
   usage?: Usage;
   callId?: string;
   name?: string;
@@ -97,11 +108,6 @@ function logFile(sessionDir: string): string {
   return join(sessionDir, name);
 }
 
-/** 会话 id 规范化：parentSession 带 session- 前缀，目录名与头 id 为裸 uuid。 */
-export function bareId(id: string): string {
-  return id.replace(/^session-/, '');
-}
-
 /** 在全部工作区中按 id 前缀定位主会话目录。 */
 function findMain(prefix: string): string {
   const p = bareId(prefix);
@@ -143,4 +149,20 @@ export function loadVariants(dir: string): SessionEvent[][] {
 export function loadBundle(source: { session?: string; zip?: string }): SessionBundle {
   if (!source.session === !source.zip) throw new Error('需指定 --session 或 --zip 之一');
   return source.zip ? readZip(resolve(source.zip)) : loadLocal(source.session ?? '');
+}
+
+/**
+ * 由会话日志重建会话；可截到某个 seq（含）为止，得到当时的表层。
+ * 日志来自 DSH 落盘的 jsonl，首行为会话头、其后 seq 与下标一致；Session.create 会校验事件与头字段。
+ */
+export function toSession(events: SessionEvent[], lastSeq?: number): Session {
+  const [head, ...body] = events;
+  if (!head?.id) throw new Error('日志缺少会话头');
+  const { type: _type, ...header } = head;
+  const seed = lastSeq === undefined ? body : body.slice(0, lastSeq + 1);
+  return Session.create(
+    SessionId(head.id),
+    seed as unknown as HostEvent[],
+    header as unknown as SessionHeader,
+  );
 }

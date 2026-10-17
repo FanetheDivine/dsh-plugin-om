@@ -3,20 +3,16 @@
  *
  * 用法：node view.ts (--session <主会话 id 或前缀> | --zip <会话日志 zip>)
  *       [--compaction <id> | --range A..B] [--out view.json]
- * 无选区：列出会话已有压缩。有选区：写 view.json，供 compress.ts 读取。
- * 导出 toSession / listCompactions / rangeView / buildViewFile 与 ViewFile 类型。
+ * 无选区：列出会话已有压缩。有选区：写 view.json，供 compress.ts 读取；
+ *       缺省写入系统临时目录下的 om-compaction-eval/view-<会话 id 前 8 位>-<阶段>-<A>-<B>.json。
+ * 导出 listCompactions / rangeView / buildViewFile 与 ViewFile / CompactionBrief 类型。
  */
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import {
-  type SessionEvent as HostEvent,
-  Session,
-  type SessionHeader,
-  SessionId,
-} from '@deepseek-ai/dsh-session';
+import type { Session, SessionHeader } from '@deepseek-ai/dsh-session';
 import { historyTextOf } from '../../../../src/compress.ts';
 import { viewCharCount } from '../../../../src/compress-loop.ts';
 import {
@@ -32,8 +28,9 @@ import type {
   CompactionStartPayload,
   CompactionSummaryPayload,
 } from '../../../../src/types.ts';
+import { viewPath } from './paths.ts';
 import { loadProfile } from './profile.ts';
-import { loadBundle, type SessionEvent } from './session-source.ts';
+import { loadBundle, type SessionEvent, toSession } from './session-source.ts';
 
 /** view.json：压缩输入视图与来源。 */
 export interface ViewFile {
@@ -54,22 +51,6 @@ export interface CompactionBrief {
   ok: boolean;
   error: string | undefined;
   model: string | undefined;
-}
-
-/**
- * 由会话日志重建会话；可截到某个 seq（含）为止，得到当时的表层。
- * 日志来自 DSH 落盘的 jsonl，首行为会话头、其后 seq 与下标一致；Session.create 会校验事件与头字段。
- */
-export function toSession(events: SessionEvent[], lastSeq?: number): Session {
-  const [head, ...body] = events;
-  if (!head?.id) throw new Error('日志缺少会话头');
-  const { type: _type, ...header } = head;
-  const seed = lastSeq === undefined ? body : body.slice(0, lastSeq + 1);
-  return Session.create(
-    SessionId(head.id),
-    seed as unknown as HostEvent[],
-    header as unknown as SessionHeader,
-  );
 }
 
 /** 列出会话已有压缩：阶段、区间、成败与模型。 */
@@ -220,7 +201,6 @@ function main(): void {
   }
   if (values.compaction !== undefined && values.range !== undefined)
     throw new Error('--compaction 与 --range 只能选其一');
-  if (!values.out) throw new Error('需指定 --out');
   const file = buildViewFile(
     events,
     values.compaction !== undefined
@@ -228,11 +208,11 @@ function main(): void {
       : { range: parseRange(values.range ?? '') },
     resolveConfig(loadProfile().plugin).compressSkipReasoning,
   );
-  const outFile = resolve(values.out);
+  const outFile = values.out ? resolve(values.out) : viewPath(file);
   mkdirSync(dirname(outFile), { recursive: true });
   writeFileSync(outFile, JSON.stringify(file, null, 1), 'utf8');
   console.log(
-    `${file.phase} [${file.view.minIndex}..${file.view.maxIndex}] 条目 ${file.view.entries.length}，原文 ${file.originalChars} 字符 → ${values.out}`,
+    `${file.phase} [${file.view.minIndex}..${file.view.maxIndex}] 条目 ${file.view.entries.length}，原文 ${file.originalChars} 字符 → ${outFile}`,
   );
 }
 

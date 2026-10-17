@@ -1,7 +1,9 @@
 /**
  * 对 view.json 跑一次压缩，产出与 DSH 同格式的压缩日志。不改原会话。
  *
- * 用法：node compress.ts <view.json> <provider/model[:effort]> --out <目录>
+ * 用法：node compress.ts <view.json> <provider/model[:effort]> [--out 目录]
+ * 缺省写入系统临时目录下的 om-compaction-eval/recompress-<会话 id 前 8 位>-<阶段>-<A>-<B>/，
+ * 同一视图的多次运行共用该目录，每次压缩各占一个 om-compaction-log-* 会话目录。
  * 模型调用走 dsh-llm + dsh-llm-pi-ai；providers 与插件配置由 profile.ts 读 DSH profile。
  * 凭据依次取环境变量、Windows 用户环境变量、$DSH_HOME/.credentials.yaml、<cwd>/.env、$DSH_HOME/.env。
  * 导出 parseTarget / resolveSecret / createRuntime / compressView / describeOutcome。
@@ -9,7 +11,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { Context } from '@deepseek-ai/cordis';
@@ -24,6 +26,7 @@ import {
   runCompressionLoop,
 } from '../../../../src/compress-loop.ts';
 import { type PluginConfig, resolveConfig } from '../../../../src/config.ts';
+import { recompressPath, selfName } from './paths.ts';
 import { dshHome, loadProfile, type ProviderProfile } from './profile.ts';
 import type { ViewFile } from './view.ts';
 
@@ -157,22 +160,18 @@ export function describeOutcome(
   return `成功 ${head} 轮数 ${outcome.rounds} 字符 ${file.originalChars}→${outcome.text.length} ${sec}s ${log}`;
 }
 
-/** 用法行中的脚本名：取实际入口文件名，源码版为 compress.ts，发布版为 compress.mjs。 */
-function selfName(): string {
-  const entry = process.argv[1];
-  return entry === undefined ? 'compress.ts' : basename(entry);
-}
-
 /** 命令行入口。 */
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: { out: { type: 'string' } },
   });
-  const [viewPath, targetText] = positionals;
-  if (!viewPath || !targetText || !values.out)
-    throw new Error(`用法：${selfName()} <view.json> <provider/model[:effort]> --out <目录>`);
-  const file = JSON.parse(readFileSync(resolve(viewPath), 'utf8')) as ViewFile;
+  const [viewFile, targetText] = positionals;
+  if (!viewFile || !targetText)
+    throw new Error(
+      `用法：${selfName('compress.ts')} <view.json> <provider/model[:effort]> [--out 目录]`,
+    );
+  const file = JSON.parse(readFileSync(resolve(viewFile), 'utf8')) as ViewFile;
   const target = parseTarget(targetText);
   const profile = loadProfile();
   const provider = profile.providers[target.provider];
@@ -183,9 +182,11 @@ async function main(): Promise<void> {
     if (!secret) throw new Error(`找不到凭据 ${ref}`);
     process.env[ref] = secret;
   }
-  const ctx = await createRuntime(values.out, { [target.provider]: provider });
+  const out = values.out ? resolve(values.out) : recompressPath(file);
+  const ctx = await createRuntime(out, { [target.provider]: provider });
   const outcome = await compressView(ctx, file, target, resolveConfig(profile.plugin));
   console.log(describeOutcome(file, targetText, outcome));
+  console.log(`重压缩目录：${out}`);
   process.exit(outcome.ok ? 0 : 1);
 }
 

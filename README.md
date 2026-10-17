@@ -110,7 +110,7 @@ Claude 的 thinking 签名绑定其前全部内容，宿主也未开放 `drop_bl
 
 在会话中执行后，插件按 `workspaceId` 在同工作区新建会话，找不到工作区时按 `cwd` 新建，再选择模型并投递首条消息。模型与思考等级默认沿用当前会话，参数 `provider/model [思考等级]` 可覆盖，只给模型时思考等级用模型默认。消息只给评估文档路径、工作区路径与工作区 id、被分析会话 id，评估步骤由文档决定。浏览器监听到命令成功后跳转到新会话，其他客户端在会话列表中打开它。
 
-评估文档与脚本随包发布在 `dist/skill/compaction-eval`。脚本是自包含 `.mjs`，用户环境只需 Node，不需要安装插件依赖。
+评估文档与脚本随包发布在 `dist/skill/compaction-eval`。脚本是自包含 `.mjs`，用户环境只需 Node，不需要安装插件依赖。评估产物写系统临时目录 `om-compaction-eval/`，不写工作区。
 
 ## 开发
 
@@ -205,7 +205,7 @@ web/                             # 机制说明与成本计算器站点
     └── src/components/          # 页面组件与 UI 原语
 .agents/skills/agent-workflow/SKILL.md # 仓库开发工作流
 .agents/skills/clear-branch/SKILL.md   # 手动清空除 main 外的分支与 worktree
-.agents/skills/compaction-eval/         # 压缩质量盲评打分：视图复现与重压缩生成、数据准备、事实清单、评审提示词与汇总脚本；构建时渲染为发布版写入 dist/skill
+.agents/skills/compaction-eval/         # 压缩质量盲评打分：视图复现与重压缩、数据准备、分段合并与汇总计分；产物写系统临时目录；构建时渲染为发布版写入 dist/skill
 .agents/skills/release/SKILL.md        # 手动发布并跟踪 CI 与 npm
 .github/workflows/web-deploy.yml # GitHub Pages 部署工作流
 ```

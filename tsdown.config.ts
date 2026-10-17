@@ -47,7 +47,7 @@ function isSkillExternal(id: string): boolean {
 const SKILL_SCRIPT_DIR = './.agents/skills/compaction-eval/scripts';
 
 /** skill 脚本名（不含扩展名），产出 dist/skill/compaction-eval/scripts/<name>.mjs。 */
-const SKILL_SCRIPTS = ['prepare', 'view', 'compress', 'aggregate'] as const;
+const SKILL_SCRIPTS = ['prepare', 'view', 'compress', 'aggregate', 'merge'] as const;
 
 /**
  * 3) compaction-eval skill 脚本 → dist/skill/compaction-eval/scripts/*.mjs：
