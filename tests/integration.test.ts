@@ -49,7 +49,8 @@ import { PLUGIN_LABEL, PLUGIN_SOURCE_KIND } from '../src/constants.ts';
 // 命中 vi.mock 打桩后的模块（ensureModelReady 为 vi.fn，可断言预热调用）
 import * as embedding from '../src/embedding.ts';
 import { apply, inject, name } from '../src/index.ts';
-import { appendOmEvent, findOmEvents } from '../src/om-event.ts';
+import { findOmEvents } from '../src/om-event.ts';
+import { appendOmEvent } from '../src/om-event-append.ts';
 
 /** mock LLM adapter：只实现 stream()，按注入的分块工厂回放响应并记录调用。 */
 class MockAdapter extends LlmAdapter {

@@ -22,7 +22,8 @@ import {
 } from './compress-loop.ts';
 import type { PluginLogger } from './logger.ts';
 import { makeLogger } from './logger.ts';
-import { appendOmEvent, type OmEventPayloadMap } from './om-event.ts';
+import type { OmEventPayloadMap } from './om-event.ts';
+import { appendOmEvent } from './om-event-append.ts';
 import type { Context, PluginConfig, Session } from './types.ts';
 import type { RoutedTarget } from './utils.ts';
 

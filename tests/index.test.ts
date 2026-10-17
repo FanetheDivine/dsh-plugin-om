@@ -1570,10 +1570,10 @@ describe('apply 接线（recallEnabled / semanticRecallEnabled）', () => {
 
 // apply 接线（延迟观察压缩：触发 → 后台预压缩 → 到期注入）：净压力首次达阈值时记录
 // om/observe-pending 待定标记（触发点 = 最后一条完整消息 index）并立即开始后台预压缩，
-// 结果写 om/observe-summary 信封、不替换表层；每个 pre-step 对账标记与任务/结果；
+// 结果写 om/observe-summary 记录、不替换表层；每个 pre-step 对账标记与任务/结果；
 // 待定后新增完整消息数 ≥ tailMessageCount 时注入（区间截至触发点）并写
-// om/observe-invalidate 失效标记；失败任务到期重启重试；标记与结果以 om 信封事件
-// （借用 feedback/record）持久化在会话日志中，重启后对账恢复。
+// om/observe-invalidate 失效标记；失败任务到期重启重试；标记与结果以 om plugin record
+// （ignorable）持久化在会话日志中，重启后对账恢复。
 describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行）', () => {
   /** 运行一次 pre-step 监听器，返回 next 是否被调用。 */
   async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {

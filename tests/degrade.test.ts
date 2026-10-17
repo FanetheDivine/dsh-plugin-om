@@ -1,5 +1,5 @@
-// degrade.ts 经 apply 接线的降级测试：挂载失败时发 om 警告信封事件（借用
-// feedback/record）并经 console 输出警告，且不阻塞压缩流程（观察照常触发）。
+// degrade.ts 经 apply 接线的降级测试：挂载失败时发 om 警告 plugin record
+// （ignorable）并经 console 输出警告，且不阻塞压缩流程（观察照常触发）。
 import { describe, expect, it, vi } from 'vitest';
 
 // 隔离 apply 的模型下载编排：ensureModelReady 打桩为"就绪"，避免单测触发真实下载/网络

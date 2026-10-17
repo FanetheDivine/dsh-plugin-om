@@ -3,7 +3,7 @@
  * 导出 reportDegrade / DEGRADE_PROBLEMS / DegradedProblem。
  *
  * - 挂载失败类问题（服务缺失、服务调用异常）始终 console.warn 到宿主进程外部输出，
- *   并向会话日志追加 log-only 的 om 警告事件（借用 feedback/record 的 om 信封，
+ *   并向会话日志追加 ignorable 的 om 警告 plugin record（
  *   见 om-event.ts；客户端渲染为「功能降级」警告行）；
  *   同一会话同一问题只报告一次（按日志扫描去重，重启不重复）
  * - 报告动作自身绝不抛错：追加失败只记日志，不阻塞压缩
@@ -11,7 +11,8 @@
  */
 import { PLUGIN_LABEL } from './constants.ts';
 import type { PluginLogger } from './logger.ts';
-import { appendOmEvent, findOmEvents } from './om-event.ts';
+import { findOmEvents } from './om-event.ts';
+import { appendOmEvent } from './om-event-append.ts';
 import type { Session } from './types.ts';
 
 /** 降级问题标识（om/warning 信封载荷 problem；同会话按此去重）。 */

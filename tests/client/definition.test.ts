@@ -569,27 +569,26 @@ describe('omCompactionDefinition 压缩 id', () => {
   });
 });
 
-describe('omWarningDefinition（om/warning 信封事件的功能降级警告行）', () => {
-  /** 构造 om/warning 信封事件（借用 feedback/record，text 为 om:1: 前缀 JSON）。 */
+describe('omWarningDefinition（om/warning 记录的功能降级警告行）', () => {
+  /** 构造 om/warning plugin record 事件。 */
   function warningEvent(seq: number, data: unknown): SessionEvent {
     return {
-      type: 'feedback/record',
+      type: 'plugin:dsh-plugin-om/warning',
       seq,
       time: 2000 + seq,
-      data: {
-        text: `om:1:${JSON.stringify({ kind: 'om/warning', ...(data as object) })}`,
-      },
+      data,
+      ignorable: true,
     } as unknown as SessionEvent;
   }
 
-  it('match 认领 om/warning 信封事件为 start（id 含 seq，逐条独立节点）', () => {
+  it('match 认领 om/warning 记录为 start（id 含 seq，逐条独立节点）', () => {
     expect(omWarningDefinition.match(warningEvent(7, { problem: 'p', message: 'm' }))).toEqual({
       id: 'om-warning:7',
       role: 'start',
     });
   });
 
-  it('忽略非 om 信封事件（其他类型 / 无前缀的用户自写反馈 / 信封载荷非法）', () => {
+  it('忽略非 om 记录（其他类型 / 未标 ignorable 的同名事件 / 载荷非法）', () => {
     const plain = {
       type: 'user/message',
       seq: 1,
@@ -597,13 +596,20 @@ describe('omWarningDefinition（om/warning 信封事件的功能降级警告行�
       data: { content: 'hi' },
     } as unknown as SessionEvent;
     expect(omWarningDefinition.match(plain)).toBeNull();
-    const userFeedback = {
-      type: 'feedback/record',
+    const notIgnorable = {
+      type: 'plugin:dsh-plugin-om/warning',
       seq: 2,
       time: 2002,
-      data: { text: '真实用户反馈' },
+      data: { problem: 'p', message: 'm' },
     } as unknown as SessionEvent;
-    expect(omWarningDefinition.match(userFeedback)).toBeNull();
+    expect(omWarningDefinition.match(notIgnorable)).toBeNull();
+    const legacyEnvelope = {
+      type: 'feedback/record',
+      seq: 4,
+      time: 2004,
+      data: { text: `om:1:${JSON.stringify({ kind: 'om/warning', problem: 'p', message: 'm' })}` },
+    } as unknown as SessionEvent;
+    expect(omWarningDefinition.match(legacyEnvelope)).toBeNull();
     expect(omWarningDefinition.match(warningEvent(3, { problem: 'p' }))).toBeNull(); // 缺 message
   });
 

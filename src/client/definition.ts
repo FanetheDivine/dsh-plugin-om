@@ -1,7 +1,7 @@
 /**
  * 压缩卡片业务定义：认领插件自产的压缩生命周期事件（compaction/start|summary|end）
  * 与替换检查点（source.kind 为插件自有 kind），聚合出可渲染的摘要卡片节点；
- * 并认领 om 警告信封事件（借用 feedback/record，kind 为 om/warning，见 om-event.ts）
+ * 并认领 om 警告 plugin record（kind 为 om/warning，见 om-event.ts）
  * 渲染为警告行。
  * 导出 COMPACTION_CARD_KIND / OmCompactionChatData / checkpointCompactionId /
  * omCompactionDefinition / OM_WARNING_CARD_KIND / OmWarningChatData / omWarningDefinition。
@@ -379,9 +379,9 @@ export interface OmWarningChatData {
 }
 
 /**
- * 插件功能降级警告定义：每条 om/warning 信封事件独立成节点（id 含 seq），渲染为可
+ * 插件功能降级警告定义：每条 om/warning 记录独立成节点（id 含 seq），渲染为可
  * 展开的「功能降级」警告行。服务端按会话同问题去重后追加，每会话同一问题至多一行；
- * 不带 om 信封的 feedback/record 记录（用户自写反馈）不认领。
+ * 其他 plugin record 不认领。
  */
 export const omWarningDefinition: ConversationNodeDefinition = {
   kind: OM_WARNING_CARD_KIND,
