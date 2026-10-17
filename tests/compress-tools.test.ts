@@ -348,11 +348,12 @@ describe('原始 ask 处理计数', () => {
 });
 
 describe('getHistory', () => {
-  it('start/end 缺省返回要求区间全部条目，带区间注释头，无 history 包裹', () => {
+  it('start/end 缺省返回要求区间全部条目，无注释头，无 history 包裹', () => {
     const state = new CompressionState(observeView());
     const result = state.getHistory({});
     expect(result.isError).toBe(false);
-    expect(result.text).toContain('<!-- 完整消息区间 [0..7]，共 8 条 -->');
+    expect(result.text).not.toContain('<!--');
+    expect(result.text.startsWith('<user_message index="0">')).toBe(true);
     expect(result.text).toContain('<user_message index="0"><![CDATA[用户消息A]]></user_message>');
     expect(result.text).not.toContain(`<${HISTORY_TAG}`);
   });
@@ -395,16 +396,14 @@ describe('getHistory', () => {
   });
 });
 
-/** getHistory 结果的注释头（首行）。 */
-const headerOf = (text: string): string => text.split('\n')[0] ?? '';
-
 describe('getHistory 当前状态', () => {
-  it('压缩后被替换条目显示为摘要并位于原位置，注释头列出本次已压缩区间', () => {
+  it('压缩后被替换条目显示为摘要并位于原位置，无注释头', () => {
     const state = new CompressionState(observeView());
     expect(state.compressHistory({ start: 1, end: 2, content: '摘要A2-B' }).isError).toBe(false);
     expect(state.compressHistory({ index: 4, content: '摘要D' }).isError).toBe(false);
     const text = state.getHistory({}).text;
-    expect(headerOf(text)).toBe('<!-- 完整消息区间 [0..7]，共 7 条；本次已压缩 [1..2]、[4] -->');
+    expect(text).not.toContain('<!--');
+    expect(text.startsWith('<user_message index="0">')).toBe(true);
     const order = [
       '<user_message index="0">',
       '<assistant start="1" end="2"><![CDATA[摘要A2-B]]></assistant>',
@@ -423,10 +422,10 @@ describe('getHistory 当前状态', () => {
     const state = new CompressionState(observeView());
     expect(state.compressHistory({ start: 1, end: 4, content: '摘要1-4' }).isError).toBe(false);
     const hit = state.getHistory({ start: 3, end: 3 });
-    expect(headerOf(hit.text)).toBe('<!-- 完整消息区间 [3..3]，共 1 条；本次已压缩 [1..4] -->');
+    expect(hit.text.startsWith('<assistant start="1" end="4">')).toBe(true);
     expect(hit.text).toContain('<assistant start="1" end="4"><![CDATA[摘要1-4]]></assistant>');
     const miss = state.getHistory({ start: 5, end: 7 });
-    expect(headerOf(miss.text)).toBe('<!-- 完整消息区间 [5..7]，共 3 条 -->');
+    expect(miss.text).not.toContain('<!--');
     expect(miss.text).not.toContain('摘要1-4');
   });
 
@@ -435,7 +434,7 @@ describe('getHistory 当前状态', () => {
     expect(state.compressHistory({ start: 2, end: 3, content: '旧摘要' }).isError).toBe(false);
     expect(state.compressHistory({ start: 1, end: 4, content: '新摘要' }).isError).toBe(false);
     const text = state.getHistory({}).text;
-    expect(headerOf(text)).toContain('本次已压缩 [1..4] -->');
+    expect(text).not.toContain('<!--');
     expect(text).toContain('<assistant start="1" end="4"><![CDATA[新摘要]]></assistant>');
     expect(text).not.toContain('旧摘要');
     expect(state.compressHistory({ start: 1, end: 4, content: '再次修正' }).isError).toBe(false);
@@ -461,7 +460,7 @@ describe('getHistory 当前状态', () => {
       false,
     );
     const text = state.getHistory({}).text;
-    expect(headerOf(text)).toBe('<!-- 完整消息区间 [1..3]，共 2 条；本次已压缩 [2..3] -->');
+    expect(text).not.toContain('<!--');
     expect(text).toContain('o2:全量发布');
     expect(text).toContain('a:第一个');
     expect(text).not.toContain('采用灰度发布，先向少量用户开放。');
@@ -514,11 +513,11 @@ describe('getHistory 当前状态', () => {
     );
     expect(state.compressHistory({ start: 3, end: 6, content: '跨块合并' }).isError).toBe(false);
     const head = state.getHistory({ start: 0, end: 0 }).text;
-    expect(headerOf(head)).toBe('<!-- 完整消息区间 [0..0]，共 4 条；本次已压缩 [3..6] -->');
+    expect(head).not.toContain('<!--');
     for (const part of ['U0', '块1摘要甲', '跨块合并', 'U7']) expect(head).toContain(part);
     for (const part of ['块1摘要乙', '块2摘要', '块3摘要']) expect(head).not.toContain(part);
     const tail = state.getHistory({ start: 8, end: 9 }).text;
-    expect(headerOf(tail)).toBe('<!-- 完整消息区间 [8..9]，共 1 条 -->');
+    expect(tail).not.toContain('<!--');
     expect(tail).toContain('块3摘要');
   });
 
@@ -526,7 +525,7 @@ describe('getHistory 当前状态', () => {
     const state = new CompressionState(observeView());
     expect(state.compressHistory({ start: 1, end: 2, content: '摘要甲' }).isError).toBe(false);
     expect(state.compressHistory({ index: 6, content: '摘要乙' }).isError).toBe(false);
-    const body = state.getHistory({}).text.split('\n').slice(1).join('\n');
+    const body = state.getHistory({}).text;
     const block = state.buildFinalBlock();
     const prefix = `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${historyFormatNote({ user: true })}\n`;
     const suffix = `\n</${HISTORY_TAG}>`;
