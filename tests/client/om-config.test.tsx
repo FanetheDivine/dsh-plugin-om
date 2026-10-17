@@ -35,7 +35,6 @@ class HostForm {
     user: {},
     revision: 4,
     writable: true,
-    mode: 'host',
   };
   listeners = new Set<() => void>();
   calls: Array<{ ops: readonly Op[]; revision: number | undefined }> = [];
