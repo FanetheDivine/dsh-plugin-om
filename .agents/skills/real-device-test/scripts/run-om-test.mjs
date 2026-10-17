@@ -155,7 +155,8 @@ try {
       'claude-mock missing',
     );
     const installed = `${root}/node_modules/dsh-plugin-om`;
-    assert.equal(JSON.parse(readFileSync(`${installed}/package.json`, 'utf8')).version, '0.0.56');
+    const versionOf = (dir) => JSON.parse(readFileSync(`${dir}/package.json`, 'utf8')).version;
+    assert.equal(versionOf(installed), versionOf(REPO));
     const hash = (f) => createHash('sha256').update(readFileSync(f)).digest('hex').slice(0, 12);
     const same = hash(`${installed}/dist/index.mjs`) === hash(`${REPO}/dist/index.mjs`);
     assert(same, 'installed dist differs from repo dist');
