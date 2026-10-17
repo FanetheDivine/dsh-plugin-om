@@ -17,14 +17,14 @@ disable-model-invocation: true
 
 ## 阶段 0 环境对齐
 
-1. 读插件 `package.json` 的 `@deepseek-ai/dsh` 依赖版本，作为期望宿主版本。
+1. 读插件 `package.json` 的 `@deepseek-ai/dsh-llm` 依赖版本（各 `dsh-*` 包版本一致），作为期望宿主版本。
 2. `dsh --version` 比对：未安装或版本不符，先 `npm i -g @deepseek-ai/dsh@<期望版本>`；一致则继续。不要假定测试环境已有 dsh。
 3. 仓库内 `pnpm i && pnpm check`（含 build），确保 `dist/` 对应当前 HEAD。
 4. 确认本机有 Chrome。Windows 默认路径见 `scripts/chrome-up.sh`。
 
 ## 阶段 1 profile 与装载（类别 A）
 
-`bash scripts/setup-env.sh <插件仓库绝对路径> <profile名>` 完成：建 profile（web 模板）→ `pnpm pack` → `dsh plugin add` → 生成 `cordis.patch.yml` → 复制驱动脚本到 profile 目录。
+`bash scripts/setup-env.sh <插件仓库绝对路径> [profile名]`（默认 `om-test-<日期>`）完成：dsh 版本对齐 → 建 profile（web 模板）→ `pnpm pack` → `dsh plugin add` → 生成 `cordis.patch.yml` → 复制驱动脚本到 profile 目录 → 注册测试工作区。
 
 patch 关键点（模板见 setup-env.sh）：
 
@@ -105,4 +105,6 @@ client 下发断言：GUI 启动后抓 Network，combo URL 含 `dsh-plugin-om/cl
 
 - `references/cases.md`：用例推导方法 + 本轮用例与 commit 映射示例 + 报告结构。
 - `references/pitfalls.md`：坑清单与恢复手段。
-- `scripts/`：参考实现。复制到 profile 目录后按本文顺序执行。
+- `scripts/`：参考实现。setup-env.sh 会把四个 mjs 复制到 profile 目录；mjs 默认自定位（脚本所在目录即 profile 目录）。
+
+脚本统一 env 约定（均可缺省）：`OM_PROFILE_DIR`（profile 目录，默认脚本所在目录）、`OM_PROFILE`（默认目录名）、`OM_REPO`（插件仓库绝对路径，Windows 风格，warm 驱动必填）、`OM_DSH_PKG`（宿主 dsh 的 package.json，默认 `npm root -g` 推导）、`OM_CDP_PORT`（默认 9334）、`OM_GUI_PORT`/`OM_GUI_TOKEN`/`OM_GUI_URL`、`OM_SHOT_DIR`（默认 `<profile>/shots`）。
