@@ -1,7 +1,8 @@
 // 真实 DSH agent loop 与 mock AI 集成测试：验证 OM 压缩、提示词保留、召回、持久化导出和回合生命周期。
+import { statSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { Context } from '@deepseek-ai/cordis';
 import { type AgentHandle, AgentRegistry } from '@deepseek-ai/dsh-agent';
 import AgentLoop from '@deepseek-ai/dsh-agent-loop';
@@ -27,13 +28,14 @@ import {
   SESSION_LOG_EXPORT_PATH,
   SESSION_LOG_FILENAME,
 } from '@deepseek-ai/dsh-session-log-export';
-import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl';
+import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl';
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection';
 import SqliteSessionQueryEngine from '@deepseek-ai/dsh-session-query-sqlite';
 import { SubagentRuntime } from '@deepseek-ai/dsh-subagent';
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter';
 import { ToolRuntime } from '@deepseek-ai/dsh-tools';
+import { WorkingDirectoryService } from '@deepseek-ai/dsh-working-directory';
 import { unzipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import { PLUGIN_SOURCE_KIND } from '../src/constants.ts';
@@ -225,6 +227,22 @@ async function stackColdExport(storageRoot: string) {
     });
     await app.plugin(SessionStore);
     await app.plugin(SessionProjectionRegistry);
+    await app.plugin(SystemPrompt);
+    // working-directory 依赖 fs（宿主由 dsh-fs-sandbox 提供）；测试内子会话不真实
+    // 启动进程，这里用 node:fs 实现其 resolve/stat/processPath 三个方法。
+    app.provide('fs', {
+      resolve: async (path: string, options?: { cwd?: string }) =>
+        isAbsolute(path) ? path : resolve(options?.cwd ?? process.cwd(), path),
+      stat: (path: string): { type: string } | undefined => {
+        try {
+          return { type: statSync(path).isDirectory() ? 'directory' : 'file' };
+        } catch {
+          return undefined;
+        }
+      },
+      processPath: (path: string) => path,
+    });
+    await app.plugin(WorkingDirectoryService, { defaultDirectory: storageRoot });
     await app.plugin(SubagentRuntime);
     await app.plugin(SqliteSessionQueryEngine, { path: ':memory:', openAt: 'never' });
     await app.plugin(LocalAttachmentStore, { dshHome: storageRoot });
