@@ -13,7 +13,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT_DIR = path.join(ROOT, '.agents', 'skills', 'compaction-eval', 'scripts');
 
 /** 入口脚本名，与 tsdown.config.ts 及 scripts/build-skill.mjs 的脚本清单一致。 */
-const ENTRIES = ['prepare', 'view', 'compress', 'aggregate'];
+const ENTRIES = ['prepare', 'view', 'compress', 'aggregate', 'merge'];
 
 /** 命名绑定是否全部带 type 修饰；缺省绑定、命名空间绑定与空绑定都视为运行时。 */
 function bindingsAllTypeOnly(

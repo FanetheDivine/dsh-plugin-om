@@ -31,6 +31,7 @@ const SKILL_DIST_SCRIPTS = [
   'dist/skill/compaction-eval/scripts/view.mjs',
   'dist/skill/compaction-eval/scripts/compress.mjs',
   'dist/skill/compaction-eval/scripts/aggregate.mjs',
+  'dist/skill/compaction-eval/scripts/merge.mjs',
 ];
 
 /** bundle 注册的 command/executed 监听回调形状（会话 id、命令名、宿主命令结果）。 */
@@ -361,6 +362,7 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
     expect(readdirSync(path.join(SKILL_DIST, 'scripts')).sort()).toEqual([
       'aggregate.mjs',
       'compress.mjs',
+      'merge.mjs',
       'prepare.mjs',
       'view.mjs',
     ]);
@@ -388,5 +390,15 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
       timeout: 60_000,
     });
     expect(usage.stderr).toContain('用法：compress.mjs');
+    const mergeUsage = spawnSync(
+      process.execPath,
+      [path.join(SKILL_DIST, 'scripts', 'merge.mjs')],
+      {
+        cwd: ROOT,
+        encoding: 'utf8',
+        timeout: 60_000,
+      },
+    );
+    expect(mergeUsage.stderr).toContain('用法：node merge.ts');
   }, 120_000);
 });

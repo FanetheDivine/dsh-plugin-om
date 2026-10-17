@@ -10,32 +10,17 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  type Category,
+  D_VERDICT,
+  type Fact,
+  type FactList,
+  type Judge,
+  judgeProblems,
+  VERDICT,
+  W,
+} from './judging.ts';
 import type { BlindEntry, Buckets, Position } from './prepare.ts';
-
-/** 事实分类。 */
-type Category = 'A' | 'B' | 'C';
-
-/** facts.json 中的关键事实。 */
-interface Fact {
-  id: string;
-  fact: string;
-  category: Category;
-  position: Position;
-}
-
-/** facts.json 中的无关信息。 */
-interface Irrelevant {
-  id: string;
-  is_credential?: boolean;
-}
-
-/** judge-<V>-<N>.json 内容。 */
-interface Judge {
-  facts: { id: string; verdict: string }[];
-  irrelevant: { id: string; verdict: string }[];
-  unsupported_claims?: { quote?: string; reason?: string }[];
-  extra_irrelevant?: { content?: string; chars_estimate?: number }[];
-}
 
 /** meta.json 内容。 */
 interface Meta {
@@ -84,12 +69,6 @@ export interface ModelSummary {
   std: number;
 }
 
-/** 事实分类权重。 */
-const W: Record<Category, number> = { A: 3, B: 2, C: 1 };
-/** 事实判定得分。 */
-const VERDICT: Record<string, number> = { 保留: 1, 部分: 0.5, 丢失: 0, 歪曲: -1 };
-/** 无关信息判定得分。 */
-const D_VERDICT: Record<string, number> = { 已省略: 1, 已概括: 0.7, 详细保留: 0 };
 /** 综合分维度权重。 */
 const WEIGHTS = { retention: 0.7, conciseness: 0.05, irrelevant: 0.2, time: 0.05 } as const;
 /** 每条无依据断言扣除的分子分。 */
@@ -159,27 +138,12 @@ function readJson<T>(dir: string, name: string): T {
   return JSON.parse(readFileSync(join(dir, name), 'utf8')) as T;
 }
 
-interface FactList {
-  facts: Fact[];
-  irrelevant: Irrelevant[];
-}
-
 /** 读取并校验单个评审文件：必须存在、全覆盖、判定词合法。 */
 export function loadJudge(dir: string, name: string, fj: FactList): Judge {
   if (!existsSync(join(dir, name))) throw new Error(`缺少评审文件 ${name}`);
   const j = readJson<Judge>(dir, name);
-  const fv = new Map(j.facts.map((x) => [x.id, x.verdict]));
-  for (const f of fj.facts) {
-    const v = fv.get(f.id);
-    if (v === undefined) throw new Error(`${name} 未覆盖事实 ${f.id}`);
-    if (!(v in VERDICT)) throw new Error(`${name} 事实 ${f.id} 判定词非法：${v}`);
-  }
-  const dv = new Map(j.irrelevant.map((x) => [x.id, x.verdict]));
-  for (const d of fj.irrelevant) {
-    const v = dv.get(d.id);
-    if (v === undefined) throw new Error(`${name} 未覆盖无关信息 ${d.id}`);
-    if (!(v in D_VERDICT)) throw new Error(`${name} 无关信息 ${d.id} 判定词非法：${v}`);
-  }
+  const problems = judgeProblems(j, fj, name);
+  if (problems.length) throw new Error(problems.join('\n'));
   return j;
 }
 
