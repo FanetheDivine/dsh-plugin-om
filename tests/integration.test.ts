@@ -28,7 +28,7 @@ import {
   assertV4RowAdmission,
   releasedV4SessionFormatCodec,
 } from '@deepseek-ai/dsh-session-format-v3-to-v4';
-import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl';
+import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl';
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection';
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter';
