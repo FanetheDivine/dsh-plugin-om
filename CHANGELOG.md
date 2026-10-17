@@ -2,6 +2,7 @@
 
 ## Changes
 
+- DSH 依赖升级到 0.2.1-rc.1（`dsh-invariants` 未发布该版本，保持 0.2.0-rc.2）：适配 `dsh-session-persistence-jsonl` 移除 default export 改为命名导入、`ConfigFormSnapshot` 移除 `mode` 属性、`SubagentRuntime` 新增 `workingDirectory` 硬注入（测试栈以最小 stub 提供）；`@deepseek-ai/dsh-working-directory` 转为显式 devDependency。biome 随 `^2.5.8` 浮动到 2.5.12，`biome.json` schema 同步迁移，测试改为 `.at(0)` 判空替代非空断言。宿主版本要求提升到 0.2.1-rc.1。
 - compaction-eval 工具链改造：评估产物缺省写系统临时目录 `om-compaction-eval/`，view.json、重压缩目录与评估目录的 `--out` 均改可选，不写工作区；评估目录已有 facts、评审或 parts 时报错，防止旧评审对上新的候选编号。token 口径改为未缓存输入加缓存读加缓存写之和，单独记录缓存读写，`prepare --list` 不写目录只列各区间的候选、模型、思考等级与 token。`after.md` 按区间终点完整消息定位后续轨迹，不再依赖 callId，只保留真实用户消息、手动加载 skill、助手正文、工具调用与压缩标记，过滤插件自产 `<history>` 摘要、运行时注入与推理块。新增 `merge.ts`：事实清单与评审由 subagent 分段落盘，脚本统一编号、全覆盖校验后合并，评审文件记录所依据 facts.json 的哈希，修正清单后旧评审报错；aggregate 共享判定校验。`aggregate --reference` 支持把原始压缩或指定模型设为参考候选，照常算保留率与无关信息压缩，不参与排名与模型汇总，精简度与耗时按参与候选折算封顶 100；空类别与空分段显示 `-`，诊断新增后续依据保留率与缓存 token；`rules.md` 附分段行号。
 - 修复压缩循环把 max-tokens 截断误判为“模型未调用压缩工具”：截断与无工具调用分开计数，各自连续 3 轮（原 2 轮）才判失败；截断轮的 assistant 输出（含巨型 reasoning）只落盘、不再进入后续请求，并追加截断专用提醒要求缩短思考、分批调用 `compressHistory`
 - 压缩循环遇到 5xx 与网络类瞬时错误时最多重试 3 次，等待复用 429 限流门，重试轮不计轮数，成功响应后清零；4xx 不重试，避免已完成的多批压缩因一次瞬时错误白做
