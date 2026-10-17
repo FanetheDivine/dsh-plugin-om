@@ -13,9 +13,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   modelSummary,
   positionChars,
+  referenceVariants,
   scoreAll,
   weightedRatio,
 } from '../.agents/skills/compaction-eval/scripts/aggregate.ts';
+import { type FactList, factsHash } from '../.agents/skills/compaction-eval/scripts/judging.ts';
 import {
   blindProduct,
   buckets,
@@ -489,23 +491,29 @@ describe('aggregate', () => {
     expect(positionChars(xml, bk, new Set([1, 5]))).toEqual({ head: 3, mid: 0, tail: 6 });
   });
 
-  it('scoreAll 双评审取均值，计算保留、精简、无关、耗时与凭据泄漏', () => {
+  it('scoreAll 双评审取均值，计算保留、精简、无关、耗时、后续依据保留率与凭据泄漏', () => {
     const d = tmp();
     writeEvalDir(d);
     const { variants, disagreements } = scoreAll(d);
     expect(variants.V1).toMatchObject({
       retention: 100,
+      retention_after: 100,
+      after_facts: 1,
       irrelevant: 100,
       conciseness: 100,
       time: 100,
       composite: 100,
       credential_leak: false,
+      by_category: { A: 100, B: null, C: 100 },
+      by_position: { head: 100, mid: null, tail: 100 },
+      tokens_cache_read: 40,
       chars: { head: 0, mid: 0, tail: 4 },
       product_chars: 4,
       compression: { head: 0, mid: null, tail: null },
     });
     expect(variants.V2).toMatchObject({
       retention: -75,
+      retention_after: 50,
       A_failed: ['F1'],
       irrelevant: 0,
       conciseness: 50,
@@ -515,6 +523,65 @@ describe('aggregate', () => {
       unsupported_claims: 1,
     });
     expect(disagreements).toEqual([{ variant: 'V2', id: 'F1', verdicts: ['丢失', '歪曲'] }]);
+  });
+
+  it('referenceVariants 解析 original 与 provider/model[:effort] 选择器', () => {
+    const k = {
+      id: 'x',
+      wall_sec: 1,
+      model_sec: 1,
+      requests: 1,
+      tokens_in: 1,
+      tokens_cache_read: 0,
+      tokens_cache_write: 0,
+      tokens_out: 1,
+    };
+    const key = {
+      V1: { ...k, model: 'p/m', effort: 'high', recompress: false },
+      V2: { ...k, model: 'p/m', effort: 'max', recompress: true },
+      V3: { ...k, model: 'p/n', effort: 'high', recompress: true },
+    };
+    expect(referenceVariants(key, 'original')).toEqual(['V1']);
+    expect(referenceVariants(key, 'p/m')).toEqual(['V1', 'V2']);
+    expect(referenceVariants(key, 'p/m:max')).toEqual(['V2']);
+    expect(referenceVariants(key, 'x/y')).toEqual([]);
+  });
+
+  it('scoreAll 参考候选照常计保留率，精简与耗时按参与候选折算并封顶 100', () => {
+    const d = tmp();
+    writeEvalDir(d);
+    const key = JSON.parse(readFileSync(join(d, '_blind_key.json'), 'utf8')) as Record<
+      string,
+      object
+    >;
+    key.V2 = { ...key.V2, model: 'r', effort: 'high' };
+    writeFileSync(join(d, '_blind_key.json'), JSON.stringify(key));
+    writeFileSync(join(d, 'V2.xml'), '<assistant index="2"><![CDATA[t]]></assistant>');
+    const { variants } = scoreAll(d, ['r:high']);
+    expect(variants.V1?.reference).toBe(false);
+    expect(variants.V2?.reference).toBe(true);
+    expect(variants.V1).toMatchObject({ conciseness: 100, time: 100 });
+    expect(variants.V2).toMatchObject({ conciseness: 100, time: 50, retention: -75 });
+    const pool = Object.fromEntries(Object.entries(variants).filter(([, x]) => !x.reference));
+    expect(modelSummary(pool)).toEqual([]);
+  });
+
+  it('参考选择器未匹配候选或全部候选为参考时报错', () => {
+    const d = tmp();
+    writeEvalDir(d);
+    expect(() => scoreAll(d, ['nope/model'])).toThrow(/参考选择器 nope\/model 未匹配任何候选/);
+    expect(() => scoreAll(d, ['m'])).toThrow(/全部候选都被设为参考/);
+  });
+
+  it('评审文件基于旧版 facts.json 时报错', () => {
+    const d = tmp();
+    writeEvalDir(d);
+    const j = JSON.parse(readFileSync(join(d, 'judge-V1-1.json'), 'utf8')) as {
+      facts_sha?: string;
+    };
+    delete j.facts_sha;
+    writeFileSync(join(d, 'judge-V1-1.json'), JSON.stringify(j));
+    expect(() => scoreAll(d)).toThrow(/基于旧版 facts\.json/);
   });
 
   it('modelSummary 输出同模型多变体的综合分均值与标准差', () => {
@@ -559,22 +626,58 @@ function writeEvalDir(d: string): void {
   w('meta.json', { session: 's', phase: 'observe', range: [0, 2], buckets: buckets(0, 2) });
   const entry = { model: 'm', effort: 'max', recompress: true, requests: 1 };
   w('_blind_key.json', {
-    V1: { ...entry, id: 'a', wall_sec: 10, model_sec: 10, tokens_in: 1, tokens_out: 1 },
-    V2: { ...entry, id: 'b', wall_sec: 20, model_sec: 20, tokens_in: 1, tokens_out: 1 },
+    V1: {
+      ...entry,
+      id: 'a',
+      wall_sec: 10,
+      model_sec: 10,
+      tokens_in: 1,
+      tokens_cache_read: 40,
+      tokens_cache_write: 10,
+      tokens_out: 1,
+    },
+    V2: {
+      ...entry,
+      id: 'b',
+      wall_sec: 20,
+      model_sec: 20,
+      tokens_in: 1,
+      tokens_cache_read: 0,
+      tokens_cache_write: 0,
+      tokens_out: 1,
+    },
   });
-  w('facts.json', {
+  const facts: FactList = {
     facts: [
-      { id: 'F1', fact: 'a', category: 'A', position: 'head' },
-      { id: 'F2', fact: 'b', category: 'C', position: 'tail' },
+      {
+        id: 'F1',
+        fact: 'a',
+        category: 'A',
+        position: 'head',
+        source_indices: [0],
+        check_hint: 'h1',
+      },
+      {
+        id: 'F2',
+        fact: 'b',
+        category: 'C',
+        position: 'tail',
+        source_indices: [1],
+        check_hint: 'h2',
+        evidence_after: 'after.md 第 3 行',
+      },
     ],
-    irrelevant: [{ id: 'D1', is_credential: true }],
-  });
+    irrelevant: [{ id: 'D1', fact: 'd', is_credential: true }],
+  };
+  w('facts.json', facts);
   w('source.xml', '<assistant index="0"><![CDATA[s]]></assistant>');
   w('V1.xml', '<assistant index="2"><![CDATA[tail]]></assistant>');
   w('V2.xml', '<assistant index="2"><![CDATA[tailtail]]></assistant>');
+  const sha = factsHash(facts);
   const judge = (facts: object[], irrelevant: object[], extra?: object) => ({
     facts,
     irrelevant,
+    facts_sha: sha,
     ...extra,
   });
   w(
