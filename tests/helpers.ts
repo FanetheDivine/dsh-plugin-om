@@ -807,6 +807,8 @@ export interface RoundScript {
   calls?: Array<{ id: string; name: string; args?: unknown }>;
   /** 本轮输出的文本（无工具调用时用于模拟纯文本输出）。 */
   text?: string;
+  /** 本轮输出的 reasoning 块（排在文本与工具调用之前）。 */
+  reasoning?: string;
   /** 本轮 usage chunk。 */
   usage?: { inputTokens: number; outputTokens: number };
   /** 本轮 finish chunk（缺省按是否有 calls 推导 stop / tool-calls）。 */
@@ -817,6 +819,11 @@ export interface RoundScript {
 export function roundChunks(script: RoundScript): unknown[] {
   const chunks: unknown[] = [];
   let index = 0;
+  if (script.reasoning !== undefined) {
+    chunks.push({ type: 'block-start', index, blockType: 'reasoning' });
+    chunks.push({ type: 'block-end', index, block: { type: 'reasoning', text: script.reasoning } });
+    index += 1;
+  }
   if (script.text !== undefined) {
     chunks.push({ type: 'block-start', index, blockType: 'text' });
     chunks.push({ type: 'text-delta', index, text: script.text });

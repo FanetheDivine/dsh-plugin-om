@@ -2,7 +2,7 @@
  * 工具驱动的压缩循环：以新会话方式直连 ctx.llm.stream()，模型通过 getHistory /
  * compressHistory / completeCompression 完成压缩，存在原始合法提问时加入重写工具。
  * 导出 runCompressionLoop / buildCompressionPrompt / buildCompressionTaskText /
- * REFLECT_COMPRESSION_PROMPT / ASK_COMPRESSION_PROMPT / CompressionLoopOptions / CompressionOutcome / CompressionStats / COMPRESSION_NUDGE_TEXT。
+ * REFLECT_COMPRESSION_PROMPT / ASK_COMPRESSION_PROMPT / CompressionLoopOptions / CompressionOutcome / CompressionStats / COMPRESSION_NUDGE_TEXT / TRUNCATION_NUDGE_TEXT。
  *
  * - 首条 user 消息仅含压缩指令与 start/end 区间（buildCompressionTaskText），不含
  *   历史消息内容；共享压缩提示词作为 system，反思 pass 追加反思合并约束
@@ -10,9 +10,12 @@
  *   BlockAssembler 组装为 assistant 消息，工具执行结果以 tool-result 消息回填
  * - completeCompression 校验通过后立即停止（同轮后续工具调用不再执行），最终 <history>
  *   块由 CompressionState 构建，全程无需整块校验
- * - 模型输出纯文本（无工具调用）时追加提醒消息继续，连续 2 轮仍无工具调用判失败
- * - 429 限流走全局限流等待门（gateRateLimit / noteRateLimit）；其余请求级错误依赖
- *   dsh 运行时重试，插件不做整体重试，错误直接判失败
+ * - 模型输出纯文本（无工具调用）时追加提醒消息继续，连续 3 轮仍无工具调用判失败
+ * - 输出被 max-tokens 截断且无工具调用时单独计数：该轮 assistant 消息仅落盘、不进入后续
+ *   请求，追加截断专用提醒，连续 3 轮截断判失败；任一轮有工具调用则两个计数清零
+ * - 429 限流走全局限流等待门（gateRateLimit / noteRateLimit）；瞬时错误（5xx、网络类）
+ *   同样经限流门等待后重试，连续最多重试 3 次，任一轮成功响应后清零；重试轮不计入轮数；
+ *   其余请求级错误（含 4xx）直接判失败
  * - signal 中止标记 aborted；token usage 汇总全部轮次；统计循环起止时间戳、总耗时
  *   与逐轮请求统计（CompressionStats），随结果返回并随会话记录落盘
  * - 成功与失败均把循环消息组落盘为子会话（recordCompressionSession，system 一并落盘
@@ -30,7 +33,11 @@ import {
   type ToolCallBlock,
   type UserMessage,
 } from '@deepseek-ai/dsh-llm';
-import { compressionInfo, recordCompressionSession } from './compaction-log.ts';
+import {
+  type CompressionFailureInfo,
+  compressionInfo,
+  recordCompressionSession,
+} from './compaction-log.ts';
 import {
   COMPRESSION_TOOL_SCHEMAS,
   CompressionState,
@@ -56,7 +63,7 @@ export function buildCompressionPrompt(skipReasoning: boolean): string {
     `【完整消息定义】${COMPLETE_MESSAGE_DEFINITION}`,
     '',
     '【工具】',
-    '- getHistory(option?: {start?, end?})：查看压缩区间内的历史条目。start/end 缺省为要求区间的第一个/最后一个完整消息 index，必须在要求区间内。返回当前状态，不带 <history> 包裹：本次已压缩的区间显示为摘要条目，注释头列出这些区间；区间切入已有 <history> 块时返回整块。',
+    '- getHistory(option?: {start?, end?})：查看压缩区间内的历史条目。start/end 缺省为要求区间的第一个/最后一个完整消息 index，必须在要求区间内。返回当前状态，不带 <history> 包裹：本次已压缩的区间显示为摘要条目；区间切入已有 <history> 块时返回整块。',
     '- compressHistory(option?: {index?, start?, end?, content})：把 index 单条或 start..end 连续区间的 assistant 类条目替换为 content 摘要（纯文本，不要包含 CDATA 包裹，插件自动包裹）。index 与 start/end 二选一，start==end 等同 index。区间不得覆盖用户消息；与已有替换区间部分重叠会被拒绝，完全包含则覆盖。返回成功即已生效，无需查看验证，不要用单条 index 试探；修改已提交的摘要时用相同或更大的区间重新提交。',
     '- completeCompression()：全部压缩完成后调用，立即结束。',
     '',
@@ -117,6 +124,16 @@ export const ASK_COMPRESSION_PROMPT = [
 /** 模型输出纯文本（无工具调用）时追加的提醒消息文本。 */
 export const COMPRESSION_NUDGE_TEXT =
   '请通过工具执行压缩：用 getHistory 查看区间条目，用 compressHistory 压缩 assistant 条目，完成后调用 completeCompression。不要输出与工具调用无关的文本。';
+
+/** 输出被 max-tokens 截断且无工具调用时追加的提醒消息文本。 */
+export const TRUNCATION_NUDGE_TEXT =
+  '上一轮输出因长度上限被截断，其中的工具调用未被接收。请缩短思考，直接分批调用 compressHistory（每次覆盖较小区间），最后调用 completeCompression。';
+
+/** 连续无工具调用、连续截断各自允许的最大轮数。 */
+const MAX_CONSECUTIVE_FAILURES = 3;
+
+/** 瞬时请求错误的连续最大重试次数。 */
+const MAX_TRANSIENT_RETRIES = 3;
 
 /** 逐轮请求统计：轮次（1 起）、该轮起止时间戳与耗时、该轮 token usage。 */
 export type CompressionRoundStat = {
@@ -269,6 +286,14 @@ function isRateLimitFailure(message: string, status?: number): boolean {
   return status === 429 || isRateLimitError(message);
 }
 
+/** 是否为可重试的瞬时失败：有 status 时按 5xx 判定，否则匹配 5xx 状态码或常见网络类错误文案。 */
+export function isTransientFailure(message: string, status?: number): boolean {
+  if (status !== undefined) return status >= 500 && status <= 599;
+  return /\b5\d{2}\b|econnreset|etimedout|econnrefused|epipe|socket hang up|fetch failed|network|overloaded|timed? ?out/i.test(
+    message,
+  );
+}
+
 /** skipReasoning=true 时去掉视图中的 reasoning 条目（兑现 getHistory 不输出 reasoning 的契约）；否则原样返回。 */
 export function withoutReasoning(view: CompressionView, skipReasoning: boolean): CompressionView {
   if (!skipReasoning) return view;
@@ -276,7 +301,7 @@ export function withoutReasoning(view: CompressionView, skipReasoning: boolean):
 }
 
 /**
- * 运行工具驱动的压缩循环：直到模型调用 completeCompression（成功）、连续 2 轮无
+ * 运行工具驱动的压缩循环：直到模型调用 completeCompression（成功）、连续 3 轮无
  * 工具调用、请求级错误或 signal 中止（失败）。成功与失败均落盘循环会话记录。
  */
 export async function runCompressionLoop(
@@ -298,6 +323,13 @@ export async function runCompressionLoop(
   const messages: Message[] = [makePluginUserMessage(options.taskText)];
   let rounds = 0;
   let nudges = 0;
+  let truncations = 0;
+  let transientRetries = 0;
+  /** 最后一个收到终态的请求的 finish 类型与输出 token 数（失败日志用）。 */
+  let lastFinish: string | undefined;
+  let lastOutputTokens: number | undefined;
+  /** 仅落盘、不进入后续请求的消息（截断轮的 assistant 消息）。 */
+  const omitted = new Set<Message>();
   let usage: TokenUsage | undefined;
   const startedAt = Date.now();
   const roundStats: CompressionRoundStat[] = [];
@@ -310,6 +342,7 @@ export async function runCompressionLoop(
     success: boolean,
     stats: CompressionStats,
     resultChars?: number,
+    failure?: CompressionFailureInfo,
   ): Promise<string | undefined> =>
     recordCompressionSession(ctx, session, {
       phase: options.phase,
@@ -329,12 +362,17 @@ export async function runCompressionLoop(
           ? {}
           : { reasoningEffort: options.reasoningEffort }),
         ...(resultChars === undefined ? {} : { resultChars }),
+        ...(failure === undefined ? {} : { failure }),
       }),
       ...(options.retry === undefined ? {} : { retry: options.retry }),
     });
   const failWith = async (error: string, aborted: boolean): Promise<CompressionFailure> => {
     const stats = buildStats();
-    const id = await recordSessionId(false, stats);
+    const id = await recordSessionId(false, stats, undefined, {
+      reason: error,
+      ...(lastFinish === undefined ? {} : { finish: lastFinish }),
+      ...(lastOutputTokens === undefined ? {} : { outputTokens: lastOutputTokens }),
+    });
     return {
       ok: false,
       error,
@@ -348,6 +386,18 @@ export async function runCompressionLoop(
       options.maxTokens === undefined ? '未设置' : String(options.maxTokens)
     }）`,
   );
+  /** 瞬时失败且未超重试额度时记入限流门并返回 true（调用方 continue 重试）。 */
+  const retryTransient = (message: string, status?: number): boolean => {
+    if (!isTransientFailure(message, status) || transientRetries >= MAX_TRANSIENT_RETRIES) {
+      return false;
+    }
+    transientRetries += 1;
+    noteRateLimit();
+    logger.warn(
+      `压缩循环请求瞬时失败（${message}），等待 ${options.rateLimitWaitMs}ms 后重试（${transientRetries}/${MAX_TRANSIENT_RETRIES}）`,
+    );
+    return true;
+  };
   for (;;) {
     if (options.signal?.aborted) {
       logger.warn('压缩循环中止（signal 已中止），放弃本次压缩');
@@ -371,7 +421,7 @@ export async function runCompressionLoop(
       purpose: 'compaction',
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       system,
-      messages: [...messages],
+      messages: messages.filter((message) => !omitted.has(message)),
       tools,
     };
     const assembler = new BlockAssembler();
@@ -385,10 +435,13 @@ export async function runCompressionLoop(
         logger.warn(`压缩循环触发限流（429），等待 ${options.rateLimitWaitMs}ms 后重试`);
         continue;
       }
+      if (retryTransient(message)) continue;
       logger.warn(`压缩循环请求失败: ${message}`);
       return await failWith(message, false);
     }
     const finish = assembler.finish;
+    lastFinish = finish.kind;
+    lastOutputTokens = assembler.usage?.outputTokens;
     if (finish.kind === 'aborted') {
       logger.warn('压缩循环中止（流以 aborted 结束），放弃本次压缩');
       return await failWith(COMPACTION_ABORTED_ERROR, true);
@@ -406,11 +459,13 @@ export async function runCompressionLoop(
         logger.warn(`压缩循环触发限流（429），等待 ${options.rateLimitWaitMs}ms 后重试`);
         continue;
       }
+      if (retryTransient(failureMessage, failureStatus)) continue;
       logger.warn(`压缩循环请求失败: ${failureMessage}`);
       // 已收集的部分输出（文本/工具调用）计入会话记录（诊断价值）
       pushPartialAssistant(assembler, messages, options.target);
       return await failWith(failureMessage, false);
     }
+    transientRetries = 0;
     rounds += 1;
     if (assembler.usage !== undefined) usage = addUsage(usage, assembler.usage);
     roundStats.push({
@@ -428,9 +483,21 @@ export async function runCompressionLoop(
       .blocks()
       .filter((block): block is ToolCallBlock => block.type === 'tool-call');
     if (calls.length === 0) {
+      if (finish.kind === 'max-tokens') {
+        truncations += 1;
+        if (truncations >= MAX_CONSECUTIVE_FAILURES) {
+          const error = `模型连续 ${MAX_CONSECUTIVE_FAILURES} 轮输出被 max-tokens 截断，放弃本次压缩`;
+          logger.warn(error);
+          return await failWith(error, false);
+        }
+        logger.warn('模型输出被 max-tokens 截断且无工具调用，丢弃该轮输出并追加提醒后继续');
+        omitted.add(assistantMessage);
+        messages.push(makePluginUserMessage(TRUNCATION_NUDGE_TEXT));
+        continue;
+      }
       nudges += 1;
-      if (nudges >= 2) {
-        const error = '模型连续 2 轮未调用压缩工具，放弃本次压缩';
+      if (nudges >= MAX_CONSECUTIVE_FAILURES) {
+        const error = `模型连续 ${MAX_CONSECUTIVE_FAILURES} 轮未调用压缩工具，放弃本次压缩`;
         logger.warn(error);
         return await failWith(error, false);
       }
@@ -439,6 +506,7 @@ export async function runCompressionLoop(
       continue;
     }
     nudges = 0;
+    truncations = 0;
     for (const call of calls) {
       messages.push(toolResultOf(call, state.executeCall(call.name, call.arguments)));
       // 仅实际完成时停止；被门禁拒绝后允许执行同轮后续调用。

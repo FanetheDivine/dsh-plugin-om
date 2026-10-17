@@ -334,7 +334,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
       expect(JSON.stringify(assistantEvents?.at(-1)?.data)).toContain(
         '压缩使用模型 mock/mock-model（默认思考等级），原始消息',
       );
-      expect(JSON.stringify(assistantEvents?.at(-1)?.data)).toContain('压缩产物 无（压缩失败）');
+      expect(JSON.stringify(assistantEvents?.at(-1)?.data)).toContain('压缩产物 无（压缩失败：');
       const promptEvent = child?.snapshotEvents().find((event) => event.type === 'user/message');
       const promptText =
         promptEvent?.type === 'user/message'

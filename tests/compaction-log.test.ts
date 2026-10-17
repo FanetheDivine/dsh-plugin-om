@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   COMPACTION_LOG_PROVIDER,
+  compressionInfo,
   compressionRecordLabel,
   recordCompressionSession,
 } from '../src/compaction-log.ts';
@@ -684,5 +685,42 @@ describe('recordCompressionSession：压缩会话记录落盘', () => {
     // 真实宿主保留 seed 的重建时间戳：turn/start 取自循环统计而非落盘时刻
     expect(events.find((e) => e.type === 'turn/start')?.time).toBe(1_000);
     expect(events.find((e) => e.type === 'turn/end')?.time).toBe(6_000);
+  });
+});
+
+describe('compressionInfo：失败原因', () => {
+  const base = { target: { provider: 'p', model: 'm' }, originalChars: 1000 };
+
+  it('成功：显示压缩产物字符数，不含失败信息', () => {
+    const { text } = compressionInfo({ ...base, resultChars: 2000 });
+    expect(text).toContain('压缩产物 2k 字符');
+    expect(text).not.toContain('失败');
+  });
+
+  it('失败无详情：保持“无（压缩失败）”', () => {
+    expect(compressionInfo(base).text).toContain('压缩产物 无（压缩失败）');
+  });
+
+  it('失败带原因、finish 与 outputTokens', () => {
+    const { text } = compressionInfo({
+      ...base,
+      failure: {
+        reason: '模型连续 3 轮输出被 max-tokens 截断',
+        finish: 'max-tokens',
+        outputTokens: 32768,
+      },
+    });
+    expect(text).toContain(
+      '压缩产物 无（压缩失败：模型连续 3 轮输出被 max-tokens 截断；最后一轮 finish=max-tokens，输出 32768 tokens）',
+    );
+  });
+
+  it('失败无 usage：省略 token 部分；无 finish 则省略整段', () => {
+    expect(compressionInfo({ ...base, failure: { reason: 'x', finish: 'stop' } }).text).toContain(
+      '无（压缩失败：x；最后一轮 finish=stop）',
+    );
+    expect(compressionInfo({ ...base, failure: { reason: 'x' } }).text).toContain(
+      '无（压缩失败：x）',
+    );
   });
 });
