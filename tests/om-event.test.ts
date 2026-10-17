@@ -1,5 +1,6 @@
 // om 私有事件（om-event.ts）单元测试：写入为 ignorable plugin record，
 // om/observe-summary 载荷往返、可选字段缺省、严格校验拒绝与类别过滤。
+import { Session, SessionId } from '@deepseek-ai/dsh-session';
 import { describe, expect, it } from 'vitest';
 import { findOmEvents } from '../src/om-event.ts';
 import { appendOmEvent } from '../src/om-event-append.ts';
@@ -96,5 +97,20 @@ describe('om/observe-summary 记录', () => {
     appendOmEvent(session, 'om/observe-summary', fullData);
     expect(findOmEvents(session, 'om/observe-summary')).toHaveLength(1);
     expect(findOmEvents(session)).toHaveLength(2);
+  });
+});
+
+describe('真实 Session 写读往返', () => {
+  it('appendOmEvent 经宿主 appendPluginRecord 落日志，findOmEvents 读回，且不进 surface', () => {
+    const session = Session.create(SessionId('om-event-real'));
+    const before = session.snapshotEvents().length;
+    const seq = appendOmEvent(session, 'om/warning', { problem: 'p', message: 'm' });
+    expect(seq).toBe(before);
+    const event = session.snapshotEvents()[seq];
+    expect(event).toMatchObject({ type: 'plugin:dsh-plugin-om/warning', ignorable: true });
+    expect(event).not.toHaveProperty('surfaceOp');
+    expect(findOmEvents(session, 'om/warning')).toEqual([
+      { kind: 'om/warning', data: { problem: 'p', message: 'm' }, seq },
+    ]);
   });
 });
