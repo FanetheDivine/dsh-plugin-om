@@ -318,14 +318,14 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
       const child = children[0];
       expect(child?.header.parentSession).toBe(session.id);
       expect(child?.header.delegationDepth).toBe(1);
-      // 首事件 descriptor：one-shot + provider om-compaction-log + label 含阶段与轮数
+      // 首事件 descriptor：one-shot + provider om-compaction-log + label 含阶段与失败后缀
       const descriptor = child?.snapshotEvents()[0];
       expect(descriptor?.type).toBe('subagent/descriptor');
       expect(descriptor?.data).toMatchObject({
         version: SUBAGENT_DESCRIPTOR_VERSION,
         mode: 'one-shot',
         provider: 'om-compaction-log',
-        label: 'OM 压缩失败日志（观察 · 0 轮）', // 首轮请求即 error：无完成的模型轮
+        label: expect.stringContaining('-失败'), // 首轮请求即 error：无完成的模型轮
       });
       // 子会话内容零加工：指令 + assistant（含模型原始输出）+ 尾部模型信息
       const assistantEvents = child

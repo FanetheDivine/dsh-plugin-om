@@ -391,12 +391,12 @@ describe('apply 接线（OM 观察压缩）', () => {
     // 统计载荷：遮蔽节点 = 整条工具流（user/assistant/tool-result）；压缩前字符数 = 9+6+4（递归计入 tool-result 内嵌文本）
     expect(summaryEvent.data.shadowedSeqs).toEqual([0, 1, 3]);
     expect((summaryEvent.data as CompactionSummaryPayload).shadowedCharCount).toBe(19);
-    // 成功落盘压缩会话记录子会话（label 为会话记录）
+    // 成功落盘压缩会话记录子会话（label 含观察阶段）
     expect(ctx._createdSessions).toHaveLength(1);
     const descriptor = ctx._createdSessions[0]?.session
       .snapshotEvents()
       .find((e) => e.type === 'subagent/descriptor');
-    expect((descriptor?.data as { label?: string })?.label).toContain('会话记录');
+    expect((descriptor?.data as { label?: string })?.label).toContain('-观察');
   });
 
   it('compressSkipReasoning=false：压缩指令携带 <reasoning> 说明行，getHistory 输出含参考条目', async () => {
@@ -605,12 +605,12 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(session.snapshotEvents().some((e) => e.type === 'compaction/summary')).toBe(false);
     expect(session.snapshotEvents().some((e) => e.type === 'compaction/end')).toBe(false);
     expect(latestHistoryText(session)).toBe(''); // 无部分替换
-    // 失败任务各落盘一份会话记录（label 为失败日志）
+    // 失败任务各落盘一份会话记录（label 追加失败后缀）
     expect(ctx._createdSessions).toHaveLength(2);
     const descriptor = ctx._createdSessions[0]?.session
       .snapshotEvents()
       .find((e) => e.type === 'subagent/descriptor');
-    expect((descriptor?.data as { label?: string })?.label).toContain('失败日志');
+    expect((descriptor?.data as { label?: string })?.label).toContain('-失败');
   });
 
   it('请求级错误：流以 error 终态结束视为失败，不产生替换', async () => {

@@ -397,7 +397,7 @@ describe('runCompressionLoop', () => {
     expect(result.text).toContain('<user_message index="0"><![CDATA[用户消息]]></user_message>');
     expect(result.text).toContain('<assistant index="1"><![CDATA[B的摘要]]></assistant>');
     expect(result.text).toContain('<assistant index="2"><![CDATA[C的摘要]]></assistant>');
-    // 会话记录子会话：label 含阶段与轮数，消息组原样落盘并 flush
+    // 会话记录子会话：label 含区间与阶段（testView 区间 0-2），消息组原样落盘并 flush
     expect(ctx._createdSessions).toHaveLength(1);
     const record = ctx._createdSessions[0];
     expect(
@@ -405,8 +405,7 @@ describe('runCompressionLoop', () => {
     ).toBe(session.id);
     const events = record?.session.snapshotEvents() ?? [];
     const descriptor = events.find((e) => e.type === 'subagent/descriptor');
-    expect((descriptor?.data as { label?: string })?.label).toContain('会话记录');
-    expect((descriptor?.data as { label?: string })?.label).toContain('3 轮');
+    expect((descriptor?.data as { label?: string })?.label).toBe('OM会话(0-2)-观察');
     // 消息组：user 指令为唯一 user/message，工具结果（getHistory、
     // 两次 compressHistory、completeCompression 共 4 条）为 tool/result；
     // assistant/message 为 3 轮模型输出 + 尾部 1 条模型信息
@@ -480,8 +479,7 @@ describe('runCompressionLoop', () => {
     expect(tailOf(failCtx).text).toContain('压缩产物 无（压缩失败）');
   });
 
-  it('retryTarget 透传到会话记录标题：成功与失败日志均带重压缩标记', async () => {
-    const retryTarget = { provider: 'alt', model: 'big-1' };
+  it('retry 透传到会话记录标题：成功与失败均带重压缩后缀', async () => {
     /** 读取首个落盘子会话的 descriptor label。 */
     const labelOf = (ctx: ReturnType<typeof makeCtx>): string | undefined => {
       const data = ctx._createdSessions[0]?.session
@@ -495,23 +493,21 @@ describe('runCompressionLoop', () => {
       });
 
     const okCtx = completing();
-    const ok = await runCompressionLoop(okCtx, makeSession(), { ...loopOptions(), retryTarget });
+    const ok = await runCompressionLoop(okCtx, makeSession(), { ...loopOptions(), retry: true });
     expect(ok.ok).toBe(true);
-    expect(labelOf(okCtx)).toContain('会话记录');
-    expect(labelOf(okCtx)).toContain('重压缩 alt/big-1');
+    expect(labelOf(okCtx)).toBe('OM会话(0-2)-观察-重压缩');
 
     const failCtx = makeCtx({ llmStreamFactory: () => roundChunks({ text: '纯文本' }) });
     const failed = await runCompressionLoop(failCtx, makeSession(), {
       ...loopOptions(),
-      retryTarget,
+      retry: true,
     });
     expect(failed.ok).toBe(false);
-    expect(labelOf(failCtx)).toContain('失败日志');
-    expect(labelOf(failCtx)).toContain('重压缩 alt/big-1');
+    expect(labelOf(failCtx)).toBe('OM会话(0-2)-观察-重压缩-失败');
 
     const plainCtx = completing();
     await runCompressionLoop(plainCtx, makeSession(), loopOptions());
-    expect(labelOf(plainCtx)).not.toContain('重压缩');
+    expect(labelOf(plainCtx)).toBe('OM会话(0-2)-观察');
   });
 
   it('请求选项：system 为共享提示词、携带压缩工具、purpose=compaction、首条消息为任务文本', async () => {
@@ -661,11 +657,11 @@ describe('runCompressionLoop', () => {
     const second = ctx._llmCalls[1];
     const messages = second ? (second.options as { messages?: unknown[] }).messages : undefined;
     expect(JSON.stringify(messages)).toContain(COMPRESSION_NUDGE_TEXT);
-    // 失败也落盘会话记录，label 为失败日志
+    // 失败也落盘会话记录，label 追加失败后缀
     const descriptor = ctx._createdSessions[0]?.session
       .snapshotEvents()
       .find((e) => e.type === 'subagent/descriptor');
-    expect((descriptor?.data as { label?: string })?.label).toContain('失败日志');
+    expect((descriptor?.data as { label?: string })?.label).toBe('OM会话(0-2)-观察-失败');
     expect(result.recordSessionId).toBe(ctx._createdSessions[0]?.id);
   });
 

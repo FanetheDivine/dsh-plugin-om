@@ -2,7 +2,7 @@
  * 压缩会话记录落盘：把工具压缩循环的完整会话消息组以 seed 事件重建为一个 one-shot
  * 诊断子会话（header origin 'subagent' + 首事件 subagent/descriptor），在父会话登记
  * subagent/catalog，使其出现在宿主子智能体列表并随父会话日志导出。成功与失败均落盘
- * （label 区分，换模型重压缩另带目标模型标记）。导出 recordCompressionSession / compressionRecordLabel /
+ * （label 含完整消息区间与阶段，重压缩与失败另加后缀）。导出 recordCompressionSession / compressionRecordLabel /
  * COMPACTION_LOG_PROVIDER。
  *
  * - 子会话经 ctx.sessions.create(seed) 构造：每个事件携带从循环统计重建的 time
@@ -49,19 +49,27 @@ function phaseLabel(phase: 'observe' | 'reflect' | undefined): string {
   return '压缩';
 }
 
+/** 完整消息区间（label 用）。 */
+export type RecordRange = {
+  /** 起始 index。 */
+  min?: number;
+  /** 结束 index。 */
+  max?: number;
+};
+
 /**
- * 压缩会话记录 label：成功为会话记录、失败为失败日志，均含压缩阶段与轮数；
- * 换模型重压缩传入 retryTarget，label 末尾追加「重压缩 provider/model」以区分。
+ * 压缩会话记录 label：`OM会话(起点-终点)-观察/反思`，区间缺失省略括号段；
+ * 重压缩追加 `-重压缩`，失败追加 `-失败`。
  */
 export function compressionRecordLabel(
   phase: 'observe' | 'reflect' | undefined,
-  rounds: number,
+  range: RecordRange,
   success: boolean,
-  retryTarget?: RoutedTarget,
+  retry: boolean,
 ): string {
-  const retry =
-    retryTarget === undefined ? '' : ` · 重压缩 ${retryTarget.provider}/${retryTarget.model}`;
-  return `OM 压缩${success ? '会话记录' : '失败日志'}（${phaseLabel(phase)} · ${rounds} 轮${retry}）`;
+  const span =
+    range.min === undefined || range.max === undefined ? '' : `(${range.min}-${range.max})`;
+  return `OM会话${span}-${phaseLabel(phase)}${retry ? '-重压缩' : ''}${success ? '' : '-失败'}`;
 }
 
 /** 日志尾部的模型信息：展示文本与归因的 provider/model。 */
@@ -297,7 +305,7 @@ function buildCompressionSeed(
  * 把一次压缩工具循环的完整会话消息组落盘为子会话：以重建时间线的 seed 事件经
  * ctx.sessions.create 构造子会话（header origin 'subagent'、parentSession 指向主会话、
  * delegationDepth = 父 + 1、cwd 继承主会话；首事件 one-shot descriptor，provider
- * om-compaction-log，label 含压缩阶段与轮数；info 存在时尾部追加一条模型文本），flush 持久化，在父会话登记
+ * om-compaction-log，label 含完整消息区间与阶段；info 存在时尾部追加一条模型文本），flush 持久化，在父会话登记
  * subagent/catalog，返回子会话 id。成功与失败均调用；落盘自身绝不抛错，任何失败仅
  * logger.warn 并返回 undefined。
  */
@@ -307,18 +315,20 @@ export async function recordCompressionSession(
   options: {
     /** 压缩 pass（记录 label 用）。 */
     phase: 'observe' | 'reflect' | undefined;
+    /** 压缩视图的完整消息区间（label 用）；缺省省略区间段。 */
+    range?: RecordRange;
     /** 循环全部消息（user 指令/提醒、assistant 含 tool-call、tool-result，原样）。 */
     messages: readonly Message[];
-    /** 循环统计（label 轮数、时间线重建与逐轮 usage 来源）。 */
+    /** 循环统计（时间线重建与逐轮 usage 来源）。 */
     stats: CompressionStats;
     /** 循环实际发送的压缩系统提示词；存在且非空时落盘为 system/message（表层节点 0）。 */
     system?: string;
-    /** 是否成功完成（label 区分会话记录/失败日志）。 */
+    /** 是否成功完成（label 追加失败后缀与否）。 */
     success: boolean;
     /** 插件 debug 开关（落盘失败的 warn 是否带步骤细节）。 */
     debug: boolean;
-    /** 换模型重压缩的目标模型（label 区分用）；常规压缩缺省。 */
-    retryTarget?: RoutedTarget;
+    /** 是否重压缩（label 追加重压缩后缀）；常规压缩缺省。 */
+    retry?: boolean;
     /** 模型信息（compressionInfo），追加为尾部模型文本；缺省不写。 */
     info?: CompressionInfo;
   },
@@ -328,9 +338,9 @@ export async function recordCompressionSession(
     const header = parentSession.header;
     const label = compressionRecordLabel(
       options.phase,
-      options.stats.rounds.length,
+      options.range ?? {},
       options.success,
-      options.retryTarget,
+      options.retry === true,
     );
     const seed = buildCompressionSeed(
       options.messages,

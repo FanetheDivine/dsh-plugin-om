@@ -148,7 +148,7 @@ export function parseLog(events: SessionEvent[]): CompactionLog {
     parent: head.parentSession,
     range: rng ? [Number(rng[1]), Number(rng[2])] : undefined,
     phase: label.includes('观察') ? 'observe' : label.includes('反思') ? 'reflect' : 'unknown',
-    failed: label.includes('失败日志'),
+    failed: label.includes('失败'),
     model: model?.[1] ?? 'unknown',
     effort: model?.[2] ?? 'unknown',
     recompress: label.includes('重压缩'),
