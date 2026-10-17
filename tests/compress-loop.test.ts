@@ -9,6 +9,7 @@ import {
   type CompressionLoopOptions,
   REFLECT_COMPRESSION_PROMPT,
   runCompressionLoop,
+  TRUNCATION_NUDGE_TEXT,
   withoutReasoning,
 } from '../src/compress-loop.ts';
 import { buildReflectView, type CompressionView, type ViewEntry } from '../src/compress-view.ts';
@@ -642,7 +643,7 @@ describe('runCompressionLoop', () => {
     expect(JSON.stringify(messages)).toContain('未知工具 badTool');
   });
 
-  it('纯文本输出：追加提醒继续，连续 2 轮仍无工具调用判失败并落盘失败日志', async () => {
+  it('纯文本输出：追加提醒继续，连续 3 轮仍无工具调用判失败并落盘失败日志', async () => {
     const ctx = makeCtx({
       llmStreamFactory: () => roundChunks({ text: '我认为不需要压缩' }),
     });
@@ -650,19 +651,91 @@ describe('runCompressionLoop', () => {
     const result = await runCompressionLoop(ctx, session, loopOptions());
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain('未调用压缩工具');
+    expect(result.error).toBe('模型连续 3 轮未调用压缩工具，放弃本次压缩');
     expect(result.aborted).toBe(false);
-    expect(ctx._llmCalls).toHaveLength(2);
+    expect(ctx._llmCalls).toHaveLength(3);
     // 第二轮请求末尾追加了提醒消息
     const second = ctx._llmCalls[1];
     const messages = second ? (second.options as { messages?: unknown[] }).messages : undefined;
     expect(JSON.stringify(messages)).toContain(COMPRESSION_NUDGE_TEXT);
+    expect(JSON.stringify(messages)).not.toContain(TRUNCATION_NUDGE_TEXT);
     // 失败也落盘会话记录，label 追加失败后缀
     const descriptor = ctx._createdSessions[0]?.session
       .snapshotEvents()
       .find((e) => e.type === 'subagent/descriptor');
     expect((descriptor?.data as { label?: string })?.label).toBe('OM会话(0-2)-观察-失败');
     expect(result.recordSessionId).toBe(ctx._createdSessions[0]?.id);
+  });
+
+  it('纯文本两轮后正常调用工具：计数清零，之后再来两轮纯文本仍可继续', async () => {
+    const ctx = makeCtx({
+      llmStreamFactory: (index) => {
+        if (index === 2) return roundChunks({ calls: [{ id: 'v', name: 'getHistory' }] });
+        if (index === 5) return roundChunks({ calls: [{ id: 'c', name: 'completeCompression' }] });
+        return roundChunks({ text: '纯文本' });
+      },
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(true);
+    expect(ctx._llmCalls).toHaveLength(6);
+  });
+
+  it('max-tokens 截断：连续 3 轮判失败，错误指明截断而非未调用工具', async () => {
+    const ctx = makeCtx({
+      llmStreamFactory: () =>
+        roundChunks({
+          reasoning: '很长的思考'.repeat(100),
+          usage: { inputTokens: 100, outputTokens: 32768 },
+          finish: { kind: 'max-tokens' },
+        }),
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('模型连续 3 轮输出被 max-tokens 截断，放弃本次压缩');
+    expect(result.aborted).toBe(false);
+    expect(ctx._llmCalls).toHaveLength(3);
+  });
+
+  it('截断轮的 assistant 消息不进入后续请求，改用截断专用提醒，会话记录仍保留', async () => {
+    const ctx = makeCtx({
+      llmStreamFactory: (index) =>
+        index === 0
+          ? roundChunks({ reasoning: '巨型思考内容', finish: { kind: 'max-tokens' } })
+          : roundChunks({ calls: [{ id: 'c', name: 'completeCompression' }] }),
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(true);
+    const second = ctx._llmCalls[1];
+    const sent = JSON.stringify(
+      (second ? (second.options as { messages?: unknown[] }) : {}).messages,
+    );
+    expect(sent).toContain(TRUNCATION_NUDGE_TEXT);
+    expect(sent).not.toContain('巨型思考内容');
+    expect(sent).not.toContain(COMPRESSION_NUDGE_TEXT);
+    const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
+    expect(JSON.stringify(events)).toContain('巨型思考内容');
+    expect(JSON.stringify(events)).toContain(TRUNCATION_NUDGE_TEXT);
+  });
+
+  it('截断与纯文本各自计数、互不累加；正常调用工具后全部清零', async () => {
+    // 截断、纯文本、截断、纯文本：两个计数都只到 2，不应失败
+    const rounds = [
+      { finish: { kind: 'max-tokens' }, reasoning: '思' },
+      { text: '纯文本' },
+      { finish: { kind: 'max-tokens' }, reasoning: '思' },
+      { text: '纯文本' },
+    ];
+    const ctx = makeCtx({
+      llmStreamFactory: (index) => {
+        const scripted = rounds[index];
+        if (scripted !== undefined) return roundChunks(scripted);
+        return roundChunks({ calls: [{ id: 'c', name: 'completeCompression' }] });
+      },
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(true);
+    expect(ctx._llmCalls).toHaveLength(5);
   });
 
   it('请求抛 429 限流：记录限流后重试同一会话', async () => {

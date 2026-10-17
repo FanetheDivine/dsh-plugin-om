@@ -580,7 +580,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(session.surface.nodes.length).toBe(3);
   });
 
-  it('模型输出纯文本（无工具调用）：追加提醒继续，连续 2 轮判失败不产生替换', async () => {
+  it('模型输出纯文本（无工具调用）：追加提醒继续，连续 3 轮判失败不产生替换', async () => {
     const session = makeSession({
       events: buildToolCallFlow({
         code: 'a()',
@@ -595,8 +595,8 @@ describe('apply 接线（OM 观察压缩）', () => {
     });
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStepWithDelay(ctx, session);
-    // 触发即后台压缩：两次任务各 2 轮（纯文本 → 提醒 → 仍纯文本 → 判失败）
-    expect(ctx._llmCalls).toHaveLength(4);
+    // 触发即后台压缩：两次任务各 3 轮（纯文本 → 提醒 → 仍纯文本 → 判失败）
+    expect(ctx._llmCalls).toHaveLength(6);
     // 压缩失败保留待定标记（无失效标记）：下个 pre-step 丢弃失败任务重启重试
     expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-pending'))).toBe(true);
     expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
@@ -1739,7 +1739,7 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     let successRound = 0;
     const ctx = makeCtx({
       llmStreamFactory: () => {
-        if (failed) return roundChunks({ text: '不调用工具' }); // 连续 2 轮纯文本 → 失败
+        if (failed) return roundChunks({ text: '不调用工具' }); // 连续 3 轮纯文本 → 失败
         // 成功任务走完整三轮（getHistory → compressHistory → completeCompression）
         successRound += 1;
         if (successRound === 1) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
@@ -1759,16 +1759,16 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
     await runPreStep(ctx, session); // 触发并开始后台压缩
     await flushBackground();
-    expect(ctx._llmCalls).toHaveLength(2); // 后台任务 2 轮纯文本判失败
+    expect(ctx._llmCalls).toHaveLength(3); // 后台任务 3 轮纯文本判失败
     appendWaitingMessage(session, 'wait-fail');
     await runPreStep(ctx, session); // 到期：对账发现失败任务 → 丢弃重启 → 仍失败 → 拒绝本 step
-    expect(ctx._llmCalls).toHaveLength(4);
+    expect(ctx._llmCalls).toHaveLength(6);
     expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
     expect(latestHistoryText(session)).toBe('');
     appendWaitingMessage(session, 'wait-retry');
     failed = false;
     await runPreStep(ctx, session); // 待定仍在、到期条件仍满足 → 再次重启任务 → 成功注入
-    expect(ctx._llmCalls).toHaveLength(7); // 失败 2+2 轮 + 重试成功 3 轮
+    expect(ctx._llmCalls).toHaveLength(9); // 失败 3+3 轮 + 重试成功 3 轮
     expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(true);
     expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
   });

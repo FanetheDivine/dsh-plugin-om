@@ -2,7 +2,7 @@
  * 工具驱动的压缩循环：以新会话方式直连 ctx.llm.stream()，模型通过 getHistory /
  * compressHistory / completeCompression 完成压缩，存在原始合法提问时加入重写工具。
  * 导出 runCompressionLoop / buildCompressionPrompt / buildCompressionTaskText /
- * REFLECT_COMPRESSION_PROMPT / ASK_COMPRESSION_PROMPT / CompressionLoopOptions / CompressionOutcome / CompressionStats / COMPRESSION_NUDGE_TEXT。
+ * REFLECT_COMPRESSION_PROMPT / ASK_COMPRESSION_PROMPT / CompressionLoopOptions / CompressionOutcome / CompressionStats / COMPRESSION_NUDGE_TEXT / TRUNCATION_NUDGE_TEXT。
  *
  * - 首条 user 消息仅含压缩指令与 start/end 区间（buildCompressionTaskText），不含
  *   历史消息内容；共享压缩提示词作为 system，反思 pass 追加反思合并约束
@@ -10,7 +10,9 @@
  *   BlockAssembler 组装为 assistant 消息，工具执行结果以 tool-result 消息回填
  * - completeCompression 校验通过后立即停止（同轮后续工具调用不再执行），最终 <history>
  *   块由 CompressionState 构建，全程无需整块校验
- * - 模型输出纯文本（无工具调用）时追加提醒消息继续，连续 2 轮仍无工具调用判失败
+ * - 模型输出纯文本（无工具调用）时追加提醒消息继续，连续 3 轮仍无工具调用判失败
+ * - 输出被 max-tokens 截断且无工具调用时单独计数：该轮 assistant 消息仅落盘、不进入后续
+ *   请求，追加截断专用提醒，连续 3 轮截断判失败；任一轮有工具调用则两个计数清零
  * - 429 限流走全局限流等待门（gateRateLimit / noteRateLimit）；其余请求级错误依赖
  *   dsh 运行时重试，插件不做整体重试，错误直接判失败
  * - signal 中止标记 aborted；token usage 汇总全部轮次；统计循环起止时间戳、总耗时
@@ -117,6 +119,13 @@ export const ASK_COMPRESSION_PROMPT = [
 /** 模型输出纯文本（无工具调用）时追加的提醒消息文本。 */
 export const COMPRESSION_NUDGE_TEXT =
   '请通过工具执行压缩：用 getHistory 查看区间条目，用 compressHistory 压缩 assistant 条目，完成后调用 completeCompression。不要输出与工具调用无关的文本。';
+
+/** 输出被 max-tokens 截断且无工具调用时追加的提醒消息文本。 */
+export const TRUNCATION_NUDGE_TEXT =
+  '上一轮输出因长度上限被截断，其中的工具调用未被接收。请缩短思考，直接分批调用 compressHistory（每次覆盖较小区间），最后调用 completeCompression。';
+
+/** 连续无工具调用、连续截断各自允许的最大轮数。 */
+const MAX_CONSECUTIVE_FAILURES = 3;
 
 /** 逐轮请求统计：轮次（1 起）、该轮起止时间戳与耗时、该轮 token usage。 */
 export type CompressionRoundStat = {
@@ -276,7 +285,7 @@ export function withoutReasoning(view: CompressionView, skipReasoning: boolean):
 }
 
 /**
- * 运行工具驱动的压缩循环：直到模型调用 completeCompression（成功）、连续 2 轮无
+ * 运行工具驱动的压缩循环：直到模型调用 completeCompression（成功）、连续 3 轮无
  * 工具调用、请求级错误或 signal 中止（失败）。成功与失败均落盘循环会话记录。
  */
 export async function runCompressionLoop(
@@ -298,6 +307,9 @@ export async function runCompressionLoop(
   const messages: Message[] = [makePluginUserMessage(options.taskText)];
   let rounds = 0;
   let nudges = 0;
+  let truncations = 0;
+  /** 仅落盘、不进入后续请求的消息（截断轮的 assistant 消息）。 */
+  const omitted = new Set<Message>();
   let usage: TokenUsage | undefined;
   const startedAt = Date.now();
   const roundStats: CompressionRoundStat[] = [];
@@ -371,7 +383,7 @@ export async function runCompressionLoop(
       purpose: 'compaction',
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       system,
-      messages: [...messages],
+      messages: messages.filter((message) => !omitted.has(message)),
       tools,
     };
     const assembler = new BlockAssembler();
@@ -428,9 +440,21 @@ export async function runCompressionLoop(
       .blocks()
       .filter((block): block is ToolCallBlock => block.type === 'tool-call');
     if (calls.length === 0) {
+      if (finish.kind === 'max-tokens') {
+        truncations += 1;
+        if (truncations >= MAX_CONSECUTIVE_FAILURES) {
+          const error = `模型连续 ${MAX_CONSECUTIVE_FAILURES} 轮输出被 max-tokens 截断，放弃本次压缩`;
+          logger.warn(error);
+          return await failWith(error, false);
+        }
+        logger.warn('模型输出被 max-tokens 截断且无工具调用，丢弃该轮输出并追加提醒后继续');
+        omitted.add(assistantMessage);
+        messages.push(makePluginUserMessage(TRUNCATION_NUDGE_TEXT));
+        continue;
+      }
       nudges += 1;
-      if (nudges >= 2) {
-        const error = '模型连续 2 轮未调用压缩工具，放弃本次压缩';
+      if (nudges >= MAX_CONSECUTIVE_FAILURES) {
+        const error = `模型连续 ${MAX_CONSECUTIVE_FAILURES} 轮未调用压缩工具，放弃本次压缩`;
         logger.warn(error);
         return await failWith(error, false);
       }
@@ -439,6 +463,7 @@ export async function runCompressionLoop(
       continue;
     }
     nudges = 0;
+    truncations = 0;
     for (const call of calls) {
       messages.push(toolResultOf(call, state.executeCall(call.name, call.arguments)));
       // 仅实际完成时停止；被门禁拒绝后允许执行同轮后续调用。
