@@ -8,3 +8,4 @@
 - 不向后兼容：旧 `feedback/record` 中 `om:1:` 前缀信封不再识别，旧会话里未完成的观察待定标记与预压缩结果失效，警告行不再显示。
 - DSH 最低版本升到 0.2.1-rc.2，`appendPluginRecord` 自 0.2.1-rc.1 起提供。
 - README「已知风险」改写为 plugin record 的版本要求与不向后兼容。
+- docs: 新增 compaction-tuning skill：OM 压缩质量的长流程评估优化。

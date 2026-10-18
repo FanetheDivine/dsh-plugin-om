@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCompressionPrompt,
   buildCompressionTaskText,
+  COMPLETION_BLOCKED_TEXT,
   COMPRESSION_NUDGE_TEXT,
   type CompressionLoopOptions,
   REFLECT_COMPRESSION_PROMPT,
@@ -12,6 +13,7 @@ import {
   TRUNCATION_NUDGE_TEXT,
   withoutReasoning,
 } from '../src/compress-loop.ts';
+import { COMPRESSION_TOOL_SCHEMAS } from '../src/compress-tools.ts';
 import { buildReflectView, type CompressionView, type ViewEntry } from '../src/compress-view.ts';
 import {
   COMPACTION_ABORTED_ERROR,
@@ -85,26 +87,22 @@ function rewriteCall(index = 1) {
 }
 
 describe('原始 ask 的循环处理', () => {
-  it('拒绝提前完成和同轮提前重写，下一轮看到选项后可以重写完成', async () => {
+  it('首条消息附带提问选项：拒绝提前完成，首轮即可重写，下一轮完成', async () => {
     const view = askView();
     view.entries = view.entries.slice(0, 1);
     view.maxIndex = 1;
     const ctx = makeCtx({
       llmStreamFactory: (round, rawOptions) => {
         const options = rawOptions as GenerateOptions;
-        if (round === 0)
+        if (round === 0) {
+          expect(JSON.stringify(options.messages)).toContain('o1:灰度发布');
+          expect(JSON.stringify(options.messages)).toContain('先向少量用户开放');
           return roundChunks({
-            calls: [
-              { id: 'early', name: 'completeCompression' },
-              { id: 'view', name: 'getHistory' },
-              { ...rewriteCall(), id: 'premature-rewrite' },
-            ],
+            calls: [{ id: 'early', name: 'completeCompression' }, rewriteCall()],
           });
-        expect(JSON.stringify(options.messages)).toContain('o1:灰度发布');
-        expect(JSON.stringify(options.messages)).toContain('先向少量用户开放');
+        }
         return roundChunks({
           calls: [
-            rewriteCall(),
             { id: 'done', name: 'completeCompression' },
             { id: 'not-started', name: 'getHistory' },
           ],
@@ -130,11 +128,6 @@ describe('原始 ask 的循环处理', () => {
     const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
     expect(
       events.find((e) => e.type === 'tool/result' && e.data.message.toolCallId === 'early'),
-    ).toMatchObject({ data: { message: { isError: true } } });
-    expect(
-      events.find(
-        (e) => e.type === 'tool/result' && e.data.message.toolCallId === 'premature-rewrite',
-      ),
     ).toMatchObject({ data: { message: { isError: true } } });
     expect(
       events.find((e) => e.type === 'tool/result' && e.data.message.toolCallId === 'rewrite-1'),
@@ -328,6 +321,36 @@ describe('buildCompressionPrompt / buildCompressionTaskText', () => {
     expect(prompt).not.toContain(REFLECT_COMPRESSION_PROMPT); // 反思约束不进共享提示词
   });
 
+  it('忠实性约束随 compressHistory.content 参数说明下发，system 不重复', () => {
+    const schema = JSON.stringify(
+      COMPRESSION_TOOL_SCHEMAS.find((t) => t.name === 'compressHistory'),
+    );
+    const rules = [
+      '只写本次 index 或 start..end 区间内',
+      '逐字照抄',
+      '表述方向照原文',
+      '写明动作对象',
+    ];
+    for (const rule of rules) {
+      expect(schema).toContain(rule);
+      for (const skip of [true, false]) expect(buildCompressionPrompt(skip)).not.toContain(rule);
+    }
+    expect(buildCompressionPrompt(true)).toContain('compressHistory 参数说明');
+  });
+
+  it('提交要求：同一轮提交全部压缩并完成，思考中不起草摘要', () => {
+    const submit = buildCompressionPrompt(true).split('【提交】')[1] ?? '';
+    expect(submit).toContain('同一轮内调用全部 compressHistory');
+    expect(submit).toContain('该轮最后调用 completeCompression');
+    expect(submit).toContain('不要在思考中起草');
+  });
+
+  it('提示词不重复工具 schema 已说明的参数规则', () => {
+    const prompt = buildCompressionPrompt(true);
+    expect(prompt).not.toContain('【工具】');
+    expect(prompt).not.toContain('index 与 start/end 二选一');
+  });
+
   it('压缩子会话看不到主会话提醒：提示词自带完整消息定义', () => {
     expect(buildCompressionPrompt(true)).toContain(COMPLETE_MESSAGE_DEFINITION);
   });
@@ -373,6 +396,37 @@ describe('runCompressionLoop', () => {
       expect(JSON.stringify(historyResult?.data).includes('其他模型的思考')).toBe(shown);
     },
   );
+
+  it('同轮前序调用失败时 completeCompression 不执行，下一轮修正后完成', async () => {
+    const ctx = makeCtx({
+      llmStreamFactory: (index) =>
+        index === 0
+          ? roundChunks({
+              calls: [
+                { id: 't1', name: 'compressHistory', args: { index: 1, content: 'B的摘要' } },
+                // 覆盖用户消息 0，被拒绝
+                { id: 't2', name: 'compressHistory', args: { start: 0, end: 2, content: '越界' } },
+                { id: 't3', name: 'completeCompression' },
+              ],
+            })
+          : roundChunks({
+              calls: [
+                { id: 't4', name: 'compressHistory', args: { index: 2, content: 'C的摘要' } },
+                { id: 't5', name: 'completeCompression' },
+              ],
+            }),
+    });
+    const result = await runCompressionLoop(ctx, makeSession(), loopOptions());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.rounds).toBe(2);
+    expect(result.text).toContain('B的摘要');
+    expect(result.text).toContain('C的摘要');
+    expect(result.text).not.toContain('越界');
+    const events = ctx._createdSessions[0]?.session.snapshotEvents() ?? [];
+    const blocked = events.filter((e) => e.type === 'tool/result')[2];
+    expect(JSON.stringify(blocked?.data)).toContain(COMPLETION_BLOCKED_TEXT);
+  });
 
   it('基本流程：getHistory → compressHistory → completeCompression，成功构建最终块并落盘会话记录', async () => {
     const ctx = makeCtx({
@@ -552,7 +606,7 @@ describe('runCompressionLoop', () => {
     ]);
     expect(options.purpose).toBe('compaction');
     expect(options.maxTokens).toBe(123);
-    expect(options.messages?.[0]?.content?.[0]?.text).toBe('压缩完整消息区间 [0..2]');
+    expect(options.messages?.[0]?.content?.[0]?.text).toContain('压缩完整消息区间 [0..2]');
   });
 
   it('会话记录：压缩系统提示词落盘为 system/message，任务指令为用户来源', async () => {

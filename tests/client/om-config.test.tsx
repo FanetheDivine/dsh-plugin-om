@@ -192,28 +192,57 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     expect(entry.name).toBe('plugins.row.config');
     expect(entry.key).toBe('dsh-plugin-om#dsh-plugin-om');
     const keys = [
+      'omEnabled',
       'observeThresholdTokens',
       'reflectThresholdTokens',
       'tailMessageCount',
-      'compressMaxTokens',
+      'recallEnabled',
+      'semanticRecallEnabled',
+      'modelDir',
       'compressProvider',
       'compressModel',
       'compressReasoningEffort',
+      'compressMaxTokens',
       'compressSkipReasoning',
       'rateLimitWaitMs',
       'recompressConcurrency',
-      'modelDir',
-      'omEnabled',
       'progressReminderEnabled',
       'progressReminderIdleEnabled',
       'progressReminderIdleSteps',
       'progressReminderIdleToolCalls',
-      'recallEnabled',
-      'semanticRecallEnabled',
       'debug',
     ];
     for (const key of keys) expect(control(container, key).disabled, key).toBe(false);
     expect(container.querySelectorAll('input').length).toBe(19);
+  });
+
+  it('按功能逻辑排列字段，父开关在依赖项之前', () => {
+    const { container } = mount();
+    expect(
+      [...container.querySelectorAll<HTMLElement>('[data-om-field]')].map(
+        (row) => row.dataset.omField,
+      ),
+    ).toEqual([
+      'omEnabled',
+      'observeThresholdTokens',
+      'reflectThresholdTokens',
+      'tailMessageCount',
+      'recallEnabled',
+      'semanticRecallEnabled',
+      'modelDir',
+      'compressProvider',
+      'compressModel',
+      'compressReasoningEffort',
+      'compressMaxTokens',
+      'compressSkipReasoning',
+      'rateLimitWaitMs',
+      'recompressConcurrency',
+      'progressReminderEnabled',
+      'progressReminderIdleEnabled',
+      'progressReminderIdleSteps',
+      'progressReminderIdleToolCalls',
+      'debug',
+    ]);
   });
 
   it('真实控件暂存整数、选填字符串和布尔值，不会编辑即持久化', () => {
@@ -233,6 +262,9 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       'observeThresholdTokens',
       'reflectThresholdTokens',
       'tailMessageCount',
+      'recallEnabled',
+      'semanticRecallEnabled',
+      'modelDir',
       'compressMaxTokens',
       'rateLimitWaitMs',
       'recompressConcurrency',
@@ -545,6 +577,9 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       'observeThresholdTokens',
       'reflectThresholdTokens',
       'tailMessageCount',
+      'recallEnabled',
+      'semanticRecallEnabled',
+      'modelDir',
       'compressMaxTokens',
       'compressProvider',
       'compressModel',

@@ -13,11 +13,13 @@
 - 最近真实用户消息、非空模型文本、`ask_user_question` 调用或进度提醒之后，开启 `progressReminderIdleEnabled` 且表层活动累计至少 `progressReminderIdleSteps`（默认 4）个已结束模型 step、工具调用超过 `progressReminderIdleToolCalls`（默认 10）次时重发，并要求立刻输出记录
 - 完整消息定义写在 history 块顶注释和 recall 工具描述中
 - 通过工具循环生成摘要，保留用户消息和未压缩内容；手动加载的 skill 计入完整消息，其余系统消息不占 index
+- 压缩会话首条消息附带区间全部条目，模型首轮即可提交全部摘要并完成
 - 压缩循环中 `getHistory` 返回当前状态，本次已压缩的区间显示为摘要条目
+- 同轮有失败的摘要或问答重写未修正时，`completeCompression` 不执行
 - 压缩循环连续 3 轮不调用工具或连续 3 轮被 max-tokens 截断才判失败，两者分开计数
 - 压缩请求遇到 5xx 或网络错误时最多重试 3 次，等待复用 429 限流门
 - 保留工具加载与手动加载的 skill 原文，并在压缩前再次确认
-- 有效提问首次直接压缩需再次确认，保留时查看选项后在下一轮重写问答并展开选项引用
+- 有效提问首次直接压缩需再次确认，保留时重写问答并展开选项引用
 - 中断或错误的提问作为普通工具调用处理
 - 压缩后发给 Claude 的请求剥离保留尾部中压缩前生成的 thinking 签名，避免前缀变化导致签名校验失败
 - 使用 `recall` 按消息序号回看原文，启用语义增强后还可按含义检索
@@ -58,24 +60,24 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
+| `omEnabled` | `true` | 是否启用自动压缩，关闭后进度提醒也不再注入 |
 | `observeThresholdTokens` | `35000` | 观察压缩阈值 |
 | `reflectThresholdTokens` | `40000` | 摘要合并阈值 |
 | `tailMessageCount` | `20` | 触发后保留的完整消息数 |
-| `compressMaxTokens` | 模型默认值 | 单轮生成上限 |
+| `recallEnabled` | `true` | 是否启用原文召回 |
+| `semanticRecallEnabled` | `true` | 是否为 `recall` 启用语义增强，依赖 `recallEnabled` |
+| `modelDir` | DSH 共享目录 | 嵌入模型目录 |
 | `compressProvider` | 会话路由 | 压缩 provider，需与 `compressModel` 同时配置 |
 | `compressModel` | 会话路由 | 压缩模型，需与 `compressProvider` 同时配置 |
 | `compressReasoningEffort` | 模型默认值 | 思考等级 |
+| `compressMaxTokens` | 模型默认值 | 单轮生成上限 |
 | `compressSkipReasoning` | `true` | 是否忽略 reasoning |
 | `rateLimitWaitMs` | `60000` | 429 与 5xx 重试前的等待毫秒数，`0` 表示不等待 |
 | `recompressConcurrency` | `2` | 重压缩同时运行的上限，至少为 `1`，超出的排队 |
-| `modelDir` | DSH 共享目录 | 嵌入模型目录 |
-| `omEnabled` | `true` | 是否启用自动压缩，关闭后进度提醒也不再注入 |
 | `progressReminderEnabled` | `true` | 是否注入进度提醒，需同时开启 `omEnabled` |
 | `progressReminderIdleEnabled` | `false` | 长期无记录时是否重发进度提醒，关闭后仅在提醒缺失时补发 |
 | `progressReminderIdleSteps` | `4` | 无记录的已结束 step 数达到该值才重发，至少为 `1` |
 | `progressReminderIdleToolCalls` | `10` | 无记录期间工具调用数超过该值才重发，至少为 `0` |
-| `recallEnabled` | `true` | 是否启用原文召回 |
-| `semanticRecallEnabled` | `true` | 是否为 `recall` 启用语义增强，依赖 `recallEnabled` |
 | `debug` | 开发环境启用 | 是否输出步骤日志 |
 
 配置页在依赖项关闭时隐藏关联项：原文召回关闭隐藏语义增强，语义增强未生效隐藏 `modelDir`，长期无记录时重发关闭隐藏两个重发阈值。
@@ -90,7 +92,7 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 
 观察待定标记、预压缩结果和降级警告经宿主 `appendPluginRecord` 写入会话日志，类型为 `plugin:dsh-plugin-om/*` 的 ignorable 记录。该 API 属宿主实验性接口，格式迁移时记录只尽力保留，丢失后预压缩结果重新压缩，待定标记重新触发。
 
-从 0.0.59 起，插件不再借用 `feedback/record` 事件：
+从 0.0.60 起，插件不再借用 `feedback/record` 事件：
 
 - om 事件不向后兼容。旧版本写入 `feedback/record` 的 `om:1:` 信封不再识别，旧会话里未完成的观察待定、预压缩结果和降级警告行失效。
 - 要求 DSH 0.2.1-rc.2 或更高版本，更低版本没有 `appendPluginRecord`。
@@ -210,6 +212,7 @@ web/                             # 机制说明与成本计算器站点
 .agents/skills/agent-workflow/SKILL.md # 仓库开发工作流
 .agents/skills/clear-branch/SKILL.md   # 手动清空除 main 外的分支与 worktree
 .agents/skills/compaction-eval/         # 压缩质量盲评打分：视图复现与重压缩、数据准备、分段合并与汇总计分；产物写系统临时目录；构建时渲染为发布版写入 dist/skill
+.agents/skills/compaction-tuning/SKILL.md # 压缩质量的长流程评估优化：选样本、诊断、改进点盲测与回归验证；产物写系统临时目录
 .agents/skills/real-device-test/        # 实机测试流程：宿主版本对齐、profile 搭建、mock LLM、warm/cold 驱动、CDP 浏览器用例；scripts 为参数化参考实现
 .agents/skills/release/SKILL.md        # 手动发布并跟踪 CI 与 npm
 .github/workflows/web-deploy.yml # GitHub Pages 部署工作流
