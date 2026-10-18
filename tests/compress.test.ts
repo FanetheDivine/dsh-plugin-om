@@ -14,21 +14,30 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
 });
 
 import {
+  archivedHistoryTextOf,
   clearCompressionModelInfoCache,
   compressionTarget,
   computeCompressRange,
   estimateTextTokens,
   findObservePending,
   historySection,
+  historyTextOf,
   isPairBalancedAfter,
   reflectPass,
 } from '../src/compress.ts';
 import { resolveConfig } from '../src/config.ts';
-import { HISTORY_TAG, HISTORY_TIP, PLUGIN_SOURCE_KIND } from '../src/constants.ts';
+import {
+  ARCHIVED_HISTORY_TAG,
+  ARCHIVED_HISTORY_TIP,
+  HISTORY_TAG,
+  HISTORY_TIP,
+  PLUGIN_SOURCE_KIND,
+} from '../src/constants.ts';
 import { apply } from '../src/index.ts';
 import { findOmEvents } from '../src/om-event.ts';
 import type { Session, SessionEvent } from '../src/types.ts';
 import {
+  archivedHistoryMessage,
   buildToolCallFlow,
   historyMessage,
   makeCtx,
@@ -167,6 +176,35 @@ describe('观察触发：净压力口径（换算系数 × 未压缩表层估算
         ),
       ),
     ).toBe(true);
+  });
+
+  it('归档块 token 同样从压力中扣除', async () => {
+    const archivedInner = '归档内容'.repeat(80);
+    const historyInner = '旧摘要'.repeat(60);
+    const session = makeSession({
+      events: [
+        archivedHistoryMessage(archivedInner),
+        historyMessage(historyInner),
+        ...buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+          withTurnEnd: true,
+        }),
+      ],
+    });
+    const compressedTokens =
+      estimateTextTokens(
+        `<${ARCHIVED_HISTORY_TAG} tip="${ARCHIVED_HISTORY_TIP}">\n${archivedInner}\n</${ARCHIVED_HISTORY_TAG}>`,
+      ) + estimateTextTokens(`<history tip="${HISTORY_TIP}">\n${historyInner}\n</history>`);
+    const threshold = 1000 - compressedTokens + 1;
+    const ctx = makeCtx({ meterSurfaceTokens: 1000 });
+    apply(ctx, { observeThresholdTokens: threshold, tailMessageCount: 0 });
+    await runPreStep(ctx, session);
+    expect(ctx._llmCalls).toHaveLength(0);
+    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
+    expect(steps.some((s) => s.includes(`已压缩块 ${compressedTokens}`))).toBe(true);
   });
 
   it('系统提示词 token 从净压力扣除：低于阈值跳过', async () => {
@@ -743,6 +781,49 @@ describe('压缩边界 historySection', () => {
     });
     expect(historySection(pluginNoTag).blocks).toEqual([]);
     expect(historySection(pluginNoTag).boundarySeq).toBeUndefined();
+  });
+
+  it('归档块单独收集，不计入 history 块，并参与压缩边界', () => {
+    const session = makeSession({
+      events: [
+        archivedHistoryMessage('<user_message index="0"><![CDATA[早期]]></user_message>'),
+        historyMessage('块1'),
+        ...buildToolCallFlow({ code: 'a()', description: '任务A', callId: 'c1', resultText: 'r1' }),
+      ],
+    });
+    const { blocks, archived, boundarySeq } = historySection(session);
+    expect(archived.map((b) => b.seq)).toEqual([0]);
+    expect(blocks.map((b) => b.seq)).toEqual([1]);
+    expect(boundarySeq).toBe(1);
+    const onlyArchived = historySection(
+      makeSession({
+        events: [
+          archivedHistoryMessage('早期'),
+          ...buildToolCallFlow({
+            code: 'a()',
+            description: '任务A',
+            callId: 'c1',
+            resultText: 'r1',
+          }),
+        ],
+      }),
+    );
+    expect(onlyArchived.blocks).toEqual([]);
+    expect(onlyArchived.boundarySeq).toBe(0);
+  });
+
+  it('归档块正文引用 <history> 标签时不被误判为 history 块', () => {
+    const session = makeSession({
+      events: [
+        archivedHistoryMessage(
+          '<user_message index="0"><![CDATA[解释 <history> 块]]></user_message>',
+        ),
+      ],
+    });
+    const event = session.snapshotEvents()[0];
+    expect(archivedHistoryTextOf(event)).toBeDefined();
+    expect(historyTextOf(event)).toBeUndefined();
+    expect(historySection(session).blocks).toEqual([]);
   });
 });
 

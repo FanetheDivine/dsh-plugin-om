@@ -3,7 +3,13 @@
 // 共享的断言辅助（latestHistoryText / compactionLifecycle / checkpointSourceOf /
 // historyMessage / twoCallFlow / textOf / hostLog）。测试目标是 src 的纯函数与 apply 接线。
 import type { SessionEvent as LogEvent } from '../.agents/skills/compaction-eval/scripts/session-source.ts';
-import { HISTORY_TAG, HISTORY_TIP, PLUGIN_SOURCE_KIND } from '../src/constants.ts';
+import {
+  ARCHIVED_HISTORY_TAG,
+  ARCHIVED_HISTORY_TIP,
+  HISTORY_TAG,
+  HISTORY_TIP,
+  PLUGIN_SOURCE_KIND,
+} from '../src/constants.ts';
 import type { Context, Session, SessionEvent } from '../src/types.ts';
 
 export function makeMessage({
@@ -770,6 +776,22 @@ export function historyMessage(inner: string, id = 'history-msg'): SessionEvent 
     type: 'user/message',
     data: makeMessage({
       content: [textBlock(`<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${inner}\n</${HISTORY_TAG}>`)],
+      source: { kind: PLUGIN_SOURCE_KIND },
+      id,
+    }),
+  } as unknown as SessionEvent;
+}
+
+/** 构造 <archived-history> 归档块消息（插件自产 user/message）。 */
+export function archivedHistoryMessage(inner: string, id = 'archived-msg'): SessionEvent {
+  return {
+    type: 'user/message',
+    data: makeMessage({
+      content: [
+        textBlock(
+          `<${ARCHIVED_HISTORY_TAG} tip="${ARCHIVED_HISTORY_TIP}">\n${inner}\n</${ARCHIVED_HISTORY_TAG}>`,
+        ),
+      ],
       source: { kind: PLUGIN_SOURCE_KIND },
       id,
     }),

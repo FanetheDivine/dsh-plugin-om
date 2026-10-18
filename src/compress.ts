@@ -1,7 +1,7 @@
 /**
  * 两级自动压缩（观察/反思）与 compaction 生命周期提交。
  * 导出 estimateTextTokens / isPairBalancedAfter / computeCompressRange / historySection /
- * historyTextOf / findObservePending / prepareObserveCompression / commitObserveCompression /
+ * historyTextOf / archivedHistoryTextOf / findObservePending / prepareObserveCompression / commitObserveCompression /
  * reflectPass / observePass / maybeCompress。
  *
  * - 摘要生成走工具驱动的压缩循环（compress-loop.ts runCompressionLoop）：首条 user
@@ -31,7 +31,7 @@
  *   （成对配置下未路由会话也执行压缩）；compressReasoningEffort 配置时压缩前经
  *   ctx.llm.resolveModelInfo 校验目标模型 reasoning.efforts（按 provider+model 缓存），
  *   未命中 / 无元数据 / 查询失败降级为模型默认并报告 reasoning-effort-unavailable 降级
- * - 压缩边界：最后一个合法 <history> 块之后的消息视为未压缩，其前不重复压缩
+ * - 压缩边界：最后一个合法 <history> 或 <archived-history> 块之后的消息视为未压缩，其前不重复压缩
  * - 压缩循环最终失败（连续无工具调用 / 请求级错误）时 pass 返回失败结果（携带最后一次
  *   错误），压缩流程向上传播，pre-step 据此拒绝本 step 中断当前 turn；signal 中止标记
  *   aborted（不中断）；成功与失败均落盘压缩会话记录子会话（失败时其 id 随结果传播为
@@ -59,7 +59,7 @@ import {
   runCompressionLoop,
 } from './compress-loop.ts';
 import { buildObserveView, buildReflectView, type CompressionView } from './compress-view.ts';
-import { HISTORY_TAG, isPluginOwnedSource, omSource } from './constants.ts';
+import { ARCHIVED_HISTORY_TAG, HISTORY_TAG, isPluginOwnedSource, omSource } from './constants.ts';
 import { reportDegrade } from './degrade.ts';
 import { indexCompleteMessages, surfaceIndexOf } from './log-index.ts';
 import type { PluginLogger } from './logger.ts';
@@ -199,15 +199,35 @@ async function runPassLoop(
   return outcome;
 }
 
-/**
- * 判定消息是否为本插件的压缩日志消息并提取日志文本（按 source 标记判断，兼容旧宿主
- * checkpoint 标记 'compact'）。仅当消息文本含 <history> 开标签时视为压缩日志，返回整段
- * 文本；其余返回 undefined。
- */
-export function historyTextOf(event: SessionEvent | undefined): string | undefined {
+/** 插件自产 user/message 的文本；其余事件返回 undefined。 */
+function pluginOwnedText(event: SessionEvent | undefined): string | undefined {
   if (event?.type !== 'user/message') return undefined;
   if (!isPluginOwnedSource(event.data.source)) return undefined;
-  const text = blocksToText(event.data.content);
+  return blocksToText(event.data.content);
+}
+
+/**
+ * 判定消息是否为本插件的归档块消息并返回整段文本：插件自产且文本以
+ * <archived-history> 开标签起始；其余返回 undefined。
+ */
+export function archivedHistoryTextOf(event: SessionEvent | undefined): string | undefined {
+  const text = pluginOwnedText(event);
+  if (text === undefined) return undefined;
+  const head = text.trimStart();
+  const open = `<${ARCHIVED_HISTORY_TAG}`;
+  if (!head.startsWith(open)) return undefined;
+  const next = head.charAt(open.length);
+  return next === '>' || next === ' ' ? text : undefined;
+}
+
+/**
+ * 判定消息是否为本插件的压缩日志消息并提取日志文本（按 source 标记判断，兼容旧宿主
+ * checkpoint 标记 'compact'）。仅当消息文本含 <history> 开标签且不是归档块时视为压缩
+ * 日志，返回整段文本；其余返回 undefined。
+ */
+export function historyTextOf(event: SessionEvent | undefined): string | undefined {
+  const text = pluginOwnedText(event);
+  if (text === undefined || archivedHistoryTextOf(event) !== undefined) return undefined;
   const idx = text.indexOf(`<${HISTORY_TAG}`);
   if (idx === -1) return undefined;
   const rest = text.slice(idx + HISTORY_TAG.length + 1);
@@ -294,24 +314,34 @@ export function computeCompressRange(
 }
 
 /**
- * 压缩边界（historySection）：扫描表层全部节点，收集所有合法 <history> 压缩日志块
- * （内文 + seq，按表层顺序），并以最后一个块的 seq 作为压缩边界——边界之后的消息视为
- * 未压缩，其前（含边界自身）视为已压缩。无压缩日志时 blocks 为空、boundarySeq 为
- * undefined。
+ * 压缩边界（historySection）：扫描表层全部节点，分别收集合法 <history> 块与
+ * <archived-history> 归档块（内文 + seq，按表层顺序），并以两类块中表层位置最后的
+ * 一个作为压缩边界——边界之后的消息视为未压缩，其前（含边界自身）视为已压缩。
+ * 无压缩块时 blocks / archived 为空、boundarySeq 为 undefined。
  */
 export function historySection(session: Session): {
   blocks: Array<{ text: string; seq: number }>;
+  archived: Array<{ text: string; seq: number }>;
   boundarySeq: number | undefined;
 } {
   const blocks: Array<{ text: string; seq: number }> = [];
+  const archived: Array<{ text: string; seq: number }> = [];
   let boundarySeq: number | undefined;
+  const events = session.snapshotEvents();
   for (const seq of session.surface.nodes) {
-    const text = historyTextOf(session.snapshotEvents()[seq]);
+    const event = events[seq];
+    const archivedText = archivedHistoryTextOf(event);
+    if (archivedText !== undefined) {
+      archived.push({ text: archivedText, seq });
+      boundarySeq = seq;
+      continue;
+    }
+    const text = historyTextOf(event);
     if (text === undefined) continue;
     blocks.push({ text, seq });
     boundarySeq = seq;
   }
-  return { blocks, boundarySeq };
+  return { blocks, archived, boundarySeq };
 }
 
 /**
@@ -937,8 +967,8 @@ export async function observePass(
     const threshold = config.observeThresholdTokens;
     const measurement = measurePressure(ctx, session, logger);
     if (measurement === undefined) return { failed: false };
-    const { blocks } = historySection(session);
-    const historyTokens = blocks.reduce(
+    const { blocks, archived } = historySection(session);
+    const historyTokens = [...blocks, ...archived].reduce(
       (total, block) => total + estimateTextTokens(block.text),
       0,
     );
