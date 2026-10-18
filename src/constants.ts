@@ -2,7 +2,7 @@
  * 共享常量：插件级魔法字符串，集中定义避免散落各模块。
  * 导出 PLUGIN_LABEL / PLUGIN_SOURCE_KIND / OmMessageSource / omSource /
  * HISTORY_TAG / HISTORY_TIP / COMPLETE_MESSAGE_DEFINITION /
- * historyFormatNote / SKILL_TOOL_NAME / ASK_USER_QUESTION_TOOL_NAME /
+ * historyFormatNote / INITIAL_HISTORY_HEADER / SKILL_TOOL_NAME / ASK_USER_QUESTION_TOOL_NAME /
  * COMPACT_CHECKPOINT_PLUGIN / COMPACTION_ABORTED_ERROR / isPluginOwnedSource。
  */
 import type { CompactionId } from '@deepseek-ai/dsh-compaction';
@@ -39,6 +39,9 @@ export const HISTORY_TIP = '当前块是历史消息的压缩产物，不要复�
  * 「完整消息」定义（压缩提示词、recall 工具描述与 <history> 块顶注释共用）。
  * 完整消息是摘要日志与 recall 共用的定位单位；首条 index 为 0，按会话顺序递增、全局稳定。
  */
+/** 压缩会话首条消息中预注入区间条目的标题行，评估脚本据此提取原文视图。 */
+export const INITIAL_HISTORY_HEADER = '区间当前条目（等同 getHistory 全区间返回）：';
+
 export const COMPLETE_MESSAGE_DEFINITION =
   '`完整消息`指一条`用户消息`、`模型输出文本`、`具有result的toolcall`或`手动加载的skill`；首条 index 为 0，按会话顺序递增。';
 

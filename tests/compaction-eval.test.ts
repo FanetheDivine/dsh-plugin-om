@@ -37,7 +37,7 @@ import {
   readZip,
   type SessionEvent,
 } from '../.agents/skills/compaction-eval/scripts/session-source.ts';
-import { SKILL_INVOCATION_KIND } from '../src/constants.ts';
+import { INITIAL_HISTORY_HEADER, SKILL_INVOCATION_KIND } from '../src/constants.ts';
 import type { SessionEvent as SrcEvent } from '../src/types.ts';
 import {
   buildToolCallFlow,
@@ -246,6 +246,23 @@ describe('prepare', () => {
     const log = parseLog(ev.filter((e) => e.data?.callId !== 'c2'));
     expect(log.views.map(([, v]) => v)).toEqual(['part']);
     expect(pickSource([log], 0, 9)).toBe('part');
+  });
+
+  it('parseLog 把首条消息预注入的区间条目作为全区间原文视图', () => {
+    const ev = compactionEvents().map((e) =>
+      e.type === 'user/message'
+        ? {
+            ...e,
+            data: {
+              content: txt(`压缩 区间 [0..9] 的消息\n\n${INITIAL_HISTORY_HEADER}\ninjected`),
+            },
+          }
+        : e,
+    );
+    const log = parseLog(ev);
+    expect(log.range).toEqual([0, 9]);
+    expect(log.views.map(([, v]) => v)).toEqual(['injected', 'part', 'full']);
+    expect(pickSource([log], 0, 9)).toBe('injected');
   });
 
   it('parseLog 识别默认思考等级、失败后缀与缺失产物', () => {

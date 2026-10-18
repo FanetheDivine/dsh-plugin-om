@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { SKILL_INVOCATION_KIND } from '../../../../src/constants.ts';
+import { INITIAL_HISTORY_HEADER, SKILL_INVOCATION_KIND } from '../../../../src/constants.ts';
 import { indexCompleteMessages } from '../../../../src/log-index.ts';
 import { bareId, evalPath } from './paths.ts';
 import {
@@ -58,7 +58,7 @@ export interface CompactionLog {
   tokens_cache_write: number;
   tokens_out: number;
   product: string;
-  /** 首次成功 compressHistory 之前的 getHistory 参数与结果。 */
+  /** 原文视图：首条消息预注入的全区间条目与首次成功 compressHistory 之前的 getHistory。 */
   views: [HistoryArgs, string][];
   created: number;
 }
@@ -159,6 +159,9 @@ export function parseLog(events: SessionEvent[]): CompactionLog {
   const product = ccRes && !ccRes.message?.isError ? textOf(ccRes.message?.content) : '';
   // 原文视图只取首次成功 compressHistory 之前的 getHistory：之后的视图显示本次摘要
   const views: [HistoryArgs, string][] = [];
+  const injected = firstUser.indexOf(INITIAL_HISTORY_HEADER);
+  if (injected >= 0)
+    views.push([{}, firstUser.slice(injected + INITIAL_HISTORY_HEADER.length).replace(/^\n/, '')]);
   for (const e of body) {
     if (e.type !== 'tool/call' || !e.data?.callId) continue;
     const r = res.get(e.data.callId);

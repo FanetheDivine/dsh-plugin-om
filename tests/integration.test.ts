@@ -343,7 +343,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
               .join('')
           : '';
       expect(promptText).toContain('压缩完整消息区间'); // user 指令（压缩指令 + 区间）
-      expect(promptText).not.toContain('任务0'); // 历史内容不进指令
+      expect(promptText).toContain('<user_message index="0"><![CDATA[任务0'); // 区间条目随指令附上
       const rawEvent = child?.snapshotEvents().find((event) => event.type === 'assistant/message');
       const rawText =
         rawEvent?.type === 'assistant/message'
