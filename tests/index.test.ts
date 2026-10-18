@@ -928,10 +928,10 @@ describe('apply 接线（OM 反思压缩）', () => {
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3);
     expect(instructionText(ctx._llmCalls[0]?.options)).toBe(REFLECT_SYSTEM); // 反思在共享提示词后追加反思合并约束
-    // 压缩指令为反思表述（合并全部块），不含历史内容
+    // 压缩指令为反思表述（合并全部块），附带区间内已有摘要
     const taskText = inputText(ctx);
     expect(taskText).toContain('合并压缩');
-    expect(taskText).not.toContain('X'.repeat(40));
+    expect(taskText).toContain('X'.repeat(40));
     expect(session.surface.nodes.length).toBe(before); // 单块区段替换，节点数不变
     expect(latestHistoryText(session)).toContain('REFLECTED');
     expect(latestHistoryText(session)).not.toContain('X'.repeat(40)); // 旧摘要被替换
@@ -1437,11 +1437,10 @@ describe('压缩请求形态（新会话直连）', () => {
       'completeCompression',
     ]);
     const input = String(options?.messages?.[0]?.content?.[0]?.text ?? '');
-    // 首条消息 = 压缩指令 + 完整消息区间，不含历史消息内容
+    // 首条消息 = 压缩指令 + 完整消息区间 + 区间条目
     expect(input).toContain('压缩完整消息区间');
-    expect(input).toContain('getHistory');
     expect(input).toContain('completeCompression');
-    expect(input).not.toContain('请帮我完成一个任务'); // 历史内容不进指令
+    expect(input).toContain('<user_message index="0"><![CDATA[请帮我完成一个任务');
     expect(input).not.toContain('message_id=user-c1'); // 不用 message_id
     expect(session.surface.nodes.length).toBe(2); // 等待期新消息 + <history>
   });

@@ -2,14 +2,16 @@
  * 工具驱动的压缩循环：以新会话方式直连 ctx.llm.stream()，模型通过 getHistory /
  * compressHistory / completeCompression 完成压缩，存在原始合法提问时加入重写工具。
  * 导出 runCompressionLoop / buildCompressionPrompt / buildCompressionTaskText /
- * REFLECT_COMPRESSION_PROMPT / ASK_COMPRESSION_PROMPT / CompressionLoopOptions / CompressionOutcome / CompressionStats / COMPRESSION_NUDGE_TEXT / TRUNCATION_NUDGE_TEXT。
+ * REFLECT_COMPRESSION_PROMPT / ASK_COMPRESSION_PROMPT / CompressionLoopOptions / CompressionOutcome / CompressionStats / COMPRESSION_NUDGE_TEXT / TRUNCATION_NUDGE_TEXT / COMPLETION_BLOCKED_TEXT。
  *
- * - 首条 user 消息仅含压缩指令与 start/end 区间（buildCompressionTaskText），不含
- *   历史消息内容；共享压缩提示词作为 system，反思 pass 追加反思合并约束
+ * - 首条 user 消息为压缩指令与 start/end 区间（buildCompressionTaskText），循环附上
+ *   全区间 getHistory 结果，原始提问随之视为已查看；共享压缩提示词作为 system，反思
+ *   pass 追加反思合并约束
  * - 每轮请求携带压缩工具 schemas（purpose='compaction'，maxTokens 沿用配置）；流经
  *   BlockAssembler 组装为 assistant 消息，工具执行结果以 tool-result 消息回填
  * - completeCompression 校验通过后立即停止（同轮后续工具调用不再执行），最终 <history>
- *   块由 CompressionState 构建，全程无需整块校验
+ *   块由 CompressionState 构建，全程无需整块校验；同轮有未解决的写入失败时 completeCompression
+ *   不执行并返回 COMPLETION_BLOCKED_TEXT
  * - 模型输出纯文本（无工具调用）时追加提醒消息继续，连续 3 轮仍无工具调用判失败
  * - 输出被 max-tokens 截断且无工具调用时单独计数：该轮 assistant 消息仅落盘、不进入后续
  *   请求，追加截断专用提醒，连续 3 轮截断判失败；任一轮有工具调用则两个计数清零
@@ -45,7 +47,12 @@ import {
   type ToolCallResult,
 } from './compress-tools.ts';
 import type { CompressionView } from './compress-view.ts';
-import { COMPACTION_ABORTED_ERROR, COMPLETE_MESSAGE_DEFINITION, omSource } from './constants.ts';
+import {
+  COMPACTION_ABORTED_ERROR,
+  COMPLETE_MESSAGE_DEFINITION,
+  INITIAL_HISTORY_HEADER,
+  omSource,
+} from './constants.ts';
 import { makeLogger } from './logger.ts';
 import { gateRateLimit, isRateLimitError, noteRateLimit } from './rate-limit.ts';
 import type { Context, Session } from './types.ts';
@@ -62,38 +69,33 @@ export function buildCompressionPrompt(skipReasoning: boolean): string {
     '',
     `【完整消息定义】${COMPLETE_MESSAGE_DEFINITION}`,
     '',
-    '【工具】',
-    '- getHistory(option?: {start?, end?})：查看压缩区间内的历史条目。start/end 缺省为要求区间的第一个/最后一个完整消息 index，必须在要求区间内。返回当前状态，不带 <history> 包裹：本次已压缩的区间显示为摘要条目；区间切入已有 <history> 块时返回整块。',
-    '- compressHistory(option?: {index?, start?, end?, content})：把 index 单条或 start..end 连续区间的 assistant 类条目替换为 content 摘要（纯文本，不要包含 CDATA 包裹，插件自动包裹）。index 与 start/end 二选一，start==end 等同 index。区间不得覆盖用户消息；与已有替换区间部分重叠会被拒绝，完全包含则覆盖。返回成功即已生效，无需查看验证，不要用单条 index 试探；修改已提交的摘要时用相同或更大的区间重新提交。',
-    '- completeCompression()：全部压缩完成后调用，立即结束。',
-    '',
     '【压缩要求】',
-    '- 先用 getHistory 查看区间内容，再划分模块分批压缩；用户消息不可压缩、保持原样，无需处理。',
+    '- 区间条目已附在首条消息中，直接划分模块压缩；只在需要查看本次已压缩结果时调用 getHistory。用户消息不可压缩、保持原样，无需处理。',
     ...(skipReasoning ? [] : ['- <reasoning> 仅作压缩参考，不进产物。']),
-    '- 将具有关联性的 assistant 消息按内在逻辑连贯性划分为连续模块，聚合为区间压缩（start..end）',
-    '- 单条重要的完整消息以 index 单独压缩',
-    '- 压缩后的 assistant 消息内，应当描述**行为逻辑**，强调关键的**结论、产出和任务**；涉及到的具体文件保留完整路径',
+    '- 将关联的 assistant 消息按内在逻辑划分为连续模块，用 start..end 聚合压缩；单条重要的完整消息以 index 单独压缩。',
+    '- content 的忠实性要求见 compressHistory 参数说明，提交前逐条核对。',
+    '- 摘要描述**行为逻辑**，强调关键的**结论、产出和任务**；涉及的文件保留完整路径。',
     '- 摘要粒度按后续用途分配，与消息位置无关：',
     '  - 未完成的任务、当前状态、待办与未解决的问题保留细节；涉及的文件写明最新状态。',
     '  - 已完成的子任务只保留结果、决策及理由、排除的方案及原因。',
     '  - 不可再生的信息不论早晚都要保留：用户提出的约束与偏好、做出的决策、报错原文、外部返回的关键数据、验证过的结论。',
     '  - 可以低成本重新获取的内容（文件内容、命令输出、搜索结果）只记来源与要点。',
-    '- 每次 compressHistory 的 content 只描述该 start..end 区间内的条目；区间之后的内容仍会单独处理，不得提前写入较早的摘要块。',
-    '- 摘要中的数字、错误码、退出码、行号、版本号、事件类型名与文件路径必须与被压缩条目原文一致；不确定时不写具体数字，不得推测或补全未出现的信息。',
-    '- 变更日志、文档与代码注释的表述方向照原文（新增/移除、引入/废弃），不得反转；旧记录与现状矛盾时写明出处与矛盾点。',
-    '- 工具结果为空或仅返回成功时，结合前序条目写清动作对象（哪个文件、哪条命令、哪个会话），不要张冠李戴。',
     '- <history> 条目正文以 CDATA 包裹，CDATA 内为逐字原样内容。',
     '- 工具调用条目为 <assistant index="N" type="toolcall" tool-name="…">，内含 <tool-args>（调用参数 JSON）与 <tool-result>（工具返回内容）两个 CDATA 子元素。',
-    '- 加载的 skill 以 <skill_content name="…" index="N"> 条目呈现，内含 <skill_resources> 与 <skill_instructions> 两段，内文为加载的 skill 内容，属于关键信息。仅在你明确判断该 skill 与后续任务无关时，压缩它；如果该 skill 与后续任务相关，或者你无法判断，不要压缩，**保持原文**。',
+    '- 加载的 skill 以 <skill_content name="…" index="N"> 条目呈现，内含 <skill_resources> 与 <skill_instructions> 两段，属于关键信息。仅在明确判断与后续任务无关时压缩；相关或无法判断时**保持原文**。',
     '- 已有 <history> 块中的 ask_user_question 以 <ask-user-question index="N"> 呈现，CDATA 内为逐题成对的 q:（问题文本）与 a:（用户回答）行，未作答的题记为 a:(未回答)。这些提问已经处理；仅在明确判断与后续任务无关时压缩，否则保持原样。原始提问按本会话的专用处理规则执行。',
     '- 除原始提问外，未压缩的条目将原样保留；宁可保留也不要强行压缩不确定的内容。',
-    '- 全部完成后调用 completeCompression 结束；不要输出与工具调用无关的文本。',
+    '',
+    '【提交】',
+    '- 首轮即在同一轮内调用全部 compressHistory，并在该轮最后调用 completeCompression；compressHistory 返回成功即已生效，无需查看验证。',
+    '- 思考只做模块划分与取舍判断，摘要正文直接写进工具参数，不要在思考中起草。',
+    '- 不要输出与工具调用无关的文本。',
   ];
   return lines.join('\n');
 }
 
 /**
- * 构建压缩会话首条 user 消息文本（压缩指令 + start/end 区间，不含历史消息内容）。
+ * 构建压缩会话首条 user 消息的指令部分（压缩指令 + start/end 区间）；区间条目由循环附加。
  */
 export function buildCompressionTaskText(
   phase: 'observe' | 'reflect',
@@ -101,9 +103,9 @@ export function buildCompressionTaskText(
   end: number,
 ): string {
   if (phase === 'reflect') {
-    return `合并压缩全部 <history> 块，完整消息区间 [${start}..${end}]：用 getHistory 查看已有块条目，用 compressHistory 重新压缩合并 assistant 条目，完成后调用 completeCompression。`;
+    return `合并压缩全部 <history> 块，完整消息区间 [${start}..${end}]：区间条目附在下方，用 compressHistory 重新压缩合并 assistant 条目，完成后调用 completeCompression。`;
   }
-  return `压缩完整消息区间 [${start}..${end}]：用 getHistory 查看条目，用 compressHistory 分批压缩 assistant 条目，完成后调用 completeCompression。`;
+  return `压缩完整消息区间 [${start}..${end}]：区间条目附在下方，用 compressHistory 压缩 assistant 条目，完成后调用 completeCompression。`;
 }
 
 /** 反思合并的额外约束，只在反思 pass 注入。 */
@@ -115,10 +117,10 @@ export const REFLECT_COMPRESSION_PROMPT = [
 /** 原始合法 ask 的处理约束，只在视图含待处理原始提问时注入。 */
 export const ASK_COMPRESSION_PROMPT = [
   '【原始提问处理】',
-  '- 原始合法 ask_user_question 在 getHistory 中以 <ask-user-question index="N"> 展示，每题为 q:问题、o1:选项一、o2:选项二等及 a:回答；选项包含 label 与 description，无选项题省略 oN 行。',
+  '- 原始合法 ask_user_question 以 <ask-user-question index="N"> 展示，每题为 q:问题、o1:选项一、o2:选项二等及 a:回答；选项包含 label 与 description，无选项题省略 oN 行。',
   '- 每个原始提问必须二选一：直接用 compressHistory 压成普通 assistant 摘要；或者保留 ask 标签并用 rewriteAskUserQuestion 重写 q/a。不能原样跳过。',
   '- 直接压缩：仅在明确判断该提问与后续任务无关时执行；首次覆盖会被阻止一次，重新思考后再次调用才执行。不确定或相关时走保留重写路径。',
-  '- 保留重写：先用 getHistory 查看该提问及全部选项，收到返回结果后的下一轮再调用 rewriteAskUserQuestion({index, qa:[{ordinal:1,q:"问题",a:"回答"},...]})，不要与查看同轮提交；ordinal 从 1 开始，按原题序提交全部题，不增删、不重复。',
+  '- 保留重写：首条消息已含该提问及全部选项，直接调用 rewriteAskUserQuestion({index, qa:[{ordinal:1,q:"问题",a:"回答"},...]})；ordinal 从 1 开始，按原题序提交全部题，不增删、不重复。',
   '- q/a 均可忠实精炼，保留语境与用户真实意图。将回答中对选项的编号、标签等引用展开为自足表述；产物仅有 q:/a:，不能保留 oN 选项列表或 options 字段。',
   '- 空答案明确为 (未回答)，不得补造用户决定。仅提交纯文本 q/a，不自行拼接 XML 或 CDATA 包裹。',
   '- 允许切换路径；最终成功的直接压缩覆盖优先，已覆盖的 ask 不能再次重写。history 块中的 ask 已处理，不需重写。',
@@ -132,6 +134,25 @@ export const COMPRESSION_NUDGE_TEXT =
 /** 输出被 max-tokens 截断且无工具调用时追加的提醒消息文本。 */
 export const TRUNCATION_NUDGE_TEXT =
   '上一轮输出因长度上限被截断，其中的工具调用未被接收。请缩短思考，直接分批调用 compressHistory（每次覆盖较小区间），最后调用 completeCompression。';
+
+/** 同轮有未解决的写入失败时 completeCompression 返回的错误文本。 */
+export const COMPLETION_BLOCKED_TEXT =
+  '本轮有失败的 compressHistory 或 rewriteAskUserQuestion 未在同轮重新提交成功，未执行 completeCompression。请按错误修正后重新提交，再调用 completeCompression。';
+
+/** 写入类调用的目标键（压缩区间或重写的 ask index）；非写入调用或参数无法解析返回 undefined。 */
+function writeTargetOf(name: string, rawArgs: string): string | undefined {
+  if (name !== 'compressHistory' && name !== 'rewriteAskUserQuestion') return undefined;
+  let args: { index?: number; start?: number; end?: number };
+  try {
+    args = JSON.parse(rawArgs) as typeof args;
+  } catch {
+    return `${name}:invalid`;
+  }
+  if (name === 'rewriteAskUserQuestion') return `ask:${String(args.index)}`;
+  const lo = args.start ?? args.index;
+  const hi = args.end ?? args.index;
+  return `range:${String(lo)}..${String(hi)}`;
+}
 
 /** 连续无工具调用、连续截断各自允许的最大轮数。 */
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -298,6 +319,16 @@ export function isTransientFailure(message: string, status?: number): boolean {
   );
 }
 
+/**
+ * 首条 user 消息：指令后附全区间 getHistory 结果，原始提问在首轮请求前标记为已查看。
+ * 视图无可定位条目时只返回指令。
+ */
+function withInitialHistory(taskText: string, state: CompressionState): string {
+  const history = state.getHistory({});
+  if (history.isError) return taskText;
+  return `${taskText}\n\n${INITIAL_HISTORY_HEADER}\n${history.text}`;
+}
+
 /** skipReasoning=true 时去掉视图中的 reasoning 条目（兑现 getHistory 不输出 reasoning 的契约）；否则原样返回。 */
 export function withoutReasoning(view: CompressionView, skipReasoning: boolean): CompressionView {
   if (!skipReasoning) return view;
@@ -324,7 +355,7 @@ export async function runCompressionLoop(
     ...(options.phase === 'reflect' ? [REFLECT_COMPRESSION_PROMPT] : []),
     ...(state.hasPendingAsks ? [ASK_COMPRESSION_PROMPT] : []),
   ].join('\n\n');
-  const messages: Message[] = [makePluginUserMessage(options.taskText)];
+  const messages: Message[] = [makePluginUserMessage(withInitialHistory(options.taskText, state))];
   let rounds = 0;
   let nudges = 0;
   let truncations = 0;
@@ -511,8 +542,20 @@ export async function runCompressionLoop(
     }
     nudges = 0;
     truncations = 0;
+    /** 本轮失败且未被同轮后续成功提交解决的写入目标。 */
+    const unresolved = new Set<string>();
     for (const call of calls) {
-      messages.push(toolResultOf(call, state.executeCall(call.name, call.arguments)));
+      // 同轮有未解决的写入失败时不执行完成：失败的提交需修正后再结束。
+      const result =
+        call.name === 'completeCompression' && unresolved.size > 0
+          ? { text: COMPLETION_BLOCKED_TEXT, isError: true }
+          : state.executeCall(call.name, call.arguments);
+      const target = writeTargetOf(call.name, call.arguments);
+      if (target !== undefined) {
+        if (result.isError) unresolved.add(target);
+        else unresolved.delete(target);
+      }
+      messages.push(toolResultOf(call, result));
       // 仅实际完成时停止；被门禁拒绝后允许执行同轮后续调用。
       if (state.completed) break;
     }

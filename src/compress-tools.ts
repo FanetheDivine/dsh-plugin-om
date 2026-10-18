@@ -557,7 +557,7 @@ export class CompressionState {
 export const REWRITE_ASK_TOOL_SCHEMA: ToolSchema = {
   name: 'rewriteAskUserQuestion',
   description:
-    '重写已用 getHistory 查看且未被 compressHistory 覆盖的原始 ask。按原题序提交全部 q/a，忠实精炼问题与回答，展开选项引用，未回答的题明确写 (未回答)。保留 ask 的产物只含 q/a，不提交 options 或 CDATA 包裹。',
+    '重写未被 compressHistory 覆盖的原始 ask。按原题序提交全部 q/a，忠实精炼问题与回答，展开选项引用，未回答的题明确写 (未回答)。保留 ask 的产物只含 q/a，不提交 options 或 CDATA 包裹。',
   parameters: {
     type: 'object',
     properties: {
@@ -613,7 +613,13 @@ export const COMPRESSION_TOOL_SCHEMAS: ToolSchema[] = [
         end: { type: 'number', description: '区间结束完整消息 index（与 start 成对提供）' },
         content: {
           type: 'string',
-          description: '替换后的摘要文本（纯文本，不要包含 CDATA 包裹，插件自动包裹）',
+          description: [
+            '替换后的摘要文本（纯文本，不要包含 CDATA 包裹，插件自动包裹）。忠实性要求：',
+            '1. 只写本次 index 或 start..end 区间内的条目，区间之后的内容不提前写入。',
+            '2. 数字、错误码、退出码、行号、版本号、事件类型名与文件路径从原文逐字照抄；原文没有或不确定时不写具体值，不推测补全。',
+            '3. 变更日志、文档与注释的表述方向照原文（新增/移除、引入/废弃），不反转；旧记录与现状矛盾时写明出处与矛盾点。',
+            '4. 工具结果为空或仅返回成功时，结合前序条目写明动作对象（哪个文件、哪条命令、哪个会话）。',
+          ].join('\n'),
         },
       },
       required: ['content'],
