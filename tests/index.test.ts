@@ -1,7 +1,7 @@
 // index.ts（插件入口）apply 接线的集成级单元测试：OM 观察压缩与增量追加、反思压缩、
 // compaction 生命周期与 checkpoint 标记、摘要 token 归入、摘要请求形态、
 // recall/semanticRecall 工具开关与 ensureModelReady 预热。
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // 隔离 apply 的模型下载编排：ensureModelReady 打桩为"就绪"，避免单测触发真实下载/网络
 vi.mock('../src/embedding.ts', async (importOriginal) => {
@@ -12,11 +12,18 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
   };
 });
 
+import { historySection } from '../src/compress.ts';
 import { buildCompressionPrompt } from '../src/compress-loop.ts';
-import { historyFormatNote, isPluginOwnedSource, PLUGIN_SOURCE_KIND } from '../src/constants.ts';
+import {
+  historyFormatNote,
+  isPluginOwnedSource,
+  PLUGIN_SOURCE_KIND,
+  SKILL_INVOCATION_KIND,
+} from '../src/constants.ts';
 import { ensureModelReady } from '../src/embedding.ts';
 import { apply } from '../src/index.ts';
 import { findOmEvents } from '../src/om-event.ts';
+import { disposeAllReflections, peekReflectJob } from '../src/reflect.ts';
 import type { CompactionSummaryPayload, Session, SessionEvent, UserMessage } from '../src/types.ts';
 import {
   buildToolCallFlow,
@@ -34,9 +41,6 @@ import {
   textBlock,
   toolCallBlock,
 } from './helpers.ts';
-
-/** 合并式反思 pass 的 system：非归档视图只用共享提示词。 */
-const REFLECT_SYSTEM = buildCompressionPrompt(true);
 
 /**
  * 构造一段成功完成压缩的工具轮脚本（供 llmStreamFactory 逐轮产出）：
@@ -868,371 +872,254 @@ describe('apply 接线（OM 观察压缩）', () => {
   });
 });
 
-describe('apply 接线（OM 反思压缩）', () => {
-  /** 运行 pre-step 监听器并返回摘要调用记录。 */
-  async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
-    const preStepListeners = ctx._onCallbacks.get('agent/pre-step');
-    await preStepListeners?.[0]?.(
-      { agent: { session }, signal: new AbortController().signal },
-      () => {},
-    );
+describe('apply 接线（OM 反思归档）', () => {
+  /** 一个 history 块：用户消息 + 一条长 assistant（可选附带 skill）。 */
+  function archiveBlock(user: number, skill?: string): string {
+    const parts = [
+      `<user_message index="${user}"><![CDATA[需求${user}]]></user_message>`,
+      `<assistant index="${user + 1}"><![CDATA[${'处理过程'.repeat(40)}${user}]]></assistant>`,
+    ];
+    if (skill !== undefined) {
+      parts.push(
+        `<skill_content name="${skill}" index="${user + 1}"><skill_resources><![CDATA[res-${skill}]]></skill_resources><skill_instructions><![CDATA[ins-${skill}]]></skill_instructions></skill_content>`,
+      );
+    }
+    return parts.join('\n');
   }
 
-  /** 提取摘要指令文本（new 方式：指令在 system 字段）。 */
-  function instructionText(options: unknown): string {
-    const o = options as { system?: string };
-    return String(o.system ?? '');
+  /** 三块会话：阈值 1 时前两块归档、最后一块保留。 */
+  function archiveSession(): Session {
+    return makeSession({
+      events: [
+        historyMessage(archiveBlock(0, 'alpha'), 'h1'),
+        historyMessage(archiveBlock(2), 'h2'),
+        historyMessage(archiveBlock(4), 'h3'),
+      ],
+    });
   }
 
-  /** 提取摘要调用的 user 输入文本（渲染消息，唯一 user 消息的首个 text 块）。 */
-  function inputText(ctx: ReturnType<typeof makeCtx>): string {
-    const call = ctx._llmCalls[0] as
-      | { options?: { messages?: Array<{ content?: Array<{ text?: string }> }> } }
+  /** 归档轮：两个段各压成一句话后完成。 */
+  function archiveRound(): unknown[] {
+    return roundChunks({
+      calls: [
+        {
+          id: 'c1',
+          name: 'compressHistory',
+          args: { start: 1, end: 1, content: '完成需求0，改 a.ts', keywords: ['a.ts'] },
+        },
+        {
+          id: 'c2',
+          name: 'compressHistory',
+          args: { start: 3, end: 3, content: '完成需求2，改 b.ts', keywords: ['b.ts'] },
+        },
+        { id: 'done', name: 'completeCompression' },
+      ],
+    });
+  }
+
+  type StepDecision = { kind: string; messages: UserMessage[] };
+
+  /** 运行一次 pre-step：next 返回带一条用户输入的 enter 决策，返回监听器的最终决策。 */
+  async function runStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
+    const listener = ctx._onCallbacks.get('agent/pre-step')?.[0];
+    const input = makeMessage({
+      content: [textBlock('继续')],
+      id: `in-${session.snapshotEvents().length}`,
+    }) as unknown as UserMessage;
+    const next = (): StepDecision => ({ kind: 'enter', messages: [input] });
+    return (await listener?.({ agent: { session }, signal: new AbortController().signal }, next)) as
+      | StepDecision
       | undefined;
-    return String(call?.options?.messages?.[0]?.content?.[0]?.text ?? '');
   }
 
-  it('摘要超反思阈值：压缩循环合并块区段并替换为一条', async () => {
-    // 单块摘要（条目 + tip 标签约 30 tokens）；反思阈值 1 → 触发反思；
-    // 上下文压力远小于观察阈值（保持默认 45000）→ 观察不触发
-    const session = makeSession({
-      events: [
-        historyMessage(`<assistant index="0">${'X'.repeat(40)}</assistant>`),
-        ...buildToolCallFlow({
-          code: 'a()',
-          description: '任务A',
-          callId: 'c1',
-          resultText: 'r1',
-          withTurnEnd: true,
-        }),
-      ],
-    });
-    const before = session.surface.nodes.length;
-    const ctx = makeCtx({
-      llmStreamFactory: (index) => {
-        if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
-        if (index === 1)
-          return roundChunks({
-            calls: [
-              {
-                id: 't1',
-                name: 'compressHistory',
-                args: { index: 0, content: 'REFLECTED-REPORT' },
-              },
-            ],
-          });
-        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
-      },
-    });
-    apply(ctx, { reflectThresholdTokens: 1 });
-    await runPreStep(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(3);
-    expect(instructionText(ctx._llmCalls[0]?.options)).toBe(REFLECT_SYSTEM); // 非归档视图不追加归档约束
-    // 压缩指令为反思表述（合并全部块），附带区间内已有摘要
-    const taskText = inputText(ctx);
-    expect(taskText).toContain('归档深度压缩');
-    expect(taskText).toContain('X'.repeat(40));
-    expect(session.surface.nodes.length).toBe(before); // 单块区段替换，节点数不变
-    expect(latestHistoryText(session)).toContain('REFLECTED');
-    expect(latestHistoryText(session)).not.toContain('X'.repeat(40)); // 旧摘要被替换
-  });
-
-  it('多块反思：按全部块总长触发，把整个块区段合并为一条', async () => {
-    // 两个块（各含一条 assistant 条目，合计 ≥ 反思阈值 1）→ 触发反思
-    const session = makeSession({
-      events: [
-        historyMessage(`<assistant index="0">${'X'.repeat(40)}</assistant>`, 'h1'),
-        historyMessage(`<assistant index="4">${'Y'.repeat(40)}</assistant>`, 'h2'),
-        ...buildToolCallFlow({
-          code: 'a()',
-          description: '任务A',
-          callId: 'c1',
-          resultText: 'r1',
-          withTurnEnd: true,
-        }),
-      ],
-    });
-    const before = session.surface.nodes.length;
-    const ctx = makeCtx({
-      llmStreamFactory: (index) => {
-        if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
-        if (index === 1)
-          return roundChunks({
-            calls: [
-              {
-                id: 't1',
-                name: 'compressHistory',
-                args: { start: 0, end: 4, content: 'MERGED-REPORT' },
-              },
-            ],
-          });
-        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
-      },
-    });
-    apply(ctx, { reflectThresholdTokens: 1 });
-    await runPreStep(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(3);
-    expect(instructionText(ctx._llmCalls[0]?.options)).toBe(REFLECT_SYSTEM);
-    expect(session.surface.nodes.length).toBe(before - 1); // 两块合并为一条
-    expect(latestHistoryText(session)).toContain('MERGED');
-    expect(latestHistoryText(session)).not.toContain('X'.repeat(40)); // 全部旧块被替换
-    expect(latestHistoryText(session)).not.toContain('Y'.repeat(40));
-    // 合并替换整个块区段（遮蔽两块）
-    const { summary } = compactionLifecycle(session);
-    const summaryEvent = session.snapshotEvents()[summary];
-    if (summaryEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
-    expect(summaryEvent.data.shadowedRange).toEqual({ start: 0, end: 1 });
-    expect(summaryEvent.data.shadowedSeqs).toEqual([0, 1]);
-    expect((summaryEvent.data as CompactionSummaryPayload).shadowedCharCount).toBeGreaterThan(0);
-  });
-
-  it('反思视图：getHistory 返回块内条目（含 user 原文），压缩替换 assistant 条目', async () => {
-    // 块 1：user 原文条目 + assistant 摘要条目（带块首格式说明注释）；
-    // 块 2：user 条目内含 tip 文本（正文原样保留）；条目内的 XML 注释在解析后不保留
-    const session = makeSession({
-      events: [
-        historyMessage(
-          `${historyFormatNote({ user: true })}\n<user_message index="0">\nOLD-SUMMARY-1\n</user_message>\n<assistant index="1">\nA-摘要\n</assistant>`,
-        ),
-        historyMessage(
-          `<user_message index="4">\ntip="正文内的 tip 文本"\n</user_message>\n<assistant index="5">\nB-摘要\n</assistant>`,
-          'h2',
-        ),
-        ...buildToolCallFlow({
-          code: 'a()',
-          description: '任务A',
-          callId: 'c1',
-          resultText: 'r1',
-          withTurnEnd: true,
-        }),
-      ],
-    });
-    let seenHistory = '';
-    const ctx = makeCtx({
-      llmStreamFactory: (index) => {
-        if (index === 0) {
-          // 第 1 轮 getHistory：捕获返回给模型的条目文本（在工具结果消息中体现于第 2 轮请求）
-          return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
-        }
-        if (index === 1) {
-          const second = ctx._llmCalls[1];
-          const messages = second
-            ? (second.options as { messages?: unknown[] }).messages
-            : undefined;
-          seenHistory = JSON.stringify(messages);
-          return roundChunks({
-            calls: [
-              {
-                id: 't1',
-                name: 'compressHistory',
-                args: { start: 1, end: 5, content: '合并后的历史条目内容' },
-              },
-              // 覆盖 user 条目（index 4）报错后再分别压缩两个 assistant 条目
-              {
-                id: 't2',
-                name: 'compressHistory',
-                args: { index: 1, content: 'A 的重新压缩' },
-              },
-              {
-                id: 't3',
-                name: 'compressHistory',
-                args: { index: 5, content: 'B 的重新压缩' },
-              },
-            ],
-          });
-        }
-        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
-      },
-    });
-    apply(ctx, { reflectThresholdTokens: 1 });
-    await runPreStep(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(3);
-    // getHistory 结果（第 2 轮请求携带）：user 条目原样、assistant 条目为块内摘要；
-    // 块首格式说明注释不进入视图
-    expect(seenHistory).toContain('OLD-SUMMARY-1');
-    expect(seenHistory).toContain('A-摘要');
-    expect(seenHistory).not.toContain(historyFormatNote({ user: true })); // 块首格式注释剥离
-    expect(seenHistory).toContain('tip='); // 正文内的 tip 同形文本原样保留
-    expect(seenHistory).toContain('正文内的 tip 文本');
-    // 最终块：user 条目原样保留 + 各 assistant 条目的重新压缩
-    const historyText = latestHistoryText(session);
-    expect(historyText).toContain('<user_message index="0">');
-    expect(historyText).toContain('OLD-SUMMARY-1');
-    expect(historyText).toContain('A 的重新压缩');
-    expect(historyText).toContain('B 的重新压缩');
-    expect(historyText).not.toContain('A-摘要');
-    expect(historyText).not.toContain('B-摘要');
-    // 第 3 轮请求包含覆盖 user 条目的工具报错（模型可修正）
-    const third = ctx._llmCalls[2];
-    expect(JSON.stringify(third?.options)).toContain('用户消息不可压缩');
-  });
-
-  it('先反思后观察串行：反思合并旧块，观察在其后追加独立新块', async () => {
-    // 反思阈值 150：旧块（X*800，约 220 tokens）首次触发反思；
-    // 合并后的块（块首格式注释加 REFLECTED-REPORT，约 120 tokens）不再触发；
-    // 观察阈值 1（上下文压力 ✓）延迟一步后执行
-    const session = makeSession({
-      events: [
-        historyMessage(`<assistant index="0">${'X'.repeat(800)}</assistant>`),
-        ...buildToolCallFlow({
-          code: 'a()',
-          description: '任务A',
-          callId: 'c1',
-          resultText: 'r1',
-          withTurnEnd: true,
-        }),
-      ],
-    });
-    // 逐轮脚本：第 1-3 轮为反思（getHistory → compress REFLECTED → complete），
-    // 第 4-6 轮为观察（getHistory → compress OBSERVED → complete）
-    const ctx = makeCtx({
-      llmStreamFactory: (index) => {
-        if (index === 0 || index === 3)
-          return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
-        if (index === 1)
-          return roundChunks({
-            calls: [
-              {
-                id: 't1',
-                name: 'compressHistory',
-                args: { index: 0, content: 'REFLECTED-REPORT' },
-              },
-            ],
-          });
-        if (index === 4)
-          return roundChunks({
-            calls: [
-              {
-                id: 't2',
-                name: 'compressHistory',
-                args: { start: 1, end: 2, content: 'OBSERVED-PASS' },
-              },
-            ],
-          });
-        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
-      },
-    });
-    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1, reflectThresholdTokens: 150 });
-    await runPreStepWithDelay(ctx, session);
-    expect(ctx._llmCalls).toHaveLength(6);
-    const firstText = instructionText(ctx._llmCalls[0]?.options);
-    const secondText = instructionText(ctx._llmCalls[3]?.options);
-    // 反思追加反思合并约束，观察只用共享提示词
-    expect(firstText).toBe(REFLECT_SYSTEM);
-    expect(secondText).toBe(buildCompressionPrompt(true));
-    const inputOf = (call: unknown) =>
-      String(
-        (call as { messages?: Array<{ content?: Array<{ type?: string; text?: string }> }> })
-          ?.messages?.[0]?.content?.[0]?.text ?? '',
-      );
-    expect(inputOf(ctx._llmCalls[0]?.options)).toContain('归档深度压缩'); // 反思指令
-    expect(inputOf(ctx._llmCalls[3]?.options)).toContain('压缩完整消息区间'); // 观察指令
-    // 反思把旧块合并为 REFLECTED 块；观察在旧块之后追加独立 OBSERVED 块（两块并存）
-    const historyMsgs = session.surface.nodes
-      .map((seq) => session.snapshotEvents()[seq])
-      .filter(
-        (e): e is SessionEvent =>
-          e?.type === 'user/message' &&
-          isPluginOwnedSource((e.data as { source?: { kind?: string; plugin?: string } }).source),
-      );
-    expect(historyMsgs).toHaveLength(2);
-    const texts = historyMsgs.map((e) =>
-      String(
-        ((e.data as { content?: unknown[] }).content?.[0] as { text?: string } | undefined)?.text ??
-          '',
-      ),
+  /** 决策中由反思提交注入的 skill-invocation 消息。 */
+  function skillInjections(decision: StepDecision | undefined): UserMessage[] {
+    return (decision?.messages ?? []).filter(
+      (message) =>
+        (message.source as { kind?: string } | undefined)?.kind === SKILL_INVOCATION_KIND,
     );
-    expect(texts[0]).toContain('REFLECTED');
-    expect(texts[0]).not.toContain('OBSERVED');
-    expect(texts[1]).toContain('OBSERVED');
-    expect(texts[1]).not.toContain('REFLECTED');
+  }
+
+  afterEach(() => disposeAllReflections());
+
+  it('反思在后台运行不阻塞 pre-step；完成后下一步提交 archived-history 并注入 skill', async () => {
+    const session = archiveSession();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ctx = makeCtx({
+      llmStreamFactory: () =>
+        (async function* () {
+          await gate;
+          yield* archiveRound();
+        })(),
+    });
+    apply(ctx, { reflectThresholdTokens: 1, rateLimitWaitMs: 0 });
+
+    const first = await runStep(ctx, session);
+    // 压缩模型尚未返回，pre-step 已放行：决策原样、表层仍是三个 history 块
+    expect(peekReflectJob(session.id)?.state).toBe('running');
+    expect(skillInjections(first)).toHaveLength(0);
+    expect(historySection(session).blocks).toHaveLength(3);
+
+    release();
+    await peekReflectJob(session.id)?.promise;
+    expect(historySection(session).archived).toHaveLength(0); // 完成后仍等待 pre-step 提交
+
+    const second = await runStep(ctx, session);
+    const { blocks, archived } = historySection(session);
+    expect(archived).toHaveLength(1);
+    expect(blocks).toHaveLength(1);
+    expect(archived[0]?.text).toContain('key-word="a.ts"');
+    expect(archived[0]?.text).not.toContain('skill_content');
+    // 本步用户输入之后追加 skill-invocation 注入
+    // 本步用户输入保留，skill-invocation 注入追加在其后
+    expect(second?.messages[0]?.id).toMatch(/^in-/);
+    const injected = skillInjections(second);
+    expect(injected).toHaveLength(1);
+    expect(injected[0]?.source).toMatchObject({ kind: SKILL_INVOCATION_KIND, name: 'alpha' });
+    expect(JSON.stringify(injected[0]?.content)).toContain('ins-alpha');
+    expect(peekReflectJob(session.id)).toBeUndefined();
+  });
+
+  it('反思失败不拒绝 step：下一步记录 compaction/end(error)，turn 照常进入', async () => {
+    const session = archiveSession();
+    const ctx = makeCtx({ llmStreamFactory: () => roundChunks({ text: '不调用压缩工具' }) });
+    apply(ctx, { reflectThresholdTokens: 1, rateLimitWaitMs: 0 });
+    const first = await runStep(ctx, session);
+    expect(first?.kind).toBe('enter');
+    await peekReflectJob(session.id)?.promise;
+    const second = await runStep(ctx, session);
+    expect(second?.kind).toBe('enter');
+    expect(skillInjections(second)).toHaveLength(0);
+    const end = session.snapshotEvents().find((e) => e.type === 'compaction/end');
+    expect((end?.data as { error?: string } | undefined)?.error).toContain('未调用压缩工具');
+    expect(historySection(session).blocks).toHaveLength(3);
+  });
+
+  it('反思与观察并行：反思运行期间观察照常注入新 history 块', async () => {
+    const session = makeSession({
+      events: [
+        historyMessage(archiveBlock(0), 'h1'),
+        historyMessage(archiveBlock(2), 'h2'),
+        ...buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+          withTurnEnd: true,
+        }),
+      ],
+    });
+    const ctx = makeCtx({
+      llmStreamFactory: (_index, options) => {
+        const system = String((options as { system?: string }).system ?? '');
+        if (system.includes('【归档深度压缩】'))
+          return (async function* () {
+            await new Promise<never>(() => {}); // 反思保持未完成
+            yield* [];
+          })();
+        return roundChunks({
+          calls: [
+            { id: 'o1', name: 'compressHistory', args: { start: 1, end: 2, content: 'OBSERVED' } },
+            { id: 'o2', name: 'completeCompression' },
+          ],
+        });
+      },
+    });
+    apply(ctx, {
+      reflectThresholdTokens: 1,
+      observeThresholdTokens: 1,
+      tailMessageCount: 0,
+      rateLimitWaitMs: 0,
+    });
+    await runStep(ctx, session);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await runStep(ctx, session);
+    const texts = historySection(session).blocks.map((b) => b.text);
+    expect(texts.some((text) => text.includes('OBSERVED'))).toBe(true);
+    expect(historySection(session).archived).toHaveLength(0);
   });
 });
 
 describe('apply 接线（compaction 生命周期与 checkpoint 标记）', () => {
-  async function runPreStep(ctx: ReturnType<typeof makeCtx>, session: Session) {
-    const preStepListeners = ctx._onCallbacks.get('agent/pre-step');
-    let nextCalled = false;
-    const next = () => {
-      nextCalled = true;
-    };
-    await preStepListeners?.[0]?.(
-      { agent: { session }, signal: new AbortController().signal },
-      next,
-    );
-    return nextCalled;
-  }
-
-  it('反思压缩：单节点替换也写完整 compaction 生命周期（summary/遮蔽/provider/model）', async () => {
-    // 单块含一条 assistant 条目（约 15 tokens）；反思阈值 1 → 触发反思；观察阈值保持默认不触发
+  it('反思归档：提交写完整 compaction 生命周期（summary/遮蔽/provider/model）', async () => {
+    // 两块会话：阈值 1 时首块归档、末块保留；观察阈值保持默认不触发
     const session = makeSession({
       events: [
-        historyMessage(`<assistant index="0">${'X'.repeat(40)}</assistant>`),
-        ...buildToolCallFlow({
-          code: 'a()',
-          description: '任务A',
-          callId: 'c1',
-          resultText: 'r1',
-          withTurnEnd: true,
-        }),
+        historyMessage(
+          `<user_message index="0"><![CDATA[需求0]]></user_message>\n<assistant index="1"><![CDATA[${'X'.repeat(40)}]]></assistant>`,
+          'h1',
+        ),
+        historyMessage(
+          `<user_message index="2"><![CDATA[需求2]]></user_message>\n<assistant index="3"><![CDATA[${'Y'.repeat(40)}]]></assistant>`,
+          'h2',
+        ),
       ],
     });
     const ctx = makeCtx({
-      llmStreamFactory: (index) => {
-        if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
-        if (index === 1)
-          return roundChunks({
-            calls: [
-              {
-                id: 't1',
-                name: 'compressHistory',
-                args: { index: 0, content: 'REFLECTED-REPORT' },
-              },
-            ],
-          });
-        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
-      },
+      llmStreamFactory: () =>
+        roundChunks({
+          calls: [
+            {
+              id: 't1',
+              name: 'compressHistory',
+              args: { start: 1, end: 1, content: 'REFLECTED-REPORT', keywords: ['X'] },
+            },
+            { id: 'c9', name: 'completeCompression' },
+          ],
+        }),
     });
     apply(ctx, { reflectThresholdTokens: 1 });
-    await runPreStep(ctx, session);
+    const listener = ctx._onCallbacks.get('agent/pre-step')?.[0];
+    const step = () =>
+      listener?.({ agent: { session }, signal: new AbortController().signal }, () => ({
+        kind: 'enter',
+        messages: [makeMessage({ content: [textBlock('继续')] })],
+      }));
+    await step();
+    await peekReflectJob(session.id)?.promise;
+    expect(compactionLifecycle(session).start).toBe(-1); // 完成后等到下一个 pre-step 才提交
+    await step();
     const { start, summary, end, replace } = compactionLifecycle(session);
     expect(start).not.toBe(-1);
-    expect(session.snapshotEvents()[start + 1]?.type).toBe('subagent/catalog');
-    expect(summary).toBe(start + 2);
+    expect(summary).toBe(start + 1);
     expect(replace).toBe(summary + 1);
     expect(end).toBe(replace + 1);
-    const startEvent = session.snapshotEvents()[start];
-    const summaryEvent = session.snapshotEvents()[summary];
-    const endEvent = session.snapshotEvents()[end];
-    const replaceEvent = session.snapshotEvents()[replace];
+    const events = session.snapshotEvents();
+    // 诊断子会话在后台循环结束时登记，早于提交
+    expect(events.findIndex((e) => e.type === 'subagent/catalog')).toBeLessThan(start);
+    const startEvent = events[start];
+    const summaryEvent = events[summary];
+    const endEvent = events[end];
+    const replaceEvent = events[replace];
     if (startEvent?.type !== 'compaction/start') throw new Error('缺 start');
     if (summaryEvent?.type !== 'compaction/summary') throw new Error('缺 summary');
     if (endEvent?.type !== 'compaction/end') throw new Error('缺 end');
     expect(summaryEvent.data.compactionId).toBe(startEvent.data.compactionId);
     expect(endEvent.data.compactionId).toBe(startEvent.data.compactionId);
-    // 反思压缩：start 携带 phase='reflect'（UI 压缩中提示按阶段区分）；summary 记录
-    // 压缩循环计时，不再记录轮数（轮数归诊断子会话）
     expect((startEvent.data as { phase?: string }).phase).toBe('reflect');
     const summaryData = summaryEvent.data as CompactionSummaryPayload;
-    expect((summaryData as Record<string, unknown>).attemptCount).toBeUndefined();
     expect(summaryData.startedAt).toBeGreaterThan(0);
     expect(summaryData.durationMs).toBeGreaterThanOrEqual(0);
-    // 单节点替换：遮蔽区间为旧 <history> 节点
-    expect(summaryEvent.data.shadowedRange).toEqual({ start: 0, end: 0 });
-    expect(summaryEvent.data.shadowedSeqs).toEqual([0]);
-    expect((summaryEvent.data as CompactionSummaryPayload).shadowedCharCount).toBeGreaterThan(0);
-    expect(summaryEvent.data.provider).toBe('test');
-    expect(summaryEvent.data.model).toBe('test-model');
-    expect(summaryEvent.data.maxTokens).toBeUndefined(); // compressMaxTokens 默认不设置
-    // summary 内容 = 合并后摘要
-    const summaryText = summaryEvent.data.summary
+    // 遮蔽区间只含被归档的首块
+    expect(summaryData.shadowedRange).toEqual({ start: 0, end: 0 });
+    expect(summaryData.shadowedSeqs).toEqual([0]);
+    expect(summaryData.shadowedCharCount).toBeGreaterThan(0);
+    expect(summaryData.provider).toBe('test');
+    expect(summaryData.model).toBe('test-model');
+    expect(summaryData.maxTokens).toBeUndefined(); // compressMaxTokens 默认不设置
+    const summaryText = summaryData.summary
       .map((block) => (block.type === 'text' ? block.text : ''))
       .join('');
+    expect(summaryText).toContain('<archived-history');
     expect(summaryText).toContain('REFLECTED');
-    // 替换消息 source = 插件自有 kind
     const source = checkpointSourceOf(replaceEvent);
     if (source?.kind !== PLUGIN_SOURCE_KIND) throw new Error('替换消息缺插件自产 source');
     expect(source.compactionId).toBe(startEvent.data.compactionId);
+    expect(historySection(session).blocks).toHaveLength(1);
+    disposeAllReflections();
   });
 
   it('观察增量追加：compaction/summary 内容 = 新观察日志；遮蔽仅新消息区间', async () => {

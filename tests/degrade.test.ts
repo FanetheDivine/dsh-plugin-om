@@ -13,6 +13,7 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
 
 import { apply } from '../src/index.ts';
 import { findOmEvents } from '../src/om-event.ts';
+import { disposeAllReflections, peekReflectJob } from '../src/reflect.ts';
 import type { Session } from '../src/types.ts';
 import { buildToolCallFlow, historyMessage, makeCtx, makeSession, roundChunks } from './helpers.ts';
 
@@ -218,10 +219,11 @@ describe('挂载失败降级（om 警告事件 + console 外部输出，不阻�
     expect(consoleText).toContain('dsh-plugin-om: token 计量服务异常');
   });
 
-  it('tokenMeter.measure 抛错：反思按系数 1 照常继续、观察本轮跳过、om/warning 追加一次', async () => {
+  it('tokenMeter.measure 抛错：反思按系数 1 后台启动、观察本轮跳过、om/warning 追加一次', async () => {
     const session = makeSession({
       events: [
-        historyMessage('<user_message index="0">旧内容</user_message>'),
+        historyMessage('<user_message index="0"><![CDATA[旧内容]]></user_message>', 'h1'),
+        historyMessage('<user_message index="1"><![CDATA[新内容]]></user_message>', 'h2'),
         ...buildToolCallFlow({
           code: 'a()',
           description: '任务A',
@@ -233,27 +235,22 @@ describe('挂载失败降级（om 警告事件 + console 外部输出，不阻�
     });
     const ctx = makeCtx({
       meterThrows: new Error('meter offline'),
-      llmStreamFactory: () =>
-        roundChunks({
-          calls: [
-            { id: 'view', name: 'getHistory' },
-            { id: 'done', name: 'completeCompression' },
-          ],
-        }),
+      llmStreamFactory: () => roundChunks({ calls: [{ id: 'done', name: 'completeCompression' }] }),
     });
     apply(ctx, { observeThresholdTokens: 1, reflectThresholdTokens: 1, tailMessageCount: 0 });
     let consoleText = '';
     const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       await runPreStep(ctx, session);
+      await peekReflectJob(session.id)?.promise;
       consoleText = consoleSpy.mock.calls.map((args) => args.join(' ')).join('\n');
     } finally {
       consoleSpy.mockRestore();
     }
-    // 反思按系数 1 继续合并（一轮摘要调用）；观察因计量失败本轮跳过
+    // 反思按系数 1 后台归档（一轮摘要调用）并待提交；观察因计量失败本轮跳过
     expect(ctx._llmCalls).toHaveLength(1);
-    const types = session.snapshotEvents().map((e) => e.type);
-    expect(types).toContain('compaction/summary');
+    expect(peekReflectJob(session.id)?.state).toBe('done');
+    disposeAllReflections();
     expect(warningsOf(session)).toHaveLength(1); // 反思与观察同轮失败只报一次
     expect(warningsOf(session)[0]?.problem).toBe('tokenMeter-unavailable');
     expect(consoleText).toContain('dsh-plugin-om: token 计量服务异常');

@@ -93,6 +93,13 @@ export const SKILL_TOOL_NAME = 'skill';
 /** 手动加载 skill 的系统消息 source kind。 */
 export const SKILL_INVOCATION_KIND = 'skill-invocation';
 
+/** 手动加载 skill 的消息 source（与宿主 skill 插件声明的形态一致）。 */
+export type SkillInvocationSource = {
+  kind: 'skill-invocation';
+  name: string;
+  form: 'instructions';
+};
+
 /**
  * 提问工具名：成功且问题与答案完整配对时视为合法 ask，失败调用按普通 toolcall 处理。
  * 合法 ask 直接压缩需二次确认；未直接压缩的原始 ask 重写后以 q/a 形式保留。

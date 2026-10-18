@@ -2,15 +2,17 @@
  * 两级自动压缩（观察/反思）与 compaction 生命周期提交。
  * 导出 estimateTextTokens / isPairBalancedAfter / computeCompressRange / historySection /
  * historyTextOf / archivedHistoryTextOf / findObservePending / prepareObserveCompression / commitObserveCompression /
- * reflectPass / observePass / maybeCompress。
+ * reflectPass / commitReflection / observePass / maybeCompress。
  *
  * - 摘要生成走工具驱动的压缩循环（compress-loop.ts runCompressionLoop）：首条 user
  *   消息仅含压缩指令与 start/end 区间，模型经 getHistory / compressHistory /
  *   completeCompression 工具完成压缩；最终 <history> 块由插件从视图与替换记录构建，
  *   全程无需整块校验
- * - 反思：全部 <history> 块 token 合计（估算 × 换算系数）≥ reflectThresholdTokens 时，
- *   把全部块条目作为压缩视图重新压缩合并（视图无条目时跳过，如全部为不可解析的历史
- *   遗留块）
+ * - 反思（异步归档）：<history> 块 token 合计（估算 × 换算系数，不计 archived-history）
+ *   ≥ reflectThresholdTokens 时，保留合计不超过阈值 1/3 的尾部块（至少 1 个），其余块在
+ *   后台归档为一个 <archived-history> 块（reflect.ts）；完成后的首个有输入的 pre-step 提交
+ *   替换，并把被归档块中的 skill 以 skill-invocation 消息注入本 step；失败只记
+ *   compaction/end(error)，块集合变化后重试
  * - 观察（打标记 → 对账 → 到期注入）：净压力（换算系数 × 未压缩表层估算，未压缩 =
  *   表层 − 已压缩块 − 系统提示词估算）首次 ≥ observeThresholdTokens 时记录待定标记
  *   （触发点 = 当时的最后一条完整消息 index），并立即开始后台预压缩（precompress.ts，
@@ -25,14 +27,14 @@
  * - 待定标记与压缩结果以 ignorable 的 plugin record（kind 为
  *   om/observe-pending / om/observe-invalidate / om/observe-summary，见 om-event.ts）
  *   持久化在会话日志中（重启后从日志恢复）；压缩失败保留待定，下个 pre-step 重启任务重试
- * - 两级在 pre-step 串行执行（先反思后观察；观察的压缩主体在后台运行，pre-step 仅在
- *   到期结果未就绪时阻塞等待）；仅主会话生效；omEnabled=false 关闭
+ * - pre-step 先做反思检查（只启动或跳过，不阻塞），再执行观察（压缩主体在后台运行，
+ *   pre-step 仅在到期结果未就绪时阻塞等待）；仅主会话生效；omEnabled=false 关闭
  * - 压缩目标默认跟随会话路由；compressProvider + compressModel 成对配置时覆盖路由
  *   （成对配置下未路由会话也执行压缩）；compressReasoningEffort 配置时压缩前经
  *   ctx.llm.resolveModelInfo 校验目标模型 reasoning.efforts（按 provider+model 缓存），
  *   未命中 / 无元数据 / 查询失败降级为模型默认并报告 reasoning-effort-unavailable 降级
  * - 压缩边界：最后一个合法 <history> 或 <archived-history> 块之后的消息视为未压缩，其前不重复压缩
- * - 压缩循环最终失败（连续无工具调用 / 请求级错误）时 pass 返回失败结果（携带最后一次
+ * - 观察压缩循环最终失败（连续无工具调用 / 请求级错误）时 pass 返回失败结果（携带最后一次
  *   错误），压缩流程向上传播，pre-step 据此拒绝本 step 中断当前 turn；signal 中止标记
  *   aborted（不中断）；成功与失败均落盘压缩会话记录子会话（失败时其 id 随结果传播为
  *   诊断子会话 id）
@@ -50,16 +52,16 @@ import { scopeOf } from '@deepseek-ai/dsh-scope';
 import { SessionSeq } from '@deepseek-ai/dsh-session';
 import type { AssembleContext } from '@deepseek-ai/dsh-system-prompt';
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt';
+import type { CompressionStats, CompressionSuccess } from './compress-loop.ts';
+import { buildArchiveView, buildObserveView, type CompressionView } from './compress-view.ts';
 import {
-  buildCompressionTaskText,
-  type CompressionLoopOptions,
-  type CompressionOutcome,
-  type CompressionStats,
-  type CompressionSuccess,
-  runCompressionLoop,
-} from './compress-loop.ts';
-import { buildObserveView, buildReflectView, type CompressionView } from './compress-view.ts';
-import { ARCHIVED_HISTORY_TAG, HISTORY_TAG, isPluginOwnedSource, omSource } from './constants.ts';
+  ARCHIVED_HISTORY_TAG,
+  HISTORY_TAG,
+  isPluginOwnedSource,
+  omSource,
+  SKILL_INVOCATION_KIND,
+  SKILL_TOOL_NAME,
+} from './constants.ts';
 import { reportDegrade } from './degrade.ts';
 import { indexCompleteMessages, surfaceIndexOf } from './log-index.ts';
 import type { PluginLogger } from './logger.ts';
@@ -73,6 +75,16 @@ import {
   findPrecompressionJob,
   startPrecompression,
 } from './precompress.ts';
+import {
+  disposeReflection,
+  historyBlocksKey,
+  peekReflectJob,
+  type ReflectJob,
+  reflectFailedKey,
+  selectArchiveBlocks,
+  startReflection,
+  takeReflectJob,
+} from './reflect.ts';
 import type {
   Agent,
   CompactionEndPayload,
@@ -83,6 +95,7 @@ import type {
   Session,
   SessionEvent,
   TokenUsage,
+  UserMessage,
 } from './types.ts';
 import { blocksToText, type RoutedTarget, routedTarget, seqsCharCount, uuid } from './utils.ts';
 
@@ -161,42 +174,6 @@ export async function resolveCompressionEffort(
   }
   compressionEffortCache.set(cacheKey, resolved);
   return resolved;
-}
-
-/**
- * 运行压缩循环并归一化结果：失败统一追加 compaction/end(error)（携带诊断子会话 id），
- * 成功记会话记录日志；返回循环结果（成功时由调用方提交）。
- */
-async function runPassLoop(
-  ctx: Context,
-  session: Session,
-  lifecycle: CompactionLifecycle,
-  options: CompressionLoopOptions,
-  logger: PluginLogger,
-  phase: 'observe' | 'reflect',
-): Promise<CompressionOutcome> {
-  const outcome = await runCompressionLoop(ctx, session, options);
-  if (!outcome.ok) {
-    logger.warn(
-      `${phase === 'reflect' ? '反思' : '观察'}：压缩循环失败（${outcome.error}），诊断子会话 ${outcome.recordSessionId ?? '未落盘'}，追加 compaction/end(error)`,
-    );
-    try {
-      appendCompactionEnd(
-        session,
-        lifecycle,
-        outcome.error,
-        outcome.recordSessionId,
-        outcome.stats.durationMs,
-      );
-    } catch {
-      /* end 追加失败忽略（start 已记录，日志仍可诊断） */
-    }
-    return outcome;
-  }
-  if (outcome.recordSessionId !== undefined) {
-    logger.step(`压缩会话记录子会话 ${outcome.recordSessionId}`);
-  }
-  return outcome;
 }
 
 /** 插件自产 user/message 的文本；其余事件返回 undefined。 */
@@ -512,153 +489,276 @@ function appendHistoryMessage(
 }
 
 /**
- * 反思：全部 <history> 块 token 合计 ≥ reflectThresholdTokens 时，把全部块内条目作为
- * 压缩视图送入工具压缩循环，整个块区段合并替换为一条更紧凑的摘要。视图无条目（全部
- * 为不可解析的历史遗留块）时跳过。失败不产生部分替换；最终失败返回失败结果
- * （error = 最后一次错误）。
+ * 反思（异步归档）检查：每个 pre-step 在观察前调用，不阻塞、不失败。
+ * - 有运行中或待提交任务：跳过（待提交任务由 commitReflection 提交）
+ * - 有失败任务：写 compaction/start + end(error) 后移除
+ * - 无任务：history 块 token 合计（估算 × 换算系数）≥ reflectThresholdTokens 时，
+ *   保留合计不超过阈值 1/3 的尾部块（至少 1 个），其余归档，启动后台反思；
+ *   同一块集合上次失败则不重试
  */
-export async function reflectPass(
+export function reflectPass(
   ctx: Context,
   agent: Agent,
   config: Readonly<PluginConfig>,
   target: RoutedTarget,
-  signal?: AbortSignal,
   reasoningEffort?: ReasoningEffortId,
-): Promise<CompressPassResult> {
+): void {
   const session = agent.session;
   const logger = makeLogger(ctx, config.debug);
-  logger.step(`反思检查（反思阈值 ${config.reflectThresholdTokens} tokens）`);
-  const { blocks } = historySection(session);
-  if (blocks.length === 0) {
-    logger.step('反思：无 <history> 压缩日志，跳过');
-    return { failed: false };
+  const job = peekReflectJob(session.id);
+  if (job !== undefined && job.session !== session) {
+    disposeReflection(session.id);
+  } else if (job?.state === 'failed') {
+    takeReflectJob(session.id);
+    recordReflectFailure(session, job, logger);
+    return;
+  } else if (job !== undefined) {
+    logger.step(job.state === 'running' ? '反思：后台任务运行中，跳过' : '反思：结果待提交，跳过');
+    return;
   }
+  startReflectionIfNeeded(ctx, session, config, target, reasoningEffort, logger);
+}
+
+/**
+ * 提交已完成的反思（pre-step 在 next() 之后、本 step 有待输入消息时调用）：
+ * 校验被归档块仍在表层且相邻后写 compaction/start → summary → 替换为 archived-history → end，
+ * 返回需追加到本 step 的 skill 注入消息。无待提交任务、校验或提交失败返回空数组。
+ */
+export function commitReflection(
+  ctx: Context,
+  agent: Agent,
+  config: Readonly<PluginConfig>,
+): UserMessage[] {
+  const session = agent.session;
+  const job = peekReflectJob(session.id);
+  if (job === undefined || job.state !== 'done') return [];
+  takeReflectJob(session.id);
+  if (job.session !== session) return [];
+  return commitReflectJob(session, job, config, makeLogger(ctx, config.debug));
+}
+
+/** 触发检查：达到阈值且有可归档块时启动后台反思。 */
+function startReflectionIfNeeded(
+  ctx: Context,
+  session: Session,
+  config: Readonly<PluginConfig>,
+  target: RoutedTarget,
+  reasoningEffort: ReasoningEffortId | undefined,
+  logger: PluginLogger,
+): void {
   const threshold = config.reflectThresholdTokens;
-  const estimatedTokens = blocks.reduce(
-    (total, block) => total + estimateTextTokens(block.text),
-    0,
-  );
-  // 阈值按主模型真实 token 计：估算 × 换算系数（计量失败按系数 1 继续，降级已在内部报告）
+  logger.step(`反思检查（反思阈值 ${threshold} tokens）`);
+  const { blocks } = historySection(session);
+  if (blocks.length < 2) {
+    logger.step(`反思：<history> 块 ${blocks.length} 个，无可归档块，跳过`);
+    return;
+  }
+  const key = historyBlocksKey(blocks);
+  if (reflectFailedKey(session.id) === key) {
+    logger.step('反思：上次失败后 <history> 块未变化，跳过');
+    return;
+  }
+  const estimatedTotal = blocks.reduce((total, block) => total + estimateTextTokens(block.text), 0);
+  // 阈值按主模型真实 token 计：估算 × 换算系数（计量失败按系数 1 继续）
   const measurement = measurePressure(ctx, session, logger);
   const ratio =
     measurement === undefined
       ? 1
       : conversionRatio(measurement, estimateToolsTokens(session, logger));
-  const tokens = Math.round(ratio * estimatedTokens);
-  const shadowedCharCount = blocks.reduce(
-    (total, block) => total + historyInnerText(block.text).length,
-    0,
-  );
+  const tokens = Math.round(ratio * estimatedTotal);
+  const detail = `${tokens} tokens（估算 ${estimatedTotal} × 换算系数 ${ratio.toFixed(2)}）`;
   if (tokens < threshold) {
-    logger.step(
-      `反思：摘要 ${tokens} tokens（估算 ${estimatedTokens} × 换算系数 ${ratio.toFixed(2)}）< 阈值 ${threshold}，跳过`,
-    );
-    return { failed: false };
+    logger.step(`反思：<history> 块 ${detail} < 阈值 ${threshold}，跳过`);
+    return;
   }
-  logger.step(
-    `反思：摘要 ${tokens} tokens（估算 ${estimatedTokens} × 换算系数 ${ratio.toFixed(2)}）≥ 阈值 ${threshold}，触发精简合并（${blocks.length} 个块）`,
+  const { archived, kept } = selectArchiveBlocks(
+    blocks,
+    (block) => ratio * estimateTextTokens(block.text),
+    threshold / 3,
   );
-  const first = blocks[0];
-  const last = blocks[blocks.length - 1];
-  if (first === undefined || last === undefined) {
-    logger.step('反思：块区段缺失，跳过');
-    return { failed: false };
+  if (archived.length === 0) {
+    logger.step('反思：尾部保留预算覆盖全部块，无可归档块，跳过');
+    return;
   }
-  const view = buildReflectView(blocks, { skipReasoning: config.compressSkipReasoning });
+  const { view, skills } = buildArchiveView(archived);
   if (view.minIndex === undefined || view.maxIndex === undefined) {
-    logger.step('反思：块内无可定位条目（历史遗留块），跳过');
-    return { failed: false };
+    logger.step('反思：被归档块内无可定位条目（历史遗留块），跳过');
+    return;
   }
-  const blockSeqs = blocks.map((block) => block.seq);
+  startReflection({
+    ctx,
+    session,
+    config,
+    target,
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+    key,
+    archived,
+    view,
+    skills,
+    estimatedTokens: archived.reduce((total, block) => total + estimateTextTokens(block.text), 0),
+    shadowedCharCount: archived.reduce(
+      (total, block) => total + historyInnerText(block.text).length,
+      0,
+    ),
+  });
+  logger.info(
+    `反思：<history> 块 ${detail} ≥ 阈值 ${threshold}，后台归档 ${archived.length} 个块，保留 ${kept.length} 个`,
+  );
+}
+
+/** 失败任务：在当前开放 turn 内写 compaction/start + end(error)；中止的任务不记录。 */
+function recordReflectFailure(session: Session, job: ReflectJob, logger: PluginLogger): void {
+  const failure = job.failure;
+  if (failure === undefined || failure.aborted) return;
   const lifecycle: CompactionLifecycle = {
     compactionId: newCompactionId(),
     turn: openTurnOf(session),
   };
   try {
-    logger.step('反思：追加 compaction/start（压缩循环前开启压缩中提示）');
+    appendCompactionStart(session, lifecycle, 'reflect');
+    appendCompactionEnd(session, lifecycle, failure.error, failure.diagnosticSessionId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`反思失败记录追加失败: ${message}`);
+  }
+}
+
+/** 被归档块仍在表层且在表层顺序中相邻。 */
+function archivedBlocksIntact(session: Session, job: ReflectJob): boolean {
+  const nodes = session.surface.nodes;
+  const first = job.archived[0];
+  if (first === undefined) return false;
+  const start = nodes.indexOf(SessionSeq(first.seq));
+  if (start < 0) return false;
+  return job.archived.every((block, i) => nodes[start + i] === block.seq);
+}
+
+/** 提交成功任务；返回需注入的 skill 消息（表层已有同名 skill 的不注入）。 */
+function commitReflectJob(
+  session: Session,
+  job: ReflectJob,
+  config: Readonly<PluginConfig>,
+  logger: PluginLogger,
+): UserMessage[] {
+  const result = job.result;
+  const first = job.archived[0];
+  const last = job.archived[job.archived.length - 1];
+  if (result === undefined || first === undefined || last === undefined) return [];
+  if (!archivedBlocksIntact(session, job)) {
+    logger.info('反思：被归档块已不在表层或不再相邻，丢弃本次结果');
+    return [];
+  }
+  const blockSeqs = job.archived.map((block) => block.seq);
+  const lifecycle: CompactionLifecycle = {
+    compactionId: newCompactionId(),
+    turn: openTurnOf(session),
+  };
+  try {
     appendCompactionStart(session, lifecycle, 'reflect');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    logger.warn(`反思压缩启动失败: ${message}`);
-    return { failed: false };
+    logger.warn(`反思提交启动失败: ${message}`);
+    return [];
   }
-  const summaryResult = await runPassLoop(
-    ctx,
-    session,
-    lifecycle,
-    {
-      view,
-      originalChars: shadowedCharCount,
-      phase: 'reflect',
-      taskText: buildCompressionTaskText('reflect', view.minIndex, view.maxIndex),
-      target,
-      maxTokens: config.compressMaxTokens,
-      rateLimitWaitMs: config.rateLimitWaitMs,
-      skipReasoning: config.compressSkipReasoning,
-      debug: config.debug,
-      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-      ...(signal === undefined ? {} : { signal }),
-    } satisfies CompressionLoopOptions,
-    logger,
-    'reflect',
-  );
-  if (!summaryResult.ok) {
-    return {
-      failed: true,
-      error: summaryResult.error,
-      aborted: summaryResult.aborted,
-      ...(summaryResult.recordSessionId === undefined
-        ? {}
-        : { diagnosticSessionId: summaryResult.recordSessionId }),
-    };
-  }
-  const report = summaryResult.text;
   try {
-    logger.step('反思提交：追加 compaction/summary（影子价格认领）');
     const summarySeq = appendCompactionSummary(session, {
       lifecycle,
-      summary: report,
+      summary: result.text,
       shadowedRange: { start: first.seq, end: last.seq },
       shadowedSeqs: blockSeqs,
       // 影子价格为宿主计价协议，保持字符/4 估算单位（不乘换算系数）
-      shadowedTokenCount: estimatedTokens,
-      shadowedCharCount,
-      provider: target.provider,
-      model: target.model,
+      shadowedTokenCount: job.estimatedTokens,
+      shadowedCharCount: job.shadowedCharCount,
+      provider: job.target.provider,
+      model: job.target.model,
       maxTokens: config.compressMaxTokens,
-      stats: summaryResult.stats,
-      ...(summaryResult.usage === undefined ? {} : { usage: summaryResult.usage }),
-      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+      stats: result.stats,
+      ...(result.usage === undefined ? {} : { usage: result.usage }),
+      ...(job.reasoningEffort === undefined ? {} : { reasoningEffort: job.reasoningEffort }),
     });
-    logger.step('反思提交：替换整个 <history> 块区段为合并摘要');
     appendHistoryMessage(
       session,
-      report,
+      result.text,
       [summarySeq, ...blockSeqs],
-      {
-        op: 'replace',
-        startSeq: first.seq,
-        endSeq: last.seq,
-      },
+      { op: 'replace', startSeq: first.seq, endSeq: last.seq },
       lifecycle.compactionId,
     );
-    logger.step('反思提交：追加 compaction/end');
-    appendCompactionEnd(session, lifecycle, undefined, summaryResult.recordSessionId);
-    logger.info(
-      `反思完成（摘要 ${tokens} tokens ≥ 阈值 ${threshold}，合并 ${blocks.length} 个块为一条）`,
-    );
-    return { failed: false };
+    appendCompactionEnd(session, lifecycle, undefined, result.recordSessionId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(`反思提交失败: ${message}`);
     try {
-      appendCompactionEnd(session, lifecycle, message, undefined, summaryResult.stats.durationMs);
+      appendCompactionEnd(session, lifecycle, message, undefined, result.stats.durationMs);
     } catch {
       /* end 追加失败忽略（start 已记录，日志仍可诊断） */
     }
-    // 提交失败为局部异常（压缩已成功）：记日志后继续本轮，不中断 turn
-    return { failed: false };
+    return [];
   }
+  const live = liveSkillNames(session);
+  const messages = job.skills
+    .filter((skill) => !live.has(skill.name))
+    .map((skill) =>
+      createUserMessage({
+        content: [{ type: 'text', text: skill.content }],
+        source: { kind: SKILL_INVOCATION_KIND, name: skill.name, form: 'instructions' },
+      }),
+    );
+  logger.info(
+    `反思提交：${job.archived.length} 个 <history> 块归档为 archived-history，注入 ${messages.length} 个 skill`,
+  );
+  return messages;
+}
+
+/** 表层中仍以 skill 形态存在的名称：history 块内 skill_content、手动加载消息、skill 工具调用。 */
+function liveSkillNames(session: Session): Set<string> {
+  const names = new Set<string>();
+  const events = session.snapshotEvents();
+  for (const seq of session.surface.nodes) {
+    const event = events[seq];
+    if (event === undefined) continue;
+    const history = historyTextOf(event);
+    if (history !== undefined) {
+      for (const match of history.matchAll(/<skill_content name="([^"]*)"/g)) {
+        names.add(unescapeAttr(match[1] ?? ''));
+      }
+      continue;
+    }
+    if (event.type === 'user/message') {
+      const source = event.data.source;
+      if (source.kind === SKILL_INVOCATION_KIND && typeof source.name === 'string') {
+        names.add(source.name);
+      }
+      continue;
+    }
+    if (event.type === 'assistant/message') {
+      for (const block of event.data.message.content) {
+        if (block.type !== 'tool-call' || block.name !== SKILL_TOOL_NAME) continue;
+        const name = skillArgName(block.arguments);
+        if (name !== undefined) names.add(name);
+      }
+    }
+  }
+  return names;
+}
+
+/** skill 工具调用参数中的 name；参数非法时 undefined。 */
+function skillArgName(args: string): string | undefined {
+  try {
+    const parsed: { name?: string } | null = JSON.parse(args);
+    return typeof parsed?.name === 'string' ? parsed.name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** XML 属性值反转义。 */
+function unescapeAttr(value: string): string {
+  return value
+    .replaceAll('&quot;', '"')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&apos;', "'")
+    .replaceAll('&amp;', '&');
 }
 
 /**
@@ -1136,9 +1236,9 @@ export async function observePass(
 }
 
 /**
- * 压力检查 + 两级压缩入口：先反思后观察，pre-step 阻塞串行执行；仅主会话生效。
- * 反思摘要耗尽失败时直接返回失败结果（观察无需继续，本轮将被拒绝）；观察失败同样
- * 传播失败结果，由 pre-step 拒绝本 step 中断当前 turn。
+ * 压力检查 + 两级压缩入口（pre-step 调用，仅主会话生效）：
+ * 先反思（异步：只启动或提交后台任务，不阻塞、不失败），后观察（阻塞注入）。
+ * 观察失败传播失败结果，由 pre-step 拒绝本 step 中断当前 turn。
  */
 export async function maybeCompress(
   ctx: Context,
@@ -1161,11 +1261,7 @@ export async function maybeCompress(
   const reasoningEffort = await resolveCompressionEffort(ctx, session, config, target, logger);
   const waitCount = config.tailMessageCount;
   logger.step('反思 pass 开始');
-  const reflect = await reflectPass(ctx, agent, config, target, signal, reasoningEffort);
-  if (reflect.failed) {
-    logger.step('反思 pass 失败（本轮将被拒绝），跳过观察 pass');
-    return reflect;
-  }
+  reflectPass(ctx, agent, config, target, reasoningEffort);
   logger.step('反思 pass 结束，观察 pass 开始');
   const observe = await observePass(ctx, agent, config, waitCount, target, signal, reasoningEffort);
   logger.step('观察 pass 结束，压缩流程完成');
