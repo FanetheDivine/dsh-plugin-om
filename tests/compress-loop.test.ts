@@ -328,6 +328,24 @@ describe('buildCompressionPrompt / buildCompressionTaskText', () => {
     expect(prompt).not.toContain(REFLECT_COMPRESSION_PROMPT); // 反思约束不进共享提示词
   });
 
+  it('压缩要求含四条硬约束：区间边界、照原文、表述方向、动作对象', () => {
+    const prompt = buildCompressionPrompt(false);
+    // 四条约束位于「压缩要求」段内，且 skipReasoning 不影响其存在
+    const requirements = prompt.slice(
+      prompt.indexOf('【压缩要求】'),
+      prompt.indexOf('- <history> 条目正文'),
+    );
+    for (const rule of [
+      'content 只描述该 start..end 区间内的条目',
+      '必须与被压缩条目原文一致',
+      '表述方向照原文',
+      '写清动作对象',
+    ]) {
+      expect(requirements).toContain(rule);
+      expect(buildCompressionPrompt(true)).toContain(rule);
+    }
+  });
+
   it('压缩子会话看不到主会话提醒：提示词自带完整消息定义', () => {
     expect(buildCompressionPrompt(true)).toContain(COMPLETE_MESSAGE_DEFINITION);
   });
