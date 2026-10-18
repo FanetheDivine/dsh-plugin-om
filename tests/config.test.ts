@@ -142,7 +142,7 @@ describe('配置校验 resolveConfig', () => {
     for (const raw of empty) {
       const d = resolveConfig(raw);
       expect(d.observeThresholdTokens).toBe(35000);
-      expect(d.reflectThresholdTokens).toBe(40000);
+      expect(d.reflectThresholdTokens).toBe(80000);
       expect(d.compressMaxTokens).toBeUndefined();
       expect(d.tailMessageCount).toBe(20);
       expect(d.compressSkipReasoning).toBe(true);
@@ -176,7 +176,7 @@ describe('配置校验 resolveConfig', () => {
     expect(resolveConfig({ compressMaxTokens: 0 }).compressMaxTokens).toBe(0);
     expect(resolveConfig({ observeThresholdTokens: '0.5' }).observeThresholdTokens).toBe(35000); // 非数值回退默认
     expect(resolveConfig({ observeThresholdTokens: 2.5 }).observeThresholdTokens).toBe(35000); // 非整数回退默认
-    expect(resolveConfig({ reflectThresholdTokens: 2.5 }).reflectThresholdTokens).toBe(40000); // 非整数回退默认
+    expect(resolveConfig({ reflectThresholdTokens: 2.5 }).reflectThresholdTokens).toBe(80000); // 非整数回退默认
     expect(resolveConfig({ compressMaxTokens: 2.5 }).compressMaxTokens).toBeUndefined(); // 非整数视为未设置
     // 全部未知键被忽略 → 结果等于默认配置
     expect(

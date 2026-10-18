@@ -11,7 +11,7 @@ import { isRecord } from './utils.ts';
 export type PluginConfig = {
   /** 观察阈值（tokens）：净压力 ≥ 该值时触发观察压缩。 */
   observeThresholdTokens: number;
-  /** 反思阈值（tokens）：全部 <history> 块 token 合计 ≥ 该值时触发精简合并。 */
+  /** 反思阈值（tokens）：<history> 块 token 合计 ≥ 该值时后台归档较早的块，尾部保留合计不超过其 1/3。 */
   reflectThresholdTokens: number;
   /** 单次摘要生成上限（LLM maxTokens）；undefined 表示不设置，由模型适配器默认值决定。 */
   compressMaxTokens: number | undefined;
@@ -50,7 +50,7 @@ export type PluginConfig = {
 /** 默认配置（冻结对象，resolveConfig 合并的基底；debug 缺省值在解析时按 NODE_ENV 判定）。 */
 export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   observeThresholdTokens: 35000,
-  reflectThresholdTokens: 40000,
+  reflectThresholdTokens: 80000,
   compressMaxTokens: undefined,
   rateLimitWaitMs: 60000,
   recompressConcurrency: 2,

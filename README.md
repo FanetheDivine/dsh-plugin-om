@@ -6,12 +6,15 @@
 
 ## 功能
 
-- 自动压缩主会话历史，并在摘要过大时再次合并
+- 自动压缩主会话历史，history 块累计过大时在后台把较早的块归档为 archived-history 块
+- 归档块保留用户消息和已处理的提问，相邻用户消息之间的模型内容压成一句话并附 recall 检索关键词
+- 归档在后台运行，不阻塞会话，同一会话同时只运行一个，完成后由下一个 pre-step 提交
+- 被归档块中的 skill 按名称去重，提交时以手动引用 skill 的形式重新注入
 - 观察压缩触发时立即开始后台预压缩，结果持久化到会话日志，新增完整消息达到 `tailMessageCount` 后注入，重启后直接采纳已有结果
 - OM 启用时以 system-reminder 消息要求模型在本会话中用 1-2 句话记录中间结论与下一步规划，记录后继续任务，最终输出另行构建
 - 表层缺少同 kind 进度提醒时补发，不比较文本内容
 - 最近真实用户消息、非空模型文本、`ask_user_question` 调用或进度提醒之后，开启 `progressReminderIdleEnabled` 且表层活动累计至少 `progressReminderIdleSteps`（默认 4）个已结束模型 step、工具调用超过 `progressReminderIdleToolCalls`（默认 10）次时重发，并要求立刻输出记录
-- 完整消息定义写在 history 块顶注释和 recall 工具描述中
+- 完整消息定义写在 history 与 archived-history 块顶注释和 recall 工具描述中
 - 通过工具循环生成摘要，保留用户消息和未压缩内容；手动加载的 skill 计入完整消息，其余系统消息不占 index
 - 压缩会话首条消息附带区间全部条目，模型首轮即可提交全部摘要并完成
 - 压缩循环中 `getHistory` 返回当前状态，本次已压缩的区间显示为摘要条目
@@ -22,7 +25,7 @@
 - 有效提问首次直接压缩需再次确认，保留时重写问答并展开选项引用
 - 中断或错误的提问作为普通工具调用处理
 - 压缩后发给 Claude 的请求剥离保留尾部中压缩前生成的 thinking 签名，避免前缀变化导致签名校验失败
-- 使用 `recall` 按消息序号回看原文，启用语义增强后还可按含义检索
+- 使用 `recall` 按消息序号回看原文，或用 `query` 检索，启用语义增强时按含义匹配，关闭时按字符串匹配
 - 压缩会话记录落盘完整循环，以宿主原生时间线展示逐轮耗时与 token 用量
 - 压缩会话记录尾部追加模型文本：压缩模型、思考等级、原始与产物字符数（k/w/M 单位，与卡片一致），失败时附原因、最后一轮 finish 与输出 token 数
 - 压缩会话记录显示在子智能体列表，标题为 `OM会话(起点-终点)-观察/反思`，重压缩与失败各追加后缀，随父会话 Session 日志一起下载
@@ -62,10 +65,9 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 | --- | --- | --- |
 | `omEnabled` | `true` | 是否启用自动压缩，关闭后进度提醒也不再注入 |
 | `observeThresholdTokens` | `35000` | 观察压缩阈值 |
-| `reflectThresholdTokens` | `40000` | 摘要合并阈值 |
+| `reflectThresholdTokens` | `80000` | 归档阈值，尾部保留合计不超过其三分之一的 history 块 |
 | `tailMessageCount` | `20` | 触发后保留的完整消息数 |
-| `recallEnabled` | `true` | 是否启用原文召回 |
-| `semanticRecallEnabled` | `true` | 是否为 `recall` 启用语义增强，依赖 `recallEnabled` |
+| `semanticRecallEnabled` | `true` | `recall` 的 `query` 是否按含义检索，关闭时按字符串匹配 |
 | `modelDir` | DSH 共享目录 | 嵌入模型目录 |
 | `compressProvider` | 会话路由 | 压缩 provider，需与 `compressModel` 同时配置 |
 | `compressModel` | 会话路由 | 压缩模型，需与 `compressProvider` 同时配置 |
@@ -80,13 +82,20 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 | `progressReminderIdleToolCalls` | `10` | 无记录期间工具调用数超过该值才重发，至少为 `0` |
 | `debug` | 开发环境启用 | 是否输出步骤日志 |
 
-配置页在依赖项关闭时隐藏关联项：原文召回关闭隐藏语义增强，语义增强未生效隐藏 `modelDir`，长期无记录时重发关闭隐藏两个重发阈值。
+配置页在依赖项关闭时隐藏关联项：语义增强关闭隐藏 `modelDir`，长期无记录时重发关闭隐藏两个重发阈值。
 
 `observeThresholdTokens` 和 `reflectThresholdTokens` 按主模型真实 token 计。较小的观察阈值更早节省上下文，较大的阈值提供更多摘要信息。只有 reasoning 包含关键决策时才需将 `compressSkipReasoning` 设为 `false`。
 
 [机制说明与成本计算器](https://fanethedivine.github.io/dsh-plugin-om/)可估算不同配置的 token 成本。
 
 ## 已知风险
+
+### 归档与 skill 注入
+
+- 注入的 skill 与用户手动引用 skill 无法区分，主模型可能把它当成新指令重新执行 skill 流程。
+- 压缩会话把 skill 当普通内容处理，观察阶段可能已把 skill 压成摘要，归档时提取不到，原文只能用 recall 找回。
+- 归档运行期间若 history 块变化，提交前校验失败，本次结果丢弃，下次检测重新归档。
+- 归档结果只存内存，进程重启后重新检测。
 
 ### 写入 plugin record
 
@@ -164,7 +173,7 @@ src/
 ├── system-reminder.ts           # 进度提醒：system-reminder 消息的构造与缺失时补发
 ├── thinking-binding.ts          # llm/stream 中间件：剥离 OM 压缩前生成的 Claude thinking 签名
 ├── config.ts                    # 配置默认值与宽松合并，未知键忽略、非法值回退默认
-├── constants.ts                 # 共享常量：插件标识、history 标签、完整消息定义、格式说明注释
+├── constants.ts                 # 共享常量：插件标识、history 与 archived-history 标签、完整消息定义、格式说明注释
 ├── degrade.ts                   # 挂载失败降级上报：console 外部输出与 om/warning 会话事件
 ├── om-event.ts                  # om 事件读取：plugin record 的类型名、载荷校验与日志查找
 ├── om-event-append.ts           # om 事件写入：经 appendPluginRecord 追加 ignorable 记录
@@ -174,17 +183,18 @@ src/
 ├── logger.ts                    # 插件日志门面，step 按 debug 开关过滤
 ├── rate-limit.ts                # 全局 429 限流冷却门，进程级共享状态
 ├── log-index.ts                 # 完整消息索引与渲染，recall 与压缩共用同一套编号
-├── recall.ts                    # recall 工具：按 index 区间回看，启用语义增强时支持 query
+├── recall.ts                    # recall 工具：按 index 区间回看或按 query 检索
 ├── recall-xml.ts                # 完整消息到 CDATA 包裹 XML 条目的渲染，recall 与语义检索共用
 ├── recall-output.ts             # recall 输出契约：{ text, images } 与 render 投影
-├── semantic-recall.ts           # recall 语义增强：本地嵌入语义检索实现
+├── semantic-recall.ts           # recall 检索：本地嵌入语义检索与字符串匹配
 ├── embedding.ts                 # 本地 ONNX 嵌入：懒加载、批量、运行时按需下载编排
 ├── model-download.ts            # 模型下载原语：URL、跳过判定、原子落盘
-├── compress-view.ts             # 压缩视图：观察与反思投影、有效提问配对与选项展示
+├── compress-view.ts             # 压缩视图：观察与归档投影、归档段切分、skill 提取、有效提问配对与选项展示
 ├── compress-tools.ts            # 压缩工具状态机：查看、压缩、问答重写、完成门禁与最终块构建
 ├── compress-loop.ts             # 工具压缩循环：条件提示、多轮请求、工具执行、限流、失败判定与统计
 ├── compaction-log.ts            # 压缩会话记录落盘：seed 重建系统提示词、时间线与逐轮 usage 的诊断子会话
-├── compress.ts                  # 两级自动压缩：观察打标记与到期注入、反思、失败传播与生命周期事件
+├── compress.ts                  # 两级自动压缩：观察打标记与到期注入、归档触发与提交、失败传播与生命周期事件
+├── reflect.ts                   # 后台归档：进程内任务注册表、尾部保留块选择与失败重试判定
 ├── precompress.ts               # 后台预压缩：进程内任务注册表、结果信封持久化与重启采纳
 ├── recompress.ts                # 换模型重压缩：按压缩 id 重放视图并落盘记录，附内部命令
 ├── recompress-gate.ts           # 重压缩并发信号量：按配置上限排队许可
@@ -193,7 +203,7 @@ src/
 └── client/                      # 浏览器客户端 bundle：压缩卡片与插件行配置
     ├── index.ts                 # 注册卡片、渲染器与行配置槽
     ├── om-config-controller.ts  # 宿主配置表单、草稿和原子保存
-    ├── OmConfigCard.tsx         # 十九项双语配置控件
+    ├── OmConfigCard.tsx         # 十八项双语配置控件
     ├── definition.ts            # 压缩卡片定义：生命周期事件、检查点替换与警告事件
     ├── OmCompactionCard.tsx     # 压缩结果与错误卡片，可跳转轨迹与诊断子会话
     ├── OmRecompressMenu.tsx     # 重压缩模型多选菜单，复用宿主会话模型目录

@@ -59,9 +59,9 @@ export const zh = {
   'config.observeThresholdTokens': '观察阈值',
   'config.observeThresholdTokens.hint':
     '未压缩上下文达到此真实 token 数时触发观察压缩，按主模型用量换算。',
-  'config.reflectThresholdTokens': '摘要合并阈值',
+  'config.reflectThresholdTokens': '归档阈值',
   'config.reflectThresholdTokens.hint':
-    '摘要累计达到此真实 token 数时触发反思合并，按主模型用量换算。',
+    'history 块累计达到此真实 token 数时在后台归档较早的块，按主模型用量换算。',
   'config.tailMessageCount': '保留消息数',
   'config.tailMessageCount.hint': '触发观察后保留的完整消息条数。',
   'config.compressMaxTokens': '单次生成上限',
@@ -151,9 +151,9 @@ export const en: Record<keyof typeof zh, string> = {
   'config.observeThresholdTokens': 'Observation threshold',
   'config.observeThresholdTokens.hint':
     'Uncompressed context in real main-model tokens that triggers observation.',
-  'config.reflectThresholdTokens': 'Reflection threshold',
+  'config.reflectThresholdTokens': 'Archive threshold',
   'config.reflectThresholdTokens.hint':
-    'Summary total in real main-model tokens that triggers reflection.',
+    'History blocks total in real main-model tokens that archives older blocks in the background.',
   'config.tailMessageCount': 'Retained message count',
   'config.tailMessageCount.hint': 'Full messages retained after observation is triggered.',
   'config.compressMaxTokens': 'Generation limit',

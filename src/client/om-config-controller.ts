@@ -1,4 +1,4 @@
-/** WebUI 行配置表单：字段顺序、严格整数/布尔解析与 19 项草稿的宿主原子提交。 */
+/** WebUI 行配置表单：字段顺序、严格整数/布尔解析与 18 项草稿的宿主原子提交。 */
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store';
 import {
   type SettingsFieldSpec,
