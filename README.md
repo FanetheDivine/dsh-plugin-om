@@ -209,7 +209,7 @@ tests/                           # 服务端、客户端与集成测试
 web/                             # 机制说明与成本计算器站点
     ├── src/model.ts             # 成本模型
     └── src/components/          # 页面组件与 UI 原语
-.agents/skills/agent-workflow/SKILL.md # 仓库开发工作流
+.agents/skills/agent-workflow/SKILL.md # 仓库开发工作流：worktree 隔离、分步实现与验收
 .agents/skills/clear-branch/SKILL.md   # 手动清空除 main 外的分支与 worktree
 .agents/skills/compaction-eval/         # 压缩质量盲评打分：视图复现与重压缩、数据准备、分段合并与汇总计分；产物写系统临时目录；构建时渲染为发布版写入 dist/skill
 .agents/skills/compaction-tuning/SKILL.md # 压缩质量的长流程评估优化：选样本、诊断、改进点盲测与回归验证；产物写系统临时目录

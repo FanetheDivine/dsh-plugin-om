@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .dsh/worktrees/
+.agents/worktrees/
 *.tsbuildinfo
 *.log
 *.zip

@@ -9,16 +9,14 @@ description: 当用户希望对仓库内容做变更，包括需求、缺陷、�
 
 ## 1. 创建 worktree
 
-- fetch 最新的`origin/main`
-- 基于`origin/main` ，在 `.dsh/worktrees/` 下创建 git worktree，分支名用 <feat,fix,etc.>/<kebab-case>。
-- 以 --no-track 方式创建新分支
-- 原工作区保持干净；后续的探索、确认、编码全部在 worktree 内进行。
+- 先拉取最新的 `origin/main`
+- 用当前环境提供的 worktree 创建能力基于 `origin/main` 创建分支与 worktree，分支名用 <feat,fix,etc.>/<kebab-case>
+- 创建后把会话工作目录切到该 worktree；原工作区保持干净；后续的探索、确认、编码全部在 worktree 内进行
+- 在 worktree 内安装依赖：
 
 ```sh
-git -C <项目根> worktree add ../<分支名> -b <分支名> origin/main --no-track
+pnpm install
 ```
-
-在worktree下载依赖
 
 ## 2. 需求分析
 
@@ -78,10 +76,11 @@ gh pr close <分支名>  # 关闭 PR
 
 无论第 5 步是合并 PR 还是放弃功能，都需要清理，因此独立为固定步骤：
 
+- 先将会话工作目录切回项目根
 - 删除 worktree、远程分支、本地分支：
 
 ```sh
 git -C <项目根> push origin --delete <分支名>  # 删除远程分支
-git -C <项目根> worktree remove ../<分支名> --force  # 移除 worktree（先于删除本地分支）
+git -C <项目根> worktree remove <worktree 路径> --force  # 移除 worktree（先于删除本地分支）
 git -C <项目根> branch -D <分支名>  # 删除本地分支
 ```
