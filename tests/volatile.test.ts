@@ -106,41 +106,33 @@ describe('Loader volatile 热更新', () => {
     expect(ctx._loggerCalls.filter((entry) => entry.level === 'debug')).toHaveLength(logCount);
   });
 
-  it('工具启停更新真实注册表且反复切换不会重复注册或遗留旧工具', () => {
-    const { values, refs } = loaderConfig({ recallEnabled: true, semanticRecallEnabled: false });
+  it('语义增强切换重新注册 recall，反复切换不会重复注册或遗留旧工具', () => {
+    const { values, refs } = loaderConfig({ semanticRecallEnabled: false });
     const ctx = makeCtx();
     const { active, disposes } = toolsHost(ctx);
     const preload = vi.mocked(ensureModelReady);
     preload.mockClear();
     apply(ctx, refs);
-    const params = () =>
-      Object.keys(
-        (active.get('recall')?.parameters as { properties: object } | undefined)?.properties ?? {},
-      ).sort();
+    const description = () =>
+      (active.get('recall') as { description?: string } | undefined)?.description ?? '';
     expect([...active.keys()]).toEqual(['recall']);
-    expect(params()).toEqual(['end', 'offset', 'start']);
+    expect(description()).toContain('字符串匹配');
     expect(preload).not.toHaveBeenCalled();
-    // 开启语义增强：recall 重新注册为带 query 的形态并触发预热
+    // 开启语义增强：recall 重新注册为语义检索形态并触发预热
     values.semanticRecallEnabled = true;
     update(ctx, 'semanticRecallEnabled');
     expect([...active.keys()]).toEqual(['recall']);
-    expect(params()).toEqual(['end', 'offset', 'query', 'start', 'top_k']);
+    expect(description()).not.toContain('字符串匹配');
     expect(preload).toHaveBeenCalledTimes(1);
     // 无关更新不重复注册、不重复预热
     update(ctx, 'semanticRecallEnabled');
     expect(active.size).toBe(1);
     expect(preload).toHaveBeenCalledTimes(1);
-    // 关闭 recall：工具与语义增强一并移除
-    values.recallEnabled = false;
-    update(ctx, 'recallEnabled');
-    expect([...active.keys()]).toEqual([]);
-    // 仅开启语义增强而 recall 关闭：不注册
+    // 关闭语义增强：回到字符串匹配，recall 仍注册
+    values.semanticRecallEnabled = false;
     update(ctx, 'semanticRecallEnabled');
-    expect([...active.keys()]).toEqual([]);
-    // 重新开启 recall：语义增强随之恢复
-    values.recallEnabled = true;
-    update(ctx, 'recallEnabled');
-    expect(params()).toEqual(['end', 'offset', 'query', 'start', 'top_k']);
+    expect([...active.keys()]).toEqual(['recall']);
+    expect(description()).toContain('字符串匹配');
     expect(disposes).toEqual(['recall', 'recall']);
   });
 
@@ -190,7 +182,6 @@ describe('Loader volatile 热更新', () => {
     const { values, refs } = loaderConfig({
       modelDir: '/old/model',
       semanticRecallEnabled: true,
-      recallEnabled: true,
     });
     const ctx = makeCtx();
     const { active, disposes } = toolsHost(ctx);

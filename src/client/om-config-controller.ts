@@ -1,4 +1,4 @@
-/** WebUI 行配置表单：字段顺序、严格整数/布尔解析与 19 项草稿的宿主原子提交。 */
+/** WebUI 行配置表单：字段顺序、严格整数/布尔解析与 18 项草稿的宿主原子提交。 */
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store';
 import {
   type SettingsFieldSpec,
@@ -26,7 +26,6 @@ export const OM_CONFIG_FIELDS = [
   { name: 'observeThresholdTokens', kind: 'integer' },
   { name: 'reflectThresholdTokens', kind: 'integer' },
   { name: 'tailMessageCount', kind: 'integer' },
-  { name: 'recallEnabled', kind: 'boolean' },
   { name: 'semanticRecallEnabled', kind: 'boolean' },
   { name: 'modelDir', kind: 'text' },
   { name: 'compressProvider', kind: 'text' },

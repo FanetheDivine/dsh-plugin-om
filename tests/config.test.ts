@@ -20,7 +20,6 @@ describe('宿主 Config 校验与 volatile 值', () => {
       progressReminderIdleSteps: 2,
       progressReminderIdleToolCalls: 0,
       debug: true,
-      recallEnabled: false,
       semanticRecallEnabled: false,
       modelDir: '/tmp/om-model',
       compressProvider: 'provider',
@@ -29,7 +28,7 @@ describe('宿主 Config 校验与 volatile 值', () => {
     };
     const parsed = Config(yaml);
     const values = Object.fromEntries(Object.entries(parsed).map(([key, ref]) => [key, ref.get()]));
-    expect(Object.keys(values)).toHaveLength(19);
+    expect(Object.keys(values)).toHaveLength(18);
     expect(resolveConfig(values)).toEqual(resolveConfig(yaml));
     expect(Config({}).observeThresholdTokens.get()).toBe(resolveConfig({}).observeThresholdTokens);
     expect(Config({}).compressMaxTokens.get()).toBeUndefined();
@@ -51,9 +50,11 @@ describe('宿主 Config 校验与 volatile 值', () => {
       expect(() => Config({ [key]: 1.5 })).toThrow(/expected/);
       expect(resolveConfig({ [key]: 1.5 })).toEqual(resolveConfig({}));
     }
-    expect(() => Config({ recallEnabled: 'false' } as never)).toThrow(/expected/);
+    expect(() => Config({ semanticRecallEnabled: 'false' } as never)).toThrow(/expected/);
     expect(() => Config({ modelDir: 42 } as never)).toThrow(/expected/);
-    expect(resolveConfig({ recallEnabled: 'false', modelDir: 42 })).toEqual(resolveConfig({}));
+    expect(resolveConfig({ semanticRecallEnabled: 'false', modelDir: 42 })).toEqual(
+      resolveConfig({}),
+    );
   });
 });
 
@@ -141,12 +142,11 @@ describe('配置校验 resolveConfig', () => {
     for (const raw of empty) {
       const d = resolveConfig(raw);
       expect(d.observeThresholdTokens).toBe(35000);
-      expect(d.reflectThresholdTokens).toBe(40000);
+      expect(d.reflectThresholdTokens).toBe(80000);
       expect(d.compressMaxTokens).toBeUndefined();
       expect(d.tailMessageCount).toBe(20);
       expect(d.compressSkipReasoning).toBe(true);
       expect(d.omEnabled).toBe(true);
-      expect(d.recallEnabled).toBe(true);
       expect(d.semanticRecallEnabled).toBe(true);
     }
   });
@@ -176,7 +176,7 @@ describe('配置校验 resolveConfig', () => {
     expect(resolveConfig({ compressMaxTokens: 0 }).compressMaxTokens).toBe(0);
     expect(resolveConfig({ observeThresholdTokens: '0.5' }).observeThresholdTokens).toBe(35000); // 非数值回退默认
     expect(resolveConfig({ observeThresholdTokens: 2.5 }).observeThresholdTokens).toBe(35000); // 非整数回退默认
-    expect(resolveConfig({ reflectThresholdTokens: 2.5 }).reflectThresholdTokens).toBe(40000); // 非整数回退默认
+    expect(resolveConfig({ reflectThresholdTokens: 2.5 }).reflectThresholdTokens).toBe(80000); // 非整数回退默认
     expect(resolveConfig({ compressMaxTokens: 2.5 }).compressMaxTokens).toBeUndefined(); // 非整数视为未设置
     // 全部未知键被忽略 → 结果等于默认配置
     expect(
@@ -275,32 +275,18 @@ describe('compressSkipReasoning 配置键', () => {
   });
 });
 
-describe('recallEnabled / semanticRecallEnabled 配置键', () => {
-  it('缺省启用（true）；false 禁用；留空回退默认', () => {
-    expect(resolveConfig({}).recallEnabled).toBe(true);
+describe('semanticRecallEnabled 配置键', () => {
+  it('缺省启用（true）；false 禁用；留空或非 boolean 回退默认', () => {
     expect(resolveConfig({}).semanticRecallEnabled).toBe(true);
-    expect(resolveConfig({ recallEnabled: false }).recallEnabled).toBe(false);
     expect(resolveConfig({ semanticRecallEnabled: false }).semanticRecallEnabled).toBe(false);
-    expect(resolveConfig({ recallEnabled: null }).recallEnabled).toBe(true);
     expect(resolveConfig({ semanticRecallEnabled: '' }).semanticRecallEnabled).toBe(true);
-  });
-
-  it('非 boolean 值回退默认（启用）', () => {
-    expect(resolveConfig({ recallEnabled: 'false' }).recallEnabled).toBe(true);
     expect(resolveConfig({ semanticRecallEnabled: 0 }).semanticRecallEnabled).toBe(true);
   });
 
-  it('语义增强依赖原文召回：recallEnabled=false 时语义增强一并失效', () => {
-    expect(resolveConfig({ recallEnabled: false }).semanticRecallEnabled).toBe(false);
-    expect(
-      resolveConfig({ recallEnabled: false, semanticRecallEnabled: true }).semanticRecallEnabled,
-    ).toBe(false);
-    expect(
-      resolveConfig({ recallEnabled: true, semanticRecallEnabled: true }).semanticRecallEnabled,
-    ).toBe(true);
-    expect(
-      resolveConfig({ recallEnabled: true, semanticRecallEnabled: false }).semanticRecallEnabled,
-    ).toBe(false);
+  it('旧键 recallEnabled 被忽略，不影响语义增强', () => {
+    const config = resolveConfig({ recallEnabled: false, semanticRecallEnabled: true });
+    expect(config.semanticRecallEnabled).toBe(true);
+    expect('recallEnabled' in config).toBe(false);
   });
 });
 

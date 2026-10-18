@@ -59,9 +59,9 @@ export const zh = {
   'config.observeThresholdTokens': '观察阈值',
   'config.observeThresholdTokens.hint':
     '未压缩上下文达到此真实 token 数时触发观察压缩，按主模型用量换算。',
-  'config.reflectThresholdTokens': '摘要合并阈值',
+  'config.reflectThresholdTokens': '归档阈值',
   'config.reflectThresholdTokens.hint':
-    '摘要累计达到此真实 token 数时触发反思合并，按主模型用量换算。',
+    'history 块累计达到此真实 token 数时在后台归档较早的块，按主模型用量换算。',
   'config.tailMessageCount': '保留消息数',
   'config.tailMessageCount.hint': '触发观察后保留的完整消息条数。',
   'config.compressMaxTokens': '单次生成上限',
@@ -92,10 +92,8 @@ export const zh = {
   'config.progressReminderIdleSteps.hint': '无记录的已结束步骤数达到此值才重发，至少为 1。',
   'config.progressReminderIdleToolCalls': '重发工具调用数',
   'config.progressReminderIdleToolCalls.hint': '无记录期间工具调用数超过此值才重发，至少为 0。',
-  'config.recallEnabled': '原文召回',
-  'config.recallEnabled.hint': '注册召回工具，按消息序号回看原文。',
   'config.semanticRecallEnabled': '语义增强',
-  'config.semanticRecallEnabled.hint': '为原文召回增加按含义检索的能力，依赖原文召回。',
+  'config.semanticRecallEnabled.hint': '召回检索按含义匹配，关闭时按字符串匹配。',
   'config.debug': '步骤日志',
   'config.debug.hint': '启用步骤级日志；缺省值由 NODE_ENV 决定。',
 } as const;
@@ -153,9 +151,9 @@ export const en: Record<keyof typeof zh, string> = {
   'config.observeThresholdTokens': 'Observation threshold',
   'config.observeThresholdTokens.hint':
     'Uncompressed context in real main-model tokens that triggers observation.',
-  'config.reflectThresholdTokens': 'Reflection threshold',
+  'config.reflectThresholdTokens': 'Archive threshold',
   'config.reflectThresholdTokens.hint':
-    'Summary total in real main-model tokens that triggers reflection.',
+    'History blocks total in real main-model tokens that archives older blocks in the background.',
   'config.tailMessageCount': 'Retained message count',
   'config.tailMessageCount.hint': 'Full messages retained after observation is triggered.',
   'config.compressMaxTokens': 'Generation limit',
@@ -192,11 +190,9 @@ export const en: Record<keyof typeof zh, string> = {
   'config.progressReminderIdleToolCalls': 'Resend tool-call count',
   'config.progressReminderIdleToolCalls.hint':
     'Resend only when tool calls without notes exceed this value; at least 0.',
-  'config.recallEnabled': 'Original-text recall',
-  'config.recallEnabled.hint': 'Register the recall tool to review original messages by index.',
   'config.semanticRecallEnabled': 'Semantic enhancement',
   'config.semanticRecallEnabled.hint':
-    'Add search by meaning to recall. Requires original-text recall.',
+    'Recall search matches by meaning; when off it matches strings.',
   'config.debug': 'Step logs',
   'config.debug.hint': 'Log processing steps; the default follows NODE_ENV.',
 };

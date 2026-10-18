@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { CompressionState } from '../src/compress-tools.ts';
 import {
+  buildArchiveView,
   buildObserveView,
   buildReflectView,
   renderEntriesXml,
@@ -841,5 +842,74 @@ describe('renderEntriesXml', () => {
   it('不可定位条目输出无属性 assistant 元素（CDATA 正文）', () => {
     const xml = renderEntriesXml([{ kind: 'assistant', text: '遗留' } as ViewEntry]);
     expect(xml).toBe('<assistant><![CDATA[遗留]]></assistant>');
+  });
+});
+
+describe('buildArchiveView', () => {
+  const skill = (name: string, index: number, body: string): string =>
+    `<skill_content name="${name}" index="${index}"><skill_resources><![CDATA[res-${body}]]></skill_resources><skill_instructions><![CDATA[ins-${body}]]></skill_instructions></skill_content>`;
+  const blockA = [
+    '<history>',
+    '<user_message index="0"><![CDATA[需求一]]></user_message>',
+    '<assistant start="1" end="3"><![CDATA[排查]]></assistant>',
+    skill('lark-im', 4, 'old'),
+    '<assistant index="5"><![CDATA[结论]]></assistant>',
+    '<ask-user-question index="6"><![CDATA[q:继续吗\na:继续]]></ask-user-question>',
+    '<assistant index="7"><![CDATA[实施]]></assistant>',
+    '</history>',
+  ].join('\n');
+  const blockB = [
+    '<history>',
+    '<assistant index="8"><![CDATA[续写]]></assistant>',
+    skill('lark-im', 9, 'new'),
+    '<user_message index="10"><![CDATA[需求二]]></user_message>',
+    '<assistant start="11" end="12"><![CDATA[完成]]></assistant>',
+    '</history>',
+  ].join('\n');
+
+  it('用户与已处理 ask 切分归档段，段跨块延续并覆盖已提取 skill 的 index', () => {
+    const { view } = buildArchiveView([
+      { text: blockA, seq: 1 },
+      { text: blockB, seq: 2 },
+    ]);
+    expect(view.segments).toEqual([
+      { lo: 1, hi: 5 },
+      { lo: 7, hi: 8 },
+      { lo: 11, hi: 12 },
+    ]);
+    expect(view.entries.some((e) => e.toolName === 'skill')).toBe(false);
+    expect(view.entries.filter((e) => e.kind === 'user').map((e) => e.text)).toEqual([
+      '需求一',
+      '需求二',
+    ]);
+    expect(view.minIndex).toBe(0);
+    expect(view.maxIndex).toBe(12);
+  });
+
+  it('skill 同名只保留最新一份，渲染为宿主 skill 引用格式', () => {
+    const { skills } = buildArchiveView([
+      { text: blockA, seq: 1 },
+      { text: blockB, seq: 2 },
+    ]);
+    expect(skills).toEqual([
+      {
+        name: 'lark-im',
+        index: 9,
+        content:
+          '<skill_content name="lark-im"><skill_resources>res-new</skill_resources>\n\n<skill_instructions>ins-new</skill_instructions></skill_content>',
+      },
+    ]);
+  });
+
+  it('不可解析的块作为分隔原样保留，不进入归档段', () => {
+    const { view } = buildArchiveView([
+      { text: '<history><broken', seq: 1 },
+      { text: blockB, seq: 2 },
+    ]);
+    expect(view.entries[0]?.lo).toBeUndefined();
+    expect(view.segments).toEqual([
+      { lo: 8, hi: 8 },
+      { lo: 11, hi: 12 },
+    ]);
   });
 });

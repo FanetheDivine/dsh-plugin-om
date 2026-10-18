@@ -16,6 +16,7 @@ import type {
   MessageId,
   StreamChunk,
   ToolCallId,
+  UserMessage,
 } from '@deepseek-ai/dsh-llm';
 import { LlmAdapter, LlmRuntime } from '@deepseek-ai/dsh-llm';
 import {
@@ -51,6 +52,7 @@ import * as embedding from '../src/embedding.ts';
 import { apply, inject, name } from '../src/index.ts';
 import { findOmEvents } from '../src/om-event.ts';
 import { appendOmEvent } from '../src/om-event-append.ts';
+import { peekReflectJob } from '../src/reflect.ts';
 
 /** mock LLM adapter：只实现 stream()，按注入的分块工厂回放响应并记录调用。 */
 class MockAdapter extends LlmAdapter {
@@ -90,7 +92,6 @@ async function stackHarness(options: {
     observeThresholdTokens: number;
     reflectThresholdTokens: number;
     tailMessageCount: number;
-    recallEnabled: boolean;
     semanticRecallEnabled: boolean;
     debug: boolean;
   }>;
@@ -123,7 +124,6 @@ async function stackHarness(options: {
       reflectThresholdTokens: 1000000,
       tailMessageCount: 0,
       rateLimitWaitMs: 0,
-      recallEnabled: false,
       semanticRecallEnabled: false,
       debug: false,
       ...options.configOverrides,
@@ -191,8 +191,22 @@ function textOf(event: { data: unknown } | undefined): string {
   return (content ?? []).map((b) => (b.type === 'text' ? (b.text ?? '') : '')).join('');
 }
 
-/** 触发一次 agent/pre-step（与 agent-loop 的 dispatch.waterfall 等价）。 */
-async function runPreStep(app: Context, session: Session): Promise<unknown> {
+/** 本步用户输入消息（pre-step 决策携带的消息）。 */
+function inputMessage(text: string): UserMessage {
+  return {
+    id: 'input' as MessageId,
+    role: 'user',
+    content: [{ type: 'text', text }],
+    source: { kind: 'user' },
+  };
+}
+
+/** 触发一次 agent/pre-step（与 agent-loop 的 dispatch.waterfall 等价）；input 为本步决策携带的消息。 */
+async function runPreStep(
+  app: Context,
+  session: Session,
+  input: UserMessage[] = [],
+): Promise<unknown> {
   return app.waterfall(
     'agent/pre-step',
     {
@@ -202,7 +216,7 @@ async function runPreStep(app: Context, session: Session): Promise<unknown> {
       step: 1,
       signal: new AbortController().signal,
     },
-    async () => ({ kind: 'enter', messages: [] }),
+    async () => ({ kind: 'enter', messages: input }),
   );
 }
 
@@ -414,39 +428,41 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(findOmEvents(session, 'om/warning')).toHaveLength(0);
   }, 30000);
 
-  it('观察→反思两级压缩全链路：单块观察 → 反思（空提交重建）→ 新消息观察，两块并存', async () => {
+  it('观察→反思两级压缩全链路：两次观察 → 后台归档 → 下一步提交，归档块与保留块并存', async () => {
     const { app, session, adapter } = await stackHarness({
       withSystemPrompt: true,
       configOverrides: { reflectThresholdTokens: 10 },
       chunksFor: toolRoundChunks(),
     });
     seedUserMessages(session, 6);
-    await runPreStep(app, session); // 第一轮：仅观察压缩（反思无块跳过）
-
+    await runPreStep(app, session); // 观察 0..5（反思块数不足跳过）
     seedUserMessages(session, 6, 600, 6);
-    await runPreStep(app, session); // 第二轮：反思（块内 user 条目不可压缩 → 空提交重建）+ 观察压缩新消息
+    await runPreStep(app, session); // 观察 6..11，表层两块
+    await runPreStep(app, session); // 两块达阈值：后台归档首块
+    await peekReflectJob(session.id)?.promise;
+    await runPreStep(app, session, [inputMessage('继续')]); // 有本步输入：提交归档
 
-    // 三个压缩循环（每个 2 轮：getHistory → completeCompression）：观察 → 反思 → 观察
-    expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(6); // compaction/start 的 phase 序列：observe → reflect → observe
+    // 三个压缩循环（每个 2 轮：getHistory → completeCompression）
+    expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(6);
     const phases = session
       .snapshotEvents()
       .filter((e) => e.type === 'compaction/start')
       .map((e) => (e.data as { phase?: string }).phase);
-    expect(phases).toEqual(['observe', 'reflect', 'observe']);
-    // 全部生命周期正常收尾（无 error）
+    expect(phases).toEqual(['observe', 'observe', 'reflect']);
     const ends = session.snapshotEvents().filter((e) => e.type === 'compaction/end');
     expect(ends).toHaveLength(3);
     for (const end of ends) {
       expect((end.data as { error?: string }).error).toBeUndefined();
     }
-    // 表层两块并存：重建块（0..5）+ 新观察块（6..11），未压缩条目原样保留
+    // 表层：归档块（0..5，用户消息原样）+ 保留的观察块（6..11）
     expect(session.surface.nodes).toHaveLength(2);
     const texts = session.surface.nodes.map((seq) =>
       textOf(session.snapshotEvents()[seq as number]),
     );
-    expect(texts[0]).toContain('<history tip=');
+    expect(texts[0]).toMatch(/^<archived-history tip=/);
     expect(texts[0]).toContain('<user_message index="0">');
     expect(texts[0]).not.toContain('index="6"');
+    expect(texts[1]).toMatch(/^<history tip=/);
     expect(texts[1]).toContain('<user_message index="6">');
     expect(texts[1]).toContain('<user_message index="11">');
   }, 30000);
@@ -454,7 +470,6 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
   it('recall 工具经真实 ToolRuntime 注册与调用：压缩后仍可回看原始内容，参数校验失败返回 isError', async () => {
     const { app, session } = await stackHarness({
       withSystemPrompt: true,
-      configOverrides: { recallEnabled: true },
       chunksFor: toolRoundChunks(),
     });
     // 仅 recall 一个工具；语义增强由 semanticRecallEnabled 控制
@@ -558,7 +573,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     warmup.mockClear();
     const { app } = await stackHarness({
       withSystemPrompt: true,
-      configOverrides: { recallEnabled: true, semanticRecallEnabled: true },
+      configOverrides: { semanticRecallEnabled: true },
       chunksFor: () => [],
     });
     const parameters = app.tools.get('recall')?.parameters as { properties: object } | undefined;
@@ -571,16 +586,12 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     });
   }, 30000);
 
-  it('recall 未启用时语义增强无效：不注册工具、不预热模型', async () => {
+  it('语义增强关闭：recall 仍注册、query 有效且不预热模型', async () => {
     const warmup = vi.mocked(embedding.ensureModelReady);
     warmup.mockClear();
-    const { app } = await stackHarness({
-      withSystemPrompt: true,
-      configOverrides: { recallEnabled: false, semanticRecallEnabled: true },
-      chunksFor: () => [],
-    });
-    expect(app.tools.get('recall')).toBeUndefined();
-    expect(app.tools.get('recall-semantic')).toBeUndefined();
+    const { app } = await stackHarness({ withSystemPrompt: true, chunksFor: () => [] });
+    const parameters = app.tools.get('recall')?.parameters as { properties: object } | undefined;
+    expect(Object.keys(parameters?.properties ?? {})).toContain('query');
     expect(warmup).not.toHaveBeenCalled();
   }, 30000);
 });

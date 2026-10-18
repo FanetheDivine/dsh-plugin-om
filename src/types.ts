@@ -23,7 +23,7 @@ import type { SubagentResult, SubagentRun, SubagentStartRequest } from '@deepsee
 import type { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import type { TokenMeter } from '@deepseek-ai/dsh-token-meter';
 import type { JsonSchemaNode, ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools';
-import type { OmMessageSource } from './constants.ts';
+import type { OmMessageSource, SkillInvocationSource } from './constants.ts';
 import type { OmEventPayloadMap } from './om-event.ts';
 import type { ProgressReminderSource } from './system-reminder.ts';
 
@@ -40,6 +40,8 @@ declare module '@deepseek-ai/dsh-llm' {
     'plugin:dsh-plugin-om': OmMessageSource;
     /** 进度提醒消息（system-reminder 用户消息）的 producer-owned source。 */
     'plugin:dsh-plugin-om:progress': ProgressReminderSource;
+    /** 手动加载 skill 的 source：反思提交时按此形态重新注入被归档的 skill。 */
+    'skill-invocation': SkillInvocationSource;
   }
 }
 

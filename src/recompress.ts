@@ -5,7 +5,7 @@
  * RECOMPRESS_COMMAND_NAME。
  *
  * - 视图重放：compaction/summary 载荷的 shadowedSeqs 加 compaction/start 的 phase 足以
- *   重建当时的压缩视图（观察取被遮蔽的原消息，反思取被合并的 <history> 块），二者都只
+ *   重建当时的压缩视图（观察取被遮蔽的原消息，反思取被归档的 <history> 块），二者都只
  *   读日志，与当前表层无关
  * - 不改会话：不写 compaction/* 事件、不替换表层、不动观察待定标记；唯一副作用是压缩
  *   会话记录子会话及其在父会话的 subagent/catalog，标题带「重压缩 provider/model」
@@ -27,7 +27,7 @@ import {
   runCompressionLoop,
   viewCharCount,
 } from './compress-loop.ts';
-import { buildObserveView, buildReflectView, type CompressionView } from './compress-view.ts';
+import { buildArchiveView, buildObserveView, type CompressionView } from './compress-view.ts';
 import { COMPACTION_ABORTED_ERROR } from './constants.ts';
 import { formatCompactCount, formatSeconds } from './format.ts';
 import { makeLogger } from './logger.ts';
@@ -129,7 +129,7 @@ function findLifecycle(session: Session, compactionId: string): Lifecycle {
   return lifecycle;
 }
 
-/** 重建被压缩内容的视图；不可重建时返回错误。 */
+/** 重建被压缩内容的视图：反思用被归档块的归档视图，观察用原消息；不可重建时返回错误。 */
 function rebuildView(
   session: Session,
   phase: 'observe' | 'reflect',
@@ -141,7 +141,7 @@ function rebuildView(
       const text = historyTextOf(session.snapshotEvents()[seq]);
       return text === undefined ? [] : [{ text, seq }];
     });
-    return buildReflectView(blocks, { skipReasoning });
+    return buildArchiveView(blocks).view;
   }
   return buildObserveView(session, shadowedSeqs, { skipReasoning });
 }
@@ -215,7 +215,7 @@ export async function recompress(
     view,
     originalChars,
     phase,
-    taskText: buildCompressionTaskText(phase, view.minIndex, view.maxIndex),
+    taskText: buildCompressionTaskText(phase, view.minIndex, view.maxIndex, view.segments),
     target,
     maxTokens: config.compressMaxTokens,
     rateLimitWaitMs: config.rateLimitWaitMs,

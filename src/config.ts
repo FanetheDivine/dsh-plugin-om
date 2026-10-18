@@ -11,7 +11,7 @@ import { isRecord } from './utils.ts';
 export type PluginConfig = {
   /** 观察阈值（tokens）：净压力 ≥ 该值时触发观察压缩。 */
   observeThresholdTokens: number;
-  /** 反思阈值（tokens）：全部 <history> 块 token 合计 ≥ 该值时触发精简合并。 */
+  /** 反思阈值（tokens）：<history> 块 token 合计 ≥ 该值时后台归档较早的块，尾部保留合计不超过其 1/3。 */
   reflectThresholdTokens: number;
   /** 单次摘要生成上限（LLM maxTokens）；undefined 表示不设置，由模型适配器默认值决定。 */
   compressMaxTokens: number | undefined;
@@ -35,9 +35,7 @@ export type PluginConfig = {
   progressReminderIdleToolCalls: number;
   /** 步骤级日志开关（缺省按 NODE_ENV !== 'production' 判定）。 */
   debug: boolean;
-  /** 是否注册 recall 工具。 */
-  recallEnabled: boolean;
-  /** 是否为 recall 启用语义增强（依赖 recallEnabled；false 时不触发模型下载）。 */
+  /** 是否为 recall 的 query 启用语义检索（false 时按字符串匹配，不触发模型下载）。 */
   semanticRecallEnabled: boolean;
   /** 语义增强嵌入模型目录。 */
   modelDir: string;
@@ -52,7 +50,7 @@ export type PluginConfig = {
 /** 默认配置（冻结对象，resolveConfig 合并的基底；debug 缺省值在解析时按 NODE_ENV 判定）。 */
 export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   observeThresholdTokens: 35000,
-  reflectThresholdTokens: 40000,
+  reflectThresholdTokens: 80000,
   compressMaxTokens: undefined,
   rateLimitWaitMs: 60000,
   recompressConcurrency: 2,
@@ -64,7 +62,6 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   progressReminderIdleSteps: 4,
   progressReminderIdleToolCalls: 10,
   debug: false,
-  recallEnabled: true,
   semanticRecallEnabled: true,
   modelDir: sharedModelDir(),
   compressProvider: undefined,
@@ -111,7 +108,6 @@ export const Config = Schema.object({
   debug: Schema.boolean()
     .default(process.env.NODE_ENV !== 'production')
     .volatile(),
-  recallEnabled: Schema.boolean().default(DEFAULT_CONFIG.recallEnabled).volatile(),
   semanticRecallEnabled: Schema.boolean().default(DEFAULT_CONFIG.semanticRecallEnabled).volatile(),
   modelDir: Schema.string().default(DEFAULT_CONFIG.modelDir).volatile(),
   compressProvider: Schema.string().volatile(),
@@ -195,10 +191,7 @@ export function resolveConfig(raw?: unknown): Readonly<PluginConfig> {
     DEFAULT_CONFIG.progressReminderIdleEnabled,
   );
   config.debug = resolveBoolean(input.debug, process.env.NODE_ENV !== 'production');
-  config.recallEnabled = resolveBoolean(input.recallEnabled, true);
-  // 语义增强依赖原文召回：recall 关闭时一并失效
-  config.semanticRecallEnabled =
-    config.recallEnabled && resolveBoolean(input.semanticRecallEnabled, true);
+  config.semanticRecallEnabled = resolveBoolean(input.semanticRecallEnabled, true);
   const modelDir = input.modelDir;
   if (typeof modelDir === 'string' && modelDir.trim() !== '') {
     config.modelDir = modelDir;

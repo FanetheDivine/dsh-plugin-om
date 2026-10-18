@@ -21,7 +21,6 @@ type Op =
 
 /** 依赖项默认全部开启，使所有字段可见。 */
 const ENABLED = {
-  recallEnabled: true,
   semanticRecallEnabled: true,
   progressReminderIdleEnabled: true,
 };
@@ -186,7 +185,7 @@ const type = (input: HTMLInputElement, text: string) => {
 };
 
 describe('dsh-plugin-om 的配置槽和编辑', () => {
-  it('把行配置注册到服务中的 namespace，并显示 19 个可以编辑的值控件', () => {
+  it('把行配置注册到服务中的 namespace，并显示 18 个可以编辑的值控件', () => {
     const { entry, registrations, container } = mount();
     expect(registrations).toEqual(['dsh-plugin-om']);
     expect(entry.name).toBe('plugins.row.config');
@@ -196,7 +195,6 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       'observeThresholdTokens',
       'reflectThresholdTokens',
       'tailMessageCount',
-      'recallEnabled',
       'semanticRecallEnabled',
       'modelDir',
       'compressProvider',
@@ -213,7 +211,7 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       'debug',
     ];
     for (const key of keys) expect(control(container, key).disabled, key).toBe(false);
-    expect(container.querySelectorAll('input').length).toBe(19);
+    expect(container.querySelectorAll('input').length).toBe(18);
   });
 
   it('按功能逻辑排列字段，父开关在依赖项之前', () => {
@@ -227,7 +225,6 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       'observeThresholdTokens',
       'reflectThresholdTokens',
       'tailMessageCount',
-      'recallEnabled',
       'semanticRecallEnabled',
       'modelDir',
       'compressProvider',
@@ -256,13 +253,12 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     expect(host.state.user).toEqual({});
   });
 
-  it('一次保存原子提交全部 19 项和读取时 revision，成功后同步宿主接受值', async () => {
+  it('一次保存原子提交全部 18 项和读取时 revision，成功后同步宿主接受值', async () => {
     const { host, container, face } = mount();
     const numberFields = [
       'observeThresholdTokens',
       'reflectThresholdTokens',
       'tailMessageCount',
-      'recallEnabled',
       'semanticRecallEnabled',
       'modelDir',
       'compressMaxTokens',
@@ -279,7 +275,6 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       'progressReminderEnabled',
       'progressReminderIdleEnabled',
       'semanticRecallEnabled',
-      'recallEnabled',
       'debug',
     ];
     for (const key of numberFields) type(control(container, key), '42');
@@ -297,7 +292,7 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     });
     expect(host.calls).toHaveLength(1);
     expect(host.calls[0]?.revision).toBe(4);
-    expect(host.calls[0]?.ops).toHaveLength(19);
+    expect(host.calls[0]?.ops).toHaveLength(18);
     // 被隐藏的字段草稿仍随保存提交
     expect(host.calls[0]?.ops).toContainEqual({
       op: 'set',
@@ -409,67 +404,13 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     expect(boolField?.querySelector('button')).toBeNull();
   });
 
-  describe('语义增强依赖原文召回', () => {
-    const texts = (face: ReturnType<typeof mount>['face']) => {
-      const { fields } = face.hooks.omConfigCard.getSnapshot();
-      return [fields.recallEnabled.text, fields.semanticRecallEnabled.text];
-    };
-
-    it('取消原文召回时一并取消语义增强，并原子保存两项', async () => {
-      const { host, container, face } = mount({
-        value: { recallEnabled: true, semanticRecallEnabled: true },
-        user: {},
-      });
-      act(() => control(container, 'recallEnabled').click());
-      expect(texts(face)).toEqual(['false', 'false']);
-      await act(async () => face.save());
-      expect(host.calls[0]?.ops).toEqual(
-        expect.arrayContaining([
-          { op: 'set', path: ['recallEnabled'], value: false },
-          { op: 'set', path: ['semanticRecallEnabled'], value: false },
-        ]),
-      );
-    });
-
-    it('取消语义增强不影响原文召回', () => {
-      const { container, face } = mount({
-        value: { recallEnabled: true, semanticRecallEnabled: true },
-        user: {},
-      });
-      act(() => control(container, 'semanticRecallEnabled').click());
-      expect(texts(face)).toEqual(['true', 'false']);
-      expect(control(container, 'recallEnabled').checked).toBe(true);
-    });
-
-    it('原文召回重新开启后语义增强重新出现，并保留此前的取消', () => {
-      const { container, face } = mount({
-        value: { recallEnabled: true, semanticRecallEnabled: true },
-        user: {},
-      });
-      act(() => control(container, 'recallEnabled').click());
-      expect(field(container, 'semanticRecallEnabled')).toBeNull();
-      act(() => control(container, 'recallEnabled').click());
-      expect(texts(face)).toEqual(['true', 'false']);
-      expect(control(container, 'semanticRecallEnabled').checked).toBe(false);
-    });
-  });
-
   describe('依赖项为关闭时隐藏关联配置', () => {
     const hidden = (container: HTMLElement, names: readonly string[]) =>
       names.map((name) => field(container, name) === null);
 
-    it('原文召回关闭时隐藏语义增强和嵌入模型目录', () => {
-      const { container } = mount({
-        value: { recallEnabled: false, semanticRecallEnabled: true },
-        user: {},
-      });
-      expect(hidden(container, ['semanticRecallEnabled', 'modelDir'])).toEqual([true, true]);
-      expect(field(container, 'recallEnabled')).not.toBeNull();
-    });
-
     it('语义增强关闭时只隐藏嵌入模型目录', () => {
       const { container } = mount({
-        value: { recallEnabled: true, semanticRecallEnabled: false },
+        value: { semanticRecallEnabled: false },
         user: {},
       });
       expect(hidden(container, ['semanticRecallEnabled', 'modelDir'])).toEqual([false, true]);
@@ -477,7 +418,7 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
 
     it('语义增强开启时显示嵌入模型目录，开关切换即时联动', () => {
       const { container } = mount({
-        value: { recallEnabled: true, semanticRecallEnabled: true },
+        value: { semanticRecallEnabled: true },
         user: {},
       });
       expect(hidden(container, ['modelDir'])).toEqual([false]);
@@ -572,12 +513,11 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     expect(control(container, 'observeThresholdTokens').value).toBe('77');
   });
 
-  it('真实中英字典在 DOM 中显示全部 19 项标题、说明和保存失败反馈', async () => {
+  it('真实中英字典在 DOM 中显示全部 18 项标题、说明和保存失败反馈', async () => {
     const keys = [
       'observeThresholdTokens',
       'reflectThresholdTokens',
       'tailMessageCount',
-      'recallEnabled',
       'semanticRecallEnabled',
       'modelDir',
       'compressMaxTokens',
@@ -593,7 +533,6 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       'progressReminderIdleEnabled',
       'progressReminderIdleSteps',
       'progressReminderIdleToolCalls',
-      'recallEnabled',
       'semanticRecallEnabled',
       'debug',
     ] as const;
