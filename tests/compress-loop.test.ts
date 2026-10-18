@@ -14,7 +14,12 @@ import {
   withoutReasoning,
 } from '../src/compress-loop.ts';
 import { COMPRESSION_TOOL_SCHEMAS } from '../src/compress-tools.ts';
-import { buildReflectView, type CompressionView, type ViewEntry } from '../src/compress-view.ts';
+import {
+  buildArchiveView,
+  buildReflectView,
+  type CompressionView,
+  type ViewEntry,
+} from '../src/compress-view.ts';
 import {
   COMPACTION_ABORTED_ERROR,
   COMPLETE_MESSAGE_DEFINITION,
@@ -360,6 +365,12 @@ describe('buildCompressionPrompt / buildCompressionTaskText', () => {
     expect(buildCompressionTaskText('observe', 3, 8)).not.toContain('<history>');
     expect(buildCompressionTaskText('reflect', 0, 12)).toContain('<history>');
     expect(buildCompressionTaskText('reflect', 0, 12)).toContain('[0..12]');
+    expect(
+      buildCompressionTaskText('reflect', 0, 12, [
+        { lo: 1, hi: 3 },
+        { lo: 5, hi: 12 },
+      ]),
+    ).toContain('归档段共 2 个：[1..3]、[5..12]');
   });
 });
 
@@ -628,18 +639,49 @@ describe('runCompressionLoop', () => {
     expect(userSource).toEqual({ kind: 'user' });
   });
 
-  it('反思 pass 在 system 追加反思合并约束，观察 pass 不追加', async () => {
-    const systemOf = async (phase: 'observe' | 'reflect') => {
-      const ctx = makeCtx({
-        llmStreamFactory: () => roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] }),
-      });
-      await runCompressionLoop(ctx, makeSession(), loopOptions({ phase }));
-      return (ctx._llmCalls[0]?.options as { system?: string } | undefined)?.system;
-    };
-    expect(await systemOf('reflect')).toBe(
-      `${buildCompressionPrompt(true)}\n\n${REFLECT_COMPRESSION_PROMPT}`,
+  it('归档视图追加归档约束、要求 keywords，逐段压缩后产出 archived-history', async () => {
+    const { view } = buildArchiveView([
+      {
+        seq: 1,
+        text: '<history>\n<user_message index="0"><![CDATA[需求]]></user_message>\n<assistant start="1" end="2"><![CDATA[实现]]></assistant>\n</history>',
+      },
+    ]);
+    const ctx = makeCtx({
+      llmStreamFactory: () =>
+        roundChunks({
+          calls: [
+            {
+              id: 'c1',
+              name: 'compressHistory',
+              args: { start: 1, end: 2, content: '实现完成', keywords: ['实现'] },
+            },
+            { id: 'done', name: 'completeCompression' },
+          ],
+        }),
+    });
+    const result = await runCompressionLoop(
+      ctx,
+      makeSession(),
+      loopOptions({ view, phase: 'reflect' }),
     );
-    expect(await systemOf('observe')).toBe(buildCompressionPrompt(true));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.text).toContain('<archived-history');
+    expect(result.text).toContain('key-word="实现"');
+    const options = ctx._llmCalls[0]?.options as GenerateOptions;
+    expect(options.system).toBe(`${buildCompressionPrompt(true)}\n\n${REFLECT_COMPRESSION_PROMPT}`);
+    const schema = options.tools?.find((t) => t.name === 'compressHistory');
+    const params = schema?.parameters as { required?: string[] } | undefined;
+    expect(params?.required).toContain('keywords');
+  });
+
+  it('非归档视图不追加归档约束', async () => {
+    const ctx = makeCtx({
+      llmStreamFactory: () => roundChunks({ calls: [{ id: 't1', name: 'completeCompression' }] }),
+    });
+    await runCompressionLoop(ctx, makeSession(), loopOptions({ phase: 'reflect' }));
+    const options = ctx._llmCalls[0]?.options as GenerateOptions | undefined;
+    expect(options?.system).toBe(buildCompressionPrompt(true));
   });
 
   it('requestOptions 条件携带 reasoningEffort：配置时透传，未配置时不带该键', async () => {

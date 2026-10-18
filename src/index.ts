@@ -1,6 +1,6 @@
 /**
  * dsh-plugin-om 入口（tsdown 打包入口）：导出 name / inject / Config / apply。
- * apply 在 tools 服务可用时维护 recall 工具（含语义增强）并处理 Loader volatile 配置提交，
+ * apply 在 tools 服务可用时恒注册 recall 工具（语义增强按配置切换）并处理 Loader volatile 配置提交，
  * 并接线 agent/pre-step 自动压缩（先反思后观察，仅主会话生效；观察压缩触发后在后台
  * 预压缩、到期注入，见 precompress.ts）与提醒补发
  * （进度提醒的 system-reminder 用户消息，见 system-reminder.ts），
@@ -16,13 +16,14 @@
 import type {} from '@deepseek-ai/cordis-plugin-loader';
 import type {} from '@deepseek-ai/dsh-commands';
 import { buildCompactionEvalCommand } from './compaction-eval-command.ts';
-import { type CompressPassResult, maybeCompress } from './compress.ts';
+import { type CompressPassResult, commitReflection, maybeCompress } from './compress.ts';
 import { Config, currentConfig } from './config.ts';
 import { ensureModelReady, getEmbedder } from './embedding.ts';
 import { makeLogger } from './logger.ts';
 import { disposeAllPrecompressions, disposePrecompression } from './precompress.ts';
 import { buildRecallTool } from './recall.ts';
 import { buildRecompressCommand } from './recompress.ts';
+import { disposeAllReflections, disposeReflection } from './reflect.ts';
 import {
   activeSystemReminders,
   ensureSystemReminders,
@@ -61,14 +62,14 @@ export function apply(ctx: Context, config?: unknown): void {
   const logModel = (message: string) => logger.info(message);
 
   // 可选服务缺失只 warn：对应功能停用，服务出现后由 ctx.inject 回调自动启用。
-  if (resolved.recallEnabled && ctx.get('tools') === undefined) {
+  if (ctx.get('tools') === undefined) {
     logger.warn('tools 服务未挂载，recall 暂不可用');
   }
   if (ctx.get('commands') === undefined) {
     logger.warn('commands 服务未挂载，重压缩与 OM 结果评估命令暂不可用');
   }
 
-  // recall 是可选能力：tools 服务可用时才注册，服务缺失不影响压缩；
+  // recall 恒注册（依赖 tools 服务，服务缺失不影响压缩）；
   // 服务变化时回调重跑，注册状态随回调局部持有并在卸载时释放。
   ctx.inject(['tools'], (inner) => {
     let disposeRecall: (() => void) | undefined;
@@ -78,18 +79,16 @@ export function apply(ctx: Context, config?: unknown): void {
     /** 保持注册的 recall 与当前配置一致；仅语义增强首次生效或更换目录时启动后台预热。 */
     const syncTools = (): void => {
       const next = currentConfig(config);
-      const semantic = next.recallEnabled && next.semanticRecallEnabled;
+      const semantic = next.semanticRecallEnabled;
       if (
         disposeRecall &&
-        (!next.recallEnabled ||
-          registered?.semantic !== semantic ||
-          (semantic && registered.modelDir !== next.modelDir))
+        (registered?.semantic !== semantic || (semantic && registered.modelDir !== next.modelDir))
       ) {
         disposeRecall();
         disposeRecall = undefined;
         registered = undefined;
       }
-      if (next.recallEnabled && !disposeRecall) {
+      if (!disposeRecall) {
         const directory = next.modelDir;
         disposeRecall = inner.tools.register(
           buildRecallTool({
@@ -140,8 +139,11 @@ export function apply(ctx: Context, config?: unknown): void {
   // 会话销毁与插件卸载时中止后台预压缩任务（待定标记与持久化结果仍在日志中，重启后由对账恢复）。
   ctx.on('session/disposed', (session) => disposePrecompression(session.id));
   ctx.effect(() => () => disposeAllPrecompressions(), 'dsh-plugin-om: precompression registry');
+  ctx.on('session/disposed', (session) => disposeReflection(session.id));
+  ctx.effect(() => () => disposeAllReflections(), 'dsh-plugin-om: reflection registry');
 
-  // 两级自动压缩：pre-step 阻塞串行（先反思后观察）；仅主会话生效。
+  // 两级自动压缩（仅主会话）：反思只启动后台任务，观察阻塞注入；
+  // next() 之后本 step 有待输入消息时提交已完成的反思，并把被归档的 skill 追加到本 step。
   // 压缩之后再确保提醒在消息列表中：被压缩遮蔽则补发。
   // 压缩循环最终失败（非 signal 中止）时拒绝本 step：当前 turn 以 blocked 结束，
   // 不再继续 AI 会话（实际报错已写入日志与 compaction/end error，UI 渲染失败行）。
@@ -167,7 +169,21 @@ export function apply(ctx: Context, config?: unknown): void {
       logger.warn(`上下文压缩失败，拒绝本 step 中断当前 turn：${outcome.error}${diagnostic}`);
       return { kind: 'reject' };
     }
-    const decision = await next();
+    let decision = await next();
+    if (
+      decision.kind === 'enter' &&
+      decision.messages.length > 0 &&
+      !signal.aborted &&
+      isMainSession(agent.session)
+    ) {
+      try {
+        const skills = commitReflection(ctx, agent, currentConfig(config));
+        if (skills.length > 0)
+          decision = { ...decision, messages: [...decision.messages, ...skills] };
+      } catch (error) {
+        logger.warn(`反思提交失败: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     // 压缩后按表层与待输入消息检查：进度提醒缺失或按活动窗口重发。
     const latest = currentConfig(config);
     const reminders = activeSystemReminders(latest);

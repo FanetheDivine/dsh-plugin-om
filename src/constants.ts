@@ -1,7 +1,7 @@
 /**
  * 共享常量：插件级魔法字符串，集中定义避免散落各模块。
  * 导出 PLUGIN_LABEL / PLUGIN_SOURCE_KIND / OmMessageSource / omSource /
- * HISTORY_TAG / HISTORY_TIP / COMPLETE_MESSAGE_DEFINITION /
+ * HISTORY_TAG / HISTORY_TIP / ARCHIVED_HISTORY_TAG / ARCHIVED_HISTORY_TIP / COMPLETE_MESSAGE_DEFINITION /
  * historyFormatNote / INITIAL_HISTORY_HEADER / SKILL_TOOL_NAME / ASK_USER_QUESTION_TOOL_NAME /
  * COMPACT_CHECKPOINT_PLUGIN / COMPACTION_ABORTED_ERROR / isPluginOwnedSource。
  */
@@ -35,6 +35,12 @@ export const HISTORY_TAG = 'history';
 /** 压缩日志块开标签的 tip 属性（对 AI 的提醒：本块是历史压缩产物，不要复述）。 */
 export const HISTORY_TIP = '当前块是历史消息的压缩产物，不要复述';
 
+/** 归档块标签名：反思把较早的 <history> 块深度压缩为 <archived-history>。 */
+export const ARCHIVED_HISTORY_TAG = 'archived-history';
+
+/** 归档块开标签的 tip 属性。 */
+export const ARCHIVED_HISTORY_TIP = '此块已被深度压缩，如需原文细节请用 recall 查看';
+
 /**
  * 「完整消息」定义（压缩提示词、recall 工具描述与 <history> 块顶注释共用）。
  * 完整消息是摘要日志与 recall 共用的定位单位；首条 index 为 0，按会话顺序递增、全局稳定。
@@ -53,6 +59,8 @@ export type HistoryNoteSections = {
   skill?: boolean;
   /** 块内存在保留的合法或历史 ask 条目时追加 <ask-user-question> 说明。 */
   askUserQuestion?: boolean;
+  /** 归档块追加 key-word 属性说明。 */
+  keyWord?: boolean;
 };
 
 /**
@@ -72,6 +80,10 @@ export function historyFormatNote(sections: HistoryNoteSections = {}): string {
     parts.push(
       '<ask-user-question index="N"> 表示向用户提问，CDATA 内为逐题成对的 q:（提问）与 a:（用户回答）行，未作答的题记为 a:(未回答)',
     );
+  if (sections.keyWord)
+    parts.push(
+      '<assistant start="A" end="B" key-word="K"> 的正文是该区间的一句话摘要，K 为供 recall 检索原文的关键词',
+    );
   return `<!-- ${parts.join('；')} -->`;
 }
 
@@ -80,6 +92,13 @@ export const SKILL_TOOL_NAME = 'skill';
 
 /** 手动加载 skill 的系统消息 source kind。 */
 export const SKILL_INVOCATION_KIND = 'skill-invocation';
+
+/** 手动加载 skill 的消息 source（与宿主 skill 插件声明的形态一致）。 */
+export type SkillInvocationSource = {
+  kind: 'skill-invocation';
+  name: string;
+  form: 'instructions';
+};
 
 /**
  * 提问工具名：成功且问题与答案完整配对时视为合法 ask，失败调用按普通 toolcall 处理。

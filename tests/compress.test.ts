@@ -14,21 +14,29 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
 });
 
 import {
+  archivedHistoryTextOf,
   clearCompressionModelInfoCache,
   compressionTarget,
   computeCompressRange,
   estimateTextTokens,
   findObservePending,
   historySection,
+  historyTextOf,
   isPairBalancedAfter,
-  reflectPass,
 } from '../src/compress.ts';
 import { resolveConfig } from '../src/config.ts';
-import { HISTORY_TAG, HISTORY_TIP, PLUGIN_SOURCE_KIND } from '../src/constants.ts';
+import {
+  ARCHIVED_HISTORY_TAG,
+  ARCHIVED_HISTORY_TIP,
+  HISTORY_TAG,
+  HISTORY_TIP,
+  PLUGIN_SOURCE_KIND,
+} from '../src/constants.ts';
 import { apply } from '../src/index.ts';
 import { findOmEvents } from '../src/om-event.ts';
 import type { Session, SessionEvent } from '../src/types.ts';
 import {
+  archivedHistoryMessage,
   buildToolCallFlow,
   historyMessage,
   makeCtx,
@@ -167,6 +175,35 @@ describe('观察触发：净压力口径（换算系数 × 未压缩表层估算
         ),
       ),
     ).toBe(true);
+  });
+
+  it('归档块 token 同样从压力中扣除', async () => {
+    const archivedInner = '归档内容'.repeat(80);
+    const historyInner = '旧摘要'.repeat(60);
+    const session = makeSession({
+      events: [
+        archivedHistoryMessage(archivedInner),
+        historyMessage(historyInner),
+        ...buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+          withTurnEnd: true,
+        }),
+      ],
+    });
+    const compressedTokens =
+      estimateTextTokens(
+        `<${ARCHIVED_HISTORY_TAG} tip="${ARCHIVED_HISTORY_TIP}">\n${archivedInner}\n</${ARCHIVED_HISTORY_TAG}>`,
+      ) + estimateTextTokens(`<history tip="${HISTORY_TIP}">\n${historyInner}\n</history>`);
+    const threshold = 1000 - compressedTokens + 1;
+    const ctx = makeCtx({ meterSurfaceTokens: 1000 });
+    apply(ctx, { observeThresholdTokens: threshold, tailMessageCount: 0 });
+    await runPreStep(ctx, session);
+    expect(ctx._llmCalls).toHaveLength(0);
+    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
+    expect(steps.some((s) => s.includes(`已压缩块 ${compressedTokens}`))).toBe(true);
   });
 
   it('系统提示词 token 从净压力扣除：低于阈值跳过', async () => {
@@ -744,133 +781,48 @@ describe('压缩边界 historySection', () => {
     expect(historySection(pluginNoTag).blocks).toEqual([]);
     expect(historySection(pluginNoTag).boundarySeq).toBeUndefined();
   });
-});
 
-describe('反思保留已处理问答', () => {
-  it('只含 q/a 的 history ask 原样保留，不要求重新处理或回读选项', async () => {
-    const inner =
-      '<ask-user-question index="3"><![CDATA[q:采用哪种发布方式？\na:采用灰度发布，先向少量用户开放。]]></ask-user-question>';
-    const session = makeSession({ events: [historyMessage(inner)] });
-    const ctx = makeCtx({
-      llmStreamFactory: () =>
-        roundChunks({
-          calls: [
-            { id: 'view', name: 'getHistory' },
-            { id: 'done', name: 'completeCompression' },
-          ],
-        }),
-    });
-    const result = await reflectPass(
-      ctx,
-      { session } as never,
-      resolveConfig({ reflectThresholdTokens: 1, rateLimitWaitMs: 0 }),
-      { provider: 'test', model: 'test-model' },
-    );
-    expect(result.failed).toBe(false);
-    expect(ctx._llmCalls).toHaveLength(1);
-    expect(JSON.stringify(ctx._llmCalls[0]?.options)).not.toContain('rewriteAskUserQuestion');
-    const { blocks } = historySection(session);
-    expect(blocks).toHaveLength(1);
-    expect(blocks[0]?.text).toContain(inner);
-    expect(blocks[0]?.text).not.toContain('o1:');
-  });
-});
-
-describe('反思阈值按换算系数折算真实 token', () => {
-  const inner = '<user_message index="0">旧内容</user_message>';
-  const blockText = `<history tip="${HISTORY_TIP}">\n${inner}\n</history>`;
-
-  it('换算系数 2：摘要估算 × 2 达阈值触发合并', async () => {
-    const session = makeSession({ events: [historyMessage(inner)] });
-    const estimated = estimateTextTokens(blockText);
-    // 真实用量基线 = 2 × 表层估算 → 换算系数 2.00；摘要 tokens = 估算 × 2
-    const ctx = makeCtx({
-      meterTotalTokens: 2 * estimated,
-      meterSurfaceTokens: estimated,
-      llmStreamFactory: () =>
-        roundChunks({
-          calls: [
-            { id: 'view', name: 'getHistory' },
-            { id: 'done', name: 'completeCompression' },
-          ],
-        }),
-    });
-    const result = await reflectPass(
-      ctx,
-      { session } as never,
-      resolveConfig({ reflectThresholdTokens: 2 * estimated, rateLimitWaitMs: 0 }),
-      { provider: 'test', model: 'test-model' },
-    );
-    expect(result.failed).toBe(false);
-    expect(ctx._llmCalls).toHaveLength(1); // 达阈值：压缩循环执行一轮
-    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
-    expect(
-      steps.some((s) =>
-        s.includes(
-          `反思：摘要 ${2 * estimated} tokens（估算 ${estimated} × 换算系数 2.00）≥ 阈值 ${2 * estimated}`,
-        ),
-      ),
-    ).toBe(true);
-  });
-
-  it('换算系数 2：摘要估算 × 2 仍低于阈值则跳过', async () => {
-    const session = makeSession({ events: [historyMessage(inner)] });
-    const estimated = estimateTextTokens(blockText);
-    const ctx = makeCtx({
-      meterTotalTokens: 2 * estimated,
-      meterSurfaceTokens: estimated,
-      llmStreamFactory: () => roundChunks({ text: '不应被调用' }),
-    });
-    const result = await reflectPass(
-      ctx,
-      { session } as never,
-      resolveConfig({ reflectThresholdTokens: 2 * estimated + 1, rateLimitWaitMs: 0 }),
-      { provider: 'test', model: 'test-model' },
-    );
-    expect(result.failed).toBe(false);
-    expect(ctx._llmCalls).toHaveLength(0);
-    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
-    expect(
-      steps.some((s) =>
-        s.includes(
-          `反思：摘要 ${2 * estimated} tokens（估算 ${estimated} × 换算系数 2.00）< 阈值 ${2 * estimated + 1}，跳过`,
-        ),
-      ),
-    ).toBe(true);
-  });
-});
-
-describe('反思压缩循环失败：诊断子会话 id 传播', () => {
-  it('循环失败：CompressPassResult 与 compaction/end 载荷携带诊断子会话 sessionId', async () => {
+  it('归档块单独收集，不计入 history 块，并参与压缩边界', () => {
     const session = makeSession({
-      events: [historyMessage('<user_message index="0">旧内容</user_message>')],
+      events: [
+        archivedHistoryMessage('<user_message index="0"><![CDATA[早期]]></user_message>'),
+        historyMessage('块1'),
+        ...buildToolCallFlow({ code: 'a()', description: '任务A', callId: 'c1', resultText: 'r1' }),
+      ],
     });
-    const ctx = makeCtx({
-      llmStreamFactory: () => roundChunks({ text: '不调用压缩工具' }),
+    const { blocks, archived, boundarySeq } = historySection(session);
+    expect(archived.map((b) => b.seq)).toEqual([0]);
+    expect(blocks.map((b) => b.seq)).toEqual([1]);
+    expect(boundarySeq).toBe(1);
+    const onlyArchived = historySection(
+      makeSession({
+        events: [
+          archivedHistoryMessage('早期'),
+          ...buildToolCallFlow({
+            code: 'a()',
+            description: '任务A',
+            callId: 'c1',
+            resultText: 'r1',
+          }),
+        ],
+      }),
+    );
+    expect(onlyArchived.blocks).toEqual([]);
+    expect(onlyArchived.boundarySeq).toBe(0);
+  });
+
+  it('归档块正文引用 <history> 标签时不被误判为 history 块', () => {
+    const session = makeSession({
+      events: [
+        archivedHistoryMessage(
+          '<user_message index="0"><![CDATA[解释 <history> 块]]></user_message>',
+        ),
+      ],
     });
-    const config = resolveConfig({
-      reflectThresholdTokens: 1,
-      rateLimitWaitMs: 0,
-      debug: false,
-    });
-    const result = await reflectPass(ctx, { session } as never, config, {
-      provider: 'test',
-      model: 'test-model',
-    });
-    expect(result).toMatchObject({ failed: true, aborted: false });
-    if (!result.failed) throw new Error('应失败');
-    // 诊断子会话已创建，id 随失败结果向上传播（index.ts 主会话日志使用）
-    const created = ctx._createdSessions[0];
-    expect(created).toBeDefined();
-    expect(result.diagnosticSessionId).toBe(created?.id);
-    // compaction/end(error) 载荷带诊断子会话 sessionId
-    const end = session.snapshotEvents().find((e) => e.type === 'compaction/end');
-    const endData =
-      (end?.data as { error?: string; diagnosticSessionId?: string } | undefined) ?? {};
-    expect(endData.error).toContain('未调用压缩工具');
-    expect(endData.diagnosticSessionId).toBe(created?.id);
-    // 失败不产生部分替换：表层仍为 history 块自身
-    expect(session.surface.nodes).toHaveLength(1);
+    const event = session.snapshotEvents()[0];
+    expect(archivedHistoryTextOf(event)).toBeDefined();
+    expect(historyTextOf(event)).toBeUndefined();
+    expect(historySection(session).blocks).toEqual([]);
   });
 });
 

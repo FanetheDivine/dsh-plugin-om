@@ -197,7 +197,6 @@ async function stackAgentLoop(mode: 'success' | 'failure', storageRoot?: string)
         reflectThresholdTokens: 1000000,
         tailMessageCount: 0,
         rateLimitWaitMs: 0,
-        recallEnabled: true,
         semanticRecallEnabled: false,
       },
     );
