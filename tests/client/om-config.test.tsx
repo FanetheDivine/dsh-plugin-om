@@ -192,28 +192,102 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     expect(entry.name).toBe('plugins.row.config');
     expect(entry.key).toBe('dsh-plugin-om#dsh-plugin-om');
     const keys = [
+      'omEnabled',
       'observeThresholdTokens',
       'reflectThresholdTokens',
       'tailMessageCount',
-      'compressMaxTokens',
       'compressProvider',
       'compressModel',
       'compressReasoningEffort',
+      'compressMaxTokens',
       'compressSkipReasoning',
       'rateLimitWaitMs',
       'recompressConcurrency',
-      'modelDir',
-      'omEnabled',
       'progressReminderEnabled',
       'progressReminderIdleEnabled',
       'progressReminderIdleSteps',
       'progressReminderIdleToolCalls',
       'recallEnabled',
       'semanticRecallEnabled',
+      'modelDir',
       'debug',
     ];
     for (const key of keys) expect(control(container, key).disabled, key).toBe(false);
     expect(container.querySelectorAll('input').length).toBe(19);
+  });
+
+  it('按功能分组呈现配置，组内父开关在依赖项之前', () => {
+    const { container } = mount();
+    const groups = [...container.querySelectorAll<HTMLElement>('[data-om-group]')];
+    expect(groups.map((group) => group.dataset.omGroup)).toEqual([
+      'compaction',
+      'compression',
+      'recompression',
+      'progress',
+      'recall',
+      'debug',
+    ]);
+    expect(
+      groups.map((group) =>
+        [...group.querySelectorAll<HTMLElement>('[data-om-field]')].map(
+          (row) => row.dataset.omField,
+        ),
+      ),
+    ).toEqual([
+      ['omEnabled', 'observeThresholdTokens', 'reflectThresholdTokens', 'tailMessageCount'],
+      [
+        'compressProvider',
+        'compressModel',
+        'compressReasoningEffort',
+        'compressMaxTokens',
+        'compressSkipReasoning',
+      ],
+      ['rateLimitWaitMs', 'recompressConcurrency'],
+      [
+        'progressReminderEnabled',
+        'progressReminderIdleEnabled',
+        'progressReminderIdleSteps',
+        'progressReminderIdleToolCalls',
+      ],
+      ['recallEnabled', 'semanticRecallEnabled', 'modelDir'],
+      ['debug'],
+    ]);
+  });
+
+  it('分组标题使用中英字典文案，依赖项隐藏时标题保留', () => {
+    const cases: Array<{ dictionary: Record<string, string>; titles: string[] }> = [
+      {
+        dictionary: zh,
+        titles: ['自动压缩', '摘要生成', '重试与并发', '进度提醒', '原文召回', '调试'],
+      },
+      {
+        dictionary: en,
+        titles: [
+          'Automatic compaction',
+          'Summary generation',
+          'Retries and concurrency',
+          'Progress reminders',
+          'Original-text recall',
+          'Debugging',
+        ],
+      },
+    ];
+    for (const { dictionary, titles } of cases) {
+      const { container } = mount(
+        { value: { recallEnabled: false, progressReminderIdleEnabled: false }, user: {} },
+        dictionary,
+      );
+      expect(
+        [...container.querySelectorAll('[data-om-group] h3')].map((title) => title.textContent),
+      ).toEqual(titles);
+      expect(container.querySelector('[data-om-group="recall"] h3')?.textContent).toBe(titles[4]);
+      expect(container.querySelectorAll('[data-om-group="recall"] [data-om-field]')).toHaveLength(
+        1,
+      );
+      expect(container.querySelectorAll('[data-om-group="progress"] [data-om-field]')).toHaveLength(
+        2,
+      );
+    }
   });
 
   it('真实控件暂存整数、选填字符串和布尔值，不会编辑即持久化', () => {

@@ -10,7 +10,7 @@ import {
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
 import type { CSSProperties, ReactNode } from 'react';
 import type { NS } from './locales.ts';
-import { OM_CONFIG_FIELDS, type OmConfigCardFace } from './om-config-controller.ts';
+import { OM_CONFIG_GROUPS, type OmConfigCardFace } from './om-config-controller.ts';
 
 /** 插件管理器注入的配置页 props。 */
 export type OmConfigCardProps = PropsRuntime<'plugins.row.config'> &
@@ -118,53 +118,69 @@ export function OmConfigCard(props: OmConfigCardProps): string | React.JSX.Eleme
           {t('config.discard')}
         </button>
       ) : null}
-      {OM_CONFIG_FIELDS.map(({ name, kind }) => {
-        const field = state.fields[name];
-        const label = t(`config.${name}`);
-        const hint = t(`config.${name}.hint`);
-        const disabled = !state.writable || state.saving;
+      {OM_CONFIG_GROUPS.map(({ key, fields }, index) => {
         // 依赖项关闭时隐藏关联配置，草稿保留并仍随保存提交
-        if (!isVisible(name, flags)) return null;
-        const checked = field.text === 'true';
-        const onChange = (value: boolean) => {
-          props.edit(name, String(value));
-          // 语义增强依赖原文召回：关闭召回时一并关闭语义增强
-          if (name === 'recallEnabled' && !value && flags.semanticOn) {
-            props.edit('semanticRecallEnabled', 'false');
-          }
-        };
-        const onReset = () => props.resetField(name);
+        const visible = fields.filter(({ name }) => isVisible(name, flags));
+        if (visible.length === 0) return null;
+        const titleId = `plugin-config-om-group-${key}`;
         return (
-          <div key={name} data-om-field={name}>
-            {kind === 'boolean' ? (
-              <BooleanField
-                id={`plugin-config-om-${name}`}
-                label={label}
-                hint={hint}
-                checked={checked}
-                overridden={field.overridden}
-                overriddenLabel={t('config.overridden')}
-                resetLabel={t('config.reset')}
-                disabled={disabled}
-                onChange={onChange}
-                onReset={onReset}
-              />
-            ) : (
-              <SettingsValueField
-                id={`plugin-config-om-${name}`}
-                label={label}
-                hint={hint}
-                overriddenLabel={t('config.overridden')}
-                resetLabel={t('config.reset')}
-                invalidLabel={t('config.invalidInteger')}
-                numeric={kind === 'integer'}
-                disabled={disabled}
-                {...field}
-                onEdit={(text) => props.edit(name, text)}
-                onReset={() => props.resetField(name)}
-              />
-            )}
-          </div>
+          <section
+            key={key}
+            data-om-group={key}
+            aria-labelledby={titleId}
+            style={index === 0 ? styles.firstGroup : styles.group}
+          >
+            <h3 id={titleId} style={styles.groupTitle}>
+              {t(`config.group.${key}`)}
+            </h3>
+            {visible.map(({ name, kind }) => {
+              const field = state.fields[name];
+              const label = t(`config.${name}`);
+              const hint = t(`config.${name}.hint`);
+              const disabled = !state.writable || state.saving;
+              const checked = field.text === 'true';
+              const onChange = (value: boolean) => {
+                props.edit(name, String(value));
+                // 语义增强依赖原文召回：关闭召回时一并关闭语义增强
+                if (name === 'recallEnabled' && !value && flags.semanticOn) {
+                  props.edit('semanticRecallEnabled', 'false');
+                }
+              };
+              const onReset = () => props.resetField(name);
+              return (
+                <div key={name} data-om-field={name}>
+                  {kind === 'boolean' ? (
+                    <BooleanField
+                      id={`plugin-config-om-${name}`}
+                      label={label}
+                      hint={hint}
+                      checked={checked}
+                      overridden={field.overridden}
+                      overriddenLabel={t('config.overridden')}
+                      resetLabel={t('config.reset')}
+                      disabled={disabled}
+                      onChange={onChange}
+                      onReset={onReset}
+                    />
+                  ) : (
+                    <SettingsValueField
+                      id={`plugin-config-om-${name}`}
+                      label={label}
+                      hint={hint}
+                      overriddenLabel={t('config.overridden')}
+                      resetLabel={t('config.reset')}
+                      invalidLabel={t('config.invalidInteger')}
+                      numeric={kind === 'integer'}
+                      disabled={disabled}
+                      {...field}
+                      onEdit={(text) => props.edit(name, text)}
+                      onReset={() => props.resetField(name)}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </section>
         );
       })}
     </SettingsForm>
@@ -172,6 +188,23 @@ export function OmConfigCard(props: OmConfigCardProps): string | React.JSX.Eleme
 }
 
 const styles: Record<string, CSSProperties> = {
+  firstGroup: {
+    display: 'flex',
+    flexDirection: 'column',
+    paddingTop: '4px',
+  },
+  group: {
+    display: 'flex',
+    flexDirection: 'column',
+    paddingTop: '24px',
+  },
+  groupTitle: {
+    margin: 0,
+    fontSize: '14px',
+    fontWeight: 500,
+    lineHeight: '20px',
+    color: 'var(--dsw-alias-label-primary)',
+  },
   field: {
     display: 'flex',
     flexDirection: 'column',
