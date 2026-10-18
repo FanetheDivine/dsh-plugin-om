@@ -58,24 +58,24 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
+| `omEnabled` | `true` | 是否启用自动压缩，关闭后进度提醒也不再注入 |
 | `observeThresholdTokens` | `35000` | 观察压缩阈值 |
 | `reflectThresholdTokens` | `40000` | 摘要合并阈值 |
 | `tailMessageCount` | `20` | 触发后保留的完整消息数 |
-| `compressMaxTokens` | 模型默认值 | 单轮生成上限 |
+| `recallEnabled` | `true` | 是否启用原文召回 |
+| `semanticRecallEnabled` | `true` | 是否为 `recall` 启用语义增强，依赖 `recallEnabled` |
+| `modelDir` | DSH 共享目录 | 嵌入模型目录 |
 | `compressProvider` | 会话路由 | 压缩 provider，需与 `compressModel` 同时配置 |
 | `compressModel` | 会话路由 | 压缩模型，需与 `compressProvider` 同时配置 |
 | `compressReasoningEffort` | 模型默认值 | 思考等级 |
+| `compressMaxTokens` | 模型默认值 | 单轮生成上限 |
 | `compressSkipReasoning` | `true` | 是否忽略 reasoning |
 | `rateLimitWaitMs` | `60000` | 429 与 5xx 重试前的等待毫秒数，`0` 表示不等待 |
 | `recompressConcurrency` | `2` | 重压缩同时运行的上限，至少为 `1`，超出的排队 |
-| `modelDir` | DSH 共享目录 | 嵌入模型目录 |
-| `omEnabled` | `true` | 是否启用自动压缩，关闭后进度提醒也不再注入 |
 | `progressReminderEnabled` | `true` | 是否注入进度提醒，需同时开启 `omEnabled` |
 | `progressReminderIdleEnabled` | `false` | 长期无记录时是否重发进度提醒，关闭后仅在提醒缺失时补发 |
 | `progressReminderIdleSteps` | `4` | 无记录的已结束 step 数达到该值才重发，至少为 `1` |
 | `progressReminderIdleToolCalls` | `10` | 无记录期间工具调用数超过该值才重发，至少为 `0` |
-| `recallEnabled` | `true` | 是否启用原文召回 |
-| `semanticRecallEnabled` | `true` | 是否为 `recall` 启用语义增强，依赖 `recallEnabled` |
 | `debug` | 开发环境启用 | 是否输出步骤日志 |
 
 配置页在依赖项关闭时隐藏关联项：原文召回关闭隐藏语义增强，语义增强未生效隐藏 `modelDir`，长期无记录时重发关闭隐藏两个重发阈值。
