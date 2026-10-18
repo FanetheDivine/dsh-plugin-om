@@ -1,6 +1,6 @@
 /**
  * dsh-plugin-om 入口（tsdown 打包入口）：导出 name / inject / Config / apply。
- * apply 在 tools 服务可用时维护 recall 工具（含语义增强）并处理 Loader volatile 配置提交，
+ * apply 在 tools 服务可用时恒注册 recall 工具（语义增强按配置切换）并处理 Loader volatile 配置提交，
  * 并接线 agent/pre-step 自动压缩（先反思后观察，仅主会话生效；观察压缩触发后在后台
  * 预压缩、到期注入，见 precompress.ts）与提醒补发
  * （进度提醒的 system-reminder 用户消息，见 system-reminder.ts），
@@ -62,14 +62,14 @@ export function apply(ctx: Context, config?: unknown): void {
   const logModel = (message: string) => logger.info(message);
 
   // 可选服务缺失只 warn：对应功能停用，服务出现后由 ctx.inject 回调自动启用。
-  if (resolved.recallEnabled && ctx.get('tools') === undefined) {
+  if (ctx.get('tools') === undefined) {
     logger.warn('tools 服务未挂载，recall 暂不可用');
   }
   if (ctx.get('commands') === undefined) {
     logger.warn('commands 服务未挂载，重压缩与 OM 结果评估命令暂不可用');
   }
 
-  // recall 是可选能力：tools 服务可用时才注册，服务缺失不影响压缩；
+  // recall 恒注册（依赖 tools 服务，服务缺失不影响压缩）；
   // 服务变化时回调重跑，注册状态随回调局部持有并在卸载时释放。
   ctx.inject(['tools'], (inner) => {
     let disposeRecall: (() => void) | undefined;
@@ -79,18 +79,16 @@ export function apply(ctx: Context, config?: unknown): void {
     /** 保持注册的 recall 与当前配置一致；仅语义增强首次生效或更换目录时启动后台预热。 */
     const syncTools = (): void => {
       const next = currentConfig(config);
-      const semantic = next.recallEnabled && next.semanticRecallEnabled;
+      const semantic = next.semanticRecallEnabled;
       if (
         disposeRecall &&
-        (!next.recallEnabled ||
-          registered?.semantic !== semantic ||
-          (semantic && registered.modelDir !== next.modelDir))
+        (registered?.semantic !== semantic || (semantic && registered.modelDir !== next.modelDir))
       ) {
         disposeRecall();
         disposeRecall = undefined;
         registered = undefined;
       }
-      if (next.recallEnabled && !disposeRecall) {
+      if (!disposeRecall) {
         const directory = next.modelDir;
         disposeRecall = inner.tools.register(
           buildRecallTool({

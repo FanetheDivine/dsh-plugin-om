@@ -61,14 +61,14 @@ describe('命令定义', () => {
       sessionControllerMounted: true,
       workspaces: [{ id: 'ws-1', path: '/ws', sessionIds: [] }],
     });
-    apply(mounted, { recallEnabled: false, rateLimitWaitMs: 0 });
+    apply(mounted, { rateLimitWaitMs: 0 });
     expect(mounted._registeredCommands.map((c) => c.name)).toEqual([
       'om-recompress',
       EVAL_COMMAND_NAME,
     ]);
 
     const missing = makeCtx();
-    expect(() => apply(missing, { recallEnabled: false, rateLimitWaitMs: 0 })).not.toThrow();
+    expect(() => apply(missing, { rateLimitWaitMs: 0 })).not.toThrow();
     expect(missing._registeredCommands).toEqual([]);
   });
 });

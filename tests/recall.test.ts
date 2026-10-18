@@ -390,42 +390,34 @@ describe('recall 参数校验（zod schema）', () => {
   });
 });
 
-describe('recall 语义增强参数与 wire schema', () => {
+describe('recall query 参数与 wire schema', () => {
   const enhanced = { semantic: {} };
 
-  it('增强关闭时 wire schema 只暴露 start/end/offset，且不接受 query', () => {
-    const properties = buildRecallTool().parameters.properties as Record<string, unknown>;
-    expect(Object.keys(properties).sort()).toEqual(['end', 'offset', 'start']);
-    expect(() => parseRecallArgs({ query: 'x' })).toThrow(/start/);
+  it('语义增强开关不影响 wire schema：恒含 query/top_k，start 不必填', () => {
+    for (const tool of [buildRecallTool(), buildRecallTool(enhanced)]) {
+      const properties = tool.parameters.properties as Record<string, unknown>;
+      expect(Object.keys(properties).sort()).toEqual(['end', 'offset', 'query', 'start', 'top_k']);
+      expect(tool.parameters.required ?? []).not.toContain('start');
+    }
   });
 
-  it('增强开启时 wire schema 增加 query/top_k，且 start 不再必填', () => {
-    const parameters = buildRecallTool(enhanced).parameters;
-    const properties = parameters.properties as Record<string, unknown>;
-    expect(Object.keys(properties).sort()).toEqual(['end', 'offset', 'query', 'start', 'top_k']);
-    expect(parameters.required ?? []).not.toContain('start');
-    expect(parameters).not.toHaveProperty('$schema');
-    expect(parameters).not.toHaveProperty('additionalProperties');
-  });
-
-  it('增强开启时 query 模式的参数解析', () => {
-    expect(parseRecallArgs({ query: '找缓存逻辑' }, true)).toEqual({ query: '找缓存逻辑' });
-    expect(parseRecallArgs({ query: 'x', top_k: 5, start: 2, end: 5 }, true)).toEqual({
+  it('query 模式的参数解析', () => {
+    expect(parseRecallArgs({ query: '找缓存逻辑' })).toEqual({ query: '找缓存逻辑' });
+    expect(parseRecallArgs({ query: 'x', top_k: 5, start: 2, end: 5 })).toEqual({
       query: 'x',
       top_k: 5,
       start: 2,
       end: 5,
     });
-    expect(() => parseRecallArgs({ query: '   ' }, true)).toThrow(/query/);
+    expect(() => parseRecallArgs({ query: '   ' })).toThrow(/query/);
     for (const topK of [0, 11, 2.5, '3']) {
-      expect(() => parseRecallArgs({ query: 'x', top_k: topK }, true)).toThrow(/top_k/);
+      expect(() => parseRecallArgs({ query: 'x', top_k: topK })).toThrow(/top_k/);
     }
   });
 
-  it('增强开启时无 query 仍按区间模式校验', () => {
-    expect(parseRecallArgs({ start: 0, end: 5 }, true)).toEqual({ start: 0, end: 5 });
-    expect(() => parseRecallArgs({}, true)).toThrow(/start/);
-    expect(() => parseRecallArgs({ start: 1 }, true)).toThrow(/end/);
+  it('无 query 时按区间模式校验', () => {
+    expect(() => parseRecallArgs({})).toThrow(/start/);
+    expect(() => parseRecallArgs({ start: 1 })).toThrow(/end/);
   });
 
   it('增强开启时无 query 的区间调用与关闭时结果一致', async () => {
@@ -438,20 +430,52 @@ describe('recall 语义增强参数与 wire schema', () => {
     expect(withSemantic).toBe(plain);
   });
 
-  it('描述随增强状态变化：开启时说明 query 用法', () => {
-    expect(buildRecallTool().description).not.toContain('query');
-    expect(buildRecallTool(enhanced).description).toContain('query');
-    expect(buildRecallTool(enhanced).description).toContain('index');
+  it('描述随增强状态说明 query 的匹配方式', () => {
+    expect(buildRecallTool().description).toContain('字符串匹配');
+    expect(buildRecallTool(enhanced).description).toContain('含义');
+    expect(buildRecallTool(enhanced).description).not.toContain('字符串匹配');
+  });
+});
+
+describe('recall 字符串匹配（语义增强关闭）', () => {
+  /** 执行一次不带语义增强的 query 检索，返回输出文本。 */
+  async function search(args: object, callId?: string): Promise<string> {
+    const session = makeSession({ events: twoCallFlow() });
+    const exec = { agent: { session }, ...(callId === undefined ? {} : { callId }) };
+    return String(textOf(await buildRecallTool().execute(args, exec as never)));
+  }
+
+  it('不区分大小写按命中词数排序，零命中不返回', async () => {
+    const out = await search({ query: 'FIRSTCODE out1 nothing-here', top_k: 10 });
+    expect(out).toContain('字符串匹配');
+    expect(out).toContain('<assistant index="2" type="toolcall" tool-name="run_code">');
+    expect(out).toContain('命中 2/3 个词: firstcode out1');
+    expect(out).not.toContain('index="5"');
+    expect(out).not.toContain('相似度');
   });
 
-  it('增强关闭时忽略 query，按区间模式执行', async () => {
-    const session = makeSession({ events: twoCallFlow() });
-    const out = textOf(
-      await buildRecallTool().execute({ query: 'firstCode', start: 0, end: 0 }, {
-        agent: { session },
-      } as never),
-    );
-    expect(String(out)).toContain('<user_message index="0">');
-    expect(String(out)).not.toContain('相似度');
+  it('同分时 index 大的优先', async () => {
+    const out = await search({ query: 'run_code', top_k: 2 });
+    const second = out.indexOf('index="5"');
+    const first = out.indexOf('index="2"');
+    expect(second).toBeGreaterThan(-1);
+    expect(first).toBeGreaterThan(second);
+  });
+
+  it('区间限定检索范围', async () => {
+    const out = await search({ query: 'run_code', start: 0, end: 3 });
+    expect(out).toContain('检索区间 [0..3]');
+    expect(out).toContain('index="2"');
+    expect(out).not.toContain('index="5"');
+  });
+
+  it('排除本次调用自身的 toolcall', async () => {
+    const out = await search({ query: 'run_code', top_k: 10 }, 'c2');
+    expect(out).toContain('index="2"');
+    expect(out).not.toContain('index="5"');
+  });
+
+  it('无命中时返回提示', async () => {
+    expect(await search({ query: 'zzz-not-exist' })).toContain('未找到包含 zzz-not-exist');
   });
 });

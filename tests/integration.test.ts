@@ -92,7 +92,6 @@ async function stackHarness(options: {
     observeThresholdTokens: number;
     reflectThresholdTokens: number;
     tailMessageCount: number;
-    recallEnabled: boolean;
     semanticRecallEnabled: boolean;
     debug: boolean;
   }>;
@@ -125,7 +124,6 @@ async function stackHarness(options: {
       reflectThresholdTokens: 1000000,
       tailMessageCount: 0,
       rateLimitWaitMs: 0,
-      recallEnabled: false,
       semanticRecallEnabled: false,
       debug: false,
       ...options.configOverrides,
@@ -472,7 +470,6 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
   it('recall 工具经真实 ToolRuntime 注册与调用：压缩后仍可回看原始内容，参数校验失败返回 isError', async () => {
     const { app, session } = await stackHarness({
       withSystemPrompt: true,
-      configOverrides: { recallEnabled: true },
       chunksFor: toolRoundChunks(),
     });
     // 仅 recall 一个工具；语义增强由 semanticRecallEnabled 控制
@@ -576,7 +573,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     warmup.mockClear();
     const { app } = await stackHarness({
       withSystemPrompt: true,
-      configOverrides: { recallEnabled: true, semanticRecallEnabled: true },
+      configOverrides: { semanticRecallEnabled: true },
       chunksFor: () => [],
     });
     const parameters = app.tools.get('recall')?.parameters as { properties: object } | undefined;
@@ -589,16 +586,12 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     });
   }, 30000);
 
-  it('recall 未启用时语义增强无效：不注册工具、不预热模型', async () => {
+  it('语义增强关闭：recall 仍注册、query 有效且不预热模型', async () => {
     const warmup = vi.mocked(embedding.ensureModelReady);
     warmup.mockClear();
-    const { app } = await stackHarness({
-      withSystemPrompt: true,
-      configOverrides: { recallEnabled: false, semanticRecallEnabled: true },
-      chunksFor: () => [],
-    });
-    expect(app.tools.get('recall')).toBeUndefined();
-    expect(app.tools.get('recall-semantic')).toBeUndefined();
+    const { app } = await stackHarness({ withSystemPrompt: true, chunksFor: () => [] });
+    const parameters = app.tools.get('recall')?.parameters as { properties: object } | undefined;
+    expect(Object.keys(parameters?.properties ?? {})).toContain('query');
     expect(warmup).not.toHaveBeenCalled();
   }, 30000);
 });

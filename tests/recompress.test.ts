@@ -339,7 +339,7 @@ describe('recompress：拒绝与互斥', () => {
 });
 
 describe('/om-recompress 命令：apply 接线', () => {
-  const quietConfig = { recallEnabled: false, rateLimitWaitMs: 0 };
+  const quietConfig = { rateLimitWaitMs: 0 };
 
   it('commands 服务可用时注册命令，缺失时插件照常加载且不注册', () => {
     const mounted = makeCtx({ commandsMounted: true });

@@ -1333,9 +1333,8 @@ describe('压缩请求形态（新会话直连）', () => {
   });
 });
 
-// apply 接线（工具注册开关）：recallEnabled 控制 recall 注册；semanticRecallEnabled 为其语义增强，
-// 依赖 recallEnabled；不影响压缩接线。
-describe('apply 接线（recallEnabled / semanticRecallEnabled）', () => {
+// apply 接线（recall 注册）：recall 恒注册；semanticRecallEnabled 只切换 query 的检索方式。
+describe('apply 接线（recall / semanticRecallEnabled）', () => {
   /** 已注册工具名集合。 */
   function registeredNames(ctx: ReturnType<typeof makeCtx>): string[] {
     return ctx._registeredTools.map((t) => t.name).filter((n): n is string => n !== undefined);
@@ -1349,31 +1348,28 @@ describe('apply 接线（recallEnabled / semanticRecallEnabled）', () => {
     return Object.keys(tool?.parameters.properties ?? {}).sort();
   }
 
-  it('缺省只注册 recall，且带语义增强参数', () => {
+  it('缺省只注册 recall，且带 query 参数', () => {
     const ctx = makeCtx();
     apply(ctx, {});
     expect(registeredNames(ctx)).toEqual(['recall']);
     expect(recallParams(ctx)).toEqual(['end', 'offset', 'query', 'start', 'top_k']);
   });
 
-  it('semanticRecallEnabled=false：recall 仅区间参数', () => {
+  it('semanticRecallEnabled=false：recall 仍注册且 query 有效，描述改为字符串匹配', () => {
     const ctx = makeCtx();
     apply(ctx, { semanticRecallEnabled: false });
     expect(registeredNames(ctx)).toEqual(['recall']);
-    expect(recallParams(ctx)).toEqual(['end', 'offset', 'start']);
+    expect(recallParams(ctx)).toEqual(['end', 'offset', 'query', 'start', 'top_k']);
+    const tool = ctx._registeredTools.find((t) => t.name === 'recall') as
+      | { description: string }
+      | undefined;
+    expect(tool?.description).toContain('字符串匹配');
   });
 
-  it('recallEnabled=false：不注册任何工具，语义增强一并失效', () => {
-    for (const semanticRecallEnabled of [true, false]) {
-      const ctx = makeCtx();
-      apply(ctx, { recallEnabled: false, semanticRecallEnabled });
-      expect(registeredNames(ctx)).toEqual([]);
-    }
-  });
-
-  it('recallEnabled=false 时压缩接线不受影响', () => {
+  it('旧配置 recallEnabled=false 被忽略：recall 仍注册', () => {
     const ctx = makeCtx();
     apply(ctx, { recallEnabled: false });
+    expect(registeredNames(ctx)).toEqual(['recall']);
     expect(ctx._onCallbacks.has('agent/pre-step')).toBe(true);
   });
 
@@ -1419,14 +1415,10 @@ describe('apply 接线（recallEnabled / semanticRecallEnabled）', () => {
     expect(ctx._createdSessions).toHaveLength(0); // 无 sessions：不落盘压缩会话记录
   });
 
-  it('服务齐全或 recall 关闭时不为 tools/commands 打 warn', () => {
+  it('服务齐全时不为 tools/commands 打 warn', () => {
     const full = makeCtx({ commandsMounted: true });
     apply(full, {});
-    const off = makeCtx({ toolsMounted: false, commandsMounted: true });
-    apply(off, { recallEnabled: false });
-    for (const ctx of [full, off]) {
-      expect(ctx._loggerCalls.filter((c) => c.level === 'warn')).toEqual([]);
-    }
+    expect(full._loggerCalls.filter((c) => c.level === 'warn')).toEqual([]);
   });
 
   it('启用：apply 触发模型后台预热下载（ensureModelReady 被调用）', () => {
@@ -1435,14 +1427,6 @@ describe('apply 接线（recallEnabled / semanticRecallEnabled）', () => {
     const ctx = makeCtx();
     apply(ctx, {});
     expect(mockEnsure).toHaveBeenCalled();
-  });
-
-  it('recallEnabled=false：不触发模型下载', () => {
-    const mockEnsure = ensureModelReady as unknown as ReturnType<typeof vi.fn>;
-    mockEnsure.mockClear();
-    const ctx = makeCtx();
-    apply(ctx, { recallEnabled: false });
-    expect(mockEnsure).not.toHaveBeenCalled();
   });
 
   it('semanticRecallEnabled=false：不触发模型下载', () => {

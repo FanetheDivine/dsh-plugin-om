@@ -1,9 +1,12 @@
 /**
- * recall 语义增强的检索实现：按自然语言 query 对会话全部完整消息（含被压缩/遮蔽的）做
- * 语义检索，返回最匹配的完整消息与匹配说明。
+ * recall 的 query 检索实现：对会话全部完整消息（含被压缩/遮蔽的）检索，返回最匹配的
+ * 完整消息与匹配说明。
  * 导出 SemanticOptions / RangeArgs / resolveSemanticRange / tokenize / matchExplanation /
- * SEMANTIC_MODEL_NOT_READY_MESSAGE / semanticSearch。
- * 向量为本地 ONNX 嵌入（cosine 相似度）；只匹配文本，纯图片消息不进候选池；
+ * keywordTerms / SEMANTIC_MODEL_NOT_READY_MESSAGE / semanticSearch / keywordSearch。
+ * - 语义检索：本地 ONNX 嵌入（cosine 相似度）
+ * - 字符串匹配（语义增强关闭时）：query 按空白拆词，不区分大小写计命中词数，同分时
+ *   index 大的优先，零命中不返回
+ * 只匹配文本，纯图片消息不进候选池；
  * 区间缺省检索全部、区间不合法回退全量并在输出中告知；输出契约同 recall
  * （{ text, images }，条目为 XML 形态见 recall-xml.ts，超大结果由 tool-result-pruner
  * 裁剪）；候选池排除本次调用自身的 toolcall 完整消息（其渲染文本含 query 原文，
@@ -98,16 +101,18 @@ export type SemanticSearchInput = RangeArgs & {
   options?: SemanticOptions | undefined;
 };
 
-/** 在会话完整消息中做语义检索，返回 TOP-K 命中条目。 */
-export async function semanticSearch(input: SemanticSearchInput): Promise<RecallOutputValue> {
-  const { session, query, topK, start, end, offset, selfCallId, getPruner, options } = input;
-  const embed: EmbedFn = options?.embedder ?? ((texts) => getEmbedder().then((fn) => fn(texts)));
-  const status = (await options?.modelStatus?.()) ?? 'ready';
-  if (status !== 'ready') return textOnly(SEMANTIC_MODEL_NOT_READY_MESSAGE);
+/** 检索候选：完整消息与其渲染文本。 */
+type Candidate = { cm: CompleteMessage; text: string };
+
+/** 收集区间内可检索的候选；会话为空或区间内无候选时返回提示文案。 */
+function collectCandidates(
+  input: SemanticSearchInput,
+): { candidates: Candidate[]; range: RangeResult } | string {
+  const { session, start, end, offset, selfCallId } = input;
   const cms = indexCompleteMessages(session);
-  if (cms.length === 0) return textOnly('会话中没有可检索的消息');
+  if (cms.length === 0) return '会话中没有可检索的消息';
   const range = resolveSemanticRange(cms.length, { start, end, offset });
-  const candidates: Array<{ cm: CompleteMessage; text: string }> = [];
+  const candidates: Candidate[] = [];
   for (let i = range.lo; i <= range.hi; i += 1) {
     const cm = cms[i];
     if (!cm) continue;
@@ -121,7 +126,19 @@ export async function semanticSearch(input: SemanticSearchInput): Promise<Recall
     }
     if (text.trim().length > 0) candidates.push({ cm, text });
   }
-  if (candidates.length === 0) return textOnly('指定范围内没有可检索的消息');
+  if (candidates.length === 0) return '指定范围内没有可检索的消息';
+  return { candidates, range };
+}
+
+/** 在会话完整消息中做语义检索，返回 TOP-K 命中条目。 */
+export async function semanticSearch(input: SemanticSearchInput): Promise<RecallOutputValue> {
+  const { query, topK, options } = input;
+  const embed: EmbedFn = options?.embedder ?? ((texts) => getEmbedder().then((fn) => fn(texts)));
+  const status = (await options?.modelStatus?.()) ?? 'ready';
+  if (status !== 'ready') return textOnly(SEMANTIC_MODEL_NOT_READY_MESSAGE);
+  const collected = collectCandidates(input);
+  if (typeof collected === 'string') return textOnly(collected);
+  const { candidates, range } = collected;
   const [queryVec] = await embed([query]);
   if (!queryVec) return textOnly('语义检索失败：无法生成查询向量');
   const vectors = await embed(candidates.map((c) => c.text));
@@ -131,23 +148,73 @@ export async function semanticSearch(input: SemanticSearchInput): Promise<Recall
     score: cosineSimilarity(queryVec, vectors[i] ?? new Float32Array(0)),
   }));
   scored.sort((a, b) => b.score - a.score);
-  const limit = topK ?? 3;
-  const hits = scored.slice(0, limit);
+  const hits = scored.slice(0, topK ?? 3).map((hit) => ({
+    ...hit,
+    explanation: matchExplanation(query, hit.text, hit.score),
+  }));
+  return renderHits(input, range, `${candidates.length} 条可嵌入`, scored.length, hits);
+}
+
+/** 字符串匹配的检索词：query 按空白拆分、转小写、去重。 */
+export function keywordTerms(query: string): string[] {
+  return [
+    ...new Set(
+      query
+        .toLowerCase()
+        .split(/\s+/u)
+        .filter((term) => term.length > 0),
+    ),
+  ];
+}
+
+/** 在会话完整消息中按字符串匹配检索（语义增强关闭时），返回 TOP-K 命中条目。 */
+export function keywordSearch(input: SemanticSearchInput): RecallOutputValue {
+  const terms = keywordTerms(input.query);
+  if (terms.length === 0) return textOnly('query 不能为空');
+  const collected = collectCandidates(input);
+  if (typeof collected === 'string') return textOnly(collected);
+  const { candidates, range } = collected;
+  const scored = candidates
+    .map((c) => {
+      const lower = c.text.toLowerCase();
+      const matched = terms.filter((term) => lower.includes(term));
+      return { ...c, score: matched.length, matched };
+    })
+    .filter((c) => c.score > 0);
+  if (scored.length === 0) {
+    return textOnly(`未找到包含 ${terms.join(' ')} 中任一词的消息（字符串匹配，不区分大小写）`);
+  }
+  scored.sort((a, b) => b.score - a.score || b.cm.index - a.cm.index);
+  const hits = scored.slice(0, input.topK ?? 3).map((hit) => ({
+    ...hit,
+    explanation: `命中 ${hit.score}/${terms.length} 个词: ${hit.matched.join(' ')}`,
+  }));
+  return renderHits(input, range, `${candidates.length} 条，字符串匹配`, scored.length, hits);
+}
+
+/** 渲染命中条目：查询与检索说明以 XML 注释置于条目之前，每条命中前附匹配说明。 */
+function renderHits(
+  input: SemanticSearchInput,
+  range: RangeResult,
+  poolNote: string,
+  total: number,
+  hits: ReadonlyArray<Candidate & { explanation: string }>,
+): RecallOutputValue {
+  const { session, query, start, getPruner } = input;
   const parts: string[] = [];
   const images: ImageRefValue[] = [];
   const rangeNote = range.fallback
     ? '指定区间不合法（start/end 越界等），已回退检索全部消息'
     : start === undefined
-      ? `检索全部消息（${candidates.length} 条可嵌入）`
-      : `检索区间 [${range.lo}..${range.hi}]（${candidates.length} 条可嵌入）`;
-  // 查询与检索说明以 XML 注释置于条目之前
+      ? `检索全部消息（${poolNote}）`
+      : `检索区间 [${range.lo}..${range.hi}]（${poolNote}）`;
   parts.push(`<!-- ${xmlCommentText(`查询: ${query}`)} -->`);
   parts.push(`<!-- ${xmlCommentText(rangeNote)} -->`);
-  parts.push(`<!-- ${xmlCommentText(`匹配 TOP-${hits.length}（共 ${scored.length} 条候选）`)} -->`);
+  parts.push(`<!-- ${xmlCommentText(`匹配 TOP-${hits.length}（共 ${total} 条候选）`)} -->`);
   for (let i = 0; i < hits.length; i += 1) {
     const hit = hits[i];
     if (!hit) continue;
-    const note = `<!-- ${xmlCommentText(`${i + 1}. ${matchExplanation(query, hit.text, hit.score)}`)} -->`;
+    const note = `<!-- ${xmlCommentText(`${i + 1}. ${hit.explanation}`)} -->`;
     let xml: string;
     let hitImages: ImageRefValue[] = [];
     try {

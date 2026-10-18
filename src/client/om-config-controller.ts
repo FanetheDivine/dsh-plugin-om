@@ -26,7 +26,6 @@ export const OM_CONFIG_FIELDS = [
   { name: 'observeThresholdTokens', kind: 'integer' },
   { name: 'reflectThresholdTokens', kind: 'integer' },
   { name: 'tailMessageCount', kind: 'integer' },
-  { name: 'recallEnabled', kind: 'boolean' },
   { name: 'semanticRecallEnabled', kind: 'boolean' },
   { name: 'modelDir', kind: 'text' },
   { name: 'compressProvider', kind: 'text' },

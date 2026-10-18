@@ -69,18 +69,15 @@ function BooleanField({
 
 /** 控制关联配置可见性的依赖开关草稿值。 */
 interface DependencyFlags {
-  readonly recallOn: boolean;
   readonly semanticOn: boolean;
   readonly idleOn: boolean;
 }
 
-/** 字段是否显示：语义增强随原文召回，模型目录随语义增强，重发阈值随长期无记录重发。 */
-function isVisible(name: string, { recallOn, semanticOn, idleOn }: DependencyFlags): boolean {
+/** 字段是否显示：模型目录随语义增强，重发阈值随长期无记录重发。 */
+function isVisible(name: string, { semanticOn, idleOn }: DependencyFlags): boolean {
   switch (name) {
-    case 'semanticRecallEnabled':
-      return recallOn;
     case 'modelDir':
-      return recallOn && semanticOn;
+      return semanticOn;
     case 'progressReminderIdleSteps':
     case 'progressReminderIdleToolCalls':
       return idleOn;
@@ -96,7 +93,6 @@ export function OmConfigCard(props: OmConfigCardProps): string | React.JSX.Eleme
   if (props.view === 'summary') return t('config.description');
   if (state.status === 'loading') return <p role="status">{t('config.loading')}</p>;
   const flags: DependencyFlags = {
-    recallOn: state.fields.recallEnabled.text === 'true',
     semanticOn: state.fields.semanticRecallEnabled.text === 'true',
     idleOn: state.fields.progressReminderIdleEnabled.text === 'true',
   };
@@ -128,10 +124,6 @@ export function OmConfigCard(props: OmConfigCardProps): string | React.JSX.Eleme
         const checked = field.text === 'true';
         const onChange = (value: boolean) => {
           props.edit(name, String(value));
-          // 语义增强依赖原文召回：关闭召回时一并关闭语义增强
-          if (name === 'recallEnabled' && !value && flags.semanticOn) {
-            props.edit('semanticRecallEnabled', 'false');
-          }
         };
         const onReset = () => props.resetField(name);
         return (
