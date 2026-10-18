@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -15,6 +15,18 @@ const dshPkg =
   process.env.OM_DSH_PKG ??
   join(execSync('npm root -g', { encoding: 'utf8' }).trim(), '@deepseek-ai', 'dsh', 'package.json');
 const REPO = process.env.OM_REPO;
+// warm 是整套电池的起点：先清上一轮残留（固定 sessionId 会与落盘会话冲突）。cold 依赖 warm 产物，不清理。
+for (const f of [
+  'test-sessions',
+  'test-storage',
+  'requests.jsonl',
+  'warm-results.json',
+  'warm-sessions.json',
+  'cold-results.json',
+  'fatal.txt',
+  'cold-fatal.txt',
+])
+  rmSync(join(root, f), { recursive: true, force: true });
 if (!REPO) throw new Error('OM_REPO 必填：插件仓库绝对路径，如 D:/Git/self/dsh-plugin-om');
 const require = createRequire(dshPkg);
 const { createUserMessage } = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-llm')));
@@ -95,21 +107,10 @@ async function turn(agent, text, timeout = 25000) {
   return calls;
 }
 const ev = (a) => a.session.snapshotEvents();
-const omKind = (t) => {
-  try {
-    return JSON.parse(t.slice(5)).kind;
-  } catch {
-    return undefined;
-  }
-};
+// om 私有事件是 ignorable 的 plugin record：类型 plugin:dsh-plugin-om/<名>，载荷即 e.data
+const omRecordType = (kind) => `plugin:dsh-plugin-om/${kind.replace(/^om\//, '')}`;
 const omEv = (a, kind) =>
-  ev(a).filter(
-    (e) =>
-      e.type === 'feedback/record' &&
-      typeof e.data?.text === 'string' &&
-      e.data.text.startsWith('om:1:') &&
-      omKind(e.data.text) === kind,
-  );
+  ev(a).filter((e) => e.ignorable === true && e.type === omRecordType(kind));
 const typed = (a, t) => ev(a).filter((e) => e.type === t);
 const summaries = (a) => typed(a, 'compaction/summary');
 const visible = (a) => a.session.surface.nodes.map((s) => a.session.eventAt(s)).filter(Boolean);
@@ -166,7 +167,8 @@ try {
       'claude-mock missing',
     );
     const installed = `${root}/node_modules/dsh-plugin-om`;
-    assert.equal(JSON.parse(readFileSync(`${installed}/package.json`, 'utf8')).version, '0.0.56');
+    const versionOf = (dir) => JSON.parse(readFileSync(`${dir}/package.json`, 'utf8')).version;
+    assert.equal(versionOf(installed), versionOf(REPO));
     const hash = (f) => createHash('sha256').update(readFileSync(f)).digest('hex').slice(0, 12);
     const same = hash(`${installed}/dist/index.mjs`) === hash(`${REPO}/dist/index.mjs`);
     assert(same, 'installed dist differs from repo dist');
@@ -186,6 +188,8 @@ try {
       commands: names.filter((n) => n.startsWith('om-')),
     };
   });
+  // 装载是后续全部用例的前提，失败即中止，避免连带出一串 undefined 误报
+  if (results.at(-1)?.status !== 'PASS') throw new Error('installed dist plugin loads 失败，中止');
   await check('immediate observe + record seed + labels (#111/#108/#112)', async () => {
     await config();
     adapter.modes.set('omtest-imm', 'normal');
@@ -790,15 +794,7 @@ try {
   const dump = app.sessions.list().map((s) => ({
     id: s.id,
     origin: s.header.origin,
-    events: s
-      .snapshotEvents()
-      .map(
-        (e) =>
-          e.type +
-          (typeof e.data?.text === 'string' && e.data.text.startsWith('om:1:')
-            ? `:${omKind(e.data.text)}`
-            : ''),
-      ),
+    events: s.snapshotEvents().map((e) => e.type),
   }));
   writeFileSync(`${root}/warm-sessions.json`, JSON.stringify(dump, null, 1));
   console.log(

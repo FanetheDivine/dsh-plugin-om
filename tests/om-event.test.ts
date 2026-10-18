@@ -1,7 +1,10 @@
-// om 私有事件信封（om-event.ts）单元测试：om/observe-summary 载荷的编码往返、
-// 可选字段缺省、严格校验拒绝与类别过滤。
+// om 私有事件（om-event.ts）单元测试：写入为 ignorable plugin record，
+// om/observe-summary 载荷往返、可选字段缺省、严格校验拒绝与类别过滤。
+import { Session, SessionId } from '@deepseek-ai/dsh-session';
 import { describe, expect, it } from 'vitest';
-import { appendOmEvent, findOmEvents } from '../src/om-event.ts';
+import { findOmEvents } from '../src/om-event.ts';
+import { appendOmEvent } from '../src/om-event-append.ts';
+import type { SessionEvent } from '../src/types.ts';
 import { makeOmEvent, makeSession } from './helpers.ts';
 
 const fullData = {
@@ -17,8 +20,34 @@ const fullData = {
   reasoningEffort: 'high',
 };
 
-describe('om/observe-summary 信封', () => {
-  it('完整载荷编码往返（findOmEvents 按类别返回数据与 seq）', () => {
+describe('om/observe-summary 记录', () => {
+  it('写入为 ignorable plugin record', () => {
+    const session = makeSession();
+    appendOmEvent(session, 'om/observe-pending', { triggerMessageIndex: 2 });
+    const [event] = session.snapshotEvents();
+    expect(event).toMatchObject({
+      type: 'plugin:dsh-plugin-om/observe-pending',
+      data: { triggerMessageIndex: 2 },
+      ignorable: true,
+    });
+  });
+
+  it('旧 feedback/record 信封与未标 ignorable 的同名事件不识别', () => {
+    const legacy = {
+      type: 'feedback/record',
+      data: {
+        text: `om:1:${JSON.stringify({ kind: 'om/observe-pending', triggerMessageIndex: 2 })}`,
+      },
+    } as unknown as SessionEvent;
+    const notIgnorable = {
+      type: 'plugin:dsh-plugin-om/observe-pending',
+      data: { triggerMessageIndex: 2 },
+    } as unknown as SessionEvent;
+    const session = makeSession({ events: [legacy, notIgnorable] });
+    expect(findOmEvents(session)).toEqual([]);
+  });
+
+  it('完整载荷往返（findOmEvents 按类别返回数据与 seq）', () => {
     const session = makeSession();
     const seq = appendOmEvent(session, 'om/observe-summary', fullData);
     expect(seq).toBe(0);
@@ -68,5 +97,20 @@ describe('om/observe-summary 信封', () => {
     appendOmEvent(session, 'om/observe-summary', fullData);
     expect(findOmEvents(session, 'om/observe-summary')).toHaveLength(1);
     expect(findOmEvents(session)).toHaveLength(2);
+  });
+});
+
+describe('真实 Session 写读往返', () => {
+  it('appendOmEvent 经宿主 appendPluginRecord 落日志，findOmEvents 读回，且不进 surface', () => {
+    const session = Session.create(SessionId('om-event-real'));
+    const before = session.snapshotEvents().length;
+    const seq = appendOmEvent(session, 'om/warning', { problem: 'p', message: 'm' });
+    expect(seq).toBe(before);
+    const event = session.snapshotEvents()[seq];
+    expect(event).toMatchObject({ type: 'plugin:dsh-plugin-om/warning', ignorable: true });
+    expect(event).not.toHaveProperty('surfaceOp');
+    expect(findOmEvents(session, 'om/warning')).toEqual([
+      { kind: 'om/warning', data: { problem: 'p', message: 'm' }, seq },
+    ]);
   });
 });

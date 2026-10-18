@@ -71,21 +71,10 @@ async function turn(agent, text, timeout = 25000) {
   return calls;
 }
 const ev = (a) => a.session.snapshotEvents();
-const omKind = (t) => {
-  try {
-    return JSON.parse(t.slice(5)).kind;
-  } catch {
-    return undefined;
-  }
-};
+// om 私有事件是 ignorable 的 plugin record：类型 plugin:dsh-plugin-om/<名>，载荷即 e.data
+const omRecordType = (kind) => `plugin:dsh-plugin-om/${kind.replace(/^om\//, '')}`;
 const omEv = (a, kind) =>
-  ev(a).filter(
-    (e) =>
-      e.type === 'feedback/record' &&
-      typeof e.data?.text === 'string' &&
-      e.data.text.startsWith('om:1:') &&
-      omKind(e.data.text) === kind,
-  );
+  ev(a).filter((e) => e.ignorable === true && e.type === omRecordType(kind));
 const typed = (a, t) => ev(a).filter((e) => e.type === t);
 const msgOf = (e) => (e.type === 'user/message' ? e.data : e.data.message);
 const visible = (a) => a.session.surface.nodes.map((s) => a.session.eventAt(s)).filter(Boolean);
