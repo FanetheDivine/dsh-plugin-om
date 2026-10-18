@@ -4,6 +4,7 @@
 
 ## Changes
 
+- docs: agent-workflow skill 第 1 步模糊化 worktree 创建方式，保留 gh 与 pnpm 命令示例。`.gitignore` 忽略 `.agents/worktrees/`。
 - 反思改为后台归档：`<history>` 块 token 合计达到 `reflectThresholdTokens` 时，尾部合计不超过阈值三分之一的块保留，至少保留 1 个，其余块在后台压缩为一个 `<archived-history>` 块。已有归档块不再二次归档，也不计入阈值。
 - 归档块保留用户消息与已处理提问，相邻用户消息之间的模型内容各压成一句话，条目带 `key-word` 属性供 recall 检索；块 tip 提示用 recall 查看原文。
 - 归档不阻塞会话，同一会话同时只运行一个；完成后由下一个有输入的 pre-step 提交，提交前校验被归档块仍连续在表层，否则丢弃结果。失败只记录 `compaction/end` 错误，块集合变化后重试。
