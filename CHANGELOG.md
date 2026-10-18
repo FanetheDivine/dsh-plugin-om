@@ -4,7 +4,7 @@
 
 ## Changes
 
-- docs: agent-workflow skill 第 1 步改用 worktree 创建能力并模糊化环境差异；恢复 gh 与 pnpm 命令示例；清理步骤先切回项目根。`.gitignore` 忽略 `.agents/worktrees/`。
+- docs: agent-workflow skill 第 1 步模糊化 worktree 创建方式，保留 gh 与 pnpm 命令示例。`.gitignore` 忽略 `.agents/worktrees/`。
 - om 私有事件（警告、观察待定与失效标记、预压缩结果）不再借用 `feedback/record`，改用宿主 `appendPluginRecord` 写入 ignorable 的 plugin record：`plugin:dsh-plugin-om/warning`、`plugin:dsh-plugin-om/observe-pending`、`plugin:dsh-plugin-om/observe-invalidate`、`plugin:dsh-plugin-om/observe-summary`。含这些记录的会话日志不再作为用户反馈上传遥测，宿主读取路径保留并跳过记录，会话可正常加载。写入拆到 `src/om-event-append.ts`，`src/om-event.ts` 只读取，客户端 bundle 不引入宿主运行时。
 - 不向后兼容：旧 `feedback/record` 中 `om:1:` 前缀信封不再识别，旧会话里未完成的观察待定标记与预压缩结果失效，警告行不再显示。
 - DSH 最低版本升到 0.2.1-rc.2，`appendPluginRecord` 自 0.2.1-rc.1 起提供。
