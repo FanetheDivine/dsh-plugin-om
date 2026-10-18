@@ -1,9 +1,15 @@
 // 压缩状态机行为：历史查看、二次确认与区间替换、原始 ask 重写和完成门禁，
 // 验证双路径切换、参数校验、仅 q/a 的保留产物及历史反思兼容。
 import { describe, expect, it } from 'vitest';
-import { CompressionState } from '../src/compress-tools.ts';
-import { buildReflectView, type CompressionView, type ViewEntry } from '../src/compress-view.ts';
+import { ARCHIVE_SUMMARY_MAX_CHARS, CompressionState } from '../src/compress-tools.ts';
 import {
+  buildArchiveView,
+  buildReflectView,
+  type CompressionView,
+  type ViewEntry,
+} from '../src/compress-view.ts';
+import {
+  ARCHIVED_HISTORY_TAG,
   COMPLETE_MESSAGE_DEFINITION,
   HISTORY_TAG,
   HISTORY_TIP,
@@ -965,5 +971,69 @@ describe('buildFinalBlock', () => {
     // 完整消息定义始终位于块顶注释
     expect(fullBlock).toContain(COMPLETE_MESSAGE_DEFINITION);
     expect(plainBlock).toContain(COMPLETE_MESSAGE_DEFINITION);
+  });
+});
+
+describe('归档模式', () => {
+  const block = [
+    '<history>',
+    '<user_message index="0"><![CDATA[需求]]></user_message>',
+    '<assistant start="1" end="2"><![CDATA[排查 src/a.ts]]></assistant>',
+    '<assistant index="3"><![CDATA[修复]]></assistant>',
+    '<user_message index="4"><![CDATA[继续]]></user_message>',
+    '<assistant index="5"><![CDATA[验证]]></assistant>',
+    '</history>',
+  ].join('\n');
+  const archive = (): CompressionState =>
+    new CompressionState(buildArchiveView([{ text: block, seq: 1 }]).view);
+  const call = (state: CompressionState, args: object) =>
+    state.executeCall('compressHistory', JSON.stringify(args));
+
+  it('区间必须恰为一个归档段', () => {
+    const state = archive();
+    const partial = call(state, { start: 1, end: 2, content: '一句话', keywords: ['a'] });
+    expect(partial.isError).toBe(true);
+    expect(partial.text).toContain('[1..3]、[5..5]');
+    expect(call(state, { start: 1, end: 3, content: '一句话', keywords: ['a'] }).isError).toBe(
+      false,
+    );
+  });
+
+  it('content 须单行且不超上限，keywords 必填', () => {
+    const state = archive();
+    const base = { start: 1, end: 3 };
+    expect(call(state, { ...base, content: '两行\n内容', keywords: ['a'] }).isError).toBe(true);
+    expect(
+      call(state, { ...base, content: 'x'.repeat(ARCHIVE_SUMMARY_MAX_CHARS + 1), keywords: ['a'] })
+        .isError,
+    ).toBe(true);
+    expect(call(state, { ...base, content: '一句话' }).isError).toBe(true);
+    expect(call(state, { ...base, content: '一句话', keywords: [' '] }).isError).toBe(true);
+  });
+
+  it('全部段覆盖前拒绝完成，完成后产出带 key-word 的 archived-history 块', () => {
+    const state = archive();
+    call(state, {
+      start: 1,
+      end: 3,
+      content: '修复 src/a.ts 的空指针',
+      keywords: ['src/a.ts', '空指针'],
+    });
+    const blocked = state.executeCall('completeCompression', '{}');
+    expect(blocked.isError).toBe(true);
+    expect(blocked.text).toContain('[5..5]');
+    call(state, { start: 5, end: 5, content: '验证通过', keywords: ['验证'] });
+    const done = state.executeCall('completeCompression', '{}');
+    expect(done.isError).toBe(false);
+    expect(done.text.startsWith(`<${ARCHIVED_HISTORY_TAG} tip=`)).toBe(true);
+    expect(done.text).toContain(
+      '<assistant start="1" end="3" key-word="src/a.ts, 空指针"><![CDATA[修复 src/a.ts 的空指针]]></assistant>',
+    );
+    expect(done.text).toContain('<user_message index="4"><![CDATA[继续]]></user_message>');
+  });
+
+  it('非归档视图不受段约束', () => {
+    const state = new CompressionState(buildReflectView([{ text: block, seq: 1 }]));
+    expect(call(state, { start: 1, end: 2, content: '多行\n摘要' }).isError).toBe(false);
   });
 });

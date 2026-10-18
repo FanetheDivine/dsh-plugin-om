@@ -5,8 +5,8 @@
  * REFLECT_COMPRESSION_PROMPT / ASK_COMPRESSION_PROMPT / CompressionLoopOptions / CompressionOutcome / CompressionStats / COMPRESSION_NUDGE_TEXT / TRUNCATION_NUDGE_TEXT / COMPLETION_BLOCKED_TEXT。
  *
  * - 首条 user 消息为压缩指令与 start/end 区间（buildCompressionTaskText），循环附上
- *   全区间 getHistory 结果，原始提问随之视为已查看；共享压缩提示词作为 system，反思
- *   pass 追加反思合并约束
+ *   全区间 getHistory 结果，原始提问随之视为已查看；共享压缩提示词作为 system，归档
+ *   视图追加归档深度压缩约束并改用归档工具定义
  * - 每轮请求携带压缩工具 schemas（purpose='compaction'，maxTokens 沿用配置）；流经
  *   BlockAssembler 组装为 assistant 消息，工具执行结果以 tool-result 消息回填
  * - completeCompression 校验通过后立即停止（同轮后续工具调用不再执行），最终 <history>
@@ -41,12 +41,13 @@ import {
   recordCompressionSession,
 } from './compaction-log.ts';
 import {
+  ARCHIVE_TOOL_SCHEMAS,
   COMPRESSION_TOOL_SCHEMAS,
   CompressionState,
   REWRITE_ASK_TOOL_SCHEMA,
   type ToolCallResult,
 } from './compress-tools.ts';
-import type { CompressionView } from './compress-view.ts';
+import type { ArchiveSegment, CompressionView } from './compress-view.ts';
 import {
   COMPACTION_ABORTED_ERROR,
   COMPLETE_MESSAGE_DEFINITION,
@@ -101,17 +102,23 @@ export function buildCompressionTaskText(
   phase: 'observe' | 'reflect',
   start: number,
   end: number,
+  segments: readonly ArchiveSegment[] = [],
 ): string {
   if (phase === 'reflect') {
-    return `合并压缩全部 <history> 块，完整消息区间 [${start}..${end}]：区间条目附在下方，用 compressHistory 重新压缩合并 assistant 条目，完成后调用 completeCompression。`;
+    const list = segments.map((seg) => `[${seg.lo}..${seg.hi}]`).join('、');
+    return `归档深度压缩 <history> 块，完整消息区间 [${start}..${end}]：区间条目附在下方。归档段共 ${segments.length} 个：${list}。每个段用一次 compressHistory 压成一句话并给出 keywords，全部完成后调用 completeCompression。`;
   }
   return `压缩完整消息区间 [${start}..${end}]：区间条目附在下方，用 compressHistory 压缩 assistant 条目，完成后调用 completeCompression。`;
 }
 
-/** 反思合并的额外约束，只在反思 pass 注入。 */
+/** 归档深度压缩的额外约束，只在归档视图注入。 */
 export const REFLECT_COMPRESSION_PROMPT = [
-  '【反思合并】',
-  '- 重新压缩已有摘要条目时，保留其中的不可再生信息，不要逐轮缩减。',
+  '【归档深度压缩】',
+  '- 本次产物是归档块，原文可由主模型通过 recall 按 index 找回；此规则优先于上方的粒度要求。',
+  '- 用户消息与已处理的提问原样保留，无需处理。',
+  '- 相邻两条用户消息之间的全部 assistant 条目构成一个归档段，每段压成一句话：写清结论、决策与涉及的文件，不写过程。',
+  '- 一句话不超过 300 字符、不换行；已被段内后续进展取代的信息直接舍弃。',
+  '- keywords 选原文中出现、便于检索的词：文件名、函数名、命令、错误码、主题词。',
 ].join('\n');
 
 /** 原始合法 ask 的处理约束，只在视图含待处理原始提问时注入。 */
@@ -347,12 +354,11 @@ export async function runCompressionLoop(
   const logger = makeLogger(ctx, options.debug);
   const view = withoutReasoning(options.view, options.skipReasoning);
   const state = new CompressionState(view);
-  const tools = state.hasPendingAsks
-    ? [...COMPRESSION_TOOL_SCHEMAS, REWRITE_ASK_TOOL_SCHEMA]
-    : COMPRESSION_TOOL_SCHEMAS;
+  const baseTools = view.segments === undefined ? COMPRESSION_TOOL_SCHEMAS : ARCHIVE_TOOL_SCHEMAS;
+  const tools = state.hasPendingAsks ? [...baseTools, REWRITE_ASK_TOOL_SCHEMA] : baseTools;
   const system = [
     buildCompressionPrompt(options.skipReasoning),
-    ...(options.phase === 'reflect' ? [REFLECT_COMPRESSION_PROMPT] : []),
+    ...(view.segments === undefined ? [] : [REFLECT_COMPRESSION_PROMPT]),
     ...(state.hasPendingAsks ? [ASK_COMPRESSION_PROMPT] : []),
   ].join('\n\n');
   const messages: Message[] = [makePluginUserMessage(withInitialHistory(options.taskText, state))];

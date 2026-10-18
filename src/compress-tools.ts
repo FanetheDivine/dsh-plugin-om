@@ -1,7 +1,9 @@
 /**
  * 压缩工具状态机：历史查看、区间摘要替换、原始 ask 重写与完成门禁。
- * 导出 CompressionState / ToolCallResult / COMPRESSION_TOOL_SCHEMAS /
- * REWRITE_ASK_TOOL_SCHEMA / SKILL_TOOL_NAME。
+ * 导出 CompressionState / ToolCallResult / COMPRESSION_TOOL_SCHEMAS / ARCHIVE_TOOL_SCHEMAS /
+ * REWRITE_ASK_TOOL_SCHEMA / ARCHIVE_SUMMARY_MAX_CHARS / ARCHIVE_MAX_KEYWORDS / SKILL_TOOL_NAME。
+ * 视图带归档段时进入归档模式：每段一句话摘要并带关键词，全部段覆盖后才能完成，产物为
+ * <archived-history> 块。
  * getHistory 与最终 history 共用当前状态投影：本次替换的区间显示为摘要条目。
  * skill 和合法 ask 直接压缩需二次确认；未直接压缩的原始 ask 必须查看后重写。
  * 最终 history 保留用户、系统与历史条目，原始 ask 仅输出重写后的 q/a。
@@ -10,6 +12,8 @@
 import type { ToolSchema } from '@deepseek-ai/dsh-llm';
 import { type CompressionView, renderEntriesXml, type ViewEntry } from './compress-view.ts';
 import {
+  ARCHIVED_HISTORY_TAG,
+  ARCHIVED_HISTORY_TIP,
   ASK_USER_QUESTION_TOOL_NAME,
   HISTORY_TAG,
   HISTORY_TIP,
@@ -35,6 +39,8 @@ type Replacement = {
   hi: number;
   /** 替换后的摘要文本（纯文本）。 */
   content: string;
+  /** 归档摘要的检索关键词。 */
+  keywords?: string[];
 };
 
 /** 当前状态投影中的一条：条目、所属压缩块，摘要条目另带其替换记录。 */
@@ -294,6 +300,8 @@ export class CompressionState {
         isError: true,
       };
     }
+    const archive = this.archiveCheck(lo, hi, content, args.keywords);
+    if (typeof archive === 'string') return { text: archive, isError: true };
     // 条目校验：相交条目不可为 user；assistant 条目必须被完整包含；区间内须有可压缩条目
     let insideCount = 0;
     for (const entry of this.view.entries) {
@@ -363,11 +371,54 @@ export class CompressionState {
       if (rep === undefined) continue;
       if (rep.lo >= lo && rep.hi <= hi) this.replacements.splice(i, 1);
     }
-    this.replacements.push({ lo, hi, content });
+    this.replacements.push({
+      lo,
+      hi,
+      content,
+      ...(archive === undefined ? {} : { keywords: archive }),
+    });
     return {
       text: `已压缩${CompressionState.spanLabel(lo, hi)}（${insideCount} 条 assistant 条目）`,
       isError: false,
     };
+  }
+
+  /**
+   * 归档模式校验：区间须恰为一个归档段，content 为不超过 ARCHIVE_SUMMARY_MAX_CHARS 的单行，
+   * keywords 为 1..ARCHIVE_MAX_KEYWORDS 个非空单行词。非归档模式返回 undefined；
+   * 校验失败返回错误文本，通过返回规整后的关键词。
+   */
+  private archiveCheck(
+    lo: number,
+    hi: number,
+    content: string,
+    keywords: unknown,
+  ): string[] | string | undefined {
+    const segments = this.view.segments;
+    if (segments === undefined) return undefined;
+    if (!segments.some((seg) => seg.lo === lo && seg.hi === hi)) {
+      return `${CompressionState.spanLabel(lo, hi)} 不是归档段；区间必须恰为一个段：${segments.map((seg) => `[${seg.lo}..${seg.hi}]`).join('、')}`;
+    }
+    if (/[\r\n]/.test(content)) return 'content 必须是一句话，不能换行';
+    if (content.length > ARCHIVE_SUMMARY_MAX_CHARS) {
+      return `content ${content.length} 字符，超过 ${ARCHIVE_SUMMARY_MAX_CHARS} 字符上限，请压成一句话`;
+    }
+    if (
+      !Array.isArray(keywords) ||
+      keywords.length === 0 ||
+      keywords.length > ARCHIVE_MAX_KEYWORDS ||
+      keywords.some((k) => typeof k !== 'string' || k.trim() === '' || /[\r\n]/.test(k))
+    ) {
+      return `keywords 必须是 1..${ARCHIVE_MAX_KEYWORDS} 个非空单行关键词`;
+    }
+    return keywords.map((k) => String(k).trim());
+  }
+
+  /** 归档模式下尚未被摘要覆盖的段。 */
+  private uncoveredSegments(): { lo: number; hi: number }[] {
+    return (this.view.segments ?? []).filter(
+      (seg) => !this.replacements.some((rep) => rep.lo === seg.lo && rep.hi === seg.hi),
+    );
   }
 
   /** 完全包含该条目的替换记录；替换区间两两不相交，至多一条。 */
@@ -408,7 +459,13 @@ export class CompressionState {
       let summary = summaries.get(rep);
       if (summary === undefined) {
         summary = {
-          entry: { kind: 'assistant', lo: rep.lo, hi: rep.hi, text: rep.content },
+          entry: {
+            kind: 'assistant',
+            lo: rep.lo,
+            hi: rep.hi,
+            text: rep.content,
+            ...(rep.keywords === undefined ? {} : { keyWord: rep.keywords.join(', ') }),
+          },
           blocks: [],
           replacement: rep,
         };
@@ -516,6 +573,13 @@ export class CompressionState {
         isError: true,
       };
     }
+    const uncovered = this.uncoveredSegments();
+    if (uncovered.length > 0) {
+      return {
+        text: `尚有归档段未压缩：${uncovered.map((seg) => `[${seg.lo}..${seg.hi}]`).join('、')}。每个段都要用 compressHistory 压成一句话后再完成`,
+        isError: true,
+      };
+    }
     this._completed = true;
     // 返回与压缩日志一致的 <history> 块，会话记录里才能直接看到压缩产物
     return { text: this.buildFinalBlock(), isError: false };
@@ -548,10 +612,20 @@ export class CompressionState {
       user: entries.some((e) => e.kind === 'user'),
       skill: entries.some((e) => e.kind === 'assistant' && e.toolName === SKILL_TOOL_NAME),
       askUserQuestion: entries.some(isAskEntry),
+      keyWord: entries.some((e) => e.keyWord !== undefined),
     });
+    if (this.view.segments !== undefined) {
+      return `<${ARCHIVED_HISTORY_TAG} tip="${ARCHIVED_HISTORY_TIP}">\n${note}\n${renderEntriesXml(entries)}\n</${ARCHIVED_HISTORY_TAG}>`;
+    }
     return `<${HISTORY_TAG} tip="${HISTORY_TIP}">\n${note}\n${renderEntriesXml(entries)}\n</${HISTORY_TAG}>`;
   }
 }
+
+/** 归档摘要单句的字符上限。 */
+export const ARCHIVE_SUMMARY_MAX_CHARS = 300;
+
+/** 归档摘要关键词数上限。 */
+export const ARCHIVE_MAX_KEYWORDS = 8;
 
 /** 仅含原始合法 ask 的压缩会话使用的重写工具。 */
 export const REWRITE_ASK_TOOL_SCHEMA: ToolSchema = {
@@ -632,3 +706,41 @@ export const COMPRESSION_TOOL_SCHEMAS: ToolSchema[] = [
     parameters: { type: 'object', properties: {} },
   },
 ];
+
+/** 归档模式的工具定义：compressHistory 区间限定为一个归档段并要求 keywords。 */
+export const ARCHIVE_TOOL_SCHEMAS: ToolSchema[] = COMPRESSION_TOOL_SCHEMAS.map((schema) => {
+  if (schema.name === 'completeCompression') {
+    return {
+      ...schema,
+      description: '全部归档段都已压缩后调用，成功时立即结束压缩会话。',
+    };
+  }
+  if (schema.name !== 'compressHistory') return schema;
+  return {
+    name: 'compressHistory',
+    description: `把一个归档段（start..end 恰为首条消息列出的某个段）压成一句话摘要。content 不换行、不超过 ${ARCHIVE_SUMMARY_MAX_CHARS} 字符，写清结论、决策与涉及的文件；keywords 为供 recall 检索原文的关键词。返回成功即已生效；修改时用同一区间重新提交。`,
+    parameters: {
+      type: 'object',
+      properties: {
+        start: { type: 'number', description: '归档段起始完整消息 index' },
+        end: { type: 'number', description: '归档段结束完整消息 index' },
+        content: {
+          type: 'string',
+          description:
+            '一句话摘要（纯文本，不换行，不要包含 CDATA 包裹）。数字、路径、版本号与错误码从原文逐字照抄，不推测补全。',
+        },
+        keywords: {
+          type: 'array',
+          minItems: 1,
+          maxItems: ARCHIVE_MAX_KEYWORDS,
+          items: { type: 'string' },
+          description:
+            '1..' +
+            String(ARCHIVE_MAX_KEYWORDS) +
+            ' 个关键词：文件名、函数名、命令、主题词等原文中出现的词',
+        },
+      },
+      required: ['start', 'end', 'content', 'keywords'],
+    },
+  };
+});

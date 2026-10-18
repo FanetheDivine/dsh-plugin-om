@@ -12,7 +12,7 @@ vi.mock('../src/embedding.ts', async (importOriginal) => {
   };
 });
 
-import { buildCompressionPrompt, REFLECT_COMPRESSION_PROMPT } from '../src/compress-loop.ts';
+import { buildCompressionPrompt } from '../src/compress-loop.ts';
 import { historyFormatNote, isPluginOwnedSource, PLUGIN_SOURCE_KIND } from '../src/constants.ts';
 import { ensureModelReady } from '../src/embedding.ts';
 import { apply } from '../src/index.ts';
@@ -35,8 +35,8 @@ import {
   toolCallBlock,
 } from './helpers.ts';
 
-/** 反思 pass 的 system：共享提示词追加反思合并约束。 */
-const REFLECT_SYSTEM = `${buildCompressionPrompt(true)}\n\n${REFLECT_COMPRESSION_PROMPT}`;
+/** 合并式反思 pass 的 system：非归档视图只用共享提示词。 */
+const REFLECT_SYSTEM = buildCompressionPrompt(true);
 
 /**
  * 构造一段成功完成压缩的工具轮脚本（供 llmStreamFactory 逐轮产出）：
@@ -927,10 +927,10 @@ describe('apply 接线（OM 反思压缩）', () => {
     apply(ctx, { reflectThresholdTokens: 1 });
     await runPreStep(ctx, session);
     expect(ctx._llmCalls).toHaveLength(3);
-    expect(instructionText(ctx._llmCalls[0]?.options)).toBe(REFLECT_SYSTEM); // 反思在共享提示词后追加反思合并约束
+    expect(instructionText(ctx._llmCalls[0]?.options)).toBe(REFLECT_SYSTEM); // 非归档视图不追加归档约束
     // 压缩指令为反思表述（合并全部块），附带区间内已有摘要
     const taskText = inputText(ctx);
-    expect(taskText).toContain('合并压缩');
+    expect(taskText).toContain('归档深度压缩');
     expect(taskText).toContain('X'.repeat(40));
     expect(session.surface.nodes.length).toBe(before); // 单块区段替换，节点数不变
     expect(latestHistoryText(session)).toContain('REFLECTED');
@@ -1125,7 +1125,7 @@ describe('apply 接线（OM 反思压缩）', () => {
         (call as { messages?: Array<{ content?: Array<{ type?: string; text?: string }> }> })
           ?.messages?.[0]?.content?.[0]?.text ?? '',
       );
-    expect(inputOf(ctx._llmCalls[0]?.options)).toContain('合并压缩'); // 反思指令
+    expect(inputOf(ctx._llmCalls[0]?.options)).toContain('归档深度压缩'); // 反思指令
     expect(inputOf(ctx._llmCalls[3]?.options)).toContain('压缩完整消息区间'); // 观察指令
     // 反思把旧块合并为 REFLECTED 块；观察在旧块之后追加独立 OBSERVED 块（两块并存）
     const historyMsgs = session.surface.nodes

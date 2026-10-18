@@ -1,10 +1,11 @@
 /**
  * 压缩视图：把被压缩区间投影为统一的条目序列（ViewEntry）。
  * 观察视图由完整消息原文构建（buildObserveView），反思视图由已有 <history> 块内条目构建
- * （buildReflectView）；getHistory 查看、compressHistory 区间校验与最终 <history> 块构建
- * 共用同一套条目。导出 AskUserQuestionView / ViewEntry / CompressionView / BuildViewOptions / buildObserveView /
- * buildReflectView / renderEntriesXml / entryToElement / appendCdataText / historyInner /
- * toolCallNameOf / skillNameOf。
+ * （buildReflectView），归档视图在反思视图基础上切分归档段并提取 skill（buildArchiveView）；
+ * getHistory 查看、compressHistory 区间校验与最终块构建共用同一套条目。
+ * 导出 AskUserQuestionView / ViewEntry / ArchiveSegment / CompressionView / ArchivedSkill /
+ * BuildViewOptions / buildObserveView / buildReflectView / buildArchiveView / renderEntriesXml /
+ * entryToElement / appendCdataText / historyInner / toolCallNameOf / skillNameOf。
  */
 
 import type { Document, Element, Node } from '@xmldom/xmldom';
@@ -64,6 +65,16 @@ export type ViewEntry = {
   ask?: AskUserQuestionView;
   /** 所属压缩块 seq（反思视图；块整体展开以此分组）。 */
   blockSeq?: number;
+  /** 归档摘要条目的检索关键词（渲染为 key-word 属性）。 */
+  keyWord?: string;
+};
+
+/** 归档段：相邻两条用户条目之间的 assistant 区间，归档时压成一句话。 */
+export type ArchiveSegment = {
+  /** 段首完整消息 index。 */
+  lo: number;
+  /** 段尾完整消息 index。 */
+  hi: number;
 };
 
 /** 压缩视图：条目序列 + 要求区间（getHistory / compressHistory 的 index 合法范围）。 */
@@ -74,6 +85,18 @@ export type CompressionView = {
   minIndex?: number;
   /** 要求区间尾 index（无任何可定位条目时 undefined）。 */
   maxIndex?: number;
+  /** 归档段；存在时压缩会话进入归档模式。 */
+  segments?: ArchiveSegment[];
+};
+
+/** 归档时从块中提取的 skill。 */
+export type ArchivedSkill = {
+  /** skill 名称。 */
+  name: string;
+  /** 原完整消息 index。 */
+  index: number;
+  /** skill 注入正文，与宿主 skill 引用渲染形态一致。 */
+  content: string;
 };
 
 /** 静默 DOMParser：非致命解析问题不刷 console，fatalError 仍抛 ParseError、解析语义不变。 */
@@ -547,7 +570,15 @@ function parseBlockEntries(blockText: string, blockSeq: number): ViewEntry[] {
       const start = intAttr(el, 'start');
       const end = intAttr(el, 'end');
       if (start !== undefined && end !== undefined) {
-        entries.push({ kind: 'assistant', lo: start, hi: end, text, blockSeq });
+        const keyWord = el.getAttribute('key-word');
+        entries.push({
+          kind: 'assistant',
+          lo: start,
+          hi: end,
+          text,
+          blockSeq,
+          ...(keyWord === null || keyWord === '' ? {} : { keyWord }),
+        });
       }
       // 属性缺失的 assistant 条目跳过（防御：产物块创建时已校验属性）
     } else if (el.nodeName === 'skill_content') {
@@ -637,6 +668,87 @@ export function buildReflectView(
       ? entries.filter((entry) => entry.kind !== 'reasoning')
       : entries;
   return { entries: filtered, ...viewBounds(filtered) };
+}
+
+/** 已处理的 ask 条目（q/a 形态，非失败 toolcall）。 */
+function isHandledAsk(entry: ViewEntry): boolean {
+  return (
+    entry.kind === 'assistant' &&
+    entry.toolName === ASK_USER_QUESTION_TOOL_NAME &&
+    entry.toolArgs === undefined
+  );
+}
+
+/** 转义 XML 属性值。 */
+function escapeAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/** 把 skill 条目渲染为宿主 skill 引用的注入正文：两段结构按宿主格式重建，已有包裹原样使用。 */
+function skillInjectionText(name: string, text: string): string {
+  const sections = skillContentSections(text);
+  const head = `<skill_content name="${escapeAttr(name)}">`;
+  if (sections) {
+    return `${head}<skill_resources>${sections.resources}</skill_resources>\n\n<skill_instructions>${sections.instructions}</skill_instructions></skill_content>`;
+  }
+  if (/^\s*<skill_content\b[^>]*>[\s\S]*<\/skill_content>\s*$/.test(text)) return text.trim();
+  return `${head}${text}</skill_content>`;
+}
+
+/**
+ * 归档视图：被归档 <history> 块的条目去掉 reasoning 与具名 skill。用户条目与已处理
+ * ask 原样保留并作为分隔，其间连续的可定位 assistant 条目构成一个归档段；不可定位的
+ * 遗留条目同样作为分隔原样保留。具名 skill 按名称去重保留最新一份，随结果返回。
+ */
+export function buildArchiveView(blocks: Array<{ text: string; seq: number }>): {
+  view: CompressionView;
+  skills: ArchivedSkill[];
+} {
+  const skills = new Map<string, ArchivedSkill>();
+  const entries: ViewEntry[] = [];
+  const segments: ArchiveSegment[] = [];
+  let open: ArchiveSegment | undefined;
+  const close = (): void => {
+    if (open !== undefined) segments.push(open);
+    open = undefined;
+  };
+  for (const block of blocks) {
+    for (const entry of parseBlockEntries(block.text, block.seq)) {
+      if (entry.kind === 'reasoning') continue;
+      if (
+        entry.toolName === SKILL_TOOL_NAME &&
+        entry.skillName !== undefined &&
+        entry.skillName !== '' &&
+        entry.lo !== undefined
+      ) {
+        const name = entry.skillName;
+        skills.delete(name);
+        skills.set(name, { name, index: entry.lo, content: skillInjectionText(name, entry.text) });
+        continue;
+      }
+      entries.push(entry);
+      if (
+        entry.kind === 'user' ||
+        isHandledAsk(entry) ||
+        entry.lo === undefined ||
+        entry.hi === undefined
+      ) {
+        close();
+        continue;
+      }
+      if (open === undefined) open = { lo: entry.lo, hi: entry.hi };
+      else open.hi = Math.max(open.hi, entry.hi);
+    }
+  }
+  close();
+  return {
+    view: { entries, ...viewBounds(entries), segments },
+    skills: [...skills.values()].sort((a, b) => a.index - b.index),
+  };
 }
 
 /**
@@ -759,6 +871,7 @@ export function entryToElement(doc: Document, entry: ViewEntry): Element {
     el.setAttribute('start', String(entry.lo));
     el.setAttribute('end', String(entry.hi));
   }
+  if (entry.keyWord !== undefined) el.setAttribute('key-word', entry.keyWord);
   appendCdataText(doc, el, entry.text);
   return el;
 }
