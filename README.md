@@ -208,6 +208,7 @@ web/                             # 机制说明与成本计算器站点
 .agents/skills/agent-workflow/SKILL.md # 仓库开发工作流
 .agents/skills/clear-branch/SKILL.md   # 手动清空除 main 外的分支与 worktree
 .agents/skills/compaction-eval/         # 压缩质量盲评打分：视图复现与重压缩、数据准备、分段合并与汇总计分；产物写系统临时目录；构建时渲染为发布版写入 dist/skill
+.agents/skills/compaction-tuning/SKILL.md # 压缩质量的长流程评估优化：选样本、诊断、改进点盲测与回归验证；产物写系统临时目录
 .agents/skills/real-device-test/        # 实机测试流程：宿主版本对齐、profile 搭建、mock LLM、warm/cold 驱动、CDP 浏览器用例；scripts 为参数化参考实现
 .agents/skills/release/SKILL.md        # 手动发布并跟踪 CI 与 npm
 .github/workflows/web-deploy.yml # GitHub Pages 部署工作流
