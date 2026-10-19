@@ -141,28 +141,26 @@ describe('staleAssistantIds', () => {
   });
 
   it('反思保留尾部旧块时，旧块之后生成的 assistant 仍视为过期', () => {
-    // 两次观察后反思归档旧块 H1、保留尾部 H2：AH(seq 9) 在表层位于 H2(seq 7) 之前，
-    // H2 之后生成的 a4 前缀同样被改写，须判过期。
-    const a1 = assistant('a1');
-    const a2 = assistant('a2');
+    // 会话：sys(0) user(1) a1(2) user(3) a2(4) 被 H1(seq 5) 替换；反思归档 H1，AH(seq 9)
+    // 追加在日志尾部但表层位于保留的尾部旧块 H2(seq 7) 之前，a3/a4 前缀被改写须判过期。
     const a3 = assistant('a3');
     const a4 = assistant('a4');
     const session = makeSession({
       events: [
         systemMessageEvent('系统提示词'),
         userEvent('任务'),
-        assistantEvent(a1),
+        assistantEvent(assistant('a1')),
         userEvent('继续'),
-        assistantEvent(a2),
+        assistantEvent(assistant('a2')),
         historyMessage('摘要1', 'history-1'),
         assistantEvent(a3),
         historyMessage('摘要2', 'history-2'),
         assistantEvent(a4),
         archivedHistoryMessage('归档', 'archived-1'),
       ],
-      surfaceNodes: [0, 9, 2, 3, 4, 6, 7, 8],
+      surfaceNodes: [0, 9, 6, 7, 8],
     });
-    expect([...staleAssistantIds(session)]).toEqual(['a1', 'a2', 'a3', 'a4']);
+    expect([...staleAssistantIds(session)]).toEqual(['a3', 'a4']);
   });
 
   it('反思提交之后生成的 assistant 不判过期', () => {
@@ -182,9 +180,9 @@ describe('staleAssistantIds', () => {
         archivedHistoryMessage('归档', 'archived-1'),
         assistantEvent(a5),
       ],
-      surfaceNodes: [0, 9, 2, 3, 4, 6, 7, 8, 10],
+      surfaceNodes: [0, 9, 6, 7, 8, 10],
     });
-    expect([...staleAssistantIds(session)]).toEqual(['a1', 'a2', 'a3', 'a4']);
+    expect([...staleAssistantIds(session)]).toEqual(['a3', 'a4']);
   });
 
   it('没有 OM 消息时不判定过期', () => {
