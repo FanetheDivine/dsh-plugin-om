@@ -41,6 +41,7 @@ import {
   recordCompressionSession,
 } from './compaction-log.ts';
 import {
+  ARCHIVE_SUMMARY_SOFT_CHARS,
   ARCHIVE_TOOL_SCHEMAS,
   COMPRESSION_TOOL_SCHEMAS,
   CompressionState,
@@ -117,7 +118,7 @@ export const REFLECT_COMPRESSION_PROMPT = [
   '- 本次产物是归档块，原文可由主模型通过 recall 按 index 找回；此规则优先于上方的粒度要求。',
   '- 用户消息与已处理的提问原样保留，无需处理。',
   '- 相邻两条用户消息之间的全部 assistant 条目构成一个归档段，每段压成一句话：写清结论、决策与涉及的文件，不写过程。',
-  '- 一句话不超过 300 字符、不换行；已被段内后续进展取代的信息直接舍弃。',
+  `- 一句话建议不超过 ${ARCHIVE_SUMMARY_SOFT_CHARS} 字符、不换行；已被段内后续进展取代的信息直接舍弃。`,
   '- keywords 选原文中出现、便于检索的词：文件名、函数名、命令、错误码、主题词。',
 ].join('\n');
 

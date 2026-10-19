@@ -1,7 +1,8 @@
 /**
  * 压缩工具状态机：历史查看、区间摘要替换、原始 ask 重写与完成门禁。
  * 导出 CompressionState / ToolCallResult / COMPRESSION_TOOL_SCHEMAS / ARCHIVE_TOOL_SCHEMAS /
- * REWRITE_ASK_TOOL_SCHEMA / ARCHIVE_SUMMARY_MAX_CHARS / ARCHIVE_MAX_KEYWORDS / SKILL_TOOL_NAME。
+ * REWRITE_ASK_TOOL_SCHEMA / ARCHIVE_SUMMARY_SOFT_CHARS / ARCHIVE_SUMMARY_MAX_CHARS /
+ * ARCHIVE_MAX_KEYWORDS / SKILL_TOOL_NAME。
  * 视图带归档段时进入归档模式：每段一句话摘要并带关键词，全部段覆盖后才能完成，产物为
  * <archived-history> 块。
  * getHistory 与最终 history 共用当前状态投影：本次替换的区间显示为摘要条目。
@@ -621,8 +622,11 @@ export class CompressionState {
   }
 }
 
-/** 归档摘要单句的字符上限。 */
-export const ARCHIVE_SUMMARY_MAX_CHARS = 300;
+/** 归档摘要单句的建议字符数（软性要求，只写进工具描述与反思提示词，不参与校验）。 */
+export const ARCHIVE_SUMMARY_SOFT_CHARS = 300;
+
+/** 归档摘要单句的硬性字符上限（超出即拒绝）。 */
+export const ARCHIVE_SUMMARY_MAX_CHARS = 1000;
 
 /** 归档摘要关键词数上限。 */
 export const ARCHIVE_MAX_KEYWORDS = 8;
@@ -718,7 +722,7 @@ export const ARCHIVE_TOOL_SCHEMAS: ToolSchema[] = COMPRESSION_TOOL_SCHEMAS.map((
   if (schema.name !== 'compressHistory') return schema;
   return {
     name: 'compressHistory',
-    description: `把一个归档段（start..end 恰为首条消息列出的某个段）压成一句话摘要。content 不换行、不超过 ${ARCHIVE_SUMMARY_MAX_CHARS} 字符，写清结论、决策与涉及的文件；keywords 为供 recall 检索原文的关键词。返回成功即已生效；修改时用同一区间重新提交。`,
+    description: `把一个归档段（start..end 恰为首条消息列出的某个段）压成一句话摘要。content 不换行，建议不超过 ${ARCHIVE_SUMMARY_SOFT_CHARS} 字符，写清结论、决策与涉及的文件；硬性上限 ${ARCHIVE_SUMMARY_MAX_CHARS} 字符，超出会被拒绝。keywords 为供 recall 检索原文的关键词。返回成功即已生效；修改时用同一区间重新提交。`,
     parameters: {
       type: 'object',
       properties: {
