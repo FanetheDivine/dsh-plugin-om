@@ -1,7 +1,11 @@
 // 压缩状态机行为：历史查看、二次确认与区间替换、原始 ask 重写和完成门禁，
 // 验证双路径切换、参数校验、仅 q/a 的保留产物及历史反思兼容。
 import { describe, expect, it } from 'vitest';
-import { ARCHIVE_SUMMARY_MAX_CHARS, CompressionState } from '../src/compress-tools.ts';
+import {
+  ARCHIVE_SUMMARY_MAX_CHARS,
+  ARCHIVE_SUMMARY_SOFT_CHARS,
+  CompressionState,
+} from '../src/compress-tools.ts';
 import {
   buildArchiveView,
   buildReflectView,
@@ -999,16 +1003,29 @@ describe('归档模式', () => {
     );
   });
 
-  it('content 须单行且不超上限，keywords 必填', () => {
+  it('content 须单行，keywords 必填', () => {
     const state = archive();
     const base = { start: 1, end: 3 };
     expect(call(state, { ...base, content: '两行\n内容', keywords: ['a'] }).isError).toBe(true);
-    expect(
-      call(state, { ...base, content: 'x'.repeat(ARCHIVE_SUMMARY_MAX_CHARS + 1), keywords: ['a'] })
-        .isError,
-    ).toBe(true);
     expect(call(state, { ...base, content: '一句话' }).isError).toBe(true);
     expect(call(state, { ...base, content: '一句话', keywords: [' '] }).isError).toBe(true);
+  });
+
+  it('content 300 字符只是建议值，硬上限 1000 字符', () => {
+    const base = { start: 1, end: 3, keywords: ['a'] };
+    // 超过建议值、未到硬上限的摘要直接生效
+    expect(
+      call(archive(), { ...base, content: 'x'.repeat(ARCHIVE_SUMMARY_SOFT_CHARS + 1) }).isError,
+    ).toBe(false);
+    expect(
+      call(archive(), { ...base, content: 'x'.repeat(ARCHIVE_SUMMARY_MAX_CHARS) }).isError,
+    ).toBe(false);
+    const over = call(archive(), {
+      ...base,
+      content: 'x'.repeat(ARCHIVE_SUMMARY_MAX_CHARS + 1),
+    });
+    expect(over.isError).toBe(true);
+    expect(over.text).toContain(`${ARCHIVE_SUMMARY_MAX_CHARS} 字符上限`);
   });
 
   it('全部段覆盖前拒绝完成，完成后产出带 key-word 的 archived-history 块', () => {
