@@ -46,7 +46,7 @@ export const ARCHIVED_HISTORY_TIP = '此块已被深度压缩，如需原文细�
  * 完整消息是摘要日志与 recall 共用的定位单位；首条 index 为 0，按会话顺序递增、全局稳定。
  */
 /** 压缩会话首条消息中预注入区间条目的标题行，评估脚本据此提取原文视图。 */
-export const INITIAL_HISTORY_HEADER = '区间当前条目（等同 getHistory 全区间返回）：';
+export const INITIAL_HISTORY_HEADER = '区间当前条目：';
 
 export const COMPLETE_MESSAGE_DEFINITION =
   '`完整消息`指一条`用户消息`、`模型输出文本`、`具有result的toolcall`或`手动加载的skill`；首条 index 为 0，按会话顺序递增。';
