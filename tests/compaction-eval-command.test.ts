@@ -54,6 +54,7 @@ describe('命令定义', () => {
     expect(command.input).toEqual({ hint: '[provider/model [思考等级]]' });
   });
 
+  // 用例内首次导入 src/index.ts 在全量并行时可达数秒，超时放宽到 30s。
   it('apply 在 commands 服务可用时注册两个命令，缺失时不注册也不抛', async () => {
     const { apply } = await import('../src/index.ts');
     const mounted = makeCtx({
@@ -70,7 +71,7 @@ describe('命令定义', () => {
     const missing = makeCtx();
     expect(() => apply(missing, { rateLimitWaitMs: 0 })).not.toThrow();
     expect(missing._registeredCommands).toEqual([]);
-  });
+  }, 30000);
 });
 
 describe('skillDocCandidates / skillDocPath', () => {
