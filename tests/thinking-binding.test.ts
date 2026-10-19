@@ -16,6 +16,7 @@ import {
 } from '../src/thinking-binding.ts';
 import type { Session, SessionEvent } from '../src/types.ts';
 import {
+  archivedHistoryMessage,
   historyMessage,
   makeCtx,
   makeMessage,
@@ -137,6 +138,53 @@ describe('staleAssistantIds', () => {
   it('反思替换后尾部全部 assistant 都过期', () => {
     const { session } = compactedSession({}, true);
     expect([...staleAssistantIds(session)]).toEqual(['a1', 'a2', 'a3']);
+  });
+
+  it('反思保留尾部旧块时，旧块之后生成的 assistant 仍视为过期', () => {
+    // 两次观察后反思归档旧块 H1、保留尾部 H2：AH(seq 9) 在表层位于 H2(seq 7) 之前，
+    // H2 之后生成的 a4 前缀同样被改写，须判过期。
+    const a1 = assistant('a1');
+    const a2 = assistant('a2');
+    const a3 = assistant('a3');
+    const a4 = assistant('a4');
+    const session = makeSession({
+      events: [
+        systemMessageEvent('系统提示词'),
+        userEvent('任务'),
+        assistantEvent(a1),
+        userEvent('继续'),
+        assistantEvent(a2),
+        historyMessage('摘要1', 'history-1'),
+        assistantEvent(a3),
+        historyMessage('摘要2', 'history-2'),
+        assistantEvent(a4),
+        archivedHistoryMessage('归档', 'archived-1'),
+      ],
+      surfaceNodes: [0, 9, 2, 3, 4, 6, 7, 8],
+    });
+    expect([...staleAssistantIds(session)]).toEqual(['a1', 'a2', 'a3', 'a4']);
+  });
+
+  it('反思提交之后生成的 assistant 不判过期', () => {
+    // 与上一用例同一会话，反思提交后又生成 a5(seq 10)，其前缀含 AH，签名有效须保留。
+    const a5 = assistant('a5');
+    const session = makeSession({
+      events: [
+        systemMessageEvent('系统提示词'),
+        userEvent('任务'),
+        assistantEvent(assistant('a1')),
+        userEvent('继续'),
+        assistantEvent(assistant('a2')),
+        historyMessage('摘要1', 'history-1'),
+        assistantEvent(assistant('a3')),
+        historyMessage('摘要2', 'history-2'),
+        assistantEvent(assistant('a4')),
+        archivedHistoryMessage('归档', 'archived-1'),
+        assistantEvent(a5),
+      ],
+      surfaceNodes: [0, 9, 2, 3, 4, 6, 7, 8, 10],
+    });
+    expect([...staleAssistantIds(session)]).toEqual(['a1', 'a2', 'a3', 'a4']);
   });
 
   it('没有 OM 消息时不判定过期', () => {
