@@ -57,6 +57,7 @@ export interface CompactionLog {
   tokens_cache_read: number;
   tokens_cache_write: number;
   tokens_out: number;
+  /** 首个成功 completeCompression 的产物；没有成功调用时为空串。 */
   product: string;
   /** 原文视图：首条消息预注入的全区间条目与首次成功 compressHistory 之前的 getHistory。 */
   views: [HistoryArgs, string][];
@@ -151,12 +152,16 @@ export function parseLog(events: SessionEvent[]): CompactionLog {
   const usage = assistants.flatMap((e) => (e.data?.usage ? [e.data.usage] : []));
   const times = body.flatMap((e) => (typeof e.time === 'number' ? [e.time] : []));
   const res = resultsByCall(body);
-  // 产物取 completeCompression 调用的 result；同轮后续调用会被补「未执行」记录，不能取最后一个 result
-  const cc = body.find(
-    (e) => e.type === 'tool/call' && e.data?.name === 'completeCompression' && e.data.callId,
-  );
-  const ccRes = cc?.data?.callId ? res.get(cc.data.callId) : undefined;
-  const product = ccRes && !ccRes.message?.isError ? textOf(ccRes.message?.content) : '';
+  // 产物取首个成功的 completeCompression result：同轮后续调用会被补「未执行」记录，
+  // 不能取最后一个 result；校验失败（如归档段未压完）后模型会重试，报错的调用要跳过
+  const ccRes = body
+    .flatMap((e) =>
+      e.type === 'tool/call' && e.data?.name === 'completeCompression' && e.data.callId
+        ? [res.get(e.data.callId)]
+        : [],
+    )
+    .find((r) => r !== undefined && !r.message?.isError);
+  const product = textOf(ccRes?.message?.content);
   // 原文视图只取首次成功 compressHistory 之前的 getHistory：之后的视图显示本次摘要
   const views: [HistoryArgs, string][] = [];
   const injected = firstUser.indexOf(INITIAL_HISTORY_HEADER);

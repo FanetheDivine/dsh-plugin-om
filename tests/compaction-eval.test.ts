@@ -287,6 +287,35 @@ describe('prepare', () => {
     });
   });
 
+  it('parseLog 取首个成功 completeCompression 的产物，跳过校验失败的调用', () => {
+    const ev = compactionEvents();
+    const info = ev.findLast((e) => e.type === 'assistant/message');
+    if (info?.data?.message)
+      info.data.message.content = txt('压缩使用模型 p/glm-5（max），原始消息 100 字符');
+    // 首次完成被拒（如归档段未压完），重试成功，产物取重试那次
+    for (const e of ev) {
+      if (e.data?.message?.toolCallId === 'c3') e.data.message.isError = true;
+    }
+    const c3 = ev.findIndex(
+      (e) => e.type === 'tool/result' && e.data?.message?.toolCallId === 'c3',
+    );
+    ev.splice(
+      c3 + 1,
+      0,
+      {
+        type: 'tool/call',
+        time: 3600,
+        data: { callId: 'c5', name: 'completeCompression', arguments: '{}' },
+      },
+      {
+        type: 'tool/result',
+        time: 3600,
+        data: { message: { content: txt('<history>重试产物</history>'), toolCallId: 'c5' } },
+      },
+    );
+    expect(parseLog(ev).product).toBe('<history>重试产物</history>');
+  });
+
   it('prepareEvalDir 清除旧候选与评分，已有评审产物时拒绝写入', () => {
     const dir = join(tmp(), 'eval-x');
     prepareEvalDir(dir);
