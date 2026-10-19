@@ -4,7 +4,8 @@
  * 导出 staleAssistantIds / isAnthropicSigned / stripReasoning / sanitizeMessages /
  * registerThinkingBinding。
  *
- * - 分界：表层最后一条 source.kind 为插件 kind 的 user/message，其 seq 恒为 OM 消息最大
+ * - 分界：seq 最大的 OM 消息（最新一次替换检查点）。观察压缩时其位于表层最后；
+ *   反思提交的归档块追加在日志尾部但表层位于保留的旧 H 块之前，故按 seq 选取
  * - 过期：分界之后 seq 小于分界的 assistant/message，即生成于该次替换之前
  * - 仅剥离 Anthropic 签名：replayState api 为 Anthropic 协议、模型名含 claude-、
  *   且带签名或 redacted 的 reasoning；其余模型的签名校验不绑定前缀，保持原样
@@ -35,22 +36,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** 返回前缀已被最后一条 OM 消息改写的 assistant 消息 id；无 OM 消息时为空。 */
+/** 返回前缀已被最新 OM 消息改写的 assistant 消息 id；无 OM 消息时为空。 */
 export function staleAssistantIds(session: Session): Set<string> {
   const stale = new Set<string>();
   const events = session.snapshotEvents();
   const nodes = session.surface.nodes;
   let boundary = -1;
-  for (let i = nodes.length - 1; i >= 0; i -= 1) {
+  let boundarySeq = -1;
+  for (let i = 0; i < nodes.length; i += 1) {
     const seq = nodes[i];
-    const event = seq === undefined ? undefined : events[seq];
-    if (event?.type === 'user/message' && event.data.source?.kind === PLUGIN_SOURCE_KIND) {
+    if (seq === undefined) continue;
+    const event = events[seq];
+    if (
+      event?.type === 'user/message' &&
+      event.data.source?.kind === PLUGIN_SOURCE_KIND &&
+      seq > boundarySeq
+    ) {
       boundary = i;
-      break;
+      boundarySeq = seq;
     }
   }
-  const boundarySeq = nodes[boundary];
-  if (boundarySeq === undefined) return stale;
+  if (boundarySeq < 0) return stale;
   for (const seq of nodes.slice(boundary + 1)) {
     const event = events[seq];
     if (event?.type === 'assistant/message' && seq < boundarySeq) stale.add(event.data.message.id);
