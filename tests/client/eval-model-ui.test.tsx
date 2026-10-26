@@ -179,6 +179,25 @@ describe('OmEvalModelPanel', () => {
     expect(onClose).toHaveBeenCalledOnce();
     expect(onSubmit).not.toHaveBeenCalled();
   });
+
+  it('打开面板的同一次 mousedown 冒泡到 document 时不关闭；之后的 mousedown 关闭', async () => {
+    const { onClose } = panel(vi.fn());
+    // 菜单点击打开面板：事件创建早于挂载，冒泡到 document 时监听已注册
+    const stale = new MouseEvent('mousedown', { bubbles: true });
+    Object.defineProperty(stale, 'timeStamp', { value: performance.now() - 50 });
+    act(() => {
+      document.body.dispatchEvent(stale);
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    // 面板打开后的新 mousedown 仍能点外关闭
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    });
+    act(() => {
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    });
+    expect(onClose).toHaveBeenCalledOnce();
+  });
 });
 
 describe('registerEvalModelPanel', () => {
