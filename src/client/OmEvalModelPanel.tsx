@@ -104,7 +104,11 @@ export function OmEvalModelPanel({ directory, load, t, onSubmit, onClose }: OmEv
 
   // 点面板外或按 Esc 关闭（提交中不关）
   useEffect(() => {
+    // 面板由菜单行的 mousedown 打开时，该事件在监听注册后仍会冒泡到 document；
+    // 按 timeStamp 忽略挂载前创建的事件，避免被打开面板的同一次点击立刻关闭
+    const mountedAt = performance.now();
     const outside = (event: MouseEvent) => {
+      if (event.timeStamp <= mountedAt) return;
       if (panelRef.current?.contains(event.target as Node) === true) return;
       if (!submitting) onClose();
     };
