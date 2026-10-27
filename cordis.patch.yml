@@ -2,3 +2,7 @@
 - insert:
     - id: dsh-plugin-om
       name: dsh-plugin-om
+    - id: dsh-plugin-om-recompress
+      name: dsh-plugin-om/recompress
+    - id: dsh-plugin-om-compaction-eval
+      name: dsh-plugin-om/compaction-eval

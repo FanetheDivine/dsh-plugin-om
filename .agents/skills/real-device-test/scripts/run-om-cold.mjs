@@ -34,13 +34,11 @@ const app = runtime.ctx,
 const results = [],
   handles = [];
 const base = {
-  omEnabled: true,
   observeThresholdTokens: 1000000,
   reflectThresholdTokens: 1000000,
   tailMessageCount: 3,
   rateLimitWaitMs: 0,
   semanticRecallEnabled: false,
-  recallEnabled: true,
   debug: true,
   compressSkipReasoning: false,
 };

@@ -328,6 +328,24 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
     );
   }, 30_000);
 
+  it('发布的组件入口声明行名、依赖与 apply', async () => {
+    const recompress = await import(
+      pathToFileURL(path.join(ROOT, 'dist/recompress/index.mjs')).href
+    );
+    expect(recompress.name).toBe('dsh-plugin-om/recompress');
+    expect(recompress.inject).toEqual(['llm', 'commands', 'omCompaction']);
+    expect(typeof recompress.apply).toBe('function');
+    expect(recompress.Config).toBeDefined();
+
+    const evalRow = await import(
+      pathToFileURL(path.join(ROOT, 'dist/compaction-eval/index.mjs')).href
+    );
+    expect(evalRow.name).toBe('dsh-plugin-om/compaction-eval');
+    expect(evalRow.inject).toEqual(['commands']);
+    expect(typeof evalRow.apply).toBe('function');
+    expect(evalRow.Config).toBeDefined();
+  }, 30_000);
+
   it('npm 发布包包含可加载的 Node 与浏览器入口', () => {
     const report = JSON.parse(run('npm', ['pack', '--dry-run', '--json'])) as Array<{
       files: Array<{ path: string }>;
@@ -336,10 +354,20 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
     for (const file of [
       'dist/index.mjs',
       'dist/index.d.ts',
+      'dist/recompress/index.mjs',
+      'dist/recompress/index.d.ts',
+      'dist/compaction-eval/index.mjs',
+      'dist/compaction-eval/index.d.ts',
       'dist/client.js',
       'dist/client/index.d.ts',
       'dist/skill/compaction-eval/SKILL.md',
       'dist/skill/compaction-eval/references/rules.md',
+      'locale/zh.json',
+      'locale/en.json',
+      'locale/recompress/zh.json',
+      'locale/recompress/en.json',
+      'locale/compaction-eval/zh.json',
+      'locale/compaction-eval/en.json',
       ...SKILL_DIST_SCRIPTS,
     ]) {
       expect(paths.has(file), file).toBe(true);

@@ -45,18 +45,19 @@ const runtime = await runProfile({
 });
 const app = runtime.ctx,
   adapter = app.get('omTestMock'),
-  entry = [...app.loader.entries()].find((e) => e.options.name === 'dsh-plugin-om');
+  entry = [...app.loader.entries()].find((e) => e.options.name === 'dsh-plugin-om'),
+  recompressEntry = [...app.loader.entries()].find(
+    (e) => e.options.name === 'dsh-plugin-om/recompress',
+  );
 const results = [],
   handles = [],
   handleById = new Map();
 const base = {
-  omEnabled: true,
   observeThresholdTokens: 1000000,
   reflectThresholdTokens: 1000000,
   tailMessageCount: 0,
   rateLimitWaitMs: 0,
   semanticRecallEnabled: false,
-  recallEnabled: true,
   debug: true,
   compressSkipReasoning: false,
 };
@@ -64,6 +65,11 @@ async function config(p = {}) {
   await entry.update({ config: { ...base, ...p } });
   await app.loader.await();
   entry.fiber.assertActive();
+}
+async function recompressConfig(p = {}) {
+  await recompressEntry.update({ config: p });
+  await app.loader.await();
+  recompressEntry.fiber.assertActive();
 }
 const askPlugin = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-tool-ask-user')));
 async function create(id, extra = {}) {
@@ -641,7 +647,7 @@ try {
       labels.some((l) => l?.endsWith('-观察-重压缩')),
       `recompress label missing: ${JSON.stringify(labels)}`,
     );
-    await config({ recompressConcurrency: 1 });
+    await recompressConfig({ recompressConcurrency: 1 });
     const att0 = compCalls('omtest-imm').length;
     const [r1, r2] = await Promise.all([
       exec(imm, `/om-recompress ${id} mock mock-model`),
@@ -654,6 +660,7 @@ try {
       6,
       `queued recompress attempts=${compCalls('omtest-imm').length - att0}`,
     );
+    await recompressConfig();
     await config();
     return { successText: r.result.text, concurrencyOk: true };
   });

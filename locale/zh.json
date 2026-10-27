@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Observational Memory 压缩",
+    "description": "自动压缩长会话并支持原文召回，附带进度提醒。重压缩与结果评估见组件行。"
+  }
+}

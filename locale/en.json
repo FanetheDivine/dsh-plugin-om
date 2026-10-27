@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Observational Memory compaction",
+    "description": "Automatically compresses long conversations with verbatim recall and progress reminders. See component rows for recompression and evaluation."
+  }
+}

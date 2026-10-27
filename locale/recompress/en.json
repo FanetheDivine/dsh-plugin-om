@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Model recompression",
+    "description": "Provides /om-recompress to replay finished compactions with another model. Requires the main plugin row."
+  }
+}

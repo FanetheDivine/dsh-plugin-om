@@ -40,8 +40,17 @@ afterAll(() => {
   }
 });
 
-/** 执行 npm pack --dry-run --json，返回 tarball 内文件路径集合。 */
+/** npm pack 结果缓存（同一进程只执行一次）。 */
+let packedCache: Set<string> | undefined;
+
+/** 执行 npm pack --dry-run --json，返回 tarball 内文件路径集合（缓存）。 */
 function packedPaths(): Set<string> {
+  packedCache ??= computePackedPaths();
+  return packedCache;
+}
+
+/** 执行 npm pack --dry-run --json，返回 tarball 内文件路径集合。 */
+function computePackedPaths(): Set<string> {
   const res = spawnSync('npm', ['pack', '--dry-run', '--json'], {
     cwd: ROOT,
     encoding: 'utf8',
@@ -76,6 +85,20 @@ describe('npm 包内容（npm pack --dry-run）', () => {
     for (const name of SMALL_FILES) {
       const rel = path.join('models', EMBEDDING_MODEL_ID, name).split(path.sep).join('/');
       expect(packed.has(rel)).toBe(true); // 小文件仍随包分发
+    }
+  }, 120_000);
+
+  it('tarball 含包根与组件行的中英文展示元信息', () => {
+    const packed = packedPaths();
+    for (const rel of [
+      'locale/zh.json',
+      'locale/en.json',
+      'locale/recompress/zh.json',
+      'locale/recompress/en.json',
+      'locale/compaction-eval/zh.json',
+      'locale/compaction-eval/en.json',
+    ]) {
+      expect(packed.has(rel), rel).toBe(true);
     }
   }, 120_000);
 });

@@ -1,6 +1,5 @@
 // /om-compaction-eval 命令单元测试：命令定义、skill 文档路径解析、新会话首条消息文本、
 // 建会话与投递入参、以及各错误分支（非主会话、缺 cwd、宿主无 sessionController、建会话或投递失败）。
-import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -24,8 +23,8 @@ import { makeCtx, makeSession } from './helpers.ts';
 /** 仓库根目录（tests/ 的上一级）。 */
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-/** 发布产物入口的模块 URL（skill 文档首选位置的基准）。 */
-const DIST_ENTRY = pathToFileURL(path.join(ROOT, 'dist', 'index.mjs')).href;
+/** 发布组件入口的模块 URL（skill 文档首选位置的基准）。 */
+const COMPONENT_ENTRY = pathToFileURL(path.join(ROOT, 'dist', 'compaction-eval', 'index.mjs')).href;
 
 /** 造一个带 cwd 的主会话。 */
 function mainSession(cwd = path.join(ROOT, 'workspace-a')) {
@@ -68,22 +67,19 @@ describe('命令定义', () => {
 });
 
 describe('skillDocCandidates / skillDocPath', () => {
-  it('候选顺序为发布产物优先、仓库源码兜底', () => {
-    expect(skillDocCandidates(DIST_ENTRY)).toEqual([
+  it('发布组件入口首选 dist/skill，源码入口命中 .agents/skills', () => {
+    expect(skillDocCandidates(COMPONENT_ENTRY)).toEqual([
       path.join(ROOT, 'dist', 'skill', 'compaction-eval', 'SKILL.md'),
-      path.join(ROOT, '.agents', 'skills', 'compaction-eval', 'SKILL.md'),
+      path.join(ROOT, 'dist', '.agents', 'skills', 'compaction-eval', 'SKILL.md'),
     ]);
-  });
-
-  it('返回第一个存在的候选；都不存在时 undefined', () => {
-    const found = skillDocPath(DIST_ENTRY);
-    expect(found).toBeDefined();
-    expect(existsSync(found as string)).toBe(true);
-    // 源码位置调用（vitest 下的 import.meta.url）同样能命中仓库内文档
+    // 源码位置调用（vitest 下的 import.meta.url）命中仓库内文档
     expect(skillDocPath()).toBe(
       path.join(ROOT, '.agents', 'skills', 'compaction-eval', 'SKILL.md'),
     );
-    const empty = pathToFileURL(path.join(ROOT, 'dist', 'nothing', 'index.mjs')).href;
+  });
+
+  it('候选都不存在时 undefined', () => {
+    const empty = pathToFileURL(path.join(ROOT, 'dist', 'nothing', 'deep', 'index.mjs')).href;
     expect(skillDocPath(empty)).toBeUndefined();
   });
 });
