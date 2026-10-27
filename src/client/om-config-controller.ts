@@ -95,10 +95,18 @@ export interface OmConfigCardState extends SettingsFormShell {
   fields: Record<string, SettingsFieldState>;
 }
 
+/** 各行 summary 视图使用的字典键。 */
+export type RowDescriptionKey =
+  | 'config.description'
+  | 'config.description.recompress'
+  | 'config.description.eval';
+
 /** 行配置槽注入的表单操作及响应式快照。 */
 export interface OmConfigCardFace extends SettingsFormActions {
   /** 本页渲染的字段及控件类别，顺序即面板顺序。 */
   layout: ReadonlyArray<RowFieldSpec<RowFieldName>>;
+  /** summary 视图显示的本页说明字典键。 */
+  descriptionKey: RowDescriptionKey;
   hooks: { omConfigCard: SnapshotStore<OmConfigCardState> };
 }
 
@@ -117,6 +125,7 @@ export class OmConfigController<T> implements RowConfigPage {
   constructor(
     private readonly scope: SettingsFormScope<Partial<T>>,
     private readonly layout: ReadonlyArray<RowFieldSpec<Extract<keyof T, RowFieldName>>>,
+    private readonly descriptionKey: RowDescriptionKey,
   ) {
     const specs: SettingsFieldSpec[] = layout.map(({ name, kind }) =>
       kind === 'integer'
@@ -152,7 +161,12 @@ export class OmConfigController<T> implements RowConfigPage {
 
   /** 供行槽注册器向 React 注入表单操作。 */
   inject(): OmConfigCardFace {
-    return { hooks: { omConfigCard: this.store }, layout: this.layout, ...this.form.actions() };
+    return {
+      hooks: { omConfigCard: this.store },
+      layout: this.layout,
+      descriptionKey: this.descriptionKey,
+      ...this.form.actions(),
+    };
   }
 
   /** 释放宿主快照订阅。 */

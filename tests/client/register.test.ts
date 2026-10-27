@@ -94,9 +94,6 @@ function setup(extra: Record<string, unknown> = {}, served?: string[]) {
       if (prop === 'commandUi' || prop === 'modelDirectories') {
         throw new Error(`cannot get property "${prop}" without inject`);
       }
-      if (prop === 'modelDirectories' || prop === 'remote' || prop === 'remote.commands') {
-        throw new Error(`cannot get property "${prop}" without inject`);
-      }
       return Reflect.get(target, prop);
     },
   });

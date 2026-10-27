@@ -90,7 +90,7 @@ function isVisible(name: string, { semanticOn, idleOn }: DependencyFlags): boole
 export function OmConfigCard(props: OmConfigCardProps): string | React.JSX.Element {
   const { t } = props;
   const state = props.useOmConfigCard((snapshot) => snapshot);
-  if (props.view === 'summary') return t('config.description');
+  if (props.view === 'summary') return t(props.descriptionKey);
   if (state.status === 'loading') return <p role="status">{t('config.loading')}</p>;
   // 组件行的字段清单没有依赖开关，缺失字段按关闭处理
   const flags: DependencyFlags = {

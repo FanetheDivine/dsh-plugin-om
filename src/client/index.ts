@@ -97,6 +97,7 @@ export function apply(ctx: Context): void {
         // 「查看」跳转：诊断子会话是父会话的 one-shot 子智能体
         // 换模型重压缩：只在重压缩组件行启用且宿主提供模型目录时注入
         // modelDirectories 是未声明 inject 的可选服务，只能经 ctx.get 读取
+        // inject 结果被宿主按会话记忆化：配置镜像就绪前渲染的会话没有重压缩菜单，会话绑定重建后恢复
         inject: (sessionId) => {
           const directories = ctx.get('modelDirectories');
           return {
@@ -125,6 +126,7 @@ export function apply(ctx: Context): void {
       page: new OmConfigController(
         ctx.configForms.get<Partial<PluginConfig>>(CONFIG_NS),
         OM_CONFIG_FIELDS,
+        'config.description',
       ),
     },
     {
@@ -132,6 +134,7 @@ export function apply(ctx: Context): void {
       page: new OmConfigController(
         ctx.configForms.get<Partial<RecompressRowConfig>>(RECOMPRESS_NS),
         RECOMPRESS_CONFIG_FIELDS,
+        'config.description.recompress',
       ),
     },
     {
@@ -139,6 +142,7 @@ export function apply(ctx: Context): void {
       page: new OmConfigController(
         ctx.configForms.get<Partial<EvalRowConfig>>(EVAL_NS),
         EVAL_CONFIG_FIELDS,
+        'config.description.eval',
       ),
     },
   ];

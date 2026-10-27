@@ -621,6 +621,24 @@ describe('组件行的配置页', () => {
     ).toEqual(['debug']);
   });
 
+  it('三行的 summary 说明各用自己的字典键，中英文齐全', () => {
+    const views = [
+      setup(),
+      setup(undefined, undefined, { row: 'recompress' }),
+      setup(undefined, undefined, { row: 'eval' }),
+    ];
+    for (const view of views) active.push(view);
+    expect(views.map((view) => view.face.descriptionKey)).toEqual([
+      'config.description',
+      'config.description.recompress',
+      'config.description.eval',
+    ]);
+    for (const { face } of views) {
+      expect(zh[face.descriptionKey], face.descriptionKey).toBeTruthy();
+      expect(en[face.descriptionKey], face.descriptionKey).toBeTruthy();
+    }
+  });
+
   it('未被服务的行不注册配置页，其余行不受影响', () => {
     const view = setup(undefined, undefined, { served: ['dsh-plugin-om'] });
     active.push(view);
