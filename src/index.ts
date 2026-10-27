@@ -1,28 +1,28 @@
 /**
- * dsh-plugin-om 入口（tsdown 打包入口）：导出 name / inject / Config / apply。
- * apply 在 tools 服务可用时恒注册 recall 工具（语义增强按配置切换）并处理 Loader volatile 配置提交，
+ * dsh-plugin-om 包根入口（tsdown 打包入口）：导出 name / inject / Config / apply。
+ * apply 提供压缩核心服务 omCompaction（组件行读取当前压缩配置，见 core-service.ts），
+ * 在 tools 服务可用时恒注册 recall 工具（语义增强按配置切换）并处理 Loader volatile 配置提交，
  * 并接线 agent/pre-step 自动压缩（先反思后观察，仅主会话生效；观察压缩触发后在后台
  * 预压缩、到期注入，见 precompress.ts）与提醒补发
  * （进度提醒的 system-reminder 用户消息，见 system-reminder.ts），
- * commands 服务可用时注册换模型重压缩命令（见 recompress.ts）与 OM 结果评估命令
- * （见 compaction-eval-command.ts），sessions 服务可用时注册
- * llm/stream 中间件剥离 OM 压缩前生成的 Claude thinking 签名（见 thinking-binding.ts）。压缩走工具驱动的压缩循环（模型经 getHistory /
+ * sessions 服务可用时注册 llm/stream 中间件剥离 OM 压缩前生成的 Claude thinking
+ * 签名（见 thinking-binding.ts）。压缩走工具驱动的压缩循环（模型经 getHistory /
  * compressHistory / completeCompression 工具完成，见 compress-loop.ts）；最终失败
  * （连续无工具调用 / 请求级错误）时拒绝本 step 中断当前 turn（signal 中止除外），
  * 主会话日志记录失败原因与诊断子会话 sessionId（完整循环会话由 compaction-log.ts
  * 落盘为子会话）。压缩与检索的实现见 compress.ts / compress-loop.ts /
  * compaction-log.ts / recall.ts / semantic-recall.ts。
+ * 换模型重压缩与 OM 结果评估命令由组件行提供，见 recompress/index.ts 与
+ * compaction-eval/index.ts。
  */
 import type {} from '@deepseek-ai/cordis-plugin-loader';
-import type {} from '@deepseek-ai/dsh-commands';
-import { buildCompactionEvalCommand } from './compaction-eval-command.ts';
 import { type CompressPassResult, commitReflection, maybeCompress } from './compress.ts';
 import { Config, currentConfig } from './config.ts';
+import { provideCompactionService } from './core-service.ts';
 import { ensureModelReady, getEmbedder } from './embedding.ts';
 import { makeLogger } from './logger.ts';
 import { disposeAllPrecompressions, disposePrecompression } from './precompress.ts';
 import { buildRecallTool } from './recall.ts';
-import { buildRecompressCommand } from './recompress.ts';
 import { disposeAllReflections, disposeReflection } from './reflect.ts';
 import {
   activeSystemReminders,
@@ -51,7 +51,7 @@ export function apply(ctx: Context, config?: unknown): void {
   logger.step(
     `apply 启动：observeThresholdTokens=${String(resolved.observeThresholdTokens)} reflectThresholdTokens=${String(resolved.reflectThresholdTokens)} compressMaxTokens=${
       resolved.compressMaxTokens === undefined ? '未设置' : String(resolved.compressMaxTokens)
-    } tailMessageCount=${String(resolved.tailMessageCount)} omEnabled=${String(resolved.omEnabled)} debug=${String(resolved.debug)} compressProvider=${
+    } tailMessageCount=${String(resolved.tailMessageCount)} debug=${String(resolved.debug)} compressProvider=${
       resolved.compressProvider ?? '跟随会话路由'
     } compressModel=${resolved.compressModel ?? '跟随会话路由'} compressReasoningEffort=${
       resolved.compressReasoningEffort ?? '模型默认'
@@ -65,9 +65,9 @@ export function apply(ctx: Context, config?: unknown): void {
   if (ctx.get('tools') === undefined) {
     logger.warn('tools 服务未挂载，recall 暂不可用');
   }
-  if (ctx.get('commands') === undefined) {
-    logger.warn('commands 服务未挂载，重压缩与 OM 结果评估命令暂不可用');
-  }
+
+  // 压缩核心服务：组件行（重压缩）读取当前压缩配置；fiber 卸载时自动撤销。
+  provideCompactionService(ctx, () => currentConfig(config));
 
   // recall 恒注册（依赖 tools 服务，服务缺失不影响压缩）；
   // 服务变化时回调重跑，注册状态随回调局部持有并在卸载时释放。
@@ -116,20 +116,6 @@ export function apply(ctx: Context, config?: unknown): void {
         disposeRecall = undefined;
       },
       'dsh-plugin-om: recall tool',
-    );
-  });
-
-  // 压缩卡片的换模型重压缩入口：commands 服务可用时注册 /om-recompress，服务缺失则
-  // 不注册（插件其余能力不受影响）。
-  ctx.inject(['commands'], (inner) => {
-    inner.effect(
-      () => inner.commands.register(buildRecompressCommand(ctx, () => currentConfig(config))),
-      'dsh-plugin-om: recompress command',
-    );
-    // OM 结果评估入口：新建同工作区会话，由它按随包发布的 compaction-eval 文档分析本会话
-    inner.effect(
-      () => inner.commands.register(buildCompactionEvalCommand(ctx)),
-      'dsh-plugin-om: compaction eval command',
     );
   });
 

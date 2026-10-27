@@ -845,30 +845,16 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(session.surface.nodes.length).toBe(3);
   });
 
-  it('omEnabled=false：关闭自动压缩（无摘要调用、无替换、recall 工具仍注册）', async () => {
-    const session = makeSession({
-      events: [
-        historyMessage('旧任务'),
-        ...buildToolCallFlow({
-          code: 'a()',
-          description: '任务A',
-          callId: 'c1',
-          resultText: 'r1',
-          withTurnEnd: true,
-        }),
-      ],
-    });
-    const ctx = makeCtx({});
-    apply(ctx, { omEnabled: false });
-    // 工具注册不受影响（recall 独立开关）
-    expect(ctx._registeredTools.some((t) => t.name === 'recall')).toBe(true);
-    await runPreStep(ctx, session);
-    // 观察/反思均不触发：无摘要调用、无 compaction 生命周期、表层不变
-    expect(ctx._llmCalls).toHaveLength(0);
-    expect(session.snapshotEvents().some((e) => e.type === 'compaction/start')).toBe(false);
-    expect(session.surface.nodes.length).toBe(4); // 旧日志 + flow 3 条
-    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
-    expect(steps.some((s) => s.includes('omEnabled=false，跳过压缩'))).toBe(true);
+  it('apply 提供 omCompaction 核心服务并透传当前配置，不再注册组件命令', async () => {
+    const ctx = makeCtx({ commandsMounted: true });
+    apply(ctx, { observeThresholdTokens: 123 });
+    const service = ctx._provided.get('omCompaction') as
+      | { config: () => Record<string, unknown> }
+      | undefined;
+    expect(service).toBeDefined();
+    expect(service?.config().observeThresholdTokens).toBe(123);
+    // 重压缩与评估命令由组件行提供，包根不再注册
+    expect(ctx._registeredCommands).toEqual([]);
   });
 });
 
@@ -1408,15 +1394,14 @@ describe('apply 接线（recall / semanticRecallEnabled）', () => {
     expect(mockEnsure).not.toHaveBeenCalled();
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
     expect(warns.some((w) => w.includes('tools'))).toBe(true);
-    expect(warns.some((w) => w.includes('commands'))).toBe(true);
     const listeners = ctx._onCallbacks.get('agent/pre-step');
     await listeners?.[0]?.({ agent: { session }, signal: new AbortController().signal }, () => {});
     expect(latestHistoryText(session)).toContain('请帮我完成一个任务');
     expect(ctx._createdSessions).toHaveLength(0); // 无 sessions：不落盘压缩会话记录
   });
 
-  it('服务齐全时不为 tools/commands 打 warn', () => {
-    const full = makeCtx({ commandsMounted: true });
+  it('服务齐全时不为 tools 打 warn', () => {
+    const full = makeCtx();
     apply(full, {});
     expect(full._loggerCalls.filter((c) => c.level === 'warn')).toEqual([]);
   });

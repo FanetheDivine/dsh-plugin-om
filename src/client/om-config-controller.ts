@@ -22,7 +22,6 @@ type OmConfigFieldSpec = {
 
 /** 完整表单字段及控件类别，顺序即面板顺序：父开关在前，其控制的细节紧随其后。 */
 export const OM_CONFIG_FIELDS = [
-  { name: 'omEnabled', kind: 'boolean' },
   { name: 'observeThresholdTokens', kind: 'integer' },
   { name: 'reflectThresholdTokens', kind: 'integer' },
   { name: 'tailMessageCount', kind: 'integer' },
@@ -34,7 +33,6 @@ export const OM_CONFIG_FIELDS = [
   { name: 'compressMaxTokens', kind: 'integer' },
   { name: 'compressSkipReasoning', kind: 'boolean' },
   { name: 'rateLimitWaitMs', kind: 'integer' },
-  { name: 'recompressConcurrency', kind: 'integer' },
   { name: 'progressReminderEnabled', kind: 'boolean' },
   { name: 'progressReminderIdleEnabled', kind: 'boolean' },
   { name: 'progressReminderIdleSteps', kind: 'integer' },

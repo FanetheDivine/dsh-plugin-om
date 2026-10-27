@@ -28,7 +28,7 @@
  *   om/observe-pending / om/observe-invalidate / om/observe-summary，见 om-event.ts）
  *   持久化在会话日志中（重启后从日志恢复）；压缩失败保留待定，下个 pre-step 重启任务重试
  * - pre-step 先做反思检查（只启动或跳过，不阻塞），再执行观察（压缩主体在后台运行，
- *   pre-step 仅在到期结果未就绪时阻塞等待）；仅主会话生效；omEnabled=false 关闭
+ *   pre-step 仅在到期结果未就绪时阻塞等待）；仅主会话生效；关闭包根行即停用
  * - 压缩目标默认跟随会话路由；compressProvider + compressModel 成对配置时覆盖路由
  *   （成对配置下未路由会话也执行压缩）；compressReasoningEffort 配置时压缩前经
  *   ctx.llm.resolveModelInfo 校验目标模型 reasoning.efforts（按 provider+model 缓存），
@@ -1248,10 +1248,6 @@ export async function maybeCompress(
 ): Promise<CompressPassResult> {
   const session = agent.session;
   const logger = makeLogger(ctx, config.debug);
-  if (!config.omEnabled) {
-    logger.step('omEnabled=false，跳过压缩');
-    return { failed: false };
-  }
   const target = compressionTarget(config, session);
   if (target === undefined) {
     logger.step('会话未路由（无 provider/model）且未配置压缩目标覆盖，跳过压缩');

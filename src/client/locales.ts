@@ -76,15 +76,10 @@ export const zh = {
   'config.compressSkipReasoning.hint': '压缩时不将历史 reasoning 纳入参考。',
   'config.rateLimitWaitMs': '限流等待毫秒数',
   'config.rateLimitWaitMs.hint': '429 限流后的冷却时间；0 表示不等待。',
-  'config.recompressConcurrency': '重压缩并发数',
-  'config.recompressConcurrency.hint': '换模型重压缩同时运行的上限，至少为 1；超出的排队等待。',
   'config.modelDir': '嵌入模型目录',
   'config.modelDir.hint': '本地语义增强使用的嵌入模型目录。',
-  'config.omEnabled': '自动压缩',
-  'config.omEnabled.hint': '启用观察压缩和摘要反思合并；关闭后进度提醒也不再注入。',
   'config.progressReminderEnabled': '进度提醒',
-  'config.progressReminderEnabled.hint':
-    '向主会话注入进度提醒，要求模型持续输出记录；需同时开启自动压缩。',
+  'config.progressReminderEnabled.hint': '向主会话注入进度提醒，要求模型持续输出记录。',
   'config.progressReminderIdleEnabled': '长期无记录时重发',
   'config.progressReminderIdleEnabled.hint':
     '模型长期只调用工具不输出记录时重发提醒；关闭后仅在提醒缺失时补发。',
@@ -170,17 +165,11 @@ export const en: Record<keyof typeof zh, string> = {
   'config.compressSkipReasoning.hint': 'Exclude historical reasoning from compression references.',
   'config.rateLimitWaitMs': 'Rate-limit wait in milliseconds',
   'config.rateLimitWaitMs.hint': 'Cooldown after a 429 response; zero skips the wait.',
-  'config.recompressConcurrency': 'Recompression concurrency',
-  'config.recompressConcurrency.hint':
-    'Maximum concurrent model-switch recompressions, at least one; extra runs wait in a queue.',
   'config.modelDir': 'Embedding model directory',
   'config.modelDir.hint': 'Directory containing the local semantic-enhancement embedding model.',
-  'config.omEnabled': 'Automatic compaction',
-  'config.omEnabled.hint':
-    'Enable observation and reflection of summaries. Turning it off also stops progress reminders.',
   'config.progressReminderEnabled': 'Progress reminder',
   'config.progressReminderEnabled.hint':
-    'Inject a progress reminder asking the model to keep writing notes. Requires automatic compaction.',
+    'Inject a progress reminder asking the model to keep writing notes.',
   'config.progressReminderIdleEnabled': 'Resend when silent',
   'config.progressReminderIdleEnabled.hint':
     'Resend the reminder when the model only calls tools without notes; off resends only when it is missing.',

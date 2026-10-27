@@ -52,11 +52,11 @@ export function systemReminderMessage(reminder: SystemReminder): UserMessage {
   });
 }
 
-/** 按配置返回应注入的提醒：omEnabled 与 progressReminderEnabled 同时开启时为进度提醒。 */
+/** 按配置返回应注入的提醒：progressReminderEnabled 开启时为进度提醒。 */
 export function activeSystemReminders(
-  config: Pick<PluginConfig, 'omEnabled' | 'progressReminderEnabled'>,
+  config: Pick<PluginConfig, 'progressReminderEnabled'>,
 ): SystemReminder[] {
-  return config.omEnabled && config.progressReminderEnabled ? [PROGRESS_REMINDER] : [];
+  return config.progressReminderEnabled ? [PROGRESS_REMINDER] : [];
 }
 
 /** 活动重发判定：开关、静默窗口内已结束 step 数下限、工具调用数须超过的值。 */

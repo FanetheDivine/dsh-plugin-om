@@ -108,7 +108,14 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
       await app.plugin(TokenMeter);
       await app.plugin(SystemPrompt);
       await app.plugin(ToolRuntime);
-      await app.plugin({ name, inject, apply }, { omEnabled: false, semanticRecallEnabled: false });
+      await app.plugin(
+        { name, inject, apply },
+        {
+          observeThresholdTokens: 1000000,
+          reflectThresholdTokens: 1000000,
+          semanticRecallEnabled: false,
+        },
+      );
       const session = app.sessions.create('release-host-integration' as SessionId);
       session.append(
         'user/message',

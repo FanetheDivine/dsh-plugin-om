@@ -51,10 +51,9 @@ function update(ctx: ReturnType<typeof makeCtx>, ...paths: string[]) {
 describe('Loader volatile 热更新', () => {
   it('不重挂载即可用新阈值和 token 上限压缩，debug 日志实时切换', async () => {
     const { values, refs } = loaderConfig({
-      omEnabled: false,
       debug: false,
       tailMessageCount: 0,
-      observeThresholdTokens: 1,
+      observeThresholdTokens: 1000000,
       compressMaxTokens: 111,
       semanticRecallEnabled: false,
     });
@@ -90,10 +89,10 @@ describe('Loader volatile 热更新', () => {
     await run();
     expect(ctx._llmCalls).toHaveLength(0);
     expect(ctx._loggerCalls.some((entry) => entry.level === 'debug')).toBe(false);
-    values.omEnabled = true;
+    values.observeThresholdTokens = 1;
     values.debug = true;
     values.compressMaxTokens = 321;
-    update(ctx, 'omEnabled', 'debug', 'compressMaxTokens');
+    update(ctx, 'observeThresholdTokens', 'debug', 'compressMaxTokens');
     await run();
     expect(ctx._llmCalls).toHaveLength(3);
     expect((ctx._llmCalls[0]?.options as { maxTokens?: number } | undefined)?.maxTokens).toBe(321);

@@ -631,13 +631,12 @@ describe('集成：只有 llm 和 tokenMeter 的最小堆叠', () => {
     return { app, adapter, logs, session };
   }
 
-  it('加载不报错，缺失的 tools 和 commands 只产生 warning，recall 不注册', async () => {
+  it('加载不报错，缺失的 tools 只产生 warning，recall 不注册', async () => {
     const { app, logs } = await minimalStack();
     expect(app.get('tools')).toBeUndefined();
     expect(logs.filter((m) => m.type === 'error')).toEqual([]);
     const warns = logs.filter((m) => m.type === 'warn').map((m) => String(m.args[0]));
     expect(warns.some((w) => w.includes('tools 服务未挂载'))).toBe(true);
-    expect(warns.some((w) => w.includes('commands 服务未挂载'))).toBe(true);
   });
 
   it('pre-step 完成压缩，缺失 sessions 只产生 warning，不落盘压缩会话记录', async () => {

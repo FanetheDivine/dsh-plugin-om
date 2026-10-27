@@ -159,16 +159,11 @@ describe('systemReminderMessage', () => {
 
 describe('activeSystemReminders', () => {
   it.each([
-    { omEnabled: true, progressReminderEnabled: true, active: true },
-    { omEnabled: true, progressReminderEnabled: false, active: false },
-    { omEnabled: false, progressReminderEnabled: true, active: false },
-    { omEnabled: false, progressReminderEnabled: false, active: false },
-  ])(
-    'omEnabled=$omEnabled 且 progressReminderEnabled=$progressReminderEnabled 时启用=$active',
-    ({ active, ...config }) => {
-      expect(activeSystemReminders(config)).toEqual(active ? [PROGRESS_REMINDER] : []);
-    },
-  );
+    { progressReminderEnabled: true, active: true },
+    { progressReminderEnabled: false, active: false },
+  ])('progressReminderEnabled=$progressReminderEnabled 时启用=$active', ({ active, ...config }) => {
+    expect(activeSystemReminders(config)).toEqual(active ? [PROGRESS_REMINDER] : []);
+  });
 });
 
 describe('进度提醒的表层活动窗口', () => {

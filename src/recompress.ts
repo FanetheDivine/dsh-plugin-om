@@ -1,8 +1,8 @@
 /**
  * 换模型重压缩：对已成功的 compaction 用另一模型在临时循环里重新压缩一次，便于对比
  * 不同模型的压缩效果。导出 parseRecompressInput / compactionView / recompress /
- * RecompressRequest / RecompressResult / ReplayView / buildRecompressCommand /
- * RECOMPRESS_COMMAND_NAME。
+ * RecompressRequest / RecompressResult / ReplayView / RecompressRuntime /
+ * buildRecompressCommand / RECOMPRESS_COMMAND_NAME。
  *
  * - 视图重放：compaction/summary 载荷的 shadowedSeqs 加 compaction/start 的 phase 足以
  *   重建当时的压缩视图（观察取被遮蔽的原消息，反思取被归档的 <history> 块），二者都只
@@ -11,8 +11,10 @@
  *   会话记录子会话及其在父会话的 subagent/catalog，标题带「重压缩 provider/model」
  * - 目标模型与思考等级由调用方显式指定，不做模型信息校验，也不受 compressProvider /
  *   compressModel 配置影响
- * - 仅主会话可用；同一会话允许多次重压缩并行，互不影响；命令并发数受
+ * - 仅主会话可用；同一会话允许多次重压缩并行，互不影响；命令并发数受组件行
  *   recompressConcurrency 配置限制，超出的先进先出排队，排队中中止返回中止错误
+ * - 压缩参数（maxTokens / rateLimitWaitMs / skipReasoning）来自包根行的压缩核心
+ *   服务（见 core-service.ts），debug 与并发上限来自组件行自身配置
  * - 命令 /om-recompress 是压缩卡片按钮到服务端的内部通道（宿主命令通道），结果文本
  *   由发起方 UI 渲染，命令事件 log-only 不进模型上下文
  */
@@ -38,10 +40,23 @@ import type {
   CompactionStartPayload,
   CompactionSummaryPayload,
   Context,
-  PluginConfig,
   Session,
 } from './types.ts';
 import { isMainSession, seqsCharCount } from './utils.ts';
+
+/** 重压缩运行时参数：压缩参数来自压缩核心服务，debug 与并发上限来自组件行配置。 */
+export type RecompressRuntime = {
+  /** 单次压缩请求的 maxTokens；undefined 用模型默认。 */
+  compressMaxTokens: number | undefined;
+  /** 复放视图与压缩请求是否跳过 reasoning。 */
+  compressSkipReasoning: boolean;
+  /** 429 限流后下一次请求前的等待毫秒数。 */
+  rateLimitWaitMs: number;
+  /** 步骤级日志开关。 */
+  debug: boolean;
+  /** 命令进程级并发上限。 */
+  recompressConcurrency: number;
+};
 
 /** 重压缩请求：被重放的 compaction 与目标模型。 */
 export type RecompressRequest = {
@@ -193,7 +208,7 @@ export function compactionView(
 export async function recompress(
   ctx: Context,
   agent: Agent,
-  config: Readonly<PluginConfig>,
+  config: Readonly<RecompressRuntime>,
   request: RecompressRequest,
   signal?: AbortSignal,
 ): Promise<RecompressResult> {
@@ -261,7 +276,7 @@ function describeResult(request: RecompressRequest, result: RecompressResult): s
 /** 构造 /om-recompress 命令定义；配置按调用时刻读取。 */
 export function buildRecompressCommand(
   ctx: Context,
-  getConfig: () => Readonly<PluginConfig>,
+  getConfig: () => Readonly<RecompressRuntime>,
 ): CommandDefinition {
   return {
     name: RECOMPRESS_COMMAND_NAME,
