@@ -531,6 +531,12 @@ await (async () => {
   if (step === 'wsclick') return wsclick();
   if (step === 'wsdrop') return wsdrop();
   if (step === 'dbg') return dbg();
+  if (step === 'rowdump') return rowdump();
+  if (step === 'bundleprobe') return bundleprobe();
+  if (step === 'rowcfg') return rowcfg();
+  if (step === 'gating') return gating();
+  if (step === 'rowwrite') return rowwrite();
+  if (step === 'evalgating') return evalgating();
   throw new Error(`unknown step ${step}`);
 })().catch((e) => {
   console.error('FATAL', e);
@@ -1968,5 +1974,404 @@ async function evalpanel() {
   })()`);
   console.log('after:', after);
   await page.shot('evaljump');
+  process.exit(0);
+}
+
+// —— 插件页三行结构探测：dump 相关 aria-label 与正文（拆分验证用）——
+async function rowdump() {
+  const page = await connect(GUI);
+  await waitLoad(page);
+  await new Promise((r) => setTimeout(r, 2500));
+  console.log('sidebar:', await page.ev(clickByText('button', '打开侧边栏')));
+  await new Promise((r) => setTimeout(r, 800));
+  console.log('plugins:', await page.ev(clickByText('button', '插件')));
+  await new Promise((r) => setTimeout(r, 2000));
+  console.log('refresh:', await page.ev(clickByText('button', '刷新')));
+  await new Promise((r) => setTimeout(r, 4000));
+  const dump = await page.ev(`(() => {
+    const labels = [...document.querySelectorAll('button[aria-label]')]
+      .map((b) => b.getAttribute('aria-label'))
+      .filter((l) => /查看|配置|启用|停用|om|压缩|重压缩|评估/i.test(l));
+    const switches = [...document.querySelectorAll('[role="switch"],input[type="checkbox"]')]
+      .map((el) => (el.getAttribute('aria-label') || el.id || '?') + '=' + (el.getAttribute('aria-checked') ?? el.checked));
+    return JSON.stringify({ labels, switches, text: document.body.innerText.slice(0, 3500) }, null, 1);
+  })()`);
+  console.log(dump);
+  await page.shot('rowdump');
+  process.exit(0);
+}
+
+// —— bundle 详情三行探测：行标题、开关、配置按钮（拆分验证用）——
+async function bundleprobe() {
+  const page = await connect(GUI);
+  await waitLoad(page);
+  await new Promise((r) => setTimeout(r, 2500));
+  await page.ev(clickByText('button', '打开侧边栏'));
+  await new Promise((r) => setTimeout(r, 800));
+  await page.ev(clickByText('button', '插件'));
+  await new Promise((r) => setTimeout(r, 2000));
+  await page.ev(clickByText('button', '刷新'));
+  await new Promise((r) => setTimeout(r, 3500));
+  console.log(
+    'detail:',
+    await page.ev(`(() => {
+      const b = [...document.querySelectorAll('button[aria-label]')].find(
+        (x) => x.getAttribute('aria-label') === '查看 Observational Memory 压缩',
+      );
+      if (!b) return 'NO_BTN';
+      b.scrollIntoView({ block: 'center' });
+      b.click();
+      return 'CLICKED';
+    })()`),
+  );
+  await new Promise((r) => setTimeout(r, 3000));
+  const dump = await page.ev(`(() => {
+    const labels = [...document.querySelectorAll('button[aria-label]')]
+      .map((b) => b.getAttribute('aria-label'))
+      .filter((l) => !/会话/.test(l));
+    const switches = [...document.querySelectorAll('[role="switch"],input[type="checkbox"]')]
+      .map((el) => (el.getAttribute('aria-label') || '?') + '=' + (el.getAttribute('aria-checked') ?? el.checked));
+    return JSON.stringify({ labels, switches, text: document.body.innerText.slice(0, 4000) }, null, 1);
+  })()`);
+  console.log(dump);
+  await page.shot('bundleprobe');
+  process.exit(0);
+}
+
+// —— 三行配置页逐行核查：字段、summary、返回（拆分验证用）——
+async function rowcfg() {
+  const page = await connect(GUI);
+  await waitLoad(page);
+  await new Promise((r) => setTimeout(r, 2500));
+  await page.ev(clickByText('button', '打开侧边栏'));
+  await new Promise((r) => setTimeout(r, 800));
+  await page.ev(clickByText('button', '插件'));
+  await new Promise((r) => setTimeout(r, 2000));
+  await page.ev(clickByText('button', '刷新'));
+  await new Promise((r) => setTimeout(r, 3500));
+  await page.ev(`(() => {
+    const b = [...document.querySelectorAll('button[aria-label]')].find(
+      (x) => x.getAttribute('aria-label') === '查看 Observational Memory 压缩',
+    );
+    b.scrollIntoView({ block: 'center' });
+    b.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 2500));
+  for (const title of ['换模型重压缩', 'OM 结果评估', 'Observational Memory 压缩']) {
+    const opened = await page.ev(`((t) => {
+      const b = [...document.querySelectorAll('button[aria-label]')].find(
+        (x) => x.getAttribute('aria-label') === '配置 ' + t,
+      );
+      if (!b) return 'NO_BTN';
+      b.scrollIntoView({ block: 'center' });
+      b.click();
+      return 'CLICKED';
+    })(${JSON.stringify(title)})`);
+    await new Promise((r) => setTimeout(r, 2200));
+    const dump = await page.ev(`((t) => {
+      const txt = document.body.innerText;
+      const labels = [...document.querySelectorAll('label')]
+        .map((l) => (l.textContent || '').trim())
+        .filter(Boolean);
+      const inputs = document.querySelectorAll('input').length;
+      return JSON.stringify({ title: t, opened: txt.includes(t), labels, inputs, head: txt.slice(0, 900) }, null, 1);
+    })(${JSON.stringify(title)})`);
+    console.log('opened:', opened);
+    console.log(dump);
+    await page.shot('rowcfg-' + title.replace(/\s/g, ''));
+    const back = await page.ev(`(() => {
+      const b = [...document.querySelectorAll('button[aria-label],button')].find(
+        (x) => /返回/.test(x.getAttribute('aria-label') || x.textContent || ''),
+      );
+      if (!b) return 'NO_BACK';
+      b.click();
+      return 'BACK';
+    })()`);
+    await new Promise((r) => setTimeout(r, 1800));
+    console.log('back:', back);
+  }
+  process.exit(0);
+}
+
+// —— 行开关门控：关闭重压缩组件行后卡片菜单消失，开启恢复（拆分验证用）——
+async function gating() {
+  const page = await connect(GUI);
+  const gotoDetail = async () => {
+    await waitLoad(page);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await page.ev(clickByText('button', '打开侧边栏'));
+      await new Promise((r) => setTimeout(r, 800));
+      await page.ev(clickByText('button', '插件'));
+      await new Promise((r) => setTimeout(r, 2500));
+      await page.ev(clickByText('button', '刷新'));
+      await new Promise((r) => setTimeout(r, 3500));
+      const d = await page.ev(`(() => {
+        const b = [...document.querySelectorAll('button[aria-label]')].find(
+          (x) => x.getAttribute('aria-label') === '查看 Observational Memory 压缩',
+        );
+        if (!b) return 'NO_DETAIL_BTN';
+        b.scrollIntoView({ block: 'center' });
+        b.click();
+        return 'CLICKED';
+      })()`);
+      await new Promise((r) => setTimeout(r, 2500));
+      if (d === 'CLICKED') return d;
+      // 已在详情页时「查看」按钮不存在：直接确认组件开关可见
+      const inDetail = await readSwitch('启用组件 换模型重压缩');
+      if (inDetail !== 'NO_SWITCH') return 'ALREADY_IN_DETAIL';
+    }
+    return 'NO_DETAIL_BTN';
+  };
+  const readSwitch = (label) =>
+    page.ev(`((l) => {
+      const el = [...document.querySelectorAll('[role="switch"],input[type="checkbox"]')].find(
+        (x) => (x.getAttribute('aria-label') || '') === l,
+      );
+      if (!el) return 'NO_SWITCH';
+      return String(el.getAttribute('aria-checked') ?? el.checked);
+    })(${JSON.stringify(label)})`);
+  const setSwitch = async (label, want) => {
+    for (let i = 0; i < 6; i++) {
+      const cur = await readSwitch(label);
+      if (cur === 'NO_SWITCH') return 'NO_SWITCH';
+      if (cur === String(want)) return 'OK';
+      await page.ev(`((l) => {
+        const el = [...document.querySelectorAll('[role="switch"],input[type="checkbox"]')].find(
+          (x) => (x.getAttribute('aria-label') || '') === l,
+        );
+        el.scrollIntoView({ block: 'center' });
+        el.click();
+      })(${JSON.stringify(label)})`);
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    return 'TIMEOUT:' + (await readSwitch(label));
+  };
+  const probeMenu = async () => {
+    // inject 结果被宿主按会话记忆化：reload 重建全部会话绑定后门控才反映到卡片
+    await page.send('Page.reload', {});
+    await new Promise((r) => setTimeout(r, 6000));
+    await openCard(page);
+    await new Promise((r) => setTimeout(r, 2000));
+    return page.ev(
+      `(() => {
+        const b = [...document.querySelectorAll('button')].find(
+          (x) => (x.textContent || '').trim() === '尝试其他模型',
+        );
+        return b ? 'MENU_PRESENT' : 'MENU_ABSENT';
+      })()`,
+    );
+  };
+  console.log('detail:', await gotoDetail());
+  console.log('switch off:', await setSwitch('启用组件 换模型重压缩', false));
+  console.log('menu after off:', await probeMenu());
+  await page.shot('gating-off');
+  console.log('detail2:', await gotoDetail());
+  console.log('switch on:', await setSwitch('启用组件 换模型重压缩', true));
+  console.log('menu after on:', await probeMenu());
+  await page.shot('gating-on');
+  process.exit(0);
+}
+
+// —— 行配置写入落盘核查：重压缩行保存并发数后 profile patch 出现该行 config（拆分验证用）——
+async function rowwrite() {
+  const { readFileSync } = await import('node:fs');
+  const PATCH = 'C:/Users/admin/.dsh/profiles/om-test-components/cordis.patch.yml';
+  const page = await connect(GUI);
+  await waitLoad(page);
+  await new Promise((r) => setTimeout(r, 2500));
+  await page.ev(clickByText('button', '打开侧边栏'));
+  await new Promise((r) => setTimeout(r, 800));
+  await page.ev(clickByText('button', '插件'));
+  await new Promise((r) => setTimeout(r, 2500));
+  await page.ev(clickByText('button', '刷新'));
+  await new Promise((r) => setTimeout(r, 3500));
+  await page.ev(`(() => {
+    const b = [...document.querySelectorAll('button[aria-label]')].find(
+      (x) => x.getAttribute('aria-label') === '查看 Observational Memory 压缩',
+    );
+    if (b) { b.scrollIntoView({ block: 'center' }); b.click(); }
+  })()`);
+  await new Promise((r) => setTimeout(r, 2500));
+  await page.ev(`(() => {
+    const b = [...document.querySelectorAll('button[aria-label]')].find(
+      (x) => x.getAttribute('aria-label') === '配置 换模型重压缩',
+    );
+    if (b) { b.scrollIntoView({ block: 'center' }); b.click(); }
+  })()`);
+  await new Promise((r) => setTimeout(r, 2200));
+  const edit = await page.ev(`(() => {
+    const labels = [...document.querySelectorAll('label,span,div,p')].filter(
+      (x) => (x.textContent || '').trim() === '重压缩并发数',
+    );
+    if (!labels.length) return 'NO_LABEL';
+    let scope = labels[0];
+    for (let i = 0; i < 6 && scope; i++) { scope = scope.parentElement; if (scope && scope.querySelector('input')) break; }
+    const input = scope && scope.querySelector('input');
+    if (!input) return 'NO_INPUT';
+    const s = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    s.call(input, '3');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return 'EDITED:' + input.value;
+  })()`);
+  console.log('edit:', edit);
+  await new Promise((r) => setTimeout(r, 800));
+  const save = await page.ev(`(() => {
+    const b = [...document.querySelectorAll('button')].find((x) => (x.textContent || '').trim() === '保存修改');
+    if (!b || b.disabled) return 'NO_SAVE';
+    b.click();
+    return 'SAVED';
+  })()`);
+  console.log('save:', save);
+  await new Promise((r) => setTimeout(r, 2500));
+  const patch1 = readFileSync(PATCH, 'utf8');
+  console.log(
+    'patch has row:',
+    patch1.includes('dsh-plugin-om-recompress'),
+    'has value:',
+    /recompressConcurrency:\s*3/.test(patch1),
+  );
+  const revert = await page.ev(`(() => {
+    const btns = [...document.querySelectorAll('button')].filter((x) => (x.textContent || '').trim() === '恢复默认');
+    if (!btns.length) return 'NO_RESET';
+    btns[0].click();
+    return 'RESET';
+  })()`);
+  console.log('reset:', revert);
+  await new Promise((r) => setTimeout(r, 800));
+  const save2 = await page.ev(`(() => {
+    const b = [...document.querySelectorAll('button')].find((x) => (x.textContent || '').trim() === '保存修改');
+    if (!b || b.disabled) return 'NO_SAVE';
+    b.click();
+    return 'SAVED';
+  })()`);
+  console.log('save2:', save2);
+  await new Promise((r) => setTimeout(r, 2500));
+  const patch2 = readFileSync(PATCH, 'utf8');
+  console.log('patch after revert has value:', /recompressConcurrency:\s*3/.test(patch2));
+  await page.shot('rowwrite');
+  process.exit(0);
+}
+
+// —— 评估行门控：关闭评估组件行后裸调用不弹模型面板（拆分验证用）——
+async function evalgating() {
+  const page = await connect(GUI);
+  const gotoDetail = async () => {
+    await waitLoad(page);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await page.ev(clickByText('button', '打开侧边栏'));
+      await new Promise((r) => setTimeout(r, 800));
+      await page.ev(clickByText('button', '插件'));
+      await new Promise((r) => setTimeout(r, 2500));
+      await page.ev(clickByText('button', '刷新'));
+      await new Promise((r) => setTimeout(r, 3500));
+      const d = await page.ev(`(() => {
+        const b = [...document.querySelectorAll('button[aria-label]')].find(
+          (x) => x.getAttribute('aria-label') === '查看 Observational Memory 压缩',
+        );
+        if (!b) return 'NO_DETAIL_BTN';
+        b.scrollIntoView({ block: 'center' });
+        b.click();
+        return 'CLICKED';
+      })()`);
+      await new Promise((r) => setTimeout(r, 2500));
+      if (d === 'CLICKED') return d;
+      const inDetail = await page.ev(`(() => {
+        const el = [...document.querySelectorAll('[role="switch"],input[type="checkbox"]')].find(
+          (x) => (x.getAttribute('aria-label') || '') === '启用组件 OM 结果评估',
+        );
+        return el ? 'IN_DETAIL' : 'NO_SWITCH';
+      })()`);
+      if (inDetail === 'IN_DETAIL') return 'ALREADY_IN_DETAIL';
+    }
+    return 'NO_DETAIL_BTN';
+  };
+  const setSwitch = async (label, want) => {
+    for (let i = 0; i < 6; i++) {
+      const cur = await page.ev(`((l) => {
+        const el = [...document.querySelectorAll('[role="switch"],input[type="checkbox"]')].find(
+          (x) => (x.getAttribute('aria-label') || '') === l,
+        );
+        if (!el) return 'NO_SWITCH';
+        return String(el.getAttribute('aria-checked') ?? el.checked);
+      })(${JSON.stringify(label)})`);
+      if (cur === 'NO_SWITCH') return 'NO_SWITCH';
+      if (cur === String(want)) return 'OK';
+      await page.ev(`((l) => {
+        const el = [...document.querySelectorAll('[role="switch"],input[type="checkbox"]')].find(
+          (x) => (x.getAttribute('aria-label') || '') === l,
+        );
+        el.scrollIntoView({ block: 'center' });
+        el.click();
+      })(${JSON.stringify(label)})`);
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    return 'TIMEOUT';
+  };
+  const probePanel = async () => {
+    await page.send('Page.reload', {});
+    await new Promise((r) => setTimeout(r, 6000));
+    await openCard(page);
+    const ed = await page.ev(`(() => {
+      const els = [...document.querySelectorAll('[contenteditable="true"], textarea, [role=textbox]')].filter(e => { const r = e.getBoundingClientRect(); return r.height > 20 && r.width > 200; });
+      if (!els.length) return null;
+      const r = els[0].getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    })()`);
+    if (!ed) return 'NO_COMPOSER';
+    await page.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: ed.x,
+      y: ed.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    await page.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: ed.x,
+      y: ed.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    await new Promise((r) => setTimeout(r, 500));
+    const key = (type, k, code, vk, mods) =>
+      page.send(
+        'Input.dispatchKeyEvent',
+        Object.assign(
+          {
+            type,
+            key: k,
+            code,
+            windowsVirtualKeyCode: vk,
+            nativeVirtualKeyCode: vk,
+            modifiers: mods || 0,
+          },
+          type === 'char' ? { text: k } : {},
+        ),
+      );
+    await key('keyDown', '/', 'Slash', 191);
+    await key('char', '/', 'Slash', 191);
+    await key('keyUp', '/', 'Slash', 191);
+    await new Promise((r) => setTimeout(r, 1200));
+    await page.send('Input.insertText', { text: 'om-compaction-eval' });
+    await new Promise((r) => setTimeout(r, 800));
+    const catalog = await page.ev(`(() => {
+      const items = [...document.querySelectorAll('[role="option"],[role="menuitem"],[cmdk-item],li')];
+      return JSON.stringify(items.map((e) => (e.textContent || '').trim().slice(0, 60)).filter((t) => t.includes('om-compaction-eval')));
+    })()`);
+    console.log('catalog match:', catalog);
+    await key('keyDown', 'Enter', 'Enter', 13);
+    await key('keyUp', 'Enter', 'Enter', 13);
+    await new Promise((r) => setTimeout(r, 2500));
+    const panel = await page.ev(
+      `(() => (document.querySelector('.om-eval-panel') ? 'PANEL_PRESENT' : 'PANEL_ABSENT'))()`,
+    );
+    return panel;
+  };
+  console.log('detail:', await gotoDetail());
+  console.log('eval off:', await setSwitch('启用组件 OM 结果评估', false));
+  console.log('panel after off:', await probePanel());
+  await page.shot('evalgating-off');
+  console.log('detail2:', await gotoDetail());
+  console.log('eval on:', await setSwitch('启用组件 OM 结果评估', true));
   process.exit(0);
 }

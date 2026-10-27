@@ -301,6 +301,28 @@ export function apply(ctx) {
             // 不再重压已替换区间，直接完成，最终块应反映当前状态（SUMMARY_MARKER_A）
             commands = [['completeCompression', {}]];
           }
+        } else if (plain(o.messages).includes('归档深度压缩')) {
+          // 归档模式（反思，#125 起）：段清单在任务文本「归档段共 N 个：[lo..hi]、…」里；
+          // round0 查看；round1 每段一句话 + keywords 后完成；round2+ 完成兜底
+          const segPart = plain(o.messages).split('归档段共')[1] ?? '';
+          const segs = [...segPart.matchAll(/\[(\d+)\.\.(\d+)\]/g)].map((m) => ({
+            start: Number(m[1]),
+            end: Number(m[2]),
+          }));
+          if (round === 0) commands = [['getHistory', {}]];
+          else if (round === 1)
+            commands = [
+              ...segs.map((span) => [
+                'compressHistory',
+                {
+                  ...span,
+                  content: '归档：该段任务已完成，结论写入产出。',
+                  keywords: ['归档', 'mock'],
+                },
+              ]),
+              ['completeCompression', {}],
+            ];
+          else commands = [['completeCompression', {}]];
         } else {
           // normal：round0 查看；round1 全部压缩后再查看（触发 skill/ask 二次确认）；round2+ 再压缩并完成
           if (round === 0) commands = [['getHistory', {}]];
