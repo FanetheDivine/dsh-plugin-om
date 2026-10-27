@@ -26,8 +26,16 @@ interface Listener {
   fn: ExecutedListener;
 }
 
+/** 各行的配置命名空间，即 patch 行 id。 */
+const ROW_NS = {
+  root: 'dsh-plugin-om',
+  recompress: 'dsh-plugin-om-recompress',
+  eval: 'dsh-plugin-om-compaction-eval',
+} as const;
+
 /** 构造只实现入口实际读取服务的宿主桩，并收集所有槽注册。 */
-function setup(extra: Record<string, unknown> = {}) {
+function setup(extra: Record<string, unknown> = {}, served?: string[]) {
+  const servedSet = new Set(served ?? Object.values(ROW_NS));
   const registrations: Registration[] = [];
   const listeners: Listener[] = [];
   const openSession = vi.fn();
@@ -55,7 +63,21 @@ function setup(extra: Record<string, unknown> = {}) {
         subscribe: () => () => {},
         getSnapshot: () => ({ status: 'unavailable' }),
       }),
-      whileServed: (_names: string[], fn: () => () => void) => fn(),
+      whileServed: (names: string[], fn: () => () => void) =>
+        names.some((name) => servedSet.has(name)) ? fn() : () => {},
+      describe: () => ({
+        getSnapshot: () => ({
+          status: 'ready',
+          view: {
+            namespaces: [...servedSet].map((ns) => ({ ns })),
+            writable: true,
+            hasDocument: true,
+          },
+          error: null,
+        }),
+        subscribe: () => () => {},
+        ensure: async () => {},
+      }),
     },
     slots: {
       inject: (_name: string, callback: () => () => void) => callback(),
@@ -133,6 +155,30 @@ describe('client apply', () => {
     );
   });
 
+  it('重压缩组件行未启用时不注入重压缩能力', () => {
+    const directoryFor = vi.fn().mockReturnValue({
+      store: { subscribe: () => () => {}, getSnapshot: () => ({}) },
+      load: vi.fn(),
+    });
+    const { registrations } = setup({ modelDirectories: { directoryFor } }, [
+      ROW_NS.root,
+      ROW_NS.eval,
+    ]);
+    const entry = registrations.find((item) => item.key === 'om-compaction');
+    expect(entry?.inject?.('s-1').recompress).toBeUndefined();
+  });
+
+  it('为包根和两个组件行分别注册配置页，键为包名#行 id', () => {
+    const { registrations } = setup();
+    expect(
+      registrations.filter((item) => item.name === 'plugins.row.config').map((item) => item.key),
+    ).toEqual([
+      'dsh-plugin-om#dsh-plugin-om',
+      'dsh-plugin-om#dsh-plugin-om-recompress',
+      'dsh-plugin-om#dsh-plugin-om-compaction-eval',
+    ]);
+  });
+
   it('监听 command/executed：本命令成功时跳转到新会话', () => {
     const { openSession, listeners } = setup();
     const listener = listeners.find((item) => item.type === 'command/executed')?.fn;
@@ -163,18 +209,21 @@ describe('client apply', () => {
     }
 
     /** 构造带 commandUi 与模型目录的宿主，返回收集到的装饰。 */
-    function panel() {
+    function panel(served?: string[]) {
       const decorations: Decoration[] = [];
-      const host = setup({
-        commandUi: {
-          decorate: (decoration: Decoration) => {
-            decorations.push(decoration);
-            return () => {};
+      const host = setup(
+        {
+          commandUi: {
+            decorate: (decoration: Decoration) => {
+              decorations.push(decoration);
+              return () => {};
+            },
           },
+          modelDirectories: { directoryFor: vi.fn() },
+          'remote.commands': { execute: vi.fn() },
         },
-        modelDirectories: { directoryFor: vi.fn() },
-        'remote.commands': { execute: vi.fn() },
-      });
+        served,
+      );
       return { decorations, ...host };
     }
 
@@ -184,6 +233,13 @@ describe('client apply', () => {
       expect(decorations[0]?.name).toBe('om-compaction-eval');
       expect(decorations[0]?.ui.kind).toBe('action');
       expect(decorations[0]?.available({ sessionId: 's-1' })).toBe(true);
+    });
+
+    it('评估组件行未启用时装饰不可用，启用后恢复', () => {
+      const { decorations } = panel([ROW_NS.root, ROW_NS.recompress]);
+      expect(decorations[0]?.available({ sessionId: 's-1' })).toBe(false);
+      const enabled = panel();
+      expect(enabled.decorations[0]?.available({ sessionId: 's-1' })).toBe(true);
     });
 
     it('缺少 commandUi 或模型目录时不挂面板也不抛错', () => {

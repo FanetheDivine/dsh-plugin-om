@@ -76,15 +76,38 @@ class HostForm {
 
 type Registration = { name: string; key: string; inject: () => OmConfigCardFace };
 
-/** 保留真实注册的组件及 inject face，再用 React DOM 挂载。 */
+type RowKey = 'root' | 'recompress' | 'eval';
+
+/** 各行的配置命名空间，即 patch 行 id。 */
+const ROW_NS: Record<RowKey, string> = {
+  root: 'dsh-plugin-om',
+  recompress: 'dsh-plugin-om-recompress',
+  eval: 'dsh-plugin-om-compaction-eval',
+};
+
+/** 保留真实注册的组件及 inject face，再用 React DOM 挂载指定行的配置页。 */
 function setup(
   initial?: Partial<ConfigFormSnapshot<Section>>,
   dictionary?: Record<string, string>,
+  options: { row?: RowKey; served?: string[] } = {},
 ) {
-  const host = new HostForm();
+  const row = options.row ?? 'root';
+  const served = new Set(options.served ?? Object.values(ROW_NS));
+  const hosts = new Map<string, HostForm>();
+  const hostOf = (ns: string): HostForm => {
+    let form = hosts.get(ns);
+    if (!form) {
+      form = new HostForm();
+      hosts.set(ns, form);
+    }
+    return form;
+  };
+  const host = hostOf(ROW_NS[row]);
   if (initial) host.publish(initial);
-  let registration: Registration | undefined;
-  let component: ((props: OmConfigCardProps) => React.ReactNode) | undefined;
+  const byKey = new Map<
+    string,
+    { entry: Registration; component: (props: OmConfigCardProps) => React.ReactNode }
+  >();
   const disposers: Array<() => void> = [];
   const registrations: string[] = [];
   const ctx = {
@@ -102,28 +125,40 @@ function setup(
     inject: () => {},
     uiConversation: { events: { register: () => () => {} } },
     configForms: {
-      get: () => host,
+      get: (ns: string) => hostOf(ns),
       whileServed: (names: string[], fn: () => () => void) => {
         registrations.push(...names);
-        return fn();
+        return names.some((name) => served.has(name)) ? fn() : () => {};
       },
+      describe: () => ({
+        getSnapshot: () => ({
+          status: 'ready',
+          view: {
+            namespaces: [...served].map((ns) => ({ ns })),
+            writable: true,
+            hasDocument: true,
+          },
+          error: null,
+        }),
+        subscribe: () => () => {},
+        ensure: async () => {},
+      }),
     },
     slots: {
       inject: (name: string, callback: () => () => void) => {
         if (name === 'plugins.row.config') disposers.push(callback());
       },
       register: (entry: Registration, view: (props: OmConfigCardProps) => React.ReactNode) => {
-        registration = entry;
-        component = view;
+        byKey.set(entry.key, { entry, component: view });
         return () => {};
       },
     },
   };
   // 宿主测试桩只实现客户端实际读取的服务。
   apply(ctx as unknown as Context);
-  if (!registration || !component) throw new Error('缺少配置槽注册');
-  const entry: Registration = registration;
-  const Card = component;
+  const found = byKey.get(`dsh-plugin-om#${ROW_NS[row]}`);
+  if (!found) throw new Error('缺少配置槽注册');
+  const { entry, component: Card } = found;
   const face = entry.inject();
   const container = document.createElement('div');
   document.body.append(container);
@@ -143,8 +178,10 @@ function setup(
   act(() => root.render(createElement(View)));
   return {
     host,
+    hosts,
     entry,
     registrations,
+    keys: () => [...byKey.keys()],
     face,
     container,
     cleanup: () => {
@@ -162,8 +199,9 @@ afterEach(() => {
 const mount = (
   initial?: Partial<ConfigFormSnapshot<Section>>,
   dictionary?: Record<string, string>,
+  options?: { row?: RowKey; served?: string[] },
 ) => {
-  const test = setup(initial, dictionary);
+  const test = setup(initial, dictionary, options);
   active.push(test);
   return test;
 };
@@ -176,6 +214,12 @@ const control = (container: HTMLElement, name: string) => {
 };
 const field = (container: HTMLElement, name: string) =>
   container.querySelector(`[data-om-field="${name}"]`);
+/** 读取快照中一个字段的状态，缺失即测试失败。 */
+const fieldState = (face: OmConfigCardFace, name: string) => {
+  const state = face.hooks.omConfigCard.getSnapshot().fields[name];
+  if (state === undefined) throw new Error(`缺少字段 ${name}`);
+  return state;
+};
 const type = (input: HTMLInputElement, text: string) => {
   act(() => {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -187,7 +231,11 @@ const type = (input: HTMLInputElement, text: string) => {
 describe('dsh-plugin-om 的配置槽和编辑', () => {
   it('把行配置注册到服务中的 namespace，并显示 16 个可以编辑的值控件', () => {
     const { entry, registrations, container } = mount();
-    expect(registrations).toEqual(['dsh-plugin-om']);
+    expect(registrations).toEqual([
+      'dsh-plugin-om',
+      'dsh-plugin-om-recompress',
+      'dsh-plugin-om-compaction-eval',
+    ]);
     expect(entry.name).toBe('plugins.row.config');
     expect(entry.key).toBe('dsh-plugin-om#dsh-plugin-om');
     const keys = [
@@ -355,9 +403,7 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
         ?.querySelectorAll('button') ?? []),
     ].find((button) => button.textContent === 'config.reset');
     act(() => reset?.click());
-    expect(face.hooks.omConfigCard.getSnapshot().fields.observeThresholdTokens.overridden).toBe(
-      false,
-    );
+    expect(fieldState(face, 'observeThresholdTokens').overridden).toBe(false);
     await act(async () => face.save());
     expect(host.calls).toEqual([
       { ops: [{ op: 'unset', path: ['observeThresholdTokens'] }], revision: 4 },
@@ -384,9 +430,7 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     act(() => {
       checkbox.click();
     });
-    expect(face.hooks.omConfigCard.getSnapshot().fields.progressReminderEnabled.overridden).toBe(
-      true,
-    );
+    expect(fieldState(face, 'progressReminderEnabled').overridden).toBe(true);
     expect(boolField?.textContent).toContain('config.overridden');
 
     // 此时出现重置按钮，点击重置后覆盖标记清除
@@ -395,9 +439,7 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     act(() => {
       resetButton?.click();
     });
-    expect(face.hooks.omConfigCard.getSnapshot().fields.progressReminderEnabled.overridden).toBe(
-      false,
-    );
+    expect(fieldState(face, 'progressReminderEnabled').overridden).toBe(false);
     expect(boolField?.textContent).not.toContain('config.overridden');
     expect(boolField?.querySelector('button')).toBeNull();
   });
@@ -550,6 +592,43 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
   it('debug 跟随宿主生效值显示，不假定浏览器中的 NODE_ENV 默认值', () => {
     const { container, face } = mount({ value: { debug: true }, user: {} });
     expect(control(container, 'debug').checked).toBe(true);
-    expect(face.hooks.omConfigCard.getSnapshot().fields.debug.overridden).toBe(false);
+    expect(fieldState(face, 'debug').overridden).toBe(false);
+  });
+});
+
+describe('组件行的配置页', () => {
+  it('重压缩行只有并发与调试两个控件，写入落在本行命名空间', async () => {
+    const { container, face, host, hosts } = mount(undefined, undefined, { row: 'recompress' });
+    expect(
+      [...container.querySelectorAll<HTMLElement>('[data-om-field]')].map(
+        (row) => row.dataset.omField,
+      ),
+    ).toEqual(['recompressConcurrency', 'debug']);
+    type(control(container, 'recompressConcurrency'), '3');
+    await act(async () => face.save());
+    expect(host.calls).toEqual([
+      { ops: [{ op: 'set', path: ['recompressConcurrency'], value: 3 }], revision: 4 },
+    ]);
+    expect(hosts.get('dsh-plugin-om')?.calls).toEqual([]);
+  });
+
+  it('评估行只有调试一个控件', () => {
+    const { container } = mount(undefined, undefined, { row: 'eval' });
+    expect(
+      [...container.querySelectorAll<HTMLElement>('[data-om-field]')].map(
+        (row) => row.dataset.omField,
+      ),
+    ).toEqual(['debug']);
+  });
+
+  it('未被服务的行不注册配置页，其余行不受影响', () => {
+    const view = setup(undefined, undefined, { served: ['dsh-plugin-om'] });
+    active.push(view);
+    expect(view.keys()).toEqual(['dsh-plugin-om#dsh-plugin-om']);
+    expect(view.registrations).toEqual([
+      'dsh-plugin-om',
+      'dsh-plugin-om-recompress',
+      'dsh-plugin-om-compaction-eval',
+    ]);
   });
 });

@@ -18,8 +18,11 @@ import { runEvalModel } from './eval-model-panel.ts';
 import { NS } from './locales.ts';
 import { OmEvalModelPanel } from './OmEvalModelPanel.tsx';
 
-/** 在 commandUi 与 modelDirectories 都就绪后注册装饰；任一服务缺失则不挂载。 */
-export function registerEvalModelPanel(ctx: Context): void {
+/**
+ * 在 commandUi 与 modelDirectories 都就绪后注册装饰；任一服务缺失则不挂载。
+ * available 由调用方提供，评估组件行停用期间面板不可用。
+ */
+export function registerEvalModelPanel(ctx: Context, available: () => boolean): void {
   const t = ctx.locale.bind(NS);
   ctx.inject(['commandUi', 'modelDirectories'], (scope) => {
     const directories = scope.modelDirectories;
@@ -67,7 +70,7 @@ export function registerEvalModelPanel(ctx: Context): void {
       const dispose = scope.commandUi.decorate({
         name: EVAL_COMMAND_NAME,
         // 非主会话由命令本身拒绝，原因显示在面板里
-        available: () => true,
+        available,
         ui: { kind: 'action', run: (session) => open(session.sessionId) },
       });
       return () => {

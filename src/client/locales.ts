@@ -74,6 +74,8 @@ export const zh = {
   'config.compressReasoningEffort.hint': '压缩请求的思考等级；留空使用模型默认值。',
   'config.compressSkipReasoning': '忽略思考内容',
   'config.compressSkipReasoning.hint': '压缩时不将历史 reasoning 纳入参考。',
+  'config.recompressConcurrency': '重压缩并发数',
+  'config.recompressConcurrency.hint': '换模型重压缩同时运行的上限，至少为 1；超出的排队等待。',
   'config.rateLimitWaitMs': '限流等待毫秒数',
   'config.rateLimitWaitMs.hint': '429 限流后的冷却时间；0 表示不等待。',
   'config.modelDir': '嵌入模型目录',
@@ -163,6 +165,9 @@ export const en: Record<keyof typeof zh, string> = {
     'Reasoning effort for compression; blank uses the model default.',
   'config.compressSkipReasoning': 'Skip reasoning',
   'config.compressSkipReasoning.hint': 'Exclude historical reasoning from compression references.',
+  'config.recompressConcurrency': 'Recompression concurrency',
+  'config.recompressConcurrency.hint':
+    'Maximum concurrent model-switch recompressions, at least one; extra runs wait in a queue.',
   'config.rateLimitWaitMs': 'Rate-limit wait in milliseconds',
   'config.rateLimitWaitMs.hint': 'Cooldown after a 429 response; zero skips the wait.',
   'config.modelDir': 'Embedding model directory',
