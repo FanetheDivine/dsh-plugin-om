@@ -23,7 +23,7 @@ describe('evalJumpTarget', () => {
 
   it('其他命令的成功结果不跳转', () => {
     expect(
-      target('om-recompress', { kind: 'success', text: '已启动 OM 结果分析会话 session-new' }),
+      target('other-command', { kind: 'success', text: '已启动 OM 结果分析会话 session-new' }),
     ).toBeUndefined();
   });
 
@@ -38,8 +38,6 @@ describe('evalJumpTarget', () => {
     expect(target('om-compaction-eval', { kind: 'success', text: '已启动 OM 结果分析会话 ' })).toBe(
       undefined,
     );
-    expect(
-      target('om-compaction-eval', { kind: 'success', text: '重压缩完成 字符 1 → 2' }),
-    ).toBeUndefined();
+    expect(target('om-compaction-eval', { kind: 'success', text: '其他文本' })).toBeUndefined();
   });
 });

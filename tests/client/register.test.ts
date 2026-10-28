@@ -6,14 +6,12 @@ import type { CommandResult } from '@deepseek-ai/dsh-commands/types';
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client';
 import { describe, expect, it, vi } from 'vitest';
 import { apply, inject } from '../../src/client/index.ts';
-import type { RecompressInjected } from '../../src/client/recompress-run.ts';
 
 interface Registration {
   name: string;
   key: string;
   inject?: (sessionId: string) => {
     openSession?: (target: SubagentAddress) => void;
-    recompress?: RecompressInjected;
   };
 }
 
@@ -117,38 +115,15 @@ describe('client apply', () => {
     expect(openSession).toHaveBeenCalledExactlyOnceWith(target);
   });
 
-  it('宿主无模型目录服务时不注入重压缩能力', () => {
-    const { registrations } = setup();
-    const entry = registrations.find((item) => item.key === 'om-compaction');
-    expect(entry?.inject?.('s-1').recompress).toBeUndefined();
-  });
-
-  it('有模型目录服务时注入：共用会话目录，提交走 command.execute', async () => {
-    const store = { subscribe: () => () => {}, getSnapshot: () => ({}) };
-    const load = vi.fn().mockResolvedValue(undefined);
-    const directoryFor = vi.fn().mockReturnValue({ store, load });
-    const execute = vi.fn().mockResolvedValue({
-      ok: true,
-      value: { result: { kind: 'success', text: 'ok' } },
-    });
+  it('模型目录可用时也不注入重压缩能力或读取目录', () => {
+    const directoryFor = vi.fn();
     const { registrations } = setup({
       modelDirectories: { directoryFor },
-      'remote.commands': { execute },
+      'remote.commands': { execute: vi.fn() },
     });
     const entry = registrations.find((item) => item.key === 'om-compaction');
-    const recompress = entry?.inject?.('s-1').recompress;
-    expect(directoryFor).toHaveBeenCalledWith('s-1');
-    expect(recompress?.directory).toBe(store);
-    recompress?.load();
-    expect(load).toHaveBeenCalledOnce();
-    await expect(
-      recompress?.run('om:1', { provider: 'alt', model: 'big-1', reasoningEffort: 'high' }),
-    ).resolves.toEqual({ ok: true, text: 'ok' });
-    expect(execute).toHaveBeenCalledExactlyOnceWith(
-      's-1',
-      '/om-recompress om:1 alt big-1 high',
-      [],
-    );
+    expect(entry?.inject?.('s-1')).not.toHaveProperty('recompress');
+    expect(directoryFor).not.toHaveBeenCalled();
   });
 
   it('为包根行注册配置页，键为包名#行 id', () => {
@@ -173,9 +148,9 @@ describe('client apply', () => {
     const { openSession, listeners } = setup();
     const listener = listeners.find((item) => item.type === 'command/executed')?.fn;
     const started = { kind: 'success', text: '已启动 OM 结果分析会话 session-new' } as const;
-    listener?.('s-1', 'om-recompress', started);
+    listener?.('s-1', 'other-command', started);
     listener?.('s-1', 'om-compaction-eval', { kind: 'error', text: '仅支持主会话' });
-    listener?.('s-1', 'om-compaction-eval', { kind: 'success', text: '重压缩完成' });
+    listener?.('s-1', 'om-compaction-eval', { kind: 'success', text: '其他文本' });
     listener?.('s-1', 'om-compaction-eval', { kind: 'success' });
     expect(openSession).not.toHaveBeenCalled();
   });

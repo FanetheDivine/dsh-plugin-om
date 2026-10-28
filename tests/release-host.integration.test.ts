@@ -323,7 +323,7 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
       kind: 'success',
       text: '已启动 OM 结果分析会话 session-new',
     });
-    jump?.fn('s-1', 'om-recompress', { kind: 'success', text: '重压缩完成' });
+    jump?.fn('s-1', 'other-command', { kind: 'success', text: '其他文本' });
     expect(opened).toEqual(['session-new']);
     for (const release of releases) release();
     expect(disposed).toBe(1);
