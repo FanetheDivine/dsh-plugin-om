@@ -108,7 +108,7 @@ describe('新会话首条消息文本', () => {
     const text = evalStartedText('session-new');
     expect(text).toBe('已启动 OM 结果分析会话 session-new');
     expect(parseEvalSessionId(text)).toBe('session-new');
-    expect(parseEvalSessionId('重压缩完成 字符 1 → 2')).toBeUndefined();
+    expect(parseEvalSessionId('其他文本')).toBeUndefined();
     expect(parseEvalSessionId('')).toBeUndefined();
   });
 });
