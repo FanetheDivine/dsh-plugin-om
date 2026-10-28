@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.serena/
 .dsh/worktrees/
 .agents/worktrees/
 *.tsbuildinfo
