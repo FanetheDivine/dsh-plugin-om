@@ -25,7 +25,8 @@ disable-model-invocation: true
 <!-- dev-only -->
 - 源码版脚本是 TS，先在仓库根 `pnpm install`，再用 `node` 直接运行。
 <!-- /dev-only -->
-- 重压缩的模型与 effort 均先用 `ask_user_question` 向用户确认，多模型对比时逐个确认；effort 可缺省，缺省时用模型默认值。
+- 生成重压缩前用 `ask_user_question` 确认评估阶段、区间和每个变体。变体至少确认模型与 effort，按需确认系统提示词、任务流程和 tools；effort 可缺省，缺省时用模型默认值。用户已明确的项不重复询问。
+- 默认变体直接使用标准压缩程序 `scripts/compress.ts`。需要改变系统提示词、任务流程或 tools 时，以标准程序为参考，在临时目录编写专用压缩程序，不改插件核心代码。专用程序须复用 DSH profile，生成 `prepare` 可识别的 `om-compaction-log-*` 日志，并写入该区间的重压缩目录。
 - 盲评完成前不读 `_blind_key.json`，subagent 提示词中不写模型名。
 - 所有文件写系统临时目录 `om-compaction-eval/`（Git Bash 即 `/tmp/om-compaction-eval/`）：view.json、重压缩目录、评估目录与自写临时脚本都在该目录下，不写工作区。重评同一区间前先删除旧评估目录。
 - subagent 有并发上限，评审多时分批启动；subagent 失败时新开一个重做，不在原会话续发。
