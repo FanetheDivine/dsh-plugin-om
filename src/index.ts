@@ -1,7 +1,6 @@
 /**
  * dsh-plugin-om 包根入口（tsdown 打包入口）：导出 name / inject / Config / apply。
  * apply 在 tools 服务可用时恒注册 recall 工具（语义增强按配置切换）并处理 Loader volatile 配置提交，
- * commands 服务可用时注册换模型重压缩命令（见 recompress.ts），
  * 并接线 agent/pre-step 自动压缩（先反思后观察，仅主会话生效；观察压缩触发后在后台
  * 预压缩、到期注入，见 precompress.ts）与提醒补发
  * （进度提醒的 system-reminder 用户消息，见 system-reminder.ts），
@@ -15,14 +14,12 @@
  * OM 结果评估命令由组件行提供，见 compaction-eval/index.ts。
  */
 import type {} from '@deepseek-ai/cordis-plugin-loader';
-import type {} from '@deepseek-ai/dsh-commands';
 import { type CompressPassResult, commitReflection, maybeCompress } from './compress.ts';
 import { Config, currentConfig } from './config.ts';
 import { ensureModelReady, getEmbedder } from './embedding.ts';
 import { makeLogger } from './logger.ts';
 import { disposeAllPrecompressions, disposePrecompression } from './precompress.ts';
 import { buildRecallTool } from './recall.ts';
-import { buildRecompressCommand } from './recompress.ts';
 import { disposeAllReflections, disposeReflection } from './reflect.ts';
 import {
   activeSystemReminders,
@@ -40,7 +37,7 @@ export { Config };
 
 /**
  * 插件必需的服务依赖：压缩请求（llm）与上下文压力计量（tokenMeter）。
- * tools / commands / sessions 等为可选能力，缺失时对应功能自动停用。
+ * tools / sessions 等为可选能力，缺失时对应功能自动停用。
  */
 export const inject = ['llm', 'tokenMeter'];
 
@@ -65,10 +62,6 @@ export function apply(ctx: Context, config?: unknown): void {
   if (ctx.get('tools') === undefined) {
     logger.warn('tools 服务未挂载，recall 暂不可用');
   }
-  if (ctx.get('commands') === undefined) {
-    logger.warn('commands 服务未挂载，重压缩命令暂不可用');
-  }
-
   // recall 恒注册（依赖 tools 服务，服务缺失不影响压缩）；
   // 服务变化时回调重跑，注册状态随回调局部持有并在卸载时释放。
   ctx.inject(['tools'], (inner) => {
@@ -116,15 +109,6 @@ export function apply(ctx: Context, config?: unknown): void {
         disposeRecall = undefined;
       },
       'dsh-plugin-om: recall tool',
-    );
-  });
-
-  // 压缩卡片的换模型重压缩入口：commands 服务可用时注册 /om-recompress，服务缺失则
-  // 不注册（插件其余能力不受影响）。
-  ctx.inject(['commands'], (inner) => {
-    inner.effect(
-      () => inner.commands.register(buildRecompressCommand(ctx, () => currentConfig(config))),
-      'dsh-plugin-om: recompress command',
     );
   });
 

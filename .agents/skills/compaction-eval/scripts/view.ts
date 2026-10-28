@@ -16,18 +16,20 @@ import type { Session, SessionHeader } from '@deepseek-ai/dsh-session';
 import { historyTextOf } from '../../../../src/compress.ts';
 import { viewCharCount } from '../../../../src/compress-loop.ts';
 import {
+  buildArchiveView,
   buildObserveView,
   buildReflectView,
+  type CompressionView,
   type ViewEntry,
 } from '../../../../src/compress-view.ts';
 import { resolveConfig } from '../../../../src/config.ts';
 import { indexCompleteMessages } from '../../../../src/log-index.ts';
-import { compactionView, type ReplayView } from '../../../../src/recompress.ts';
 import type {
   CompactionEndPayload,
   CompactionStartPayload,
   CompactionSummaryPayload,
 } from '../../../../src/types.ts';
+import { seqsCharCount } from '../../../../src/utils.ts';
 import { viewPath } from './paths.ts';
 import { loadProfile } from './profile.ts';
 import { loadBundle, type SessionEvent, toSession } from './session-source.ts';
@@ -51,6 +53,88 @@ export interface CompactionBrief {
   ok: boolean;
   error: string | undefined;
   model: string | undefined;
+}
+
+/** 日志中某 compaction 的生命周期事件。 */
+type Lifecycle = {
+  phase: CompactionStartPayload['phase'] | undefined;
+  summary: CompactionSummaryPayload | undefined;
+  end: CompactionEndPayload | undefined;
+};
+
+/** 按 compactionId 收集 start、summary 和 end 载荷。 */
+function findLifecycle(session: Session, compactionId: string): Lifecycle {
+  const lifecycle: Lifecycle = { phase: undefined, summary: undefined, end: undefined };
+  for (const event of session.snapshotEvents()) {
+    if (event.type === 'compaction/start') {
+      const data = event.data as CompactionStartPayload;
+      if (String(data.compactionId) === compactionId) lifecycle.phase = data.phase;
+    } else if (event.type === 'compaction/summary') {
+      const data = event.data as CompactionSummaryPayload;
+      if (String(data.compactionId) === compactionId) lifecycle.summary = data;
+    } else if (event.type === 'compaction/end') {
+      const data = event.data as CompactionEndPayload;
+      if (String(data.compactionId) === compactionId) lifecycle.end = data;
+    }
+  }
+  return lifecycle;
+}
+
+/** 重建被压缩内容的视图：反思用归档块，观察用原消息。 */
+function rebuildView(
+  session: Session,
+  phase: 'observe' | 'reflect',
+  shadowedSeqs: number[],
+  skipReasoning: boolean,
+): CompressionView | string {
+  if (phase === 'reflect') {
+    const blocks = shadowedSeqs.flatMap((seq) => {
+      const text = historyTextOf(session.snapshotEvents()[seq]);
+      return text === undefined ? [] : [{ text, seq }];
+    });
+    return buildArchiveView(blocks).view;
+  }
+  return buildObserveView(session, shadowedSeqs, { skipReasoning });
+}
+
+/** 重建视图：阶段、可定位区间的视图与原始字符数。 */
+export type ReplayView = {
+  phase: 'observe' | 'reflect';
+  view: CompressionView & { minIndex: number; maxIndex: number };
+  originalChars: number;
+};
+
+/** 按 compactionId 重建一次已成功压缩的输入视图。 */
+export function compactionView(
+  session: Session,
+  compactionId: string,
+  skipReasoning: boolean,
+): ReplayView | { error: string } {
+  const lifecycle = findLifecycle(session, compactionId);
+  if (lifecycle.phase === undefined && lifecycle.summary === undefined) {
+    return { error: `未找到压缩 ${compactionId}` };
+  }
+  const summary = lifecycle.summary;
+  if (summary === undefined || lifecycle.end === undefined || lifecycle.end.error !== undefined) {
+    return { error: `压缩 ${compactionId} 未成功完成，无法重建视图` };
+  }
+  const shadowedSeqs = (summary.shadowedSeqs ?? []).map(Number);
+  if (shadowedSeqs.length === 0) {
+    return { error: `压缩 ${compactionId} 缺少 shadowedSeqs，无法重放` };
+  }
+  const firstEvent = session.snapshotEvents()[shadowedSeqs[0] ?? -1];
+  const phase =
+    lifecycle.phase ?? (historyTextOf(firstEvent) === undefined ? 'observe' : 'reflect');
+  const view = rebuildView(session, phase, shadowedSeqs, skipReasoning);
+  if (typeof view === 'string') return { error: view };
+  const { minIndex, maxIndex } = view;
+  if (minIndex === undefined || maxIndex === undefined) {
+    return { error: `压缩 ${compactionId} 的原内容无可定位条目` };
+  }
+  const originalChars =
+    summary.shadowedCharCount ??
+    (phase === 'observe' ? seqsCharCount(session, shadowedSeqs) : viewCharCount(view));
+  return { phase, view: { ...view, minIndex, maxIndex }, originalChars };
 }
 
 /** 列出会话已有压缩：阶段、区间、成败与模型。 */

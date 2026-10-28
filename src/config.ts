@@ -17,8 +17,6 @@ export type PluginConfig = {
   compressMaxTokens: number | undefined;
   /** 遇 429 限流后下一次摘要请求前的等待毫秒数（全局冷却期）。 */
   rateLimitWaitMs: number;
-  /** 换模型重压缩命令的进程级并发上限（≥ 1），超出的排队等待。 */
-  recompressConcurrency: number;
   /** 观察触发后延迟执行的等待完整消息条数（新增完整消息数达到该值才执行压缩；0 表示触发当轮立即执行）。 */
   tailMessageCount: number;
   /** 工具循环 getHistory 输出是否携带 reasoning 参考条目（true 时不携带，压缩指令也省略其说明行）。 */
@@ -51,7 +49,6 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   reflectThresholdTokens: 80000,
   compressMaxTokens: undefined,
   rateLimitWaitMs: 60000,
-  recompressConcurrency: 2,
   tailMessageCount: 20,
   compressSkipReasoning: true,
   progressReminderEnabled: true,
@@ -85,11 +82,6 @@ export const Config = Schema.object({
     .volatile(),
   compressMaxTokens: Schema.number().step(1).volatile(),
   rateLimitWaitMs: Schema.number().step(1).default(DEFAULT_CONFIG.rateLimitWaitMs).volatile(),
-  recompressConcurrency: Schema.number()
-    .step(1)
-    .min(1)
-    .default(DEFAULT_CONFIG.recompressConcurrency)
-    .volatile(),
   tailMessageCount: Schema.number().step(1).default(DEFAULT_CONFIG.tailMessageCount).volatile(),
   compressSkipReasoning: Schema.boolean().default(DEFAULT_CONFIG.compressSkipReasoning).volatile(),
   progressReminderEnabled: Schema.boolean()
@@ -140,7 +132,6 @@ type NumberKey =
   | 'reflectThresholdTokens'
   | 'compressMaxTokens'
   | 'rateLimitWaitMs'
-  | 'recompressConcurrency'
   | 'tailMessageCount'
   | 'progressReminderIdleSteps'
   | 'progressReminderIdleToolCalls';
@@ -151,7 +142,6 @@ const NUMBER_KEYS: Array<[NumberKey, boolean, number?]> = [
   ['reflectThresholdTokens', true],
   ['compressMaxTokens', true],
   ['rateLimitWaitMs', true],
-  ['recompressConcurrency', true, 1],
   ['tailMessageCount', true],
   ['progressReminderIdleSteps', true, 1],
   ['progressReminderIdleToolCalls', true, 0],
