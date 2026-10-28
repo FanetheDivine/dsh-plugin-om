@@ -39,7 +39,7 @@ declare module '@deepseek-ai/dsh-client-ui-chat/client' {
 
 /** 压缩卡片载荷：摘要文本与遮蔽统计。 */
 export interface OmCompactionChatData {
-  /** 压缩 id（compaction/* 事件载荷的 compactionId），换模型重压缩据此定位那次压缩。 */
+  /** 压缩 id（compaction/* 事件载荷的 compactionId），关联同一次压缩的生命周期事件。 */
   readonly compactionId: string;
   /** 压缩进行中（start 已到、checkpoint/end 未到）：渲染为「正在压缩上下文…」提示行。 */
   readonly running: boolean;

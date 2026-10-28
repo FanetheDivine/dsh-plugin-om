@@ -6,7 +6,15 @@
  */
 import { EVAL_COMMAND_NAME } from '../eval-session-text.ts';
 import { evalJumpTarget } from './compaction-eval-jump.ts';
-import type { CommandExecutor } from './recompress-run.ts';
+
+/** 结果分析命令通道的最小远程面：按会话 id 执行一行命令。 */
+type EvalCommandExecutor = (
+  sessionId: string,
+  line: string,
+) => Promise<
+  | { ok: true; value: { result: { kind: string; text?: string } } }
+  | { ok: false; error: { message: string } }
+>;
 
 /** 目录中一个模型的思考等级元数据。 */
 export interface EvalModelReasoning {
@@ -87,7 +95,7 @@ export function evalModelLine(choice: EvalModelChoice): string {
 
 /** 提交与跳转所需的最小依赖。 */
 export interface EvalModelDeps {
-  readonly execute: CommandExecutor;
+  readonly execute: EvalCommandExecutor;
   readonly openSession: (sessionId: string) => void;
 }
 

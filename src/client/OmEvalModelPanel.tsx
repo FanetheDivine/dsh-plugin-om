@@ -162,16 +162,16 @@ export function OmEvalModelPanel({ directory, load, t, onSubmit, onClose }: OmEv
   if (state.status === 'error' && groups.length === 0) {
     left = (
       <div className={css.note}>
-        {state.error ?? t('recompress.loadFailed')}{' '}
+        {state.error ?? t('eval.loadFailed')}{' '}
         <button type="button" className={css.row} data-om-eval-retry onClick={() => load()}>
-          {t('recompress.retry')}
+          {t('eval.retry')}
         </button>
       </div>
     );
   } else if (groups.length === 0) {
     left = (
       <div className={css.note}>
-        {state.status === 'ready' ? t('eval.empty') : t('recompress.loading')}
+        {state.status === 'ready' ? t('eval.empty') : t('eval.loading')}
       </div>
     );
   } else {
@@ -230,7 +230,7 @@ export function OmEvalModelPanel({ directory, load, t, onSubmit, onClose }: OmEv
   } else {
     right = (
       <>
-        <div className={css.section}>{t('recompress.effort.title')}</div>
+        <div className={css.section}>{t('eval.effort')}</div>
         <button
           type="button"
           className={css.row}
@@ -240,7 +240,7 @@ export function OmEvalModelPanel({ directory, load, t, onSubmit, onClose }: OmEv
           onClick={() => setEffort(undefined)}
         >
           {mark(effort === undefined)}
-          {t('recompress.effort.default')}
+          {t('eval.effortDefault')}
         </button>
         {efforts.map((item) => (
           <button

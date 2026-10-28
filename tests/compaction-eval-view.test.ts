@@ -11,13 +11,56 @@ import {
 } from '../.agents/skills/compaction-eval/scripts/session-source.ts';
 import {
   buildViewFile,
+  compactionView,
   listCompactions,
   rangeView,
 } from '../.agents/skills/compaction-eval/scripts/view.ts';
+import { commitReflection, reflectPass } from '../src/compress.ts';
 import { resolveConfig } from '../src/config.ts';
 import { indexCompleteMessages } from '../src/log-index.ts';
+import { peekReflectJob } from '../src/reflect.ts';
 import { compactedLog } from './compaction-eval-fixtures.ts';
-import { hostLog, twoCallFlow } from './helpers.ts';
+import {
+  historyMessage,
+  hostLog,
+  makeCtx,
+  makeSession,
+  roundChunks,
+  twoCallFlow,
+} from './helpers.ts';
+
+const ORIGINAL = { provider: 'test', model: 'test-model' };
+
+/** 生成已提交一次反思归档的会话。 */
+async function archivedSession() {
+  const session = makeSession({
+    events: [
+      historyMessage(
+        '<user_message index="0"><![CDATA[旧内容A]]></user_message>\n<assistant index="1"><![CDATA[旧内容B]]></assistant>',
+        'h1',
+      ),
+      historyMessage('<user_message index="2"><![CDATA[保留]]></user_message>', 'h2'),
+    ],
+  });
+  const ctx = makeCtx({
+    llmStreamFactory: () =>
+      roundChunks({
+        calls: [
+          {
+            id: 'c',
+            name: 'compressHistory',
+            args: { start: 1, end: 1, content: '合并B', keywords: ['B'] },
+          },
+          { id: 'done', name: 'completeCompression' },
+        ],
+      }),
+  });
+  const config = resolveConfig({ reflectThresholdTokens: 1, rateLimitWaitMs: 0 });
+  reflectPass(ctx, { session } as never, config, ORIGINAL);
+  await peekReflectJob(session.id)?.promise;
+  commitReflection(ctx, { session } as never, config);
+  return session;
+}
 
 describe('toSession / listCompactions', () => {
   it('由日志重建真实会话，并列出压缩的阶段、区间、成败与模型', async () => {
@@ -92,6 +135,23 @@ describe('buildViewFile：按 compactionId 重建', () => {
     expect(file.header.id).toBe('session-view-test');
     expect([file.view.minIndex, file.view.maxIndex]).toEqual([0, 5]);
     expect(file.view.entries.some((e) => e.text.includes('firstCode()'))).toBe(true);
+  });
+
+  it('反思压缩：从被归档块重建条目、段区间和原始字符数', async () => {
+    const session = await archivedSession();
+    const summary = session
+      .snapshotEvents()
+      .findLast((event) => event.type === 'compaction/summary');
+    if (summary === undefined) throw new Error('会话无 compaction/summary');
+    const data = summary.data as { compactionId: string; shadowedCharCount?: number };
+    const replay = compactionView(session, String(data.compactionId), false);
+    if ('error' in replay) throw new Error(replay.error);
+    expect(replay.phase).toBe('reflect');
+    expect(replay.view.entries.map((entry) => entry.text)).toEqual(['旧内容A', '旧内容B']);
+    expect(replay.view.segments).toEqual([{ lo: 1, hi: 1 }]);
+    expect([replay.view.minIndex, replay.view.maxIndex]).toEqual([0, 1]);
+    expect(data.shadowedCharCount).toBeGreaterThan(0);
+    expect(replay.originalChars).toBe(data.shadowedCharCount);
   });
 
   it('未知 compactionId 报错', async () => {

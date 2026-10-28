@@ -845,10 +845,10 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(session.surface.nodes.length).toBe(3);
   });
 
-  it('apply 注册重压缩命令，评估命令由组件行提供', async () => {
+  it('apply 不注册重压缩命令，评估命令由组件行提供', () => {
     const ctx = makeCtx({ commandsMounted: true });
     apply(ctx, {});
-    expect(ctx._registeredCommands.map((c) => c.name)).toEqual(['om-recompress']);
+    expect(ctx._registeredCommands).toEqual([]);
   });
 });
 
@@ -1394,8 +1394,8 @@ describe('apply 接线（recall / semanticRecallEnabled）', () => {
     expect(ctx._createdSessions).toHaveLength(0); // 无 sessions：不落盘压缩会话记录
   });
 
-  it('服务齐全时不为 tools/commands 打 warn', () => {
-    const full = makeCtx({ commandsMounted: true });
+  it('工具服务齐全时不打 warn', () => {
+    const full = makeCtx();
     apply(full, {});
     expect(full._loggerCalls.filter((c) => c.level === 'warn')).toEqual([]);
   });

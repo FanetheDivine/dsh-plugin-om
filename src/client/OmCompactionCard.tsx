@@ -14,16 +14,13 @@ import {
   DisclosureRow,
   IconBrowseOutlineRegular,
   IconInspectOutlineRegular,
-  Toast,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots';
 import type { SessionId } from '@deepseek-ai/dsh-session/types';
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client';
-import type { CSSProperties, MouseEvent, ReactNode } from 'react';
-import { memo, useRef, useState } from 'react';
+import type { CSSProperties, MouseEvent } from 'react';
+import { memo, useState } from 'react';
 import { formatCompactCount, formatSeconds } from '../format.ts';
-import { OmRecompressMenu } from './OmRecompressMenu.tsx';
-import type { RecompressChoice, RecompressInjected } from './recompress-run.ts';
 
 /** Keyed renderer props: 装配好的卡片节点 + 绑定 `om-compaction` 命名空间的 locale 座。 */
 export interface OmCompactionCardProps {
@@ -33,16 +30,9 @@ export interface OmCompactionCardProps {
   readonly sessionId?: SessionId;
   /** 宿主注入的会话跳转；缺失时不显示「诊断日志」。 */
   readonly openSession?: (target: SubagentAddress) => void;
-  /** 换模型重压缩能力；缺失时（宿主无模型目录）不显示按钮。 */
-  readonly recompress?: RecompressInjected;
   /** 宿主 owner 提供的轨迹视图跳转；缺失（轨迹视图不可用）时不显示「轨迹」。 */
   readonly inspectCall?: ((callId: ToolCallId) => void) | undefined;
 }
-
-/** 一次重压缩提交：进行中带模型名，结束后带提示文案。同一卡片允许多条并行。 */
-type RecompressEntry =
-  | { readonly id: number; readonly status: 'running'; readonly model: string }
-  | { readonly id: number; readonly status: 'done' | 'failed'; readonly text: string };
 
 /** 卡片样式类名（与宿主 ContextInjectionRow.module.css 同款规则，增加水平滚动支持）。 */
 const css = {
@@ -54,7 +44,6 @@ const css = {
   body: 'om-compaction-body',
   actions: 'om-compaction-actions',
   inspect: 'om-compaction-inspect',
-  result: 'om-compaction-recompress-result',
   trajectory: 'om-compaction-trajectory',
 } as const;
 
@@ -71,7 +60,6 @@ const cardCss = `
 .${css.inspect}{border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:16px;cursor:pointer;white-space:nowrap;border-radius:999px;flex:none;align-items:center;gap:4px;margin:0;padding:2px 8px;display:inline-flex}
 .${css.inspect}:is(:hover,:focus-visible){background:var(--dsw-alias-interactive-bg-hover-solid);color:var(--dsw-alias-label-primary)}
 .${css.trajectory}{display:none}
-.${css.result}{padding:2px 0 0 22px;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary);max-height:60px;overflow-y:auto;overflow-wrap:anywhere;overscroll-behavior:contain;scrollbar-width:thin}
 .${css.body}{box-sizing:border-box;background:var(--dsw-alias-markdown-code-block);width:calc(100% - 22px);max-height:141px;color:var(--dsw-alias-label-tertiary);font:400 11px/16px var(--ds-font-family-code);border:none;border-radius:8px;margin:4px 0 0 22px;padding:10px 16px 12px 12px;overflow-x:auto;overflow-y:auto;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
 `;
 
@@ -92,15 +80,9 @@ export const OmCompactionCard = memo(function OmCompactionCard({
   t,
   sessionId,
   openSession,
-  recompress,
   inspectCall,
 }: OmCompactionCardProps) {
   const [expanded, setExpanded] = useState(false);
-  const [recompressEntries, setRecompressEntries] = useState<readonly RecompressEntry[]>([]);
-  // 提交序号：并行时用来定位各自的条目
-  const nextEntryId = useRef(0);
-  // 重压缩开始提示：每次提交递增 seq，作为 Toast 的 key 重新开始一轮显示
-  const [startedToast, setStartedToast] = useState(0);
   const { data } = node;
   // 「诊断日志」：仅当有诊断子会话 id、父会话 id 与宿主跳转能力时渲染；点击不触发行折叠
   const diagnosticSessionId = data.diagnosticSessionId;
@@ -124,51 +106,6 @@ export const OmCompactionCard = memo(function OmCompactionCard({
         {t('card.inspect')}
       </button>
     ) : null;
-  // 换模型重压缩：仅成功卡片提供；结果只作提示，重压缩记录在日志子会话中。
-  // 一次提交为一批组合，每组合一条进行中条目；提交不阻塞按钮，可多批并行；
-  // 新提交会清掉已结束的旧结果，保留仍在进行的条目
-  const pickRecompress = (choices: readonly RecompressChoice[]) => {
-    if (recompress === undefined) return;
-    const batch = choices.map((choice) => ({
-      id: nextEntryId.current++,
-      choice,
-      model: `${choice.provider}/${choice.model}(${
-        choice.reasoningEffort ?? t('compaction.stats.effortDefault')
-      })`,
-    }));
-    setRecompressEntries((entries) => [
-      ...entries.filter((entry) => entry.status === 'running'),
-      ...batch.map(({ id, model }) => ({ id, status: 'running' as const, model })),
-    ]);
-    setStartedToast((seq) => seq + 1);
-    for (const { id, choice } of batch) {
-      void recompress.run(data.compactionId, choice).then((outcome) => {
-        const text = outcome.ok
-          ? outcome.text || t('recompress.done')
-          : t('recompress.failed', { error: outcome.text });
-        setRecompressEntries((entries) =>
-          entries.map((entry) =>
-            entry.id === id ? { id, status: outcome.ok ? 'done' : 'failed', text } : entry,
-          ),
-        );
-      });
-    }
-  };
-  const recompressButton =
-    recompress === undefined ? null : (
-      <OmRecompressMenu source={recompress} t={t} onPick={pickRecompress} />
-    );
-  const recompressResult = recompressEntries.map((entry) =>
-    entry.status === 'running' ? (
-      <div key={entry.id} className={css.result} data-om-recompress-running>
-        {t('recompress.running', { model: entry.model })}
-      </div>
-    ) : (
-      <div key={entry.id} className={css.result} data-om-recompress-result>
-        {entry.text}
-      </div>
-    ),
-  );
   // 「轨迹」：切到轨迹视图。轨迹按 callId 定位记录，压缩没有 callId，无法跳到具体条目，
   // 只切视图对用户没有意义，故暂以 display:none 隐藏（样式见 css.trajectory）；
   // 待宿主支持按压缩定位后移除该规则即可恢复
@@ -188,17 +125,13 @@ export const OmCompactionCard = memo(function OmCompactionCard({
       </button>
     );
   // 展开体下方的操作栏；「轨迹」被隐藏，不单独构成操作栏，避免展开出空栏
-  const actionBar = (extra: ReactNode) =>
-    inspect === null && extra === null ? null : (
+  const actions =
+    inspect === null ? null : (
       <div className={css.actions} data-om-compaction-actions>
         {trajectory}
         {inspect}
-        {extra}
       </div>
     );
-  // 失败行没有可重放的摘要，不提供重压缩
-  const failureActions = actionBar(null);
-  const actions = actionBar(recompressButton);
   // 压缩进行中：不可展开的「正在压缩上下文…」提示行（按 phase 区分文案）
   if (data.running) {
     const runningLabel =
@@ -255,7 +188,7 @@ export const OmCompactionCard = memo(function OmCompactionCard({
           <div className={css.body} style={styles.body}>
             {data.error}
           </div>
-          {failureActions}
+          {actions}
         </DisclosureRow>
       </div>
     );
@@ -318,18 +251,6 @@ export const OmCompactionCard = memo(function OmCompactionCard({
         )}
         {actions}
       </DisclosureRow>
-      {recompressResult}
-      {startedToast > 0 && (
-        <Toast
-          key={startedToast}
-          tone="success"
-          text={t('recompress.started')}
-          holdMs={4000}
-          onDone={() => {
-            setStartedToast(0);
-          }}
-        />
-      )}
     </div>
   );
 });
