@@ -44,15 +44,13 @@ function exportKeyOf(name: string): string {
 /** 行 name 对应的源码入口（相对本测试文件）。 */
 const SOURCE_ENTRIES: Record<string, string> = {
   'dsh-plugin-om': '../src/index.ts',
-  'dsh-plugin-om/recompress': '../src/recompress/index.ts',
   'dsh-plugin-om/compaction-eval': '../src/compaction-eval/index.ts',
 };
 
 describe('组合包 patch 与 exports', () => {
-  it('patch 按顺序插入包根行与两个组件行', () => {
+  it('patch 按顺序插入包根行与评估组件行', () => {
     expect(patchRows()).toEqual([
       { id: 'dsh-plugin-om', name: 'dsh-plugin-om' },
-      { id: 'dsh-plugin-om-recompress', name: 'dsh-plugin-om/recompress' },
       { id: 'dsh-plugin-om-compaction-eval', name: 'dsh-plugin-om/compaction-eval' },
     ]);
   });
@@ -73,14 +71,13 @@ describe('组合包 patch 与 exports', () => {
   it('locale 子路径 exports 映射到包内文件且随包分发', () => {
     const pkg = readPkg();
     expect(pkg.exports['./locale/*.json']).toBe('./locale/*.json');
-    expect(pkg.exports['./recompress/locale/*.json']).toBe('./locale/recompress/*.json');
     expect(pkg.exports['./compaction-eval/locale/*.json']).toBe('./locale/compaction-eval/*.json');
     expect(pkg.files).toContain('locale');
     expect(typeof pkg.description).toBe('string');
   });
 
-  it('包根与组件行都有中英文展示元信息', () => {
-    for (const dir of ['locale', 'locale/recompress', 'locale/compaction-eval']) {
+  it('包根与评估组件行都有中英文展示元信息', () => {
+    for (const dir of ['locale', 'locale/compaction-eval']) {
       for (const lang of ['zh', 'en']) {
         const file = path.join(ROOT, dir, `${lang}.json`);
         const meta = JSON.parse(readFileSync(file, 'utf8')) as {

@@ -1,8 +1,8 @@
 /**
  * 浏览器客户端入口：注册压缩卡片、功能降级警告及 WebUI 插件行配置页，
  * 并监听本浏览器的命令执行结果，把 /om-compaction-eval 新建的会话跳转过去。
- * 浏览器代码只在包根行加载；每行的配置页只在宿主提供该行命名空间时挂载，
- * 重压缩菜单与评估模型面板也按对应组件行是否启用门控。
+ * 浏览器代码只在包根行加载；配置页只在宿主提供包根命名空间时挂载，
+ * 评估模型面板按评估组件行是否启用门控。
  */
 import type { Context } from '@deepseek-ai/cordis';
 // Type-only: 宿主远程调用（ctx.remote）的 Context 合并。
@@ -22,7 +22,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
 // Type-only: 拉取 uiWorkspace 服务（会话跳转）的 Context 合并。
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client';
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client';
-import type { EvalRowConfig, PluginConfig, RecompressRowConfig } from '../config.ts';
+import type { PluginConfig } from '../config.ts';
 import { registerCompactionEvalJump } from './compaction-eval-jump.ts';
 import { omCompactionDefinition, omWarningDefinition } from './definition.ts';
 import { registerEvalModelPanel } from './eval-model-register.tsx';
@@ -30,16 +30,7 @@ import { en, NS, zh } from './locales.ts';
 import { OmCompactionCard } from './OmCompactionCard.tsx';
 import { OmConfigCard } from './OmConfigCard.tsx';
 import { OmWarningCard } from './OmWarningCard.tsx';
-import {
-  CONFIG_NS,
-  EVAL_CONFIG_FIELDS,
-  EVAL_NS,
-  OM_CONFIG_FIELDS,
-  OmConfigController,
-  RECOMPRESS_CONFIG_FIELDS,
-  RECOMPRESS_NS,
-  type RowConfigPage,
-} from './om-config-controller.ts';
+import { CONFIG_NS, EVAL_NS, OmConfigController } from './om-config-controller.ts';
 import { recompressFor } from './recompress-inject.ts';
 
 /** 必需服务：聊天节点槽、会话定义、双语 locale、宿主配置表单与会话跳转。 */
@@ -52,7 +43,7 @@ function rowServed(ctx: Context, ns: string): boolean {
 }
 
 /** 在宿主服务该行命名空间期间注册行配置页；槽键为 <包名>#<行 id>。 */
-function registerRowConfig(ctx: Context, ns: string, page: RowConfigPage): () => void {
+function registerRowConfig(ctx: Context, ns: string, page: OmConfigController): () => void {
   return ctx.configForms.whileServed([ns], () =>
     ctx.slots.inject('plugins.row.config', () =>
       ctx.slots.register(
@@ -95,16 +86,15 @@ export function apply(ctx: Context): void {
         key: 'om-compaction',
         locale: NS,
         // 「查看」跳转：诊断子会话是父会话的 one-shot 子智能体
-        // 换模型重压缩：只在重压缩组件行启用且宿主提供模型目录时注入
+        // 换模型重压缩：宿主提供模型目录时注入
         // modelDirectories 是未声明 inject 的可选服务，只能经 ctx.get 读取
-        // inject 结果被宿主按会话记忆化：配置镜像就绪前渲染的会话没有重压缩菜单，会话绑定重建后恢复
         inject: (sessionId) => {
           const directories = ctx.get('modelDirectories');
           return {
             openSession: (target: SubagentAddress) => {
               ctx.uiWorkspace.openSession(target);
             },
-            ...(directories === undefined || !rowServed(ctx, RECOMPRESS_NS)
+            ...(directories === undefined
               ? {}
               : { recompress: recompressFor(ctx, directories, sessionId) }),
           };
@@ -119,35 +109,8 @@ export function apply(ctx: Context): void {
       OmWarningCard,
     ),
   );
-  // 每行一张配置页：包根、重压缩组件行、评估组件行
-  const rows: ReadonlyArray<{ ns: string; page: RowConfigPage }> = [
-    {
-      ns: CONFIG_NS,
-      page: new OmConfigController(
-        ctx.configForms.get<Partial<PluginConfig>>(CONFIG_NS),
-        OM_CONFIG_FIELDS,
-        'config.description',
-      ),
-    },
-    {
-      ns: RECOMPRESS_NS,
-      page: new OmConfigController(
-        ctx.configForms.get<Partial<RecompressRowConfig>>(RECOMPRESS_NS),
-        RECOMPRESS_CONFIG_FIELDS,
-        'config.description.recompress',
-      ),
-    },
-    {
-      ns: EVAL_NS,
-      page: new OmConfigController(
-        ctx.configForms.get<Partial<EvalRowConfig>>(EVAL_NS),
-        EVAL_CONFIG_FIELDS,
-        'config.description.eval',
-      ),
-    },
-  ];
-  for (const { ns, page } of rows) {
-    ctx.effect(() => () => page.dispose(), `dsh-plugin-om: ${ns} config form subscription`);
-    ctx.effect(() => registerRowConfig(ctx, ns, page), `dsh-plugin-om: ${ns} row configuration`);
-  }
+  // 包根行配置页：宿主提供包根命名空间时挂载
+  const page = new OmConfigController(ctx.configForms.get<Partial<PluginConfig>>(CONFIG_NS));
+  ctx.effect(() => () => page.dispose(), 'dsh-plugin-om: config form subscription');
+  ctx.effect(() => registerRowConfig(ctx, CONFIG_NS, page), 'dsh-plugin-om: row configuration');
 }

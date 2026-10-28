@@ -534,9 +534,9 @@ await (async () => {
   if (step === 'rowdump') return rowdump();
   if (step === 'bundleprobe') return bundleprobe();
   if (step === 'rowcfg') return rowcfg();
-  if (step === 'gating') return gating();
   if (step === 'rowwrite') return rowwrite();
   if (step === 'evalgating') return evalgating();
+  if (step === 'pagetext') return pagetext();
   throw new Error(`unknown step ${step}`);
 })().catch((e) => {
   console.error('FATAL', e);
@@ -2016,7 +2016,7 @@ async function bundleprobe() {
     'detail:',
     await page.ev(`(() => {
       const b = [...document.querySelectorAll('button[aria-label]')].find(
-        (x) => x.getAttribute('aria-label') === '查看 Observational Memory 压缩',
+        (x) => x.getAttribute('aria-label') === '查看 OM风格的上下文管理',
       );
       if (!b) return 'NO_BTN';
       b.scrollIntoView({ block: 'center' });
@@ -2051,13 +2051,13 @@ async function rowcfg() {
   await new Promise((r) => setTimeout(r, 3500));
   await page.ev(`(() => {
     const b = [...document.querySelectorAll('button[aria-label]')].find(
-      (x) => x.getAttribute('aria-label') === '查看 Observational Memory 压缩',
+      (x) => x.getAttribute('aria-label') === '查看 OM风格的上下文管理',
     );
     b.scrollIntoView({ block: 'center' });
     b.click();
   })()`);
   await new Promise((r) => setTimeout(r, 2500));
-  for (const title of ['换模型重压缩', 'OM 结果评估', 'Observational Memory 压缩']) {
+  for (const title of ['OM风格的上下文管理']) {
     const opened = await page.ev(`((t) => {
       const b = [...document.querySelectorAll('button[aria-label]')].find(
         (x) => x.getAttribute('aria-label') === '配置 ' + t,
@@ -2093,86 +2093,7 @@ async function rowcfg() {
   process.exit(0);
 }
 
-// —— 行开关门控：关闭重压缩组件行后卡片菜单消失，开启恢复（拆分验证用）——
-async function gating() {
-  const page = await connect(GUI);
-  const gotoDetail = async () => {
-    await waitLoad(page);
-    for (let attempt = 0; attempt < 3; attempt++) {
-      await page.ev(clickByText('button', '打开侧边栏'));
-      await new Promise((r) => setTimeout(r, 800));
-      await page.ev(clickByText('button', '插件'));
-      await new Promise((r) => setTimeout(r, 2500));
-      await page.ev(clickByText('button', '刷新'));
-      await new Promise((r) => setTimeout(r, 3500));
-      const d = await page.ev(`(() => {
-        const b = [...document.querySelectorAll('button[aria-label]')].find(
-          (x) => x.getAttribute('aria-label') === '查看 Observational Memory 压缩',
-        );
-        if (!b) return 'NO_DETAIL_BTN';
-        b.scrollIntoView({ block: 'center' });
-        b.click();
-        return 'CLICKED';
-      })()`);
-      await new Promise((r) => setTimeout(r, 2500));
-      if (d === 'CLICKED') return d;
-      // 已在详情页时「查看」按钮不存在：直接确认组件开关可见
-      const inDetail = await readSwitch('启用组件 换模型重压缩');
-      if (inDetail !== 'NO_SWITCH') return 'ALREADY_IN_DETAIL';
-    }
-    return 'NO_DETAIL_BTN';
-  };
-  const readSwitch = (label) =>
-    page.ev(`((l) => {
-      const el = [...document.querySelectorAll('[role="switch"],input[type="checkbox"]')].find(
-        (x) => (x.getAttribute('aria-label') || '') === l,
-      );
-      if (!el) return 'NO_SWITCH';
-      return String(el.getAttribute('aria-checked') ?? el.checked);
-    })(${JSON.stringify(label)})`);
-  const setSwitch = async (label, want) => {
-    for (let i = 0; i < 6; i++) {
-      const cur = await readSwitch(label);
-      if (cur === 'NO_SWITCH') return 'NO_SWITCH';
-      if (cur === String(want)) return 'OK';
-      await page.ev(`((l) => {
-        const el = [...document.querySelectorAll('[role="switch"],input[type="checkbox"]')].find(
-          (x) => (x.getAttribute('aria-label') || '') === l,
-        );
-        el.scrollIntoView({ block: 'center' });
-        el.click();
-      })(${JSON.stringify(label)})`);
-      await new Promise((r) => setTimeout(r, 3000));
-    }
-    return 'TIMEOUT:' + (await readSwitch(label));
-  };
-  const probeMenu = async () => {
-    // inject 结果被宿主按会话记忆化：reload 重建全部会话绑定后门控才反映到卡片
-    await page.send('Page.reload', {});
-    await new Promise((r) => setTimeout(r, 6000));
-    await openCard(page);
-    await new Promise((r) => setTimeout(r, 2000));
-    return page.ev(
-      `(() => {
-        const b = [...document.querySelectorAll('button')].find(
-          (x) => (x.textContent || '').trim() === '尝试其他模型',
-        );
-        return b ? 'MENU_PRESENT' : 'MENU_ABSENT';
-      })()`,
-    );
-  };
-  console.log('detail:', await gotoDetail());
-  console.log('switch off:', await setSwitch('启用组件 换模型重压缩', false));
-  console.log('menu after off:', await probeMenu());
-  await page.shot('gating-off');
-  console.log('detail2:', await gotoDetail());
-  console.log('switch on:', await setSwitch('启用组件 换模型重压缩', true));
-  console.log('menu after on:', await probeMenu());
-  await page.shot('gating-on');
-  process.exit(0);
-}
-
-// —— 行配置写入落盘核查：重压缩行保存并发数后 profile patch 出现该行 config（拆分验证用）——
+// —— 行配置写入落盘核查：包根行保存重压缩并发数后 profile patch 落盘（拆分验证用）——
 async function rowwrite() {
   const { readFileSync } = await import('node:fs');
   const PATCH = 'C:/Users/admin/.dsh/profiles/om-test-components/cordis.patch.yml';
@@ -2187,14 +2108,14 @@ async function rowwrite() {
   await new Promise((r) => setTimeout(r, 3500));
   await page.ev(`(() => {
     const b = [...document.querySelectorAll('button[aria-label]')].find(
-      (x) => x.getAttribute('aria-label') === '查看 Observational Memory 压缩',
+      (x) => x.getAttribute('aria-label') === '查看 OM风格的上下文管理',
     );
     if (b) { b.scrollIntoView({ block: 'center' }); b.click(); }
   })()`);
   await new Promise((r) => setTimeout(r, 2500));
   await page.ev(`(() => {
     const b = [...document.querySelectorAll('button[aria-label]')].find(
-      (x) => x.getAttribute('aria-label') === '配置 换模型重压缩',
+      (x) => x.getAttribute('aria-label') === '配置 OM风格的上下文管理',
     );
     if (b) { b.scrollIntoView({ block: 'center' }); b.click(); }
   })()`);
@@ -2225,10 +2146,10 @@ async function rowwrite() {
   await new Promise((r) => setTimeout(r, 2500));
   const patch1 = readFileSync(PATCH, 'utf8');
   console.log(
-    'patch has row:',
-    patch1.includes('dsh-plugin-om-recompress'),
-    'has value:',
+    'patch has value:',
     /recompressConcurrency:\s*3/.test(patch1),
+    'no recompress row:',
+    !patch1.includes('dsh-plugin-om-recompress'),
   );
   const revert = await page.ev(`(() => {
     const btns = [...document.querySelectorAll('button')].filter((x) => (x.textContent || '').trim() === '恢复默认');
@@ -2266,7 +2187,7 @@ async function evalgating() {
       await new Promise((r) => setTimeout(r, 3500));
       const d = await page.ev(`(() => {
         const b = [...document.querySelectorAll('button[aria-label]')].find(
-          (x) => x.getAttribute('aria-label') === '查看 Observational Memory 压缩',
+          (x) => x.getAttribute('aria-label') === '查看 OM风格的上下文管理',
         );
         if (!b) return 'NO_DETAIL_BTN';
         b.scrollIntoView({ block: 'center' });
@@ -2373,5 +2294,20 @@ async function evalgating() {
   await page.shot('evalgating-off');
   console.log('detail2:', await gotoDetail());
   console.log('eval on:', await setSwitch('启用组件 OM 结果评估', true));
+  process.exit(0);
+}
+
+// —— 临时探针：dump 页面文本与侧边栏树行（环境排查用）——
+async function pagetext() {
+  const page = await connect(GUI);
+  await waitLoad(page);
+  await new Promise((r) => setTimeout(r, 3000));
+  const out = await page.ev(`(() => {
+    const items = [...document.querySelectorAll('[role="treeitem"], [class*="projectRow"]')].map(
+      (e) => (e.textContent || '').trim().slice(0, 80),
+    );
+    return JSON.stringify({ body: document.body.innerText.slice(0, 1200), items }, null, 1);
+  })()`);
+  console.log(out);
   process.exit(0);
 }

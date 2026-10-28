@@ -355,13 +355,6 @@ interface MockCtxOptions {
   toolsMounted?: boolean;
   /** sessions 服务是否挂载（缺省 true；false 时 ctx.get('sessions') 返回 undefined）。 */
   sessionsMounted?: boolean;
-  /**
-   * omCompaction 核心服务是否挂载（缺省 false）。true 时 ctx.omCompaction 返回
-   * omCompactionConfig 桩；包根 apply 经 ctx.provide 提供后组件也能读到。
-   */
-  omCompactionMounted?: boolean;
-  /** omCompaction.config() 返回值（核心压缩配置；缺省空对象，宽松解析回默认）。 */
-  omCompactionConfig?: () => Record<string, unknown>;
 }
 
 /** workspaceRegistry 桩中的一个工作区（仅命令用到的字段）。 */
@@ -392,8 +385,6 @@ export function makeCtx({
   workspaces,
   toolsMounted = true,
   sessionsMounted = true,
-  omCompactionMounted = false,
-  omCompactionConfig,
 }: MockCtxOptions = {}) {
   const onCallbacks = new Map<string, ((...args: unknown[]) => unknown)[]>();
   /** ctx.on 的注册选项（与 onCallbacks 同序）。 */
@@ -490,8 +481,6 @@ export function makeCtx({
   const systemPromptMountedNow = systemPromptMounted && systemPromptAssemble !== undefined;
   /** commands.register 登记的命令定义（注销后移除）。 */
   const registeredCommands: RegisteredCommand[] = [];
-  /** ctx.provide 登记的服务（注销后移除；测试据此断言包根提供核心服务）。 */
-  const provided = new Map<string, unknown>();
   /** ctx.effect 注册的清理函数（测试据此模拟 fiber 卸载）。 */
   const effectDisposers: Array<() => void> = [];
   /** sessionController.create 的调用记录（请求原样入列）。 */
@@ -543,14 +532,6 @@ export function makeCtx({
       const dispose = run();
       if (typeof dispose === 'function') effectDisposers.push(dispose as () => void);
     },
-    /** 登记服务（模拟 cordis ctx.provide：重复提供抛错，返回注销函数）。 */
-    provide(name: string, value: unknown) {
-      if (provided.has(name)) throw new Error(`service "${name}" has been registered`);
-      provided.set(name, value);
-      return () => {
-        provided.delete(name);
-      };
-    },
     tools: {
       register: (def: unknown) => {
         registeredTools.push(def);
@@ -598,7 +579,6 @@ export function makeCtx({
       return () => true;
     },
     get(name: string) {
-      if (provided.has(name)) return provided.get(name);
       if (name === 'toolResultPruner') return pruner;
       if (name === 'sessionPersistence') return sessionPersistence;
       if (name === 'sessions') return sessionsMounted ? sessions : undefined;
@@ -616,7 +596,6 @@ export function makeCtx({
     _liveSessions: liveSessions,
     _registeredTools: registeredTools,
     _registeredCommands: registeredCommands,
-    _provided: provided,
     _effectDisposers: effectDisposers,
     _sessionCreations: sessionCreations,
     _sessionPrompts: sessionPrompts,
@@ -630,18 +609,6 @@ export function makeCtx({
     _mockSessionPersistence: sessionPersistence,
     _persistenceWrites: persistenceWrites,
   };
-  // 与真实 cordis 一致：核心服务未提供且未模拟挂载时属性访问抛错
-  Object.defineProperty(ctx, 'omCompaction', {
-    enumerable: false,
-    get() {
-      const service = provided.get('omCompaction');
-      if (service !== undefined) return service;
-      if (!omCompactionMounted) {
-        throw new Error('cannot get property "omCompaction" without inject');
-      }
-      return { config: omCompactionConfig ?? (() => ({})) };
-    },
-  });
   // 与真实 cordis 一致：服务未挂载时属性访问抛错（回归验证压缩必须经 ctx.get 容错读取）
   Object.defineProperty(ctx, 'systemPrompt', {
     enumerable: false,
@@ -659,7 +626,6 @@ export function makeCtx({
     _liveSessions: Map<string, Session>;
     _registeredTools: Array<{ name?: string }>;
     _registeredCommands: RegisteredCommand[];
-    _provided: Map<string, unknown>;
     _effectDisposers: Array<() => void>;
     _sessionCreations: unknown[];
     _sessionPrompts: unknown[];

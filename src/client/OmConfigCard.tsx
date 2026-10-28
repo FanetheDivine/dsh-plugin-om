@@ -10,7 +10,7 @@ import {
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
 import type { CSSProperties, ReactNode } from 'react';
 import type { NS } from './locales.ts';
-import type { OmConfigCardFace } from './om-config-controller.ts';
+import { OM_CONFIG_FIELDS, type OmConfigCardFace } from './om-config-controller.ts';
 
 /** 插件管理器注入的配置页 props。 */
 export type OmConfigCardProps = PropsRuntime<'plugins.row.config'> &
@@ -90,12 +90,11 @@ function isVisible(name: string, { semanticOn, idleOn }: DependencyFlags): boole
 export function OmConfigCard(props: OmConfigCardProps): string | React.JSX.Element {
   const { t } = props;
   const state = props.useOmConfigCard((snapshot) => snapshot);
-  if (props.view === 'summary') return t(props.descriptionKey);
+  if (props.view === 'summary') return t('config.description');
   if (state.status === 'loading') return <p role="status">{t('config.loading')}</p>;
-  // 组件行的字段清单没有依赖开关，缺失字段按关闭处理
   const flags: DependencyFlags = {
-    semanticOn: state.fields.semanticRecallEnabled?.text === 'true',
-    idleOn: state.fields.progressReminderIdleEnabled?.text === 'true',
+    semanticOn: state.fields.semanticRecallEnabled.text === 'true',
+    idleOn: state.fields.progressReminderIdleEnabled.text === 'true',
   };
   return (
     <SettingsForm
@@ -115,10 +114,8 @@ export function OmConfigCard(props: OmConfigCardProps): string | React.JSX.Eleme
           {t('config.discard')}
         </button>
       ) : null}
-      {props.layout.map(({ name, kind }) => {
+      {OM_CONFIG_FIELDS.map(({ name, kind }) => {
         const field = state.fields[name];
-        // layout 与投影字段同源，缺字段属于内部错误，直接不渲染该项
-        if (field === undefined) return null;
         const label = t(`config.${name}`);
         const hint = t(`config.${name}.hint`);
         const disabled = !state.writable || state.saving;

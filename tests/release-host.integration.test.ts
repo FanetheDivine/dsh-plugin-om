@@ -288,16 +288,12 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
           served.push(...names);
           return register();
         },
-        // 三行命名空间都被宿主服务：行启用判定与配置页注册都放行
+        // 两行命名空间都被宿主服务：行启用判定与配置页注册都放行
         describe: () => ({
           getSnapshot: () => ({
             status: 'ready',
             view: {
-              namespaces: [
-                { ns: 'dsh-plugin-om' },
-                { ns: 'dsh-plugin-om-recompress' },
-                { ns: 'dsh-plugin-om-compaction-eval' },
-              ],
+              namespaces: [{ ns: 'dsh-plugin-om' }, { ns: 'dsh-plugin-om-compaction-eval' }],
               writable: true,
               hasDocument: true,
             },
@@ -317,16 +313,8 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
         },
       },
     });
-    expect(scoped).toEqual([
-      'dsh-plugin-om',
-      'dsh-plugin-om-recompress',
-      'dsh-plugin-om-compaction-eval',
-    ]);
-    expect(served).toEqual([
-      'dsh-plugin-om',
-      'dsh-plugin-om-recompress',
-      'dsh-plugin-om-compaction-eval',
-    ]);
+    expect(scoped).toEqual(['dsh-plugin-om']);
+    expect(served).toEqual(['dsh-plugin-om']);
     expect(rowStatus).toBe('ready');
     // 发布的 bundle 内含 OM 结果评估跳转：监听 command/executed，只对本命令的成功结果跳转
     expect(events.map((item) => item.type)).toContain('command/executed');
@@ -338,19 +326,13 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
     jump?.fn('s-1', 'om-recompress', { kind: 'success', text: '重压缩完成' });
     expect(opened).toEqual(['session-new']);
     for (const release of releases) release();
-    expect(disposed).toBe(3);
+    expect(disposed).toBe(1);
     expect(plugin.inject).toEqual(
       expect.arrayContaining(['slots', 'uiConversation', 'locale', 'configForms']),
     );
     expect(namespaces).toHaveLength(1);
     expect(definitions).toHaveLength(2);
-    expect(renderers).toEqual([
-      'om-compaction',
-      'om-warning',
-      'dsh-plugin-om#dsh-plugin-om',
-      'dsh-plugin-om#dsh-plugin-om-recompress',
-      'dsh-plugin-om#dsh-plugin-om-compaction-eval',
-    ]);
+    expect(renderers).toEqual(['om-compaction', 'om-warning', 'dsh-plugin-om#dsh-plugin-om']);
     expect(installedVersion('dsh-client-ui-conversation')).toBe(RELEASE);
     expect(installedVersion('dsh-client-ui-settings')).toBe(RELEASE);
     expect(installedVersion('dsh-client-ui-plugin-manager')).toBe(RELEASE);
@@ -366,21 +348,12 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
   }, 30_000);
 
   it('发布的组件入口声明行名、依赖与 apply', async () => {
-    const recompress = await import(
-      pathToFileURL(path.join(ROOT, 'dist/recompress/index.mjs')).href
-    );
-    expect(recompress.name).toBe('dsh-plugin-om/recompress');
-    expect(recompress.inject).toEqual(['llm', 'commands', 'omCompaction']);
-    expect(typeof recompress.apply).toBe('function');
-    expect(recompress.Config).toBeDefined();
-
     const evalRow = await import(
       pathToFileURL(path.join(ROOT, 'dist/compaction-eval/index.mjs')).href
     );
     expect(evalRow.name).toBe('dsh-plugin-om/compaction-eval');
     expect(evalRow.inject).toEqual(['commands']);
     expect(typeof evalRow.apply).toBe('function');
-    expect(evalRow.Config).toBeDefined();
   }, 30_000);
 
   it('npm 发布包包含可加载的 Node 与浏览器入口', () => {
@@ -391,8 +364,6 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
     for (const file of [
       'dist/index.mjs',
       'dist/index.d.ts',
-      'dist/recompress/index.mjs',
-      'dist/recompress/index.d.ts',
       'dist/compaction-eval/index.mjs',
       'dist/compaction-eval/index.d.ts',
       'dist/client.js',
@@ -401,8 +372,6 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
       'dist/skill/compaction-eval/references/rules.md',
       'locale/zh.json',
       'locale/en.json',
-      'locale/recompress/zh.json',
-      'locale/recompress/en.json',
       'locale/compaction-eval/zh.json',
       'locale/compaction-eval/en.json',
       ...SKILL_DIST_SCRIPTS,

@@ -6,7 +6,7 @@
 
 ## 功能
 
-- 单包三行，包根行提供压缩与全部浏览器界面，重压缩行提供 `/om-recompress`，评估行提供 `/om-compaction-eval`，各行在插件页单独启停并各有配置页
+- 单包两行，包根行提供压缩、`/om-recompress` 与全部浏览器界面，评估行提供 `/om-compaction-eval`，各行在插件页单独启停
 - 自动压缩主会话历史，history 块累计过大时在后台把较早的块归档为 archived-history 块
 - 归档块保留用户消息和已处理的提问，相邻用户消息之间的模型内容压成一句话并附 recall 检索关键词
 - 归档在后台运行，不阻塞会话，同一会话同时只运行一个，完成后由下一个 pre-step 提交
@@ -31,16 +31,16 @@
 - 压缩会话记录尾部追加模型文本：压缩模型、思考等级、原始与产物字符数（k/w/M 单位，与卡片一致），失败时附原因、最后一轮 finish 与输出 token 数
 - 压缩会话记录显示在子智能体列表，标题为 `OM会话(起点-终点)-观察/反思`，重压缩与失败各追加后缀，随父会话 Session 日志一起下载
 - 在浏览器中显示压缩结果、错误和降级警告
-- 压缩卡片可换模型重压缩，由重压缩行提供，可多选模型和思考等级，一次提交按组合并行运行，超出并发上限的排队，进行中显示所用模型，结果只写入压缩会话记录，用于对比不同模型的压缩效果
+- 压缩卡片可换模型重压缩，可多选模型和思考等级，一次提交按组合并行运行，超出并发上限的排队，进行中显示所用模型，结果只写入压缩会话记录，用于对比不同模型的压缩效果
 - 提供 `/om-compaction-eval` 命令，由评估行提供，在同工作区新建会话，可选模型与思考等级，不带参数时弹出模型面板，由新会话按随包发布的评估文档分析本会话的压缩结果
 
 ## 安装
 
 要求 DSH 0.2.1-rc.2 或更高版本。
 
-包根行服务端必需 `llm` 和 `tokenMeter`。`tools` 和 `sessions` 缺失时，对应的 `recall` 和压缩会话记录停用并输出 warning，压缩照常运行。重压缩行依赖 `llm`、`commands` 和包根行的 `omCompaction` 服务，包根行关闭时自动停用。评估行只依赖 `commands`。
+包根行服务端必需 `llm` 和 `tokenMeter`。`tools`、`sessions` 和 `commands` 缺失时，对应的 `recall`、压缩会话记录和 `/om-recompress` 停用并输出 warning，压缩照常运行。评估行只依赖 `commands`。
 
-安装后插件页出现 `dsh-plugin-om`、`dsh-plugin-om-recompress` 和 `dsh-plugin-om-compaction-eval` 三行，可单独启停。
+安装后插件页出现 `dsh-plugin-om` 和 `dsh-plugin-om-compaction-eval` 两行，可单独启停。
 
 ```sh
 dsh plugin --profile <profile> add dsh-plugin-om
@@ -62,8 +62,6 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 - id: dsh-plugin-om
   config:
     observeThresholdTokens: 35000
-- id: dsh-plugin-om-recompress
-  config:
     recompressConcurrency: 2
 ```
 
@@ -82,6 +80,7 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 | `compressMaxTokens` | 模型默认值 | 单轮生成上限 |
 | `compressSkipReasoning` | `true` | 是否忽略 reasoning |
 | `rateLimitWaitMs` | `60000` | 429 与 5xx 重试前的等待毫秒数，`0` 表示不等待 |
+| `recompressConcurrency` | `2` | 重压缩同时运行的上限，至少为 `1`，超出的排队 |
 | `progressReminderEnabled` | `true` | 是否注入进度提醒 |
 | `progressReminderIdleEnabled` | `false` | 长期无记录时是否重发进度提醒，关闭后仅在提醒缺失时补发 |
 | `progressReminderIdleSteps` | `4` | 无记录的已结束 step 数达到该值才重发，至少为 `1` |
@@ -90,20 +89,9 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 
 配置页在依赖项关闭时隐藏关联项：语义增强关闭隐藏 `modelDir`，长期无记录时重发关闭隐藏两个重发阈值。
 
-重压缩行 `dsh-plugin-om-recompress` 配置：
+评估行 `dsh-plugin-om-compaction-eval` 没有配置项。
 
-| 配置项 | 默认值 | 说明 |
-| --- | --- | --- |
-| `recompressConcurrency` | `2` | 重压缩同时运行的上限，至少为 `1`，超出的排队 |
-| `debug` | 开发环境启用 | 是否输出步骤日志 |
-
-评估行 `dsh-plugin-om-compaction-eval` 配置：
-
-| 配置项 | 默认值 | 说明 |
-| --- | --- | --- |
-| `debug` | 开发环境启用 | 是否输出步骤日志 |
-
-重压缩的压缩参数来自包根行配置。旧版写在包根行上的 `omEnabled` 与 `recompressConcurrency` 会被忽略，停止压缩直接关闭包根行，`recompressConcurrency` 迁到重压缩行。
+旧版写在包根行上的 `omEnabled` 会被忽略，停止压缩直接关闭 `dsh-plugin-om` 行。`/om-compaction-eval` 迁到评估行，关闭评估行即停用该命令。
 
 `observeThresholdTokens` 和 `reflectThresholdTokens` 按主模型真实 token 计。较小的观察阈值更早节省上下文，较大的阈值提供更多摘要信息。只有 reasoning 包含关键决策时才需将 `compressSkipReasoning` 设为 `false`。
 
@@ -141,7 +129,7 @@ Claude 的 thinking 签名绑定其前全部内容，宿主也未开放 `drop_bl
 
 | 命令 | 提供行 | 作用 |
 | --- | --- | --- |
-| `/om-recompress <compactionId> <provider> <model> [思考等级]` | `dsh-plugin-om-recompress` | 用另一模型重放一次已有压缩，结果只写入压缩会话记录 |
+| `/om-recompress <compactionId> <provider> <model> [思考等级]` | `dsh-plugin-om` | 用另一模型重放一次已有压缩，结果只写入压缩会话记录 |
 | `/om-compaction-eval [provider/model [思考等级]]` | `dsh-plugin-om-compaction-eval` | ai分析OM结果 |
 
 命令只在对应行启用时注册。
@@ -158,8 +146,6 @@ Claude 的 thinking 签名绑定其前全部内容，宿主也未开放 `drop_bl
 - insert:
     - id: dsh-plugin-om-dev
       name: file:///<repo>/dist/index.mjs
-    - id: dsh-plugin-om-recompress-dev
-      name: file:///<repo>/dist/recompress/index.mjs
     - id: dsh-plugin-om-compaction-eval-dev
       name: file:///<repo>/dist/compaction-eval/index.mjs
 ```
@@ -195,11 +181,10 @@ Claude 的 thinking 签名绑定其前全部内容，宿主也未开放 `drop_bl
 ## 文件地图
 
 ```text
-cordis.patch.yml                 # bundle patch，按顺序插入包根行与两个组件行
-locale/                          # 三行的中英文展示元信息
+cordis.patch.yml                 # bundle patch，按顺序插入包根行与评估组件行
+locale/                          # 包根与评估行的中英文展示元信息
 src/
-├── index.ts                     # 包根入口：提供 omCompaction 服务，注册 recall 工具并接线自动压缩和提醒补发
-├── core-service.ts              # omCompaction 服务契约：向组件行实时暴露包根压缩配置
+├── index.ts                     # 包根入口：注册 recall 工具与 /om-recompress，接线自动压缩和提醒补发
 ├── system-reminder.ts           # 进度提醒：system-reminder 消息的构造与缺失时补发
 ├── thinking-binding.ts          # llm/stream 中间件：剥离 OM 压缩前生成的 Claude thinking 签名
 ├── config.ts                    # 配置默认值与宽松合并，未知键忽略、非法值回退默认
@@ -228,20 +213,19 @@ src/
 ├── precompress.ts               # 后台预压缩：进程内任务注册表、结果信封持久化与重启采纳
 ├── recompress.ts                # 换模型重压缩：按压缩 id 重放视图并落盘记录，附命令构建
 ├── recompress-gate.ts           # 重压缩并发信号量：按配置上限排队许可
-├── recompress/index.ts          # 重压缩行入口：注册 /om-recompress，压缩参数取自 omCompaction 服务
 ├── compaction-eval-command.ts   # OM 结果评估命令：定位评估文档、新建同工作区会话并投递首条消息
 ├── compaction-eval/index.ts     # 评估行入口：注册 /om-compaction-eval
 ├── eval-session-text.ts         # 评估命令文本契约：命令名与描述、首条消息、成功文本与其反解
-└── client/                      # 浏览器客户端 bundle：压缩卡片、三行配置页与组件行门控
-    ├── index.ts                 # 注册卡片与渲染器，为三行注册配置页，按行启用状态门控组件能力
-    ├── om-config-controller.ts  # 三行配置页的字段布局、宿主配置表单、草稿和原子保存
-    ├── OmConfigCard.tsx         # 按行布局渲染的双语配置控件
+└── client/                      # 浏览器客户端 bundle：压缩卡片、包根配置页与评估行门控
+    ├── index.ts                 # 注册卡片与渲染器，为包根注册配置页，按评估行启用状态门控模型面板
+    ├── om-config-controller.ts  # 包根配置页的字段布局、宿主配置表单、草稿和原子保存
+    ├── OmConfigCard.tsx         # 按字段布局渲染的双语配置控件
     ├── definition.ts            # 压缩卡片定义：生命周期事件、检查点替换与警告事件
     ├── OmCompactionCard.tsx     # 压缩结果与错误卡片，可跳转轨迹与诊断子会话
     ├── OmRecompressMenu.tsx     # 重压缩模型多选菜单，复用宿主会话模型目录
     ├── recompress-inject.ts     # 装配模型目录与命令通道
     ├── recompress-run.ts        # 重压缩命令行拼装、组合展开与结果归一化
-    ├── eval-model-register.tsx  # 评估命令模型面板：装饰命令并在评估行启用时可用
+    ├── eval-model-register.tsx  # 评估命令模型面板：装饰命令并在评估组件行启用时可用
     ├── compaction-eval-jump.ts  # 监听命令执行结果，跳转到评估命令新建的会话
     ├── OmWarningCard.tsx        # 功能降级警告行
     ├── format.ts                # 统计数字紧凑格式化

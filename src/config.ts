@@ -1,8 +1,6 @@
 /**
- * 各行配置：宿主 Config 严格校验、volatile 引用读取与兼容 YAML 的宽松合并。
- * 包根行导出 Config / PluginConfig / DEFAULT_CONFIG / currentConfig / resolveConfig；
- * 重压缩行导出 RecompressConfig / RecompressRowConfig / currentRecompressConfig；
- * 评估行导出 EvalConfig / EvalRowConfig / currentEvalConfig。
+ * 插件配置：宿主 Config 严格校验、volatile 引用读取与兼容 YAML 的宽松合并。
+ * 导出 Config / PluginConfig / DEFAULT_CONFIG / currentConfig / resolveConfig。
  * 宽松解析时未知键忽略、非法值回退默认值。
  */
 import Schema from '@deepseek-ai/schemastery';
@@ -19,6 +17,8 @@ export type PluginConfig = {
   compressMaxTokens: number | undefined;
   /** 遇 429 限流后下一次摘要请求前的等待毫秒数（全局冷却期）。 */
   rateLimitWaitMs: number;
+  /** 换模型重压缩命令的进程级并发上限（≥ 1），超出的排队等待。 */
+  recompressConcurrency: number;
   /** 观察触发后延迟执行的等待完整消息条数（新增完整消息数达到该值才执行压缩；0 表示触发当轮立即执行）。 */
   tailMessageCount: number;
   /** 工具循环 getHistory 输出是否携带 reasoning 参考条目（true 时不携带，压缩指令也省略其说明行）。 */
@@ -51,6 +51,7 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   reflectThresholdTokens: 80000,
   compressMaxTokens: undefined,
   rateLimitWaitMs: 60000,
+  recompressConcurrency: 2,
   tailMessageCount: 20,
   compressSkipReasoning: true,
   progressReminderEnabled: true,
@@ -84,6 +85,11 @@ export const Config = Schema.object({
     .volatile(),
   compressMaxTokens: Schema.number().step(1).volatile(),
   rateLimitWaitMs: Schema.number().step(1).default(DEFAULT_CONFIG.rateLimitWaitMs).volatile(),
+  recompressConcurrency: Schema.number()
+    .step(1)
+    .min(1)
+    .default(DEFAULT_CONFIG.recompressConcurrency)
+    .volatile(),
   tailMessageCount: Schema.number().step(1).default(DEFAULT_CONFIG.tailMessageCount).volatile(),
   compressSkipReasoning: Schema.boolean().default(DEFAULT_CONFIG.compressSkipReasoning).volatile(),
   progressReminderEnabled: Schema.boolean()
@@ -134,6 +140,7 @@ type NumberKey =
   | 'reflectThresholdTokens'
   | 'compressMaxTokens'
   | 'rateLimitWaitMs'
+  | 'recompressConcurrency'
   | 'tailMessageCount'
   | 'progressReminderIdleSteps'
   | 'progressReminderIdleToolCalls';
@@ -144,6 +151,7 @@ const NUMBER_KEYS: Array<[NumberKey, boolean, number?]> = [
   ['reflectThresholdTokens', true],
   ['compressMaxTokens', true],
   ['rateLimitWaitMs', true],
+  ['recompressConcurrency', true, 1],
   ['tailMessageCount', true],
   ['progressReminderIdleSteps', true, 1],
   ['progressReminderIdleToolCalls', true, 0],
@@ -208,54 +216,4 @@ export function resolveConfig(raw?: unknown): Readonly<PluginConfig> {
   config.compressModel = resolveOptionalString(input.compressModel);
   config.compressReasoningEffort = resolveOptionalString(input.compressReasoningEffort);
   return Object.freeze(config);
-}
-
-/** 重压缩行配置。 */
-export type RecompressRowConfig = {
-  /** 重压缩命令的进程级并发上限（≥ 1），超出的排队等待。 */
-  recompressConcurrency: number;
-  /** 步骤级日志开关（缺省按 NODE_ENV !== 'production' 判定）。 */
-  debug: boolean;
-};
-
-/** 重压缩并发上限默认值。 */
-const DEFAULT_RECOMPRESS_CONCURRENCY = 2;
-
-/** 重压缩行 Config：宿主保存时严格校验，字段均为 volatile 引用。 */
-export const RecompressConfig = Schema.object({
-  recompressConcurrency: Schema.number()
-    .step(1)
-    .min(1)
-    .default(DEFAULT_RECOMPRESS_CONCURRENCY)
-    .volatile(),
-  debug: debugSchema(),
-}).default({});
-
-/** 解析重压缩行当前配置：volatile 引用或原始对象，非法值回退默认。 */
-export function currentRecompressConfig(config?: unknown): Readonly<RecompressRowConfig> {
-  const input = normalizeConfigInput(
-    readVolatile(config, ['recompressConcurrency', 'debug']) ?? config,
-  );
-  return Object.freeze({
-    recompressConcurrency:
-      resolveNumber(input.recompressConcurrency, true, 1) ?? DEFAULT_RECOMPRESS_CONCURRENCY,
-    debug: resolveDebug(input.debug),
-  });
-}
-
-/** 评估行配置。 */
-export type EvalRowConfig = {
-  /** 步骤级日志开关（缺省按 NODE_ENV !== 'production' 判定）。 */
-  debug: boolean;
-};
-
-/** 评估行 Config：宿主保存时严格校验，字段均为 volatile 引用。 */
-export const EvalConfig = Schema.object({
-  debug: debugSchema(),
-}).default({});
-
-/** 解析评估行当前配置：volatile 引用或原始对象，非法值回退默认。 */
-export function currentEvalConfig(config?: unknown): Readonly<EvalRowConfig> {
-  const input = normalizeConfigInput(readVolatile(config, ['debug']) ?? config);
-  return Object.freeze({ debug: resolveDebug(input.debug) });
 }

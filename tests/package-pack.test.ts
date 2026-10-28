@@ -88,13 +88,11 @@ describe('npm 包内容（npm pack --dry-run）', () => {
     }
   }, 120_000);
 
-  it('tarball 含包根与组件行的中英文展示元信息', () => {
+  it('tarball 含包根与评估组件行的中英文展示元信息', () => {
     const packed = packedPaths();
     for (const rel of [
       'locale/zh.json',
       'locale/en.json',
-      'locale/recompress/zh.json',
-      'locale/recompress/en.json',
       'locale/compaction-eval/zh.json',
       'locale/compaction-eval/en.json',
     ]) {

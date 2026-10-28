@@ -1,6 +1,0 @@
-{
-  "meta": {
-    "title": "换模型重压缩",
-    "description": "提供 /om-recompress 命令，用指定模型重放已完成的压缩，依赖主插件行。"
-  }
-}

@@ -845,16 +845,10 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(session.surface.nodes.length).toBe(3);
   });
 
-  it('apply 提供 omCompaction 核心服务并透传当前配置，不再注册组件命令', async () => {
+  it('apply 注册重压缩命令，评估命令由组件行提供', async () => {
     const ctx = makeCtx({ commandsMounted: true });
-    apply(ctx, { observeThresholdTokens: 123 });
-    const service = ctx._provided.get('omCompaction') as
-      | { config: () => Record<string, unknown> }
-      | undefined;
-    expect(service).toBeDefined();
-    expect(service?.config().observeThresholdTokens).toBe(123);
-    // 重压缩与评估命令由组件行提供，包根不再注册
-    expect(ctx._registeredCommands).toEqual([]);
+    apply(ctx, {});
+    expect(ctx._registeredCommands.map((c) => c.name)).toEqual(['om-recompress']);
   });
 });
 
@@ -1400,8 +1394,8 @@ describe('apply 接线（recall / semanticRecallEnabled）', () => {
     expect(ctx._createdSessions).toHaveLength(0); // 无 sessions：不落盘压缩会话记录
   });
 
-  it('服务齐全时不为 tools 打 warn', () => {
-    const full = makeCtx();
+  it('服务齐全时不为 tools/commands 打 warn', () => {
+    const full = makeCtx({ commandsMounted: true });
     apply(full, {});
     expect(full._loggerCalls.filter((c) => c.level === 'warn')).toEqual([]);
   });

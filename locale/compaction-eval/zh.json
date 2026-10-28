@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "OM 结果评估",
-    "description": "提供 /om-compaction-eval 命令，新建会话按随包文档分析本会话的压缩质量。"
+    "description": "提供 /om-compaction-eval 命令。在进行过 OM 压缩的会话中调用此命令，可以分析压缩质量。"
   }
 }

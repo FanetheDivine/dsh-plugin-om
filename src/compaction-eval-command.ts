@@ -21,7 +21,6 @@ import {
   EVAL_COMMAND_NAME,
   evalStartedText,
 } from './eval-session-text.ts';
-import { makeLogger } from './logger.ts';
 import type { Agent, Context } from './types.ts';
 import { isMainSession, uuid } from './utils.ts';
 
@@ -170,33 +169,17 @@ export async function startEvalSession(
 /**
  * 构造 /om-compaction-eval 命令定义：可选参数指定新会话的模型与思考等级。
  * @param ctx - 组件行上下文。
- * @param debug - 步骤级日志开关（按调用时刻读取组件行配置）。
  */
-export function buildCompactionEvalCommand(
-  ctx: Context,
-  debug: () => boolean = () => false,
-): CommandDefinition {
+export function buildCompactionEvalCommand(ctx: Context): CommandDefinition {
   return {
     name: EVAL_COMMAND_NAME,
     description: EVAL_COMMAND_DESCRIPTION,
     input: { hint: '[provider/model [思考等级]]' },
     handler: async ({ agent, rawInput, signal }) => {
-      const logger = makeLogger(ctx, debug);
       const parsed = parseEvalModelInput(rawInput);
       if (!parsed.ok) return { kind: 'error', text: parsed.error };
-      const route =
-        parsed.model === undefined
-          ? '沿用会话路由'
-          : `${parsed.model.provider}/${parsed.model.model}${
-              parsed.model.reasoningEffort === undefined ? '' : ` · ${parsed.model.reasoningEffort}`
-            }`;
-      logger.step(`OM 结果评估启动：会话 ${agent.session.id}，模型 ${route}`);
       const result = await startEvalSession(ctx, agent, signal, parsed.model);
-      if (result.ok) {
-        logger.step(`评估会话已创建：${result.sessionId}`);
-        return { kind: 'success', text: result.text };
-      }
-      logger.step(`评估启动失败：${result.error}`);
+      if (result.ok) return { kind: 'success', text: result.text };
       return { kind: 'error', text: result.error };
     },
   };

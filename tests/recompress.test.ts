@@ -12,7 +12,7 @@ import {
   reflectPass,
 } from '../src/compress.ts';
 import { resolveConfig } from '../src/config.ts';
-import { apply } from '../src/recompress/index.ts';
+import { apply } from '../src/index.ts';
 import { compactionView, parseRecompressInput, recompress } from '../src/recompress.ts';
 import { resetRecompressGate } from '../src/recompress-gate.ts';
 import { peekReflectJob } from '../src/reflect.ts';
@@ -111,13 +111,7 @@ function run(
   return recompress(
     ctx,
     { session } as never,
-    {
-      compressMaxTokens: undefined,
-      compressSkipReasoning: true,
-      rateLimitWaitMs: 0,
-      debug: false,
-      recompressConcurrency: 2,
-    },
+    resolveConfig({ rateLimitWaitMs: 0 }),
     {
       compactionId,
       ...ALT,
@@ -344,33 +338,26 @@ describe('recompress：拒绝与互斥', () => {
   });
 });
 
-describe('/om-recompress 命令：组件行 apply 接线', () => {
-  /** 核心服务桩：压缩参数由包根行提供（测试用不限流 + 显式 maxTokens）。 */
-  const core = () => resolveConfig({ rateLimitWaitMs: 0, compressMaxTokens: 321 });
+describe('/om-recompress 命令：apply 接线', () => {
+  const quietConfig = { rateLimitWaitMs: 0 };
 
-  it('核心服务可用时注册命令，服务缺失时硬依赖抛错且不注册', () => {
-    const mounted = makeCtx({
-      commandsMounted: true,
-      omCompactionMounted: true,
-      omCompactionConfig: core,
-    });
-    apply(mounted, {});
+  it('commands 服务可用时注册命令，缺失时插件照常加载且不注册', () => {
+    const mounted = makeCtx({ commandsMounted: true });
+    apply(mounted, quietConfig);
     expect(mounted._registeredCommands.map((c) => c.name)).toContain('om-recompress');
 
-    const missing = makeCtx({ commandsMounted: true });
-    expect(() => apply(missing, {})).toThrow(/omCompaction/);
+    const missing = makeCtx();
+    expect(() => apply(missing, quietConfig)).not.toThrow();
     expect(missing._registeredCommands).toEqual([]);
   });
 
-  it('处理函数：成功返回对比文本且压缩参数来自核心服务，参数错误与压缩失败返回 error', async () => {
+  it('处理函数：成功返回对比文本且压缩参数来自插件配置，参数错误与压缩失败返回 error', async () => {
     const { session, compactionId } = await observedSession();
     const ctx = makeCtx({
       commandsMounted: true,
-      omCompactionMounted: true,
-      omCompactionConfig: core,
       llmStreamFactory: (index) => scriptedFactory({ 1: '另一个模型的摘要' })(index),
     });
-    apply(ctx, {});
+    apply(ctx, { ...quietConfig, compressMaxTokens: 321 });
     const command = ctx._registeredCommands[0];
     const call = (rawInput: string) =>
       command?.handler({
@@ -403,16 +390,17 @@ describe('/om-recompress 命令：组件行 apply 接线', () => {
     expect(missing?.text).toContain('nope');
   });
 
-  it('压缩参数按调用时刻读取核心服务：热更新后下一次调用即用新值', async () => {
+  it('配置按调用时刻读取：热更新后下一次调用即用新值', async () => {
     const { session, compactionId } = await observedSession();
-    let compressMaxTokens = 111;
+    const live: { rateLimitWaitMs: number; compressMaxTokens: number } = {
+      rateLimitWaitMs: 0,
+      compressMaxTokens: 111,
+    };
     const ctx = makeCtx({
       commandsMounted: true,
-      omCompactionMounted: true,
-      omCompactionConfig: () => resolveConfig({ rateLimitWaitMs: 0, compressMaxTokens }),
       llmStreamFactory: (index) => scriptedFactory({ 1: '摘要' })(index),
     });
-    apply(ctx, {});
+    apply(ctx, live);
     const command = ctx._registeredCommands[0];
     const call = () =>
       command?.handler({
@@ -422,13 +410,13 @@ describe('/om-recompress 命令：组件行 apply 接线', () => {
       });
     await call();
     expect(ctx._llmCalls[0]?.options).toMatchObject({ maxTokens: 111 });
-    compressMaxTokens = 321;
+    live.compressMaxTokens = 321;
     const before = ctx._llmCalls.length;
     await call();
     expect(ctx._llmCalls[before]?.options).toMatchObject({ maxTokens: 321 });
   });
 
-  it('命令并发受本行 recompressConcurrency 限制：超出的排队，排队中中止不占许可', async () => {
+  it('命令并发受 recompressConcurrency 配置限制：超出的排队，排队中中止不占许可', async () => {
     const { session, compactionId } = await observedSession();
     let started = 0;
     let release: () => void = () => {};
@@ -437,8 +425,6 @@ describe('/om-recompress 命令：组件行 apply 接线', () => {
     });
     const ctx = makeCtx({
       commandsMounted: true,
-      omCompactionMounted: true,
-      omCompactionConfig: () => resolveConfig({ rateLimitWaitMs: 0 }),
       llmStreamFactory: (index) =>
         (async function* () {
           started++;
@@ -446,7 +432,7 @@ describe('/om-recompress 命令：组件行 apply 接线', () => {
           yield* scriptedFactory({ 1: 'y' })(index);
         })(),
     });
-    apply(ctx, { recompressConcurrency: 2 });
+    apply(ctx, { ...quietConfig, recompressConcurrency: 2 });
     const command = ctx._registeredCommands[0];
     const call = (model: string, controller: AbortController) =>
       command?.handler({

@@ -1,15 +1,8 @@
-// config.ts 单元测试：各行配置解析 —— 包根 resolveConfig 与组件行
-// currentRecompressConfig / currentEvalConfig 的类型/范围校验、默认值与非法值回退。
+// config.ts 单元测试：宿主 Config 严格校验与 resolveConfig 宽松解析的
+// 类型/范围校验、默认值与非法值回退。
 import { describe, expect, it } from 'vitest';
 
-import {
-  Config,
-  currentEvalConfig,
-  currentRecompressConfig,
-  EvalConfig,
-  RecompressConfig,
-  resolveConfig,
-} from '../src/config.ts';
+import { Config, resolveConfig } from '../src/config.ts';
 
 describe('宿主 Config 校验与 volatile 值', () => {
   it('合法 YAML 值经过宿主解析后与宽松解析的行为一致，包括零和负整数', () => {
@@ -18,6 +11,7 @@ describe('宿主 Config 校验与 volatile 值', () => {
       reflectThresholdTokens: 0,
       compressMaxTokens: 4096,
       rateLimitWaitMs: 0,
+      recompressConcurrency: 5,
       tailMessageCount: 2,
       compressSkipReasoning: false,
       progressReminderEnabled: false,
@@ -33,7 +27,7 @@ describe('宿主 Config 校验与 volatile 值', () => {
     };
     const parsed = Config(yaml);
     const values = Object.fromEntries(Object.entries(parsed).map(([key, ref]) => [key, ref.get()]));
-    expect(Object.keys(values)).toHaveLength(16);
+    expect(Object.keys(values)).toHaveLength(17);
     expect(resolveConfig(values)).toEqual(resolveConfig(yaml));
     expect(Config({}).observeThresholdTokens.get()).toBe(resolveConfig({}).observeThresholdTokens);
     expect(Config({}).compressMaxTokens.get()).toBeUndefined();
@@ -133,6 +127,15 @@ describe('配置校验 resolveConfig', () => {
     expect(resolveConfig({ rateLimitWaitMs: '' }).rateLimitWaitMs).toBe(60000); // 留空回退默认
   });
 
+  it('recompressConcurrency：默认 2，正整数可覆盖，小于 1、非整数和非数值回退默认', () => {
+    expect(resolveConfig({}).recompressConcurrency).toBe(2);
+    expect(resolveConfig({ recompressConcurrency: 5 }).recompressConcurrency).toBe(5);
+    for (const bad of [0, -1, 1.5, '3', '']) {
+      expect(resolveConfig({ recompressConcurrency: bad }).recompressConcurrency).toBe(2);
+    }
+    expect(() => Config({ recompressConcurrency: 0 })).toThrow();
+  });
+
   it('整份配置留空（undefined/null/空串/空白串）时全部用默认值', () => {
     const empty = [undefined, null, '', '   '];
     for (const raw of empty) {
@@ -164,10 +167,8 @@ describe('配置校验 resolveConfig', () => {
     expect(resolveConfig([])).toEqual(resolveConfig({})); // 空数组不是对象，回归默认
     expect(resolveConfig('0.5')).toEqual(resolveConfig({})); // 非空字符串不是对象，回归默认
     expect(resolveConfig({ badKey: 1 })).toEqual(resolveConfig({})); // 未知键忽略
-    // 不属于包根配置的键（omEnabled / recompressConcurrency）忽略
-    expect(resolveConfig({ omEnabled: false, recompressConcurrency: 5 })).toEqual(
-      resolveConfig({}),
-    );
+    // 已删除的旧键忽略
+    expect(resolveConfig({ omEnabled: false })).toEqual(resolveConfig({}));
     // 阈值不做取值区间限制：任意整数（调试场景）按原样接受
     expect(resolveConfig({ observeThresholdTokens: 0 }).observeThresholdTokens).toBe(0);
     expect(resolveConfig({ reflectThresholdTokens: 0 }).reflectThresholdTokens).toBe(0);
@@ -226,45 +227,6 @@ describe('debug 配置键', () => {
     expect(resolveConfig({ debug: 1 }).debug).toBe(process.env.NODE_ENV !== 'production');
     expect(resolveConfig({ debug: null }).debug).toBe(process.env.NODE_ENV !== 'production');
     expect(resolveConfig({ debug: '' }).debug).toBe(process.env.NODE_ENV !== 'production');
-  });
-});
-
-describe('重压缩组件行配置', () => {
-  it('默认并发 2；正整数覆盖；小于 1、非整数和非数值回退默认', () => {
-    expect(currentRecompressConfig({}).recompressConcurrency).toBe(2);
-    expect(currentRecompressConfig({ recompressConcurrency: 5 }).recompressConcurrency).toBe(5);
-    for (const bad of [0, -1, 1.5, '3', '']) {
-      expect(currentRecompressConfig({ recompressConcurrency: bad }).recompressConcurrency).toBe(2);
-    }
-  });
-
-  it('宿主保存时拒绝越界与小数；volatile 引用经 current 解包后与宽松解析一致', () => {
-    expect(() => RecompressConfig({ recompressConcurrency: 0 })).toThrow();
-    const yaml = { recompressConcurrency: 4, debug: true };
-    const parsed = RecompressConfig(yaml);
-    expect(currentRecompressConfig(parsed)).toEqual(currentRecompressConfig(yaml));
-    expect(Object.keys(currentRecompressConfig(yaml))).toEqual(['recompressConcurrency', 'debug']);
-  });
-
-  it('非本行配置键忽略，回退本行默认值', () => {
-    expect(currentRecompressConfig({ observeThresholdTokens: 1, debug: false })).toEqual({
-      recompressConcurrency: 2,
-      debug: false,
-    });
-  });
-});
-
-describe('评估组件行配置', () => {
-  it('debug 显式开关生效；非 boolean 回退 NODE_ENV 默认', () => {
-    expect(currentEvalConfig({ debug: true }).debug).toBe(true);
-    expect(currentEvalConfig({ debug: false }).debug).toBe(false);
-    expect(currentEvalConfig({ debug: 'true' }).debug).toBe(process.env.NODE_ENV !== 'production');
-  });
-
-  it('volatile 引用经 current 解包；仅含 debug 一个键', () => {
-    const parsed = EvalConfig({ debug: true });
-    expect(currentEvalConfig(parsed)).toEqual({ debug: true });
-    expect(Object.keys(currentEvalConfig({}))).toEqual(['debug']);
   });
 });
 

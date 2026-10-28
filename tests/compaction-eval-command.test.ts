@@ -57,7 +57,7 @@ describe('命令定义', () => {
   it('组件 apply 注册评估命令，fiber 卸载后注销', async () => {
     const { apply } = await import('../src/compaction-eval/index.ts');
     const mounted = makeCtx({ commandsMounted: true });
-    apply(mounted, {});
+    apply(mounted);
     expect(mounted._registeredCommands.map((c) => c.name)).toEqual([EVAL_COMMAND_NAME]);
 
     // 模拟 fiber 卸载：effect 清理函数注销命令

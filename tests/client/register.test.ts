@@ -29,7 +29,6 @@ interface Listener {
 /** 各行的配置命名空间，即 patch 行 id。 */
 const ROW_NS = {
   root: 'dsh-plugin-om',
-  recompress: 'dsh-plugin-om-recompress',
   eval: 'dsh-plugin-om-compaction-eval',
 } as const;
 
@@ -152,28 +151,11 @@ describe('client apply', () => {
     );
   });
 
-  it('重压缩组件行未启用时不注入重压缩能力', () => {
-    const directoryFor = vi.fn().mockReturnValue({
-      store: { subscribe: () => () => {}, getSnapshot: () => ({}) },
-      load: vi.fn(),
-    });
-    const { registrations } = setup({ modelDirectories: { directoryFor } }, [
-      ROW_NS.root,
-      ROW_NS.eval,
-    ]);
-    const entry = registrations.find((item) => item.key === 'om-compaction');
-    expect(entry?.inject?.('s-1').recompress).toBeUndefined();
-  });
-
-  it('为包根和两个组件行分别注册配置页，键为包名#行 id', () => {
+  it('为包根行注册配置页，键为包名#行 id', () => {
     const { registrations } = setup();
     expect(
       registrations.filter((item) => item.name === 'plugins.row.config').map((item) => item.key),
-    ).toEqual([
-      'dsh-plugin-om#dsh-plugin-om',
-      'dsh-plugin-om#dsh-plugin-om-recompress',
-      'dsh-plugin-om#dsh-plugin-om-compaction-eval',
-    ]);
+    ).toEqual(['dsh-plugin-om#dsh-plugin-om']);
   });
 
   it('监听 command/executed：本命令成功时跳转到新会话', () => {
@@ -233,7 +215,7 @@ describe('client apply', () => {
     });
 
     it('评估组件行未启用时装饰不可用，启用后恢复', () => {
-      const { decorations } = panel([ROW_NS.root, ROW_NS.recompress]);
+      const { decorations } = panel([ROW_NS.root]);
       expect(decorations[0]?.available({ sessionId: 's-1' })).toBe(false);
       const enabled = panel();
       expect(enabled.decorations[0]?.available({ sessionId: 's-1' })).toBe(true);

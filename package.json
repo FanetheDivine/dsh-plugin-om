@@ -20,10 +20,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs"
     },
-    "./recompress": {
-      "types": "./dist/recompress/index.d.ts",
-      "import": "./dist/recompress/index.mjs"
-    },
     "./compaction-eval": {
       "types": "./dist/compaction-eval/index.d.ts",
       "import": "./dist/compaction-eval/index.mjs"
@@ -33,7 +29,6 @@
       "default": "./dist/client.js"
     },
     "./locale/*.json": "./locale/*.json",
-    "./recompress/locale/*.json": "./locale/recompress/*.json",
     "./compaction-eval/locale/*.json": "./locale/compaction-eval/*.json",
     "./package.json": "./package.json"
   },

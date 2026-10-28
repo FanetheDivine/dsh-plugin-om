@@ -2,7 +2,7 @@ import { defineConfig, type UserConfig } from 'tsdown';
 
 /**
  * 多组构建：
- * 1) 服务端插件入口（包根 + recompress / compaction-eval 两个组件行）→ ESM
+ * 1) 服务端插件入口（包根 + compaction-eval 组件行）→ ESM
  *    （npm 依赖保持 external，宿主提供 cordis/dsh 实例；仅 @xmldom/xmldom 内联）；
  *    共享模块由 rolldown 抽为 dist/chunks/；声明由 'tsc -p tsconfig.build.json'
  *    产出（dts: false）。
@@ -77,7 +77,7 @@ const SKILL_SCRIPT_CONFIGS: UserConfig[] = SKILL_SCRIPTS.map((name) => ({
 
 export default defineConfig([
   {
-    entry: ['src/index.ts', 'src/recompress/index.ts', 'src/compaction-eval/index.ts'],
+    entry: ['src/index.ts', 'src/compaction-eval/index.ts'],
     outDir: 'dist',
     format: ['esm'],
     platform: 'node',
