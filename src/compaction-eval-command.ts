@@ -74,13 +74,13 @@ function currentModel(session: Agent['session']): EvalModel | undefined {
 
 /**
  * skill 文档候选绝对路径，按优先级排列：
- * 1. 发布产物 dist/skill/compaction-eval/SKILL.md（脚本为自包含 .mjs）；
+ * 1. 发布产物 dist/skill/compaction-eval/SKILL.md（组件入口为 dist/compaction-eval/index.mjs）；
  * 2. 仓库源码 .agents/skills/compaction-eval/SKILL.md（开发时 dist 未构建）。
- * @param fromUrl - 入口模块 URL，缺省为本模块（打包后即 dist/index.mjs）。
+ * @param fromUrl - 入口模块 URL，缺省为本模块。
  */
 export function skillDocCandidates(fromUrl: string | URL = import.meta.url): string[] {
   return [
-    fileURLToPath(new URL('./skill/compaction-eval/SKILL.md', fromUrl)),
+    fileURLToPath(new URL('../skill/compaction-eval/SKILL.md', fromUrl)),
     fileURLToPath(new URL('../.agents/skills/compaction-eval/SKILL.md', fromUrl)),
   ];
 }
@@ -166,7 +166,10 @@ export async function startEvalSession(
   }
 }
 
-/** 构造 /om-compaction-eval 命令定义：可选参数指定新会话的模型与思考等级。 */
+/**
+ * 构造 /om-compaction-eval 命令定义：可选参数指定新会话的模型与思考等级。
+ * @param ctx - 组件行上下文。
+ */
 export function buildCompactionEvalCommand(ctx: Context): CommandDefinition {
   return {
     name: EVAL_COMMAND_NAME,
@@ -176,9 +179,8 @@ export function buildCompactionEvalCommand(ctx: Context): CommandDefinition {
       const parsed = parseEvalModelInput(rawInput);
       if (!parsed.ok) return { kind: 'error', text: parsed.error };
       const result = await startEvalSession(ctx, agent, signal, parsed.model);
-      return result.ok
-        ? { kind: 'success', text: result.text }
-        : { kind: 'error', text: result.error };
+      if (result.ok) return { kind: 'success', text: result.text };
+      return { kind: 'error', text: result.error };
     },
   };
 }

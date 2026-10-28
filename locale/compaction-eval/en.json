@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "OM compaction eval",
+    "description": "Provides /om-compaction-eval. Run it in a session compacted by OM to analyze compaction quality."
+  }
+}

@@ -2,6 +2,7 @@
   "name": "dsh-plugin-om",
   "version": "0.0.62",
   "type": "module",
+  "description": "Observational Memory style context compaction and verbatim recall for DSH",
   "main": "./dist/index.mjs",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
@@ -19,14 +20,21 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs"
     },
+    "./compaction-eval": {
+      "types": "./dist/compaction-eval/index.d.ts",
+      "import": "./dist/compaction-eval/index.mjs"
+    },
     "./client": {
       "types": "./dist/client/index.d.ts",
       "default": "./dist/client.js"
     },
+    "./locale/*.json": "./locale/*.json",
+    "./compaction-eval/locale/*.json": "./locale/compaction-eval/*.json",
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
+    "locale",
     "models",
     "!models/*/onnx/*.onnx",
     "cordis.patch.yml",

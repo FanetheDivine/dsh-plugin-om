@@ -1,5 +1,5 @@
 // 真实 Cordis、Loader 与 Agent 集成测试：验证进度提醒作为 system-reminder
-// 用户消息进入请求，且不修改系统提示词；覆盖开关、召回工具描述、子会话、热更新、重复请求、
+// 用户消息进入请求，且不修改系统提示词；覆盖 progressReminderEnabled 开关、召回工具描述、子会话、热更新、重复请求、
 // 工具 step 自动重发、文本重置、压缩遮蔽与卸载行为。
 import { Context } from '@deepseek-ai/cordis';
 import Loader from '@deepseek-ai/cordis-plugin-loader';
@@ -82,11 +82,11 @@ class RecordingAdapter extends LlmAdapter {
 
 /** 保持历史低于压缩阈值，禁用需要下载模型的语义增强。 */
 function pluginConfig(
-  omEnabled: boolean,
+  progressReminderEnabled: boolean,
   extra: Partial<PluginConfig> = {},
 ): Partial<PluginConfig> {
   return {
-    omEnabled,
+    progressReminderEnabled,
     observeThresholdTokens: 1000000,
     reflectThresholdTokens: 1000000,
     semanticRecallEnabled: false,
@@ -97,7 +97,7 @@ function pluginConfig(
 
 /** 用真实 Loader 加载插件，并创建可由 inbox 驱动的主 Agent。 */
 async function stackPromptHost(
-  omEnabled: boolean,
+  progressReminderEnabled: boolean,
   script: readonly (readonly StreamChunk[])[] = [],
   extra: Partial<PluginConfig> = {},
 ) {
@@ -143,7 +143,7 @@ async function stackPromptHost(
     app.loader.builtins[name] = { name, inject, Config, apply };
     const entryId = await app.loader.create({
       name: `cordis:${name}`,
-      config: pluginConfig(omEnabled, extra),
+      config: pluginConfig(progressReminderEnabled, extra),
     });
     await app.loader.await();
     const entry = app.loader.resolve(entryId);
@@ -259,7 +259,7 @@ function expectSystemUntouched(system: string): void {
 }
 
 describe('system-reminder 的真实宿主集成', () => {
-  it('omEnabled=true 且未发生过压缩时，只注入进度提醒，不注入定义提醒', async () => {
+  it('progressReminderEnabled=true 且未发生过压缩时，只注入进度提醒，不注入定义提醒', async () => {
     const { app, adapter, handle } = await stackPromptHost(true);
     try {
       expectSystemUntouched(await assembledSystem(app, handle.agent));
@@ -273,7 +273,7 @@ describe('system-reminder 的真实宿主集成', () => {
     }
   });
 
-  it('omEnabled=false 时不注入任何提醒，recall 仍注册且描述携带完整消息定义', async () => {
+  it('progressReminderEnabled=false 时不注入任何提醒，recall 仍注册且描述携带完整消息定义', async () => {
     const { app, adapter, handle } = await stackPromptHost(false);
     try {
       expectSystemUntouched(await assembledSystem(app, handle.agent));
@@ -375,7 +375,7 @@ describe('system-reminder 的真实宿主集成', () => {
             await entry.update({ config: pluginConfig(enabled) });
             await app.loader.await();
             expect(entry.fiber).toBe(fiber);
-            expect(config.omEnabled.get()).toBe(enabled);
+            expect(config.progressReminderEnabled.get()).toBe(enabled);
           }
           // 已写入历史的提醒无法撤回：关闭只停止补发
           everEnabled ||= enabled;
@@ -431,20 +431,6 @@ describe('system-reminder 的真实宿主集成', () => {
         Array.from({ length: script.length }, () => 1),
       );
       expect(loggedReminders(handle.agent)).toBe(3);
-    } finally {
-      await handle.dispose();
-      await app.fiber.dispose();
-    }
-  });
-
-  it('progressReminderEnabled=false 时 OM 仍开启也不注入进度提醒', async () => {
-    const { app, adapter, handle } = await stackPromptHost(true, [], {
-      progressReminderEnabled: false,
-    });
-    try {
-      const request = await runTurn(adapter, handle.agent, '不需要提醒的任务。');
-      expect(requestReminders(request)).toBe(0);
-      expect(loggedReminders(handle.agent)).toBe(0);
     } finally {
       await handle.dispose();
       await app.fiber.dispose();

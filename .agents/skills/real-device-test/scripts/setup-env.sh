@@ -61,13 +61,11 @@ else
 # OM 实机测试隔离配置：无真实模型，mock provider 由文件尾部 insert 加载。
 - id: dsh-plugin-om
   config:
-    omEnabled: true
     observeThresholdTokens: 1000000
     reflectThresholdTokens: 1000000
     tailMessageCount: 0
     rateLimitWaitMs: 0
     semanticRecallEnabled: false
-    recallEnabled: true
     debug: true
 - id: agent-default-model
   config:

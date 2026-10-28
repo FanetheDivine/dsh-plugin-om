@@ -1,5 +1,5 @@
-// config.ts 单元测试：resolveConfig 配置解析 —— 各配置键的类型/范围校验、
-// 默认值与非法值回退。
+// config.ts 单元测试：宿主 Config 严格校验与 resolveConfig 宽松解析的
+// 类型/范围校验、默认值与非法值回退。
 import { describe, expect, it } from 'vitest';
 
 import { Config, resolveConfig } from '../src/config.ts';
@@ -14,7 +14,6 @@ describe('宿主 Config 校验与 volatile 值', () => {
       recompressConcurrency: 5,
       tailMessageCount: 2,
       compressSkipReasoning: false,
-      omEnabled: false,
       progressReminderEnabled: false,
       progressReminderIdleEnabled: false,
       progressReminderIdleSteps: 2,
@@ -28,7 +27,7 @@ describe('宿主 Config 校验与 volatile 值', () => {
     };
     const parsed = Config(yaml);
     const values = Object.fromEntries(Object.entries(parsed).map(([key, ref]) => [key, ref.get()]));
-    expect(Object.keys(values)).toHaveLength(18);
+    expect(Object.keys(values)).toHaveLength(17);
     expect(resolveConfig(values)).toEqual(resolveConfig(yaml));
     expect(Config({}).observeThresholdTokens.get()).toBe(resolveConfig({}).observeThresholdTokens);
     expect(Config({}).compressMaxTokens.get()).toBeUndefined();
@@ -146,7 +145,6 @@ describe('配置校验 resolveConfig', () => {
       expect(d.compressMaxTokens).toBeUndefined();
       expect(d.tailMessageCount).toBe(20);
       expect(d.compressSkipReasoning).toBe(true);
-      expect(d.omEnabled).toBe(true);
       expect(d.semanticRecallEnabled).toBe(true);
     }
   });
@@ -169,6 +167,8 @@ describe('配置校验 resolveConfig', () => {
     expect(resolveConfig([])).toEqual(resolveConfig({})); // 空数组不是对象，回归默认
     expect(resolveConfig('0.5')).toEqual(resolveConfig({})); // 非空字符串不是对象，回归默认
     expect(resolveConfig({ badKey: 1 })).toEqual(resolveConfig({})); // 未知键忽略
+    // 已删除的旧键忽略
+    expect(resolveConfig({ omEnabled: false })).toEqual(resolveConfig({}));
     // 阈值不做取值区间限制：任意整数（调试场景）按原样接受
     expect(resolveConfig({ observeThresholdTokens: 0 }).observeThresholdTokens).toBe(0);
     expect(resolveConfig({ reflectThresholdTokens: 0 }).reflectThresholdTokens).toBe(0);
@@ -227,31 +227,6 @@ describe('debug 配置键', () => {
     expect(resolveConfig({ debug: 1 }).debug).toBe(process.env.NODE_ENV !== 'production');
     expect(resolveConfig({ debug: null }).debug).toBe(process.env.NODE_ENV !== 'production');
     expect(resolveConfig({ debug: '' }).debug).toBe(process.env.NODE_ENV !== 'production');
-  });
-});
-
-describe('omEnabled 配置键', () => {
-  it('缺省启用（true）；留空（null/空串）回退默认', () => {
-    expect(resolveConfig({}).omEnabled).toBe(true);
-    expect(resolveConfig({ omEnabled: null }).omEnabled).toBe(true);
-    expect(resolveConfig({ omEnabled: '' }).omEnabled).toBe(true);
-    expect(resolveConfig({ omEnabled: '   ' }).omEnabled).toBe(true);
-  });
-
-  it('true / false 显式开关', () => {
-    expect(resolveConfig({ omEnabled: true }).omEnabled).toBe(true);
-    expect(resolveConfig({ omEnabled: false }).omEnabled).toBe(false);
-  });
-
-  it('不合法值回退默认（true）', () => {
-    expect(resolveConfig({ omEnabled: 'false' }).omEnabled).toBe(true); // 字符串不合法
-    expect(resolveConfig({ omEnabled: 0 }).omEnabled).toBe(true);
-    expect(resolveConfig({ omEnabled: 'bogus' }).omEnabled).toBe(true);
-  });
-
-  it('summaryMode 不再是配置键（忽略、回归默认）', () => {
-    expect(resolveConfig({ summaryMode: 'new' }).omEnabled).toBe(true); // 未知键忽略
-    expect(resolveConfig({ summaryMode: 'fork' })).not.toHaveProperty('summaryMode');
   });
 });
 

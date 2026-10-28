@@ -481,6 +481,8 @@ export function makeCtx({
   const systemPromptMountedNow = systemPromptMounted && systemPromptAssemble !== undefined;
   /** commands.register 登记的命令定义（注销后移除）。 */
   const registeredCommands: RegisteredCommand[] = [];
+  /** ctx.effect 注册的清理函数（测试据此模拟 fiber 卸载）。 */
+  const effectDisposers: Array<() => void> = [];
   /** sessionController.create 的调用记录（请求原样入列）。 */
   const sessionCreations: unknown[] = [];
   /** sessionController.selectModel 的调用记录（请求原样入列）。 */
@@ -525,9 +527,10 @@ export function makeCtx({
       };
       if (deps.every((name) => mounted[name] === true)) callback(ctx);
     },
-    /** 立即运行副作用并忽略其返回的注销函数（测试不卸载）。 */
+    /** 立即运行副作用并收集其返回的注销函数（测试经 _effectDisposers 模拟卸载）。 */
     effect(run: () => unknown) {
-      run();
+      const dispose = run();
+      if (typeof dispose === 'function') effectDisposers.push(dispose as () => void);
     },
     tools: {
       register: (def: unknown) => {
@@ -593,6 +596,7 @@ export function makeCtx({
     _liveSessions: liveSessions,
     _registeredTools: registeredTools,
     _registeredCommands: registeredCommands,
+    _effectDisposers: effectDisposers,
     _sessionCreations: sessionCreations,
     _sessionPrompts: sessionPrompts,
     _modelSelections: modelSelections,
@@ -622,6 +626,7 @@ export function makeCtx({
     _liveSessions: Map<string, Session>;
     _registeredTools: Array<{ name?: string }>;
     _registeredCommands: RegisteredCommand[];
+    _effectDisposers: Array<() => void>;
     _sessionCreations: unknown[];
     _sessionPrompts: unknown[];
     _modelSelections: unknown[];

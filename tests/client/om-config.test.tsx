@@ -107,6 +107,20 @@ function setup(
         registrations.push(...names);
         return fn();
       },
+      // 入口经 describe 触发首读并判定评估行是否启用
+      describe: () => ({
+        getSnapshot: () => ({
+          status: 'ready',
+          view: {
+            namespaces: [{ ns: 'dsh-plugin-om' }, { ns: 'dsh-plugin-om-compaction-eval' }],
+            writable: true,
+            hasDocument: true,
+          },
+          error: null,
+        }),
+        subscribe: () => () => {},
+        ensure: async () => {},
+      }),
     },
     slots: {
       inject: (name: string, callback: () => () => void) => {
@@ -185,13 +199,12 @@ const type = (input: HTMLInputElement, text: string) => {
 };
 
 describe('dsh-plugin-om 的配置槽和编辑', () => {
-  it('把行配置注册到服务中的 namespace，并显示 18 个可以编辑的值控件', () => {
+  it('把行配置注册到服务中的 namespace，并显示 17 个可以编辑的值控件', () => {
     const { entry, registrations, container } = mount();
     expect(registrations).toEqual(['dsh-plugin-om']);
     expect(entry.name).toBe('plugins.row.config');
     expect(entry.key).toBe('dsh-plugin-om#dsh-plugin-om');
     const keys = [
-      'omEnabled',
       'observeThresholdTokens',
       'reflectThresholdTokens',
       'tailMessageCount',
@@ -211,7 +224,7 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       'debug',
     ];
     for (const key of keys) expect(control(container, key).disabled, key).toBe(false);
-    expect(container.querySelectorAll('input').length).toBe(18);
+    expect(container.querySelectorAll('input').length).toBe(17);
   });
 
   it('按功能逻辑排列字段，父开关在依赖项之前', () => {
@@ -221,7 +234,6 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
         (row) => row.dataset.omField,
       ),
     ).toEqual([
-      'omEnabled',
       'observeThresholdTokens',
       'reflectThresholdTokens',
       'tailMessageCount',
@@ -246,14 +258,14 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     const { host, container, face } = mount();
     type(control(container, 'observeThresholdTokens'), '4242');
     type(control(container, 'compressProvider'), 'local');
-    const enabled = control(container, 'omEnabled');
+    const enabled = control(container, 'progressReminderEnabled');
     act(() => enabled.click());
     expect(face.hooks.omConfigCard.getSnapshot().dirty).toBe(true);
     expect(host.calls).toHaveLength(0);
     expect(host.state.user).toEqual({});
   });
 
-  it('一次保存原子提交全部 18 项和读取时 revision，成功后同步宿主接受值', async () => {
+  it('一次保存原子提交全部 17 项和读取时 revision，成功后同步宿主接受值', async () => {
     const { host, container, face } = mount();
     const numberFields = [
       'observeThresholdTokens',
@@ -271,7 +283,6 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     // 依赖开关放在最后切换：先暂存被隐藏项的草稿，再关闭其上游
     const booleanFields = [
       'compressSkipReasoning',
-      'omEnabled',
       'progressReminderEnabled',
       'progressReminderIdleEnabled',
       'semanticRecallEnabled',
@@ -292,7 +303,7 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     });
     expect(host.calls).toHaveLength(1);
     expect(host.calls[0]?.revision).toBe(4);
-    expect(host.calls[0]?.ops).toHaveLength(18);
+    expect(host.calls[0]?.ops).toHaveLength(17);
     // 被隐藏的字段草稿仍随保存提交
     expect(host.calls[0]?.ops).toContainEqual({
       op: 'set',
@@ -373,10 +384,10 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
 
   it('布尔字段未覆盖时仅呈现开关与说明，覆盖后显示已覆盖徽章与重置按钮', async () => {
     const { container, face } = mount({
-      value: { omEnabled: true },
+      value: { progressReminderEnabled: true },
       user: {},
     });
-    const boolField = container.querySelector('[data-om-field="omEnabled"]');
+    const boolField = container.querySelector('[data-om-field="progressReminderEnabled"]');
     expect(boolField).not.toBeNull();
     // 默认继承状态下：不应渲染任何冗余的「继承默认」字样或已覆盖标记
     expect(boolField?.textContent).not.toContain('继承默认');
@@ -385,12 +396,14 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     expect(boolField?.querySelector('button')).toBeNull();
 
     // 用户切换开关，发生覆盖
-    const checkbox = control(container, 'omEnabled');
+    const checkbox = control(container, 'progressReminderEnabled');
     expect(checkbox.checked).toBe(true);
     act(() => {
       checkbox.click();
     });
-    expect(face.hooks.omConfigCard.getSnapshot().fields.omEnabled.overridden).toBe(true);
+    expect(face.hooks.omConfigCard.getSnapshot().fields.progressReminderEnabled.overridden).toBe(
+      true,
+    );
     expect(boolField?.textContent).toContain('config.overridden');
 
     // 此时出现重置按钮，点击重置后覆盖标记清除
@@ -399,7 +412,9 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     act(() => {
       resetButton?.click();
     });
-    expect(face.hooks.omConfigCard.getSnapshot().fields.omEnabled.overridden).toBe(false);
+    expect(face.hooks.omConfigCard.getSnapshot().fields.progressReminderEnabled.overridden).toBe(
+      false,
+    );
     expect(boolField?.textContent).not.toContain('config.overridden');
     expect(boolField?.querySelector('button')).toBeNull();
   });
@@ -513,7 +528,7 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     expect(control(container, 'observeThresholdTokens').value).toBe('77');
   });
 
-  it('真实中英字典在 DOM 中显示全部 18 项标题、说明和保存失败反馈', async () => {
+  it('真实中英字典在 DOM 中显示全部 17 项标题、说明和保存失败反馈', async () => {
     const keys = [
       'observeThresholdTokens',
       'reflectThresholdTokens',
@@ -528,7 +543,6 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       'rateLimitWaitMs',
       'recompressConcurrency',
       'modelDir',
-      'omEnabled',
       'progressReminderEnabled',
       'progressReminderIdleEnabled',
       'progressReminderIdleSteps',

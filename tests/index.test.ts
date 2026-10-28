@@ -845,30 +845,10 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(session.surface.nodes.length).toBe(3);
   });
 
-  it('omEnabled=false：关闭自动压缩（无摘要调用、无替换、recall 工具仍注册）', async () => {
-    const session = makeSession({
-      events: [
-        historyMessage('旧任务'),
-        ...buildToolCallFlow({
-          code: 'a()',
-          description: '任务A',
-          callId: 'c1',
-          resultText: 'r1',
-          withTurnEnd: true,
-        }),
-      ],
-    });
-    const ctx = makeCtx({});
-    apply(ctx, { omEnabled: false });
-    // 工具注册不受影响（recall 独立开关）
-    expect(ctx._registeredTools.some((t) => t.name === 'recall')).toBe(true);
-    await runPreStep(ctx, session);
-    // 观察/反思均不触发：无摘要调用、无 compaction 生命周期、表层不变
-    expect(ctx._llmCalls).toHaveLength(0);
-    expect(session.snapshotEvents().some((e) => e.type === 'compaction/start')).toBe(false);
-    expect(session.surface.nodes.length).toBe(4); // 旧日志 + flow 3 条
-    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
-    expect(steps.some((s) => s.includes('omEnabled=false，跳过压缩'))).toBe(true);
+  it('apply 注册重压缩命令，评估命令由组件行提供', async () => {
+    const ctx = makeCtx({ commandsMounted: true });
+    apply(ctx, {});
+    expect(ctx._registeredCommands.map((c) => c.name)).toEqual(['om-recompress']);
   });
 });
 
@@ -1408,7 +1388,6 @@ describe('apply 接线（recall / semanticRecallEnabled）', () => {
     expect(mockEnsure).not.toHaveBeenCalled();
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
     expect(warns.some((w) => w.includes('tools'))).toBe(true);
-    expect(warns.some((w) => w.includes('commands'))).toBe(true);
     const listeners = ctx._onCallbacks.get('agent/pre-step');
     await listeners?.[0]?.({ agent: { session }, signal: new AbortController().signal }, () => {});
     expect(latestHistoryText(session)).toContain('请帮我完成一个任务');

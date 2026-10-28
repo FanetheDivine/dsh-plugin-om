@@ -344,7 +344,6 @@ describe('/om-recompress 命令：apply 接线', () => {
   it('commands 服务可用时注册命令，缺失时插件照常加载且不注册', () => {
     const mounted = makeCtx({ commandsMounted: true });
     apply(mounted, quietConfig);
-    // 插件还注册 /om-compaction-eval，完整命令列表由 compaction-eval-command 测试断言
     expect(mounted._registeredCommands.map((c) => c.name)).toContain('om-recompress');
 
     const missing = makeCtx();
@@ -352,13 +351,13 @@ describe('/om-recompress 命令：apply 接线', () => {
     expect(missing._registeredCommands).toEqual([]);
   });
 
-  it('处理函数：成功返回对比文本，参数错误与压缩失败返回 error', async () => {
+  it('处理函数：成功返回对比文本且压缩参数来自插件配置，参数错误与压缩失败返回 error', async () => {
     const { session, compactionId } = await observedSession();
     const ctx = makeCtx({
       commandsMounted: true,
       llmStreamFactory: (index) => scriptedFactory({ 1: '另一个模型的摘要' })(index),
     });
-    apply(ctx, quietConfig);
+    apply(ctx, { ...quietConfig, compressMaxTokens: 321 });
     const command = ctx._registeredCommands[0];
     const call = (rawInput: string) =>
       command?.handler({
@@ -373,7 +372,11 @@ describe('/om-recompress 命令：apply 接线', () => {
     expect(ok?.text).toMatch(
       /^重压缩完成 字符 [\d.]+[kwM]? → [\d.]+[kwM]?，\d+\.\ds，alt\/vendor\/big-1\(high\)$/,
     );
-    expect(ctx._llmCalls[0]?.options).toMatchObject({ provider: 'alt', reasoningEffort: 'high' });
+    expect(ctx._llmCalls[0]?.options).toMatchObject({
+      provider: 'alt',
+      reasoningEffort: 'high',
+      maxTokens: 321,
+    });
 
     const defaultEffort = await call(` ${compactionId} alt big-2`);
     expect(defaultEffort?.text).toMatch(/，alt\/big-2\(默认\)$/);
@@ -387,7 +390,33 @@ describe('/om-recompress 命令：apply 接线', () => {
     expect(missing?.text).toContain('nope');
   });
 
-  it('命令并发受 recompressConcurrency 限制：超出的排队，排队中中止不占许可', async () => {
+  it('配置按调用时刻读取：热更新后下一次调用即用新值', async () => {
+    const { session, compactionId } = await observedSession();
+    const live: { rateLimitWaitMs: number; compressMaxTokens: number } = {
+      rateLimitWaitMs: 0,
+      compressMaxTokens: 111,
+    };
+    const ctx = makeCtx({
+      commandsMounted: true,
+      llmStreamFactory: (index) => scriptedFactory({ 1: '摘要' })(index),
+    });
+    apply(ctx, live);
+    const command = ctx._registeredCommands[0];
+    const call = () =>
+      command?.handler({
+        agent: { session },
+        rawInput: ` ${compactionId} alt big-1`,
+        signal: new AbortController().signal,
+      });
+    await call();
+    expect(ctx._llmCalls[0]?.options).toMatchObject({ maxTokens: 111 });
+    live.compressMaxTokens = 321;
+    const before = ctx._llmCalls.length;
+    await call();
+    expect(ctx._llmCalls[before]?.options).toMatchObject({ maxTokens: 321 });
+  });
+
+  it('命令并发受 recompressConcurrency 配置限制：超出的排队，排队中中止不占许可', async () => {
     const { session, compactionId } = await observedSession();
     let started = 0;
     let release: () => void = () => {};

@@ -1,4 +1,4 @@
-/** WebUI 行配置表单：字段顺序、严格整数/布尔解析与 18 项草稿的宿主原子提交。 */
+/** WebUI 行配置表单：字段顺序、严格整数/布尔解析与 17 项草稿的宿主原子提交。 */
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store';
 import {
   type SettingsFieldSpec,
@@ -14,6 +14,9 @@ import type { PluginConfig } from '../config.ts';
 /** 由宿主提供的插件条目配置命名空间。 */
 export const CONFIG_NS = 'dsh-plugin-om';
 
+/** 评估组件行的配置命名空间（该行无配置项，命名空间仅用于启用门控）。 */
+export const EVAL_NS = 'dsh-plugin-om-compaction-eval';
+
 /** 表单字段及控件类别。 */
 type OmConfigFieldSpec = {
   name: keyof PluginConfig;
@@ -22,7 +25,6 @@ type OmConfigFieldSpec = {
 
 /** 完整表单字段及控件类别，顺序即面板顺序：父开关在前，其控制的细节紧随其后。 */
 export const OM_CONFIG_FIELDS = [
-  { name: 'omEnabled', kind: 'boolean' },
   { name: 'observeThresholdTokens', kind: 'integer' },
   { name: 'reflectThresholdTokens', kind: 'integer' },
   { name: 'tailMessageCount', kind: 'integer' },

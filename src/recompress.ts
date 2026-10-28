@@ -1,8 +1,8 @@
 /**
  * 换模型重压缩：对已成功的 compaction 用另一模型在临时循环里重新压缩一次，便于对比
  * 不同模型的压缩效果。导出 parseRecompressInput / compactionView / recompress /
- * RecompressRequest / RecompressResult / ReplayView / buildRecompressCommand /
- * RECOMPRESS_COMMAND_NAME。
+ * RecompressRequest / RecompressResult / ReplayView /
+ * buildRecompressCommand / RECOMPRESS_COMMAND_NAME。
  *
  * - 视图重放：compaction/summary 载荷的 shadowedSeqs 加 compaction/start 的 phase 足以
  *   重建当时的压缩视图（观察取被遮蔽的原消息，反思取被归档的 <history> 块），二者都只
@@ -13,6 +13,7 @@
  *   compressModel 配置影响
  * - 仅主会话可用；同一会话允许多次重压缩并行，互不影响；命令并发数受
  *   recompressConcurrency 配置限制，超出的先进先出排队，排队中中止返回中止错误
+ * - 压缩参数（maxTokens / rateLimitWaitMs / skipReasoning）与 debug 均读插件配置
  * - 命令 /om-recompress 是压缩卡片按钮到服务端的内部通道（宿主命令通道），结果文本
  *   由发起方 UI 渲染，命令事件 log-only 不进模型上下文
  */
@@ -28,6 +29,7 @@ import {
   viewCharCount,
 } from './compress-loop.ts';
 import { buildArchiveView, buildObserveView, type CompressionView } from './compress-view.ts';
+import type { PluginConfig } from './config.ts';
 import { COMPACTION_ABORTED_ERROR } from './constants.ts';
 import { formatCompactCount, formatSeconds } from './format.ts';
 import { makeLogger } from './logger.ts';
@@ -38,7 +40,6 @@ import type {
   CompactionStartPayload,
   CompactionSummaryPayload,
   Context,
-  PluginConfig,
   Session,
 } from './types.ts';
 import { isMainSession, seqsCharCount } from './utils.ts';

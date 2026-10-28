@@ -50,13 +50,11 @@ const results = [],
   handles = [],
   handleById = new Map();
 const base = {
-  omEnabled: true,
   observeThresholdTokens: 1000000,
   reflectThresholdTokens: 1000000,
   tailMessageCount: 0,
   rateLimitWaitMs: 0,
   semanticRecallEnabled: false,
-  recallEnabled: true,
   debug: true,
   compressSkipReasoning: false,
 };
@@ -578,15 +576,25 @@ try {
     await config({ observeThresholdTokens: 1000000, reflectThresholdTokens: 1 });
     const calls = await turn(a, '触发反思合并');
     const cc = calls.filter((c) => c.purpose === 'compaction');
-    assert(cc.length >= 3, 'reflect loop missing');
+    assert(cc.length >= 2, 'reflect loop missing');
     assert(
-      cc.some((c) => plain(c.messages).includes('合并压缩全部')),
+      cc.some((c) => plain(c.messages).includes('归档深度压缩')),
       'reflect task text missing',
     );
     assert(
       cc.every((c) => !c.tools.some((t) => t.name === 'rewriteAskUserQuestion')),
       'reflect must not offer rewrite tool',
     );
+    // #125 起反思是后台任务：产物在下一个 pre-step 提交，发提交 turn 等事件落盘
+    await config({ reflectThresholdTokens: 1000000 });
+    for (
+      let i = 0;
+      i < 4 && !typed(a, 'compaction/start').some((e) => e.data.phase === 'reflect');
+      i++
+    ) {
+      await turn(a, `提交反思归档 ${i}`);
+      await new Promise((r) => setTimeout(r, 500));
+    }
     assert.equal(historyBlocks(a).length, 1, 'blocks must merge into one');
     const start = typed(a, 'compaction/start');
     assert.equal(start.at(-1).data.phase, 'reflect');
@@ -612,15 +620,24 @@ try {
     await turn(rf, 'LONG_CASE 反思失败背景');
     await config({ observeThresholdTokens: 10 });
     await turn(rf, '注入一块历史');
-    assert.equal(summaries(rf).length, 1, 'rfail needs one injected block first');
+    await turn(rf, 'LONG_CASE 再注入一块');
+    assert.equal(summaries(rf).length, 2, 'rfail needs two injected blocks first');
     adapter.modes.set('omtest-rfail', 'failure');
     await config({ observeThresholdTokens: 1000000, reflectThresholdTokens: 1 });
     await turn(rf, '触发反思失败');
-    const rfStart = typed(rf, 'compaction/start').at(-1);
-    assert.equal(rfStart.data.phase, 'reflect');
+    // 失败任务同样在下一个 pre-step 写 start(reflect) + end(error)
+    await config({ observeThresholdTokens: 1000000, reflectThresholdTokens: 1000000 });
+    let rfStart;
+    for (let i = 0; i < 4; i++) {
+      await turn(rf, `提交反思失败 ${i}`);
+      rfStart = typed(rf, 'compaction/start').find((e) => e.data.phase === 'reflect');
+      if (rfStart) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    assert(rfStart, 'failed reflect must append start(reflect)');
     const rfEnd = typed(rf, 'compaction/end').at(-1);
     assert(rfEnd.data.error !== undefined, 'failed reflect must append end(error)');
-    assert.equal(summaries(rf).length, 1, 'failed reflect must not add summary');
+    assert.equal(summaries(rf).length, 2, 'failed reflect must not add summary');
     const rfId = String(rfStart.data.compactionId);
     r = await exec(rf, `/om-recompress ${rfId} mock mock-model`);
     assert(r.result.text.includes('未成功完成'), r.result.text);

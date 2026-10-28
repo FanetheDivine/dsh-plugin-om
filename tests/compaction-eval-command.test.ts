@@ -1,6 +1,5 @@
 // /om-compaction-eval 命令单元测试：命令定义、skill 文档路径解析、新会话首条消息文本、
 // 建会话与投递入参、以及各错误分支（非主会话、缺 cwd、宿主无 sessionController、建会话或投递失败）。
-import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -24,8 +23,8 @@ import { makeCtx, makeSession } from './helpers.ts';
 /** 仓库根目录（tests/ 的上一级）。 */
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-/** 发布产物入口的模块 URL（skill 文档首选位置的基准）。 */
-const DIST_ENTRY = pathToFileURL(path.join(ROOT, 'dist', 'index.mjs')).href;
+/** 发布组件入口的模块 URL（skill 文档首选位置的基准）。 */
+const COMPONENT_ENTRY = pathToFileURL(path.join(ROOT, 'dist', 'compaction-eval', 'index.mjs')).href;
 
 /** 造一个带 cwd 的主会话。 */
 function mainSession(cwd = path.join(ROOT, 'workspace-a')) {
@@ -54,43 +53,33 @@ describe('命令定义', () => {
     expect(command.input).toEqual({ hint: '[provider/model [思考等级]]' });
   });
 
-  // 用例内首次导入 src/index.ts 在全量并行时可达数秒，超时放宽到 30s。
-  it('apply 在 commands 服务可用时注册两个命令，缺失时不注册也不抛', async () => {
-    const { apply } = await import('../src/index.ts');
-    const mounted = makeCtx({
-      commandsMounted: true,
-      sessionControllerMounted: true,
-      workspaces: [{ id: 'ws-1', path: '/ws', sessionIds: [] }],
-    });
-    apply(mounted, { rateLimitWaitMs: 0 });
-    expect(mounted._registeredCommands.map((c) => c.name)).toEqual([
-      'om-recompress',
-      EVAL_COMMAND_NAME,
-    ]);
+  // 用例内首次导入组件入口在全量并行时可达数秒，超时放宽到 30s。
+  it('组件 apply 注册评估命令，fiber 卸载后注销', async () => {
+    const { apply } = await import('../src/compaction-eval/index.ts');
+    const mounted = makeCtx({ commandsMounted: true });
+    apply(mounted);
+    expect(mounted._registeredCommands.map((c) => c.name)).toEqual([EVAL_COMMAND_NAME]);
 
-    const missing = makeCtx();
-    expect(() => apply(missing, { rateLimitWaitMs: 0 })).not.toThrow();
-    expect(missing._registeredCommands).toEqual([]);
+    // 模拟 fiber 卸载：effect 清理函数注销命令
+    for (const dispose of mounted._effectDisposers) dispose();
+    expect(mounted._registeredCommands).toEqual([]);
   }, 30000);
 });
 
 describe('skillDocCandidates / skillDocPath', () => {
-  it('候选顺序为发布产物优先、仓库源码兜底', () => {
-    expect(skillDocCandidates(DIST_ENTRY)).toEqual([
+  it('发布组件入口首选 dist/skill，源码入口命中 .agents/skills', () => {
+    expect(skillDocCandidates(COMPONENT_ENTRY)).toEqual([
       path.join(ROOT, 'dist', 'skill', 'compaction-eval', 'SKILL.md'),
-      path.join(ROOT, '.agents', 'skills', 'compaction-eval', 'SKILL.md'),
+      path.join(ROOT, 'dist', '.agents', 'skills', 'compaction-eval', 'SKILL.md'),
     ]);
-  });
-
-  it('返回第一个存在的候选；都不存在时 undefined', () => {
-    const found = skillDocPath(DIST_ENTRY);
-    expect(found).toBeDefined();
-    expect(existsSync(found as string)).toBe(true);
-    // 源码位置调用（vitest 下的 import.meta.url）同样能命中仓库内文档
+    // 源码位置调用（vitest 下的 import.meta.url）命中仓库内文档
     expect(skillDocPath()).toBe(
       path.join(ROOT, '.agents', 'skills', 'compaction-eval', 'SKILL.md'),
     );
-    const empty = pathToFileURL(path.join(ROOT, 'dist', 'nothing', 'index.mjs')).href;
+  });
+
+  it('候选都不存在时 undefined', () => {
+    const empty = pathToFileURL(path.join(ROOT, 'dist', 'nothing', 'deep', 'index.mjs')).href;
     expect(skillDocPath(empty)).toBeUndefined();
   });
 });
