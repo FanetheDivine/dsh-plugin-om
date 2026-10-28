@@ -170,11 +170,17 @@ Claude 的 thinking 签名绑定其前全部内容，宿主也未开放 `drop_bl
 
 语义增强首次使用时自动下载嵌入模型，也可运行 `pnpm run download:model` 预下载。
 
+Serena 符号查询需要 uv 和 Python 3.11–3.14。安装依赖时自动准备 Serena，也可运行 `pnpm serena:setup` 手动准备。
+
 | 命令 | 作用 |
 | --- | --- |
 | `pnpm dev` | 监听并构建 |
 | `pnpm check` | 检查类型、lint、测试和构建 |
 | `pnpm test` | 运行测试 |
+| `pnpm serena definition <name_path>` | 寻找符号定义 |
+| `pnpm serena references <name_path>` | 寻找符号引用 |
+| `pnpm serena doc <name_path>` | 查看符号签名和注释 |
+| `pnpm serena:setup` | 准备 Serena Python 依赖 |
 | `pnpm run download:model` | 预下载嵌入模型 |
 | `pnpm run release` | 检查并发布新版本 |
 
@@ -231,7 +237,7 @@ src/
     ├── format.ts                # 统计数字紧凑格式化
     └── locales.ts               # 中英文文案
 models/                          # 嵌入模型目录
-scripts/                         # 下载、发布与 skill 打包脚本
+scripts/                         # 下载、发布、skill 打包与 Serena 符号查询脚本
 tests/                           # 服务端、客户端与集成测试
 web/                             # 机制说明与成本计算器站点
     ├── src/model.ts             # 成本模型
