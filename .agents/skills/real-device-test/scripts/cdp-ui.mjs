@@ -2151,10 +2151,20 @@ async function rowwrite() {
     'no recompress row:',
     !patch1.includes('dsh-plugin-om-recompress'),
   );
+  // 包根页有多个「恢复默认」按钮：按字段作用域定位重压缩并发数自己的按钮
   const revert = await page.ev(`(() => {
-    const btns = [...document.querySelectorAll('button')].filter((x) => (x.textContent || '').trim() === '恢复默认');
-    if (!btns.length) return 'NO_RESET';
-    btns[0].click();
+    const labels = [...document.querySelectorAll('label,span,div,p')].filter(
+      (x) => (x.textContent || '').trim() === '重压缩并发数',
+    );
+    if (!labels.length) return 'NO_LABEL';
+    let scope = labels[0];
+    for (let i = 0; i < 8 && scope; i++) {
+      scope = scope.parentElement;
+      if (scope && [...scope.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === '恢复默认')) break;
+    }
+    const b = scope && [...scope.querySelectorAll('button')].find((x) => (x.textContent || '').trim() === '恢复默认');
+    if (!b) return 'NO_RESET';
+    b.click();
     return 'RESET';
   })()`);
   console.log('reset:', revert);
