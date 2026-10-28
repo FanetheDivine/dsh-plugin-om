@@ -20,6 +20,10 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+          enable-cache: true
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Run check
@@ -49,6 +53,10 @@ jobs:
       # trusted publishing（OIDC）要求 npm >= 11.5.1；node 24 自带的 npm 可能仍偏旧，显式升级到最新
       - name: Update npm (>= 11.5.1 required for OIDC)
         run: npm install -g npm@latest
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+          enable-cache: true
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Build

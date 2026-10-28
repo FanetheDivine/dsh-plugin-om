@@ -65,7 +65,7 @@
     "build": "tsdown && node scripts/build-skill.mjs && tsc -p tsconfig.build.json",
     "download:model": "node scripts/download-model.mjs",
     "serena": "uv run --script scripts/serena-cli.py",
-    "serena:setup": "uv run --script scripts/serena-cli.py --version",
+    "serena:setup": "uv run --script scripts/serena-cli.py --version 1>&2",
     "prepare": "pnpm run serena:setup",
     "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run build",
     "release": "pnpm check && npm version patch && node scripts/release-archive.mjs && git push && git push --tags",
