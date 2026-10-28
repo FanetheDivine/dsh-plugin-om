@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-om",
-  "version": "0.0.63",
+  "version": "0.0.64",
   "type": "module",
   "description": "Observational Memory style context compaction and verbatim recall for DSH",
   "main": "./dist/index.mjs",
