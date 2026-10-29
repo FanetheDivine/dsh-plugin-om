@@ -270,7 +270,10 @@ def normalize_json(value: JsonValue) -> JsonValue:
         return value
     result: dict[str, JsonValue] = {}
     for key, item in value.items():
-        if key == "body_location" and isinstance(item, dict):
+        key = key.replace("\\", "/")
+        if key == "relative_path" and isinstance(item, str):
+            result[key] = item.replace("\\", "/")
+        elif key == "body_location" and isinstance(item, dict):
             result[key] = {
                 part_key: part_value + 1
                 if part_key in {"start_line", "end_line"} and isinstance(part_value, int)
@@ -371,12 +374,32 @@ def apply_tool(agent: SerenaAgent, tool_name: str, *args: JsonValue, **kwargs: J
     return agent.execute_task(lambda: agent.get_tool_by_name(tool_name).apply(*args, **kwargs), logged=False)
 
 
-def run_query(agent: SerenaAgent, args: argparse.Namespace, relative_path: str | None, line: int | None) -> str:
-    """按名称或位置分发定义、引用和文档查询。"""
+def prepare_query(agent: SerenaAgent) -> Project:
+    """等待激活任务、检查服务器并同步磁盘与已打开的缓冲区。"""
+    agent.execute_task(lambda: None, logged=False)
     project = agent.get_active_project_or_raise()
     project.project_config.await_asynchronous_completion()
-    if project.language_server_manager is None:
-        project.create_language_server_manager()
+    manager = project.language_server_manager
+    if manager is None:
+        raise CliError("language server initialization failed; inspect the instance log")
+    # Serena 2.1 的公共迭代器会自动重启崩溃的 LS；此处先检查以保留失败语义。
+    servers = list(manager._language_servers.values())
+    for server in servers:
+        if not server.is_running():
+            raise CliError("language server has stopped; run pnpm serena stop before retrying")
+    project.ls_sync_file_system_changes()
+    for server in servers:
+        for buffer in list(server.open_file_buffers.values()):
+            if buffer.abs_path.is_file():
+                buffer.ensure_open_in_ls()
+            else:
+                buffer.close()
+    return project
+
+
+def run_query(agent: SerenaAgent, args: argparse.Namespace, relative_path: str | None, line: int | None) -> str:
+    """按名称或位置分发定义、引用和文档查询。"""
+    project = prepare_query(agent)
 
     if relative_path is not None and line is None:
         return file_candidates(agent, relative_path, args.max_chars)
