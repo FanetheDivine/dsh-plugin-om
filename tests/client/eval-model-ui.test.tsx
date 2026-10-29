@@ -225,7 +225,7 @@ describe('registerEvalModelPanel', () => {
       get: (name: string) => (name === 'remote.commands' ? { execute } : undefined),
       uiWorkspace: { openSession },
     };
-    registerEvalModelPanel(ctx as unknown as Context, () => true);
+    registerEvalModelPanel(ctx as unknown as Context);
     const run = decorations[0]?.ui.run;
     if (run === undefined) throw new Error('缺少装饰');
     return { run, execute, openSession, directoryFor, dispose };

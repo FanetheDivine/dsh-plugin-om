@@ -2300,10 +2300,16 @@ async function evalgating() {
   };
   console.log('detail:', await gotoDetail());
   console.log('eval off:', await setSwitch('启用组件 OM 结果评估', false));
-  console.log('panel after off:', await probePanel());
+  const offPanel = await probePanel();
+  console.log('panel after off:', offPanel);
   await page.shot('evalgating-off');
+  if (offPanel !== 'PANEL_ABSENT') throw new Error(`评估行停用后仍出现模型面板：${offPanel}`);
   console.log('detail2:', await gotoDetail());
   console.log('eval on:', await setSwitch('启用组件 OM 结果评估', true));
+  const onPanel = await probePanel();
+  console.log('panel after on:', onPanel);
+  await page.shot('evalgating-on');
+  if (onPanel !== 'PANEL_PRESENT') throw new Error(`评估行启用后模型面板未恢复：${onPanel}`);
   process.exit(0);
 }
 

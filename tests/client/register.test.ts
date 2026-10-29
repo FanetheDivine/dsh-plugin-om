@@ -189,11 +189,10 @@ describe('client apply', () => {
       expect(decorations[0]?.available({ sessionId: 's-1' })).toBe(true);
     });
 
-    it('评估组件行未启用时装饰不可用，启用后恢复', () => {
+    it('评估行没有配置命名空间时，已注册命令的模型面板仍可用', () => {
       const { decorations } = panel([ROW_NS.root]);
-      expect(decorations[0]?.available({ sessionId: 's-1' })).toBe(false);
-      const enabled = panel();
-      expect(enabled.decorations[0]?.available({ sessionId: 's-1' })).toBe(true);
+      expect(decorations).toHaveLength(1);
+      expect(decorations[0]?.available({ sessionId: 's-1' })).toBe(true);
     });
 
     it('缺少 commandUi 或模型目录时不挂面板也不抛错', () => {
