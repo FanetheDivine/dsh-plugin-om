@@ -166,7 +166,14 @@ Claude 的 thinking 签名绑定其前全部内容，宿主也未开放 `drop_bl
 
 语义增强首次使用时自动下载嵌入模型，也可运行 `pnpm run download:model` 预下载。
 
-Serena 符号查询需要 uv 和 Python 3.11–3.14。安装依赖时自动准备 Serena，也可运行 `pnpm serena:setup` 手动准备。
+Serena 符号查询需要 uv、Node.js 和 Python 3.11–3.14。安装依赖时自动准备 Serena，也可运行 `pnpm serena:setup` 手动准备。
+
+- 查询复用当前项目的独立后台实例。Windows 启动不弹出控制台。
+- 实例默认空闲 15 分钟退出。`SERENA_CLI_IDLE_TIMEOUT` 可设置空闲秒数。
+- `references` 激活 TS 工程并补全松散 JS/MJS 引用。空结果不重试，初始化失败或超时直接报错。
+- 查询前同步外部文件改动。输出行号从 1 开始，路径使用 `/`。
+- `--no-daemon` 或 `SERENA_CLI_DAEMON=0` 使用单进程。实例启动失败会提示并回退，已提交的查询不重复执行。
+- 删除 worktree 前在目标目录执行 `pnpm serena stop`，确认停止后离开目录再删除。
 
 | 命令 | 作用 |
 | --- | --- |
@@ -176,6 +183,8 @@ Serena 符号查询需要 uv 和 Python 3.11–3.14。安装依赖时自动准�
 | `pnpm serena definition <name_path>` | 寻找符号定义 |
 | `pnpm serena references <name_path>` | 寻找符号引用 |
 | `pnpm serena doc <name_path>` | 查看符号签名和注释 |
+| `pnpm serena status` | 查看当前项目实例状态 |
+| `pnpm serena stop` | 停止当前项目实例 |
 | `pnpm serena:setup` | 准备 Serena Python 依赖 |
 | `pnpm run download:model` | 预下载嵌入模型 |
 | `pnpm run release` | 检查并发布新版本 |
