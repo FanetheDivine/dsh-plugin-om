@@ -190,6 +190,47 @@ describe('Serena CLI', () => {
     expect(removed).not.toContain(`${LIVE_REL}/c.ts`);
   }, 120_000);
 
+  it('跨工程与松散 JS/MJS 引用完整且不随查询顺序改变', () => {
+    const refs = (name: string) => {
+      const result = runSerena('references', name);
+      expectSuccess(result);
+      expect(result.stderr).not.toContain('retry');
+      return Object.keys(parseOutput(result.stdout));
+    };
+    for (let round = 0; round < 2; round++) {
+      expect(refs('buildTable')).toEqual(
+        expect.arrayContaining(['web/src/App.tsx', 'tests/web/model.test.ts']),
+      );
+      expect(refs('planArchive')).toEqual(
+        expect.arrayContaining(['scripts/release-archive.mjs', 'tests/release-archive.test.mjs']),
+      );
+      expect(refs('safeJson')).toContain('tests/utils.test.ts');
+    }
+    expect(refs('serenaFirst')).toEqual([]);
+  }, 180_000);
+
+  it('重复引用查询释放临时 JS 缓冲区，退出释放工程锚点', () => {
+    const result = spawnSync(
+      'uv',
+      ['run', '--script', 'tests/serena-reference-lifecycle.test.py'],
+      {
+        cwd: ROOT,
+        env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+        encoding: 'utf8',
+        timeout: 120_000,
+        windowsHide: true,
+      },
+    );
+    expectSuccess(result);
+    const output = JSON.parse(result.stdout) as {
+      persistent_buffers: number;
+      before: number;
+      after: number;
+    };
+    expect(output.persistent_buffers).toBeGreaterThan(0);
+    expect(output.after).toBe(output.before);
+  }, 150_000);
+
   it('无匹配符号或声明行不唯一时返回明确错误', () => {
     const missingName = runSerena('references', 'serenaSymbolThatDoesNotExist');
     expect(missingName.status).toBe(1);

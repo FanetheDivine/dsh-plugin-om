@@ -2,10 +2,12 @@
 # requires-python = ">=3.11,<3.15"
 # dependencies = ["psutil==7.0.0"]
 # ///
-"""Serena CLI 的标准库行为测试：传输失败不重复执行，启动失败可回退。"""
+"""Serena CLI 行为测试与真实 LS 进程探针。"""
 
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -63,6 +65,39 @@ class QueryPreparationTests(unittest.TestCase):
         with self.assertRaises(CLI.CliError):
             CLI.run_query(agent, Mock(max_chars=100), "a.ts", None)
         project.ls_sync_file_system_changes.assert_not_called()
+
+    def test_typescript_timeout_is_not_an_empty_result(self):
+        with self.assertRaisesRegex(CLI.CliError, "timed out after 0.01s"):
+            CLI.fail_typescript_timeout(Mock(), 0.01)
+
+    def test_project_cache_invalidates_when_extended_config_changes(self):
+        with tempfile.TemporaryDirectory(prefix="serena-config-cache-") as directory:
+            root = Path(directory)
+            (root / "tsconfig.json").write_text('{"extends":"./base.json","include":["**/*"]}', encoding="utf-8")
+            base = root / "base.json"
+            base.write_text('{"compilerOptions":{"allowJs":false}}', encoding="utf-8")
+            (root / "a.ts").write_text('export const a = 1;', encoding="utf-8")
+            (root / "b.mjs").write_text('export const b = 1;', encoding="utf-8")
+            project = Mock(project_root=str(root))
+            workspace = CLI.ReferenceWorkspace(Mock(get_active_project_or_raise=Mock(return_value=project)))
+            compiler = SCRIPT.parent.parent / "node_modules" / "typescript" / "lib"
+            server = Mock(_get_pinned_tsdk_path=Mock(return_value=str(compiler)))
+            files = ["a.ts", "b.mjs", "base.json", "tsconfig.json"]
+            with patch.object(CLI.subprocess, "run", wraps=CLI.subprocess.run) as run:
+                workspace.discover(server, files)
+                self.assertEqual(workspace.projects[0]["files"], ["a.ts"])
+                workspace.discover(server, files)
+                self.assertEqual(run.call_count, 1)
+                base.write_text('{"compilerOptions":{"allowJs":true}}', encoding="utf-8")
+                workspace.discover(server, files)
+                self.assertEqual(run.call_count, 2)
+                self.assertEqual(workspace.projects[0]["files"], ["a.ts", "b.mjs"])
+                base.unlink()
+                workspace.discover(server, files)
+                self.assertEqual(workspace.projects, [])
+                base.write_text('{"compilerOptions":{"allowJs":true}}', encoding="utf-8")
+                workspace.discover(server, files)
+                self.assertEqual(workspace.projects[0]["files"], ["a.ts", "b.mjs"])
 
     def test_paths_and_lines_are_normalized(self):
         value = {"src\\use.ts": [{"relative_path": "src\\use.ts", "reference_line": 0}]}

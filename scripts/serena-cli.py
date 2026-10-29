@@ -14,21 +14,24 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Iterator, TypedDict
 
 if TYPE_CHECKING:
     from serena.agent import SerenaAgent
     from serena.project import Project
     from serena.symbol import LanguageServerSymbol
+    from solidlsp.ls import LSPFileBuffer
+    from solidlsp.language_servers.typescript_language_server import TypeScriptLanguageServer
 
 DEFAULT_MAX_CHARS = 20_000
 SERENA_VERSION = "2.1.0"
@@ -120,7 +123,9 @@ class InstanceLock:
 
 def script_build() -> str:
     """用脚本内容识别需要替换的旧实例。"""
-    return f"{CLI_VERSION}-{hashlib.sha256(SCRIPT_PATH.read_bytes()).hexdigest()[:12]}"
+    digest = hashlib.sha256(SCRIPT_PATH.read_bytes())
+    digest.update(SCRIPT_PATH.with_name("serena-projects.cjs").read_bytes())
+    return f"{CLI_VERSION}-{digest.hexdigest()[:12]}"
 
 
 def environment_timeout(name: str, default: float) -> float:
@@ -374,6 +379,136 @@ def apply_tool(agent: SerenaAgent, tool_name: str, *args: JsonValue, **kwargs: J
     return agent.execute_task(lambda: agent.get_tool_by_name(tool_name).apply(*args, **kwargs), logged=False)
 
 
+class TypeScriptProject(TypedDict):
+    """工程解析器返回的相对配置路径和源文件集合。"""
+
+    config: str
+    files: list[str]
+
+
+class ReferenceWorkspace:
+    """保留有效 TS 工程锚点，仅在一次引用查询内打开松散脚本。"""
+
+    def __init__(self, agent: SerenaAgent):
+        self.project = agent.get_active_project_or_raise()
+        self.root = Path(self.project.project_root).resolve()
+        self.anchors: dict[str, AbstractContextManager[LSPFileBuffer]] = {}
+        self.projects: list[TypeScriptProject] = []
+        self.file_set: tuple[str, ...] | None = None
+        self.dependencies: dict[str, tuple[int, int]] = {}
+
+    @staticmethod
+    def file_stamp(path: str) -> tuple[int, int]:
+        """包含缺失文件，保证新增 extends 配置使缓存失效。"""
+        try:
+            stat = Path(path).stat()
+            return stat.st_mtime_ns, stat.st_size
+        except FileNotFoundError:
+            return -1, -1
+
+    def prune(self) -> None:
+        """删除文件的长期上下文须在同步 LS 前释放。"""
+        for path in list(self.anchors):
+            if not (self.root / path).is_file():
+                self.anchors.pop(path).__exit__(None, None, None)
+
+    def close(self) -> None:
+        """在关闭 agent 前释放所有锚点。"""
+        for context in self.anchors.values():
+            context.__exit__(None, None, None)
+        self.anchors.clear()
+
+    def discover(self, server: TypeScriptLanguageServer, files: list[str]) -> None:
+        """使用 LS 自身的 TypeScript 编译器解析 JSONC 与工程覆盖范围。"""
+        if tuple(files) == self.file_set and all(
+            self.file_stamp(path) == stamp for path, stamp in self.dependencies.items()
+        ):
+            return
+        configs = [path for path in files if Path(path).name == "jsconfig.json" or (
+            Path(path).name.startswith("tsconfig") and Path(path).suffix == ".json"
+        )]
+        source_files = [path for path in files if Path(path).suffix.lower() in {
+            ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"
+        }]
+        node = shutil.which("node")
+        if node is None:
+            raise CliError("Node.js is required to discover TypeScript projects")
+        compiler = Path(server._get_pinned_tsdk_path()) / "typescript.js"
+        try:
+            result = subprocess.run(
+                [node, str(SCRIPT_PATH.with_name("serena-projects.cjs")), str(compiler)],
+                input=json.dumps({"root": str(self.root), "configs": configs, "files": source_files}),
+                capture_output=True, encoding="utf-8", timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise CliError(f"cannot discover TypeScript projects: {error}") from error
+        if result.returncode:
+            raise CliError(f"cannot discover TypeScript projects: {result.stderr.strip()}")
+        value = json.loads(result.stdout)
+        self.projects = value["projects"]
+        self.file_set = tuple(files)
+        self.dependencies = {path: self.file_stamp(path) for path in value["dependencies"]}
+
+    @contextmanager
+    def for_symbol(self, symbol: LanguageServerSymbol) -> Iterator[None]:
+        """先打开工程锚点，再打开包含当前标识符的非工程 JS 候选。"""
+        from solidlsp.language_servers.typescript_language_server import TypeScriptLanguageServer
+
+        manager = self.project.get_language_server_manager_or_raise()
+        if symbol.relative_path is None:
+            raise CliError("reference symbol has no project-relative path")
+        server = manager.get_language_server(symbol.relative_path)
+        if not isinstance(server, TypeScriptLanguageServer):
+            yield
+            return
+        files = sorted({file.rel_path.replace("\\", "/") for file in self.project.gather_project_files()
+            if (self.root / file.rel_path).resolve().is_relative_to(self.root)})
+        self.discover(server, files)
+        covered = {path for project in self.projects for path in project["files"]}
+        desired: set[str] = set()
+        for project in self.projects:
+            candidates = [path for path in project["files"] if not path.endswith(".d.ts")]
+            if candidates:
+                desired.add(min(candidates, key=lambda path: ("src" not in Path(path).parts, len(Path(path).parts), path)))
+        for path in list(self.anchors):
+            if path not in desired:
+                self.anchors.pop(path).__exit__(None, None, None)
+        server._raise_if_crashed()
+        opened = False
+        for path in sorted(desired):
+            if path not in self.anchors:
+                server.expect_indexing()
+                context = server.open_file(path)
+                context.__enter__()
+                self.anchors[path] = context
+                opened = True
+            else:
+                with server.open_file(path):
+                    pass
+        identifier = re.compile(r"(?<![\w$])" + re.escape(symbol.name) + r"(?![\w$])")
+        with ExitStack() as stack:
+            for path in files:
+                if path in covered or Path(path).suffix.lower() not in {".js", ".jsx", ".mjs", ".cjs"}:
+                    continue
+                try:
+                    text = (self.root / path).read_text(encoding="utf-8-sig")
+                except FileNotFoundError:
+                    continue
+                if identifier.search(text):
+                    server.expect_indexing()
+                    stack.enter_context(server.open_file(path))
+                    opened = True
+            if opened and not server._wait_for_indexing_start_or_completion(
+                timeout=server._get_indexing_timeout(), start_grace=server._get_indexing_start_grace()
+            ):
+                raise CliError("TypeScript indexing timed out; references are not ready")
+            server._raise_if_crashed()
+            yield
+            if not server.wait_for_indexing(timeout=server._get_indexing_timeout()):
+                raise CliError("TypeScript indexing timed out; references are not ready")
+
+
 def prepare_query(agent: SerenaAgent) -> Project:
     """等待激活任务、检查服务器并同步磁盘与已打开的缓冲区。"""
     agent.execute_task(lambda: None, logged=False)
@@ -397,8 +532,13 @@ def prepare_query(agent: SerenaAgent) -> Project:
     return project
 
 
-def run_query(agent: SerenaAgent, args: argparse.Namespace, relative_path: str | None, line: int | None) -> str:
+def run_query(
+    agent: SerenaAgent, args: argparse.Namespace, relative_path: str | None,
+    line: int | None, references: ReferenceWorkspace | None = None,
+) -> str:
     """按名称或位置分发定义、引用和文档查询。"""
+    if references is not None:
+        references.prune()
     project = prepare_query(agent)
 
     if relative_path is not None and line is None:
@@ -415,13 +555,16 @@ def run_query(agent: SerenaAgent, args: argparse.Namespace, relative_path: str |
         name_path = symbol.get_name_path()
 
     if args.command == "references":
-        return apply_tool(
-            agent,
-            "find_referencing_symbols",
-            name_path,
-            relative_path,
-            max_answer_chars=args.max_chars,
-        )
+        workspace = references if references is not None else ReferenceWorkspace(agent)
+        try:
+            with workspace.for_symbol(symbol):
+                return apply_tool(
+                    agent, "find_referencing_symbols", name_path, relative_path,
+                    max_answer_chars=args.max_chars,
+                )
+        finally:
+            if references is None:
+                workspace.close()
     return apply_tool(
         agent,
         "find_symbol",
@@ -432,11 +575,19 @@ def run_query(agent: SerenaAgent, args: argparse.Namespace, relative_path: str |
     )
 
 
+def fail_typescript_timeout(_server: TypeScriptLanguageServer, timeout: float) -> None:
+    """Serena 2.1 的宽松超时钩子须在 CLI 进程中改为失败。"""
+    raise CliError(f"TypeScript startup or indexing timed out after {timeout:g}s")
+
+
 def create_agent(root: Path) -> SerenaAgent:
     """创建无界面的 Serena agent。"""
     from serena.agent import SerenaAgent
     from serena.config.serena_config import SerenaConfig
+    from solidlsp.language_servers.typescript_language_server import TypeScriptLanguageServer
 
+    TypeScriptLanguageServer._handle_server_ready_timeout = fail_typescript_timeout
+    TypeScriptLanguageServer._handle_project_indexing_timeout = fail_typescript_timeout
     config = SerenaConfig.from_config_file()
     config.web_dashboard = False
     config.gui_log_window = False
@@ -648,6 +799,7 @@ class ProjectDaemon:
     def __init__(self, root: Path):
         self.root = root
         self.agent: SerenaAgent | None = None
+        self.references: ReferenceWorkspace | None = None
         self.query_lock = threading.Lock()
         self.activity = threading.Condition()
         self.in_flight = 0
@@ -685,7 +837,9 @@ class ProjectDaemon:
                 raise CliError(f"project directory no longer exists: {self.root}")
             if self.agent is None:
                 self.agent = create_agent(self.root)
-            return run_query(self.agent, args, relative_path, line)
+            if args.command == "references" and self.references is None:
+                self.references = ReferenceWorkspace(self.agent)
+            return run_query(self.agent, args, relative_path, line, self.references)
 
     def close(self) -> None:
         """等待查询结束后释放项目 agent。"""
@@ -693,9 +847,14 @@ class ProjectDaemon:
         with self.query_lock:
             if self.agent is not None:
                 try:
-                    self.agent.on_shutdown()
+                    if self.references is not None:
+                        self.references.close()
                 finally:
-                    self.agent = None
+                    try:
+                        self.agent.on_shutdown()
+                    finally:
+                        self.references = None
+                        self.agent = None
 
 
 def validate_query(root: Path, payload: dict[str, JsonValue]) -> tuple[argparse.Namespace, str | None, int | None]:
