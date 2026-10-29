@@ -1,11 +1,14 @@
-// Serena CLI 真实行为测试：通过 uv 启动独立进程并查询仓库 TypeScript 符号。
+// Serena CLI 真实行为测试：通过 uv 查询仓库 TypeScript 符号并清理测试实例。
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 /** 仓库根目录。 */
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const STATE_DIR = mkdtempSync(path.join(tmpdir(), 'serena-query-state-'));
 
 /** Serena 符号输出。 */
 interface SymbolOutput {
@@ -22,6 +25,7 @@ function runSerena(...args: string[]) {
   return spawnSync('uv', ['run', '--script', 'scripts/serena-cli.py', ...args], {
     cwd: ROOT,
     encoding: 'utf8',
+    env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1', SERENA_CLI_STATE_DIR: STATE_DIR },
     maxBuffer: 5 * 1024 * 1024,
     timeout: 120_000,
     windowsHide: true,
@@ -42,6 +46,11 @@ function expectSuccess(result: ReturnType<typeof runSerena>) {
 }
 
 describe('Serena CLI', () => {
+  afterAll(() => {
+    runSerena('stop');
+    rmSync(STATE_DIR, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  }, 30_000);
+
   it('拒绝互斥输入、缺失目标和无效行号', () => {
     const conflict = runSerena('definition', 'formatTokens', '--at', 'web/src/format.ts:13');
     expect(conflict.status).toBe(2);
