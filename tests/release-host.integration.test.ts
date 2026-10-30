@@ -15,7 +15,7 @@ import { ToolRuntime } from '@deepseek-ai/dsh-tools';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const RELEASE = '0.2.1-rc.2';
+const RELEASE = '0.2.1-rc.5';
 
 /** 发布的 compaction-eval skill 目录（dist 内）。 */
 const SKILL_DIST = path.join(ROOT, 'dist', 'skill', 'compaction-eval');

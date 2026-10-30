@@ -35,8 +35,6 @@
 
 ## 安装
 
-要求 DSH 0.2.1-rc.2 或更高版本。
-
 包根行服务端必需 `llm` 和 `tokenMeter`。`tools` 和 `sessions` 缺失时，对应的 `recall` 和压缩会话记录停用并输出 warning，压缩照常运行。评估行只依赖 `commands`。
 
 安装后插件页出现 `dsh-plugin-om` 和 `dsh-plugin-om-compaction-eval` 两行，可单独启停。
