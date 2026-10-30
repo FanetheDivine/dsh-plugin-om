@@ -2,7 +2,7 @@
  * 浏览器客户端入口：注册压缩卡片、功能降级警告及 WebUI 插件行配置页，
  * 并监听本浏览器的命令执行结果，把 /om-compaction-eval 新建的会话跳转过去。
  * 浏览器代码只在包根行加载；配置页只在宿主提供包根命名空间时挂载，
- * 评估模型面板按评估组件行是否启用门控。
+ * 评估模型面板装饰宿主已注册的评估命令。
  */
 import type { Context } from '@deepseek-ai/cordis';
 // Type-only: 拉取 locale 插件的 Context 合并（ctx.locale）。
@@ -26,16 +26,10 @@ import { en, NS, zh } from './locales.ts';
 import { OmCompactionCard } from './OmCompactionCard.tsx';
 import { OmConfigCard } from './OmConfigCard.tsx';
 import { OmWarningCard } from './OmWarningCard.tsx';
-import { CONFIG_NS, EVAL_NS, OmConfigController } from './om-config-controller.ts';
+import { CONFIG_NS, OmConfigController } from './om-config-controller.ts';
 
 /** 必需服务：聊天节点槽、会话定义、双语 locale、宿主配置表单与会话跳转。 */
 export const inject = ['slots', 'uiConversation', 'locale', 'configForms', 'uiWorkspace'];
-
-/** 行的配置命名空间是否被宿主服务，即该行是否启用。 */
-function rowServed(ctx: Context, ns: string): boolean {
-  const view = ctx.configForms.describe().getSnapshot().view;
-  return view?.namespaces.some((item) => item.ns === ns) ?? false;
-}
 
 /** 在宿主服务该行命名空间期间注册行配置页；槽键为 <包名>#<行 id>。 */
 function registerRowConfig(ctx: Context, ns: string, page: OmConfigController): () => void {
@@ -56,7 +50,7 @@ function registerRowConfig(ctx: Context, ns: string, page: OmConfigController): 
 
 /** 挂载压缩卡片、警告行和可配置的插件行。 */
 export function apply(ctx: Context): void {
-  // 配置镜像可能尚未读取：触发首读，让行启用判定与配置页有数据
+  // 配置镜像可能尚未读取：触发首读，让配置页有数据
   void ctx.configForms.describe().ensure();
   ctx.effect(
     () => ctx.locale.register(NS, { zh, en }),
@@ -72,8 +66,8 @@ export function apply(ctx: Context): void {
   );
   // /om-compaction-eval 由宿主执行；本浏览器监听执行结果后跳转到新会话
   ctx.effect(() => registerCompactionEvalJump(ctx), 'dsh-plugin-om: compaction eval jump');
-  // 裸调用 /om-compaction-eval 时弹出模型面板；只在评估组件行启用期间提供
-  registerEvalModelPanel(ctx, () => rowServed(ctx, EVAL_NS));
+  // 裸调用 /om-compaction-eval 时弹出模型面板；装饰只作用于已注册命令
+  registerEvalModelPanel(ctx);
   ctx.slots.inject('conversation.chat.node', () =>
     ctx.slots.register(
       {

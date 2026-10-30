@@ -14,9 +14,6 @@ import type { PluginConfig } from '../config.ts';
 /** 由宿主提供的插件条目配置命名空间。 */
 export const CONFIG_NS = 'dsh-plugin-om';
 
-/** 评估组件行的配置命名空间（该行无配置项，命名空间仅用于启用门控）。 */
-export const EVAL_NS = 'dsh-plugin-om-compaction-eval';
-
 /** 表单字段及控件类别。 */
 type OmConfigFieldSpec = {
   name: keyof PluginConfig;
