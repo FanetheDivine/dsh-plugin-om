@@ -29,10 +29,6 @@
   - `pnpm serena references <name_path>`：寻找引用。
   - `pnpm serena doc <name_path>`：查看签名和注释。
 - 三个命令也支持 `--at <file_path>[:<line>]`，与 `name_path` 二选一。省略行号时只返回带 `line` 的文件符号候选；提供行号时只解析该行声明的符号。
-- 查询复用当前项目的独立后台实例，默认空闲 15 分钟退出。`SERENA_CLI_IDLE_TIMEOUT` 可覆盖空闲秒数。
-- `pnpm serena status` 查看实例状态；`pnpm serena stop` 停止当前项目实例。
-- 删除 worktree 前在目标目录运行 `pnpm serena stop`，确认停止后离开目录再删除。Windows 上语言服务器会占用项目目录。
-- `--no-daemon` 或 `SERENA_CLI_DAEMON=0` 使用单进程。实例启动失败会回退；查询错误不重复执行。
-- 引用查询激活有效 TS 工程和松散 JS/MJS 候选。空结果不重试，初始化失败和索引超时直接报错。
-- 查询前同步磁盘文件。输入和输出中的行号均为 1 起始，输出路径使用 `/`。
+- 删除 worktree 前在目标目录运行 `pnpm serena stop`，确认停止后离开目录再删除。
+- 输入和输出中的行号均为 1 起始，输出路径使用 `/`。
 - 使用 `pnpm serena --help` 或 `pnpm serena <命令> --help` 查看参数。
