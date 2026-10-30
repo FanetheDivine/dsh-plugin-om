@@ -1,11 +1,24 @@
-// Serena CLI 真实行为测试：通过 uv 启动独立进程并查询仓库 TypeScript 符号。
+// Serena CLI 真实行为测试：通过 uv 查询仓库 TypeScript 符号并清理测试实例。
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 /** 仓库根目录。 */
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const STATE_DIR = mkdtempSync(path.join(tmpdir(), 'serena-query-state-'));
+const LIVE_DIR = mkdtempSync(path.join(ROOT, 'tests/fixtures/serena-live-'));
+const LIVE_REL = path.relative(ROOT, LIVE_DIR).replaceAll('\\', '/');
+writeFileSync(
+  path.join(LIVE_DIR, 'a.ts'),
+  'export function serenaLiveGreet(): string { return "hello"; }\n',
+);
+writeFileSync(
+  path.join(LIVE_DIR, 'b.ts'),
+  'import { serenaLiveGreet } from "./a";\nexport const serenaLiveMessage = serenaLiveGreet();\n',
+);
 
 /** Serena 符号输出。 */
 interface SymbolOutput {
@@ -22,6 +35,7 @@ function runSerena(...args: string[]) {
   return spawnSync('uv', ['run', '--script', 'scripts/serena-cli.py', ...args], {
     cwd: ROOT,
     encoding: 'utf8',
+    env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1', SERENA_CLI_STATE_DIR: STATE_DIR },
     maxBuffer: 5 * 1024 * 1024,
     timeout: 120_000,
     windowsHide: true,
@@ -42,6 +56,12 @@ function expectSuccess(result: ReturnType<typeof runSerena>) {
 }
 
 describe('Serena CLI', () => {
+  afterAll(() => {
+    runSerena('stop');
+    rmSync(STATE_DIR, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    rmSync(LIVE_DIR, { recursive: true, force: true });
+  }, 30_000);
+
   it('拒绝互斥输入、缺失目标和无效行号', () => {
     const conflict = runSerena('definition', 'formatTokens', '--at', 'web/src/format.ts:13');
     expect(conflict.status).toBe(2);
@@ -111,6 +131,105 @@ describe('Serena CLI', () => {
     expect(symbols[0]?.info).toContain('token 数紧凑展示');
     expect(result.stdout).not.toContain('�');
   }, 180_000);
+
+  it('首次初始化只创建一套 TypeScript 语言服务器', () => {
+    expectSuccess(runSerena('definition', 'serenaLiveGreet'));
+    const name = readdirSync(STATE_DIR).find((entry) => entry.endsWith('.json'));
+    if (!name) throw new Error('missing instance state');
+    const state = JSON.parse(readFileSync(path.join(STATE_DIR, name), 'utf8')) as { pid: number };
+    const probe = spawnSync(
+      'uv',
+      ['run', '--script', 'tests/serena-runtime.test.py', '--probe', String(state.pid)],
+      {
+        cwd: ROOT,
+        env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+        encoding: 'utf8',
+        timeout: 60_000,
+        windowsHide: true,
+      },
+    );
+    expectSuccess(probe);
+    const tree = JSON.parse(probe.stdout) as { typescript_servers: number[] };
+    expect(tree.typescript_servers).toHaveLength(1);
+  }, 90_000);
+
+  it('外部修改定义、增加和删除文件立即更新查询结果', () => {
+    const references = () => {
+      const result = runSerena('references', '--at', `${LIVE_REL}/a.ts:1`);
+      expectSuccess(result);
+      return result.stdout;
+    };
+    expect(references()).toContain(`${LIVE_REL}/b.ts`);
+    writeFileSync(
+      path.join(LIVE_DIR, 'a.ts'),
+      'export function serenaLiveGreeting(): string { return "new hello"; }\n',
+    );
+    writeFileSync(
+      path.join(LIVE_DIR, 'b.ts'),
+      'import { serenaLiveGreeting } from "./a";\nexport const serenaLiveMessage = serenaLiveGreeting();\n',
+    );
+    const renamed = runSerena('definition', 'serenaLiveGreeting');
+    expectSuccess(renamed);
+    expect(parseOutput(renamed.stdout)).toContainEqual(
+      expect.objectContaining({ name_path: 'serenaLiveGreeting' }),
+    );
+    const old = runSerena('definition', 'serenaLiveGreet');
+    expectSuccess(old);
+    expect(parseOutput(old.stdout)).toEqual([]);
+    writeFileSync(
+      path.join(LIVE_DIR, 'c.ts'),
+      'import { serenaLiveGreeting } from "./a";\nexport const serenaLiveAgain = serenaLiveGreeting();\n',
+    );
+    const added = references();
+    expect(added).toContain(`${LIVE_REL}/b.ts`);
+    expect(added).toContain(`${LIVE_REL}/c.ts`);
+    rmSync(path.join(LIVE_DIR, 'b.ts'));
+    rmSync(path.join(LIVE_DIR, 'c.ts'));
+    const removed = references();
+    expect(removed).not.toContain(`${LIVE_REL}/b.ts`);
+    expect(removed).not.toContain(`${LIVE_REL}/c.ts`);
+  }, 120_000);
+
+  it('跨工程与松散 JS/MJS 引用完整且不随查询顺序改变', () => {
+    const refs = (name: string) => {
+      const result = runSerena('references', name);
+      expectSuccess(result);
+      expect(result.stderr).not.toContain('retry');
+      return Object.keys(parseOutput(result.stdout));
+    };
+    for (let round = 0; round < 2; round++) {
+      expect(refs('buildTable')).toEqual(
+        expect.arrayContaining(['web/src/App.tsx', 'tests/web/model.test.ts']),
+      );
+      expect(refs('planArchive')).toEqual(
+        expect.arrayContaining(['scripts/release-archive.mjs', 'tests/release-archive.test.mjs']),
+      );
+      expect(refs('safeJson')).toContain('tests/utils.test.ts');
+    }
+    expect(refs('serenaFirst')).toEqual([]);
+  }, 180_000);
+
+  it('重复引用查询释放临时 JS 缓冲区，退出释放工程锚点', () => {
+    const result = spawnSync(
+      'uv',
+      ['run', '--script', 'tests/serena-reference-lifecycle.test.py'],
+      {
+        cwd: ROOT,
+        env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+        encoding: 'utf8',
+        timeout: 120_000,
+        windowsHide: true,
+      },
+    );
+    expectSuccess(result);
+    const output = JSON.parse(result.stdout) as {
+      persistent_buffers: number;
+      before: number;
+      after: number;
+    };
+    expect(output.persistent_buffers).toBeGreaterThan(0);
+    expect(output.after).toBe(output.before);
+  }, 150_000);
 
   it('无匹配符号或声明行不唯一时返回明确错误', () => {
     const missingName = runSerena('references', 'serenaSymbolThatDoesNotExist');
