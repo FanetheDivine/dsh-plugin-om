@@ -176,10 +176,7 @@ try {
     );
     imm = await create('omtest-imm');
     const names = app.commands.list(imm).map((d) => d.name);
-    assert(
-      names.includes('om-recompress') && names.includes('om-compaction-eval'),
-      `commands missing: ${names.join(',')}`,
-    );
+    assert(names.includes('om-compaction-eval'), `commands missing: ${names.join(',')}`);
     return {
       fiberState: entry.fiber.state,
       distSha256_12: hash(`${installed}/dist/index.mjs`),
@@ -605,74 +602,6 @@ try {
       `reflect label missing: ${JSON.stringify(labels)}`,
     );
     return { labels };
-  });
-  await check('recompress command matrix (#94)', async () => {
-    const id = String(typed(imm, 'compaction/start')[0].data.compactionId);
-    let r = await exec(imm, '/om-recompress');
-    assert.equal(r.result.kind, 'error');
-    assert(r.result.text.startsWith('用法：/om-recompress'), r.result.text);
-    r = await exec(imm, '/om-recompress nonexistent mock mock-model');
-    assert(r.result.text.includes('未找到压缩'), r.result.text);
-    // 失败的反思压缩：start(reflect) + end(error) 已落盘但无 summary → 未成功完成
-    await config({ observeThresholdTokens: 1000000, reflectThresholdTokens: 1000000 });
-    const rf = await create('omtest-rfail');
-    adapter.modes.set('omtest-rfail', 'normal');
-    await turn(rf, 'LONG_CASE 反思失败背景');
-    await config({ observeThresholdTokens: 10 });
-    await turn(rf, '注入一块历史');
-    await turn(rf, 'LONG_CASE 再注入一块');
-    assert.equal(summaries(rf).length, 2, 'rfail needs two injected blocks first');
-    adapter.modes.set('omtest-rfail', 'failure');
-    await config({ observeThresholdTokens: 1000000, reflectThresholdTokens: 1 });
-    await turn(rf, '触发反思失败');
-    // 失败任务同样在下一个 pre-step 写 start(reflect) + end(error)
-    await config({ observeThresholdTokens: 1000000, reflectThresholdTokens: 1000000 });
-    let rfStart;
-    for (let i = 0; i < 4; i++) {
-      await turn(rf, `提交反思失败 ${i}`);
-      rfStart = typed(rf, 'compaction/start').find((e) => e.data.phase === 'reflect');
-      if (rfStart) break;
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    assert(rfStart, 'failed reflect must append start(reflect)');
-    const rfEnd = typed(rf, 'compaction/end').at(-1);
-    assert(rfEnd.data.error !== undefined, 'failed reflect must append end(error)');
-    assert.equal(summaries(rf).length, 2, 'failed reflect must not add summary');
-    const rfId = String(rfStart.data.compactionId);
-    r = await exec(rf, `/om-recompress ${rfId} mock mock-model`);
-    assert(r.result.text.includes('未成功完成'), r.result.text);
-    adapter.modes.set('omtest-rfail', 'normal');
-    await config({ observeThresholdTokens: 1000000, reflectThresholdTokens: 1000000 });
-    const before = summaries(imm).length,
-      nodesBefore = [...imm.session.surface.nodes];
-    r = await exec(imm, `/om-recompress ${id} mock claude-mock low`);
-    assert.equal(r.result.kind, 'success', JSON.stringify(r.result));
-    assert(r.result.text.startsWith('重压缩完成 字符'), r.result.text);
-    const lastcc = compCalls('omtest-imm').at(-1);
-    assert.equal(lastcc.model, 'claude-mock');
-    assert.equal(lastcc.reasoningEffort, 'low');
-    assert.equal(summaries(imm).length, before, 'main session must not gain summary');
-    assert.deepEqual([...imm.session.surface.nodes], nodesBefore, 'surface must not change');
-    const labels = children('omtest-imm').map((k) => recordLabel(imm, k.id));
-    assert(
-      labels.some((l) => l?.endsWith('-观察-重压缩')),
-      `recompress label missing: ${JSON.stringify(labels)}`,
-    );
-    await config({ recompressConcurrency: 1 });
-    const att0 = compCalls('omtest-imm').length;
-    const [r1, r2] = await Promise.all([
-      exec(imm, `/om-recompress ${id} mock mock-model`),
-      exec(imm, `/om-recompress ${id} mock mock-model`),
-    ]);
-    assert.equal(r1.result.kind, 'success');
-    assert.equal(r2.result.kind, 'success');
-    assert.equal(
-      compCalls('omtest-imm').length - att0,
-      6,
-      `queued recompress attempts=${compCalls('omtest-imm').length - att0}`,
-    );
-    await config();
-    return { successText: r.result.text, concurrencyOk: true };
   });
   await check('compaction eval command (#102/#104/#106)', async () => {
     let r = await exec(imm, '/om-compaction-eval a b c');
