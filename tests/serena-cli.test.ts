@@ -9,6 +9,12 @@ import { afterAll, describe, expect, it } from 'vitest';
 /** 仓库根目录。 */
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = mkdtempSync(path.join(tmpdir(), 'serena-query-state-'));
+// 上次运行中断可能在仓库内留下临时目录；先清掉，避免被误提交
+const FIXTURES_DIR = path.join(ROOT, 'tests/fixtures');
+for (const name of readdirSync(FIXTURES_DIR)) {
+  if (name.startsWith('serena-live-'))
+    rmSync(path.join(FIXTURES_DIR, name), { recursive: true, force: true });
+}
 const LIVE_DIR = mkdtempSync(path.join(ROOT, 'tests/fixtures/serena-live-'));
 const LIVE_REL = path.relative(ROOT, LIVE_DIR).replaceAll('\\', '/');
 writeFileSync(
