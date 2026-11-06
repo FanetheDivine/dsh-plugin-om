@@ -529,9 +529,12 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(value?.text).toContain('任务5');
     expect(value?.images).toEqual([]);
     // output.render 投影：text 块在前、内容与 value.text 一致
-    const content = result.content as Array<{ type?: string; text?: string }>;
-    expect(content[0]?.type).toBe('text');
-    expect(content[0]?.text).toContain('<user_message index="0">');
+    expect(result.content[0]).toEqual(
+      expect.objectContaining({
+        type: 'text',
+        text: expect.stringContaining('<user_message index="0">'),
+      }),
+    );
 
     // 参数校验失败（缺 end/offset）：经真实管线物化为 isError 结果
     const bad = await callTool(app, session, {

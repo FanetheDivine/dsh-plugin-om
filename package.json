@@ -79,7 +79,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",
     "@deepseek-ai/cordis": "~4.1.0",
-    "@deepseek-ai/cordis-plugin-loader": "~1.1.0",
+    "@deepseek-ai/cordis-plugin-loader": "1.1.0",
     "@deepseek-ai/dsh-agent": "0.2.2-rc.1",
     "@deepseek-ai/dsh-agent-loop": "0.2.2-rc.1",
     "@deepseek-ai/dsh-api-remotes": "0.2.2-rc.1",
@@ -158,7 +158,7 @@
     "zustand": "~4.4.7"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "~3.19.0",
+    "@deepseek-ai/schemastery": "3.19.0",
     "@huggingface/transformers": "4.2.0",
     "@xmldom/xmldom": "0.9.11"
   }
