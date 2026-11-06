@@ -23,6 +23,11 @@ import { type SessionId, SessionStore } from '@deepseek-ai/dsh-session';
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection';
 import { renderPrompt, SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter';
+import {
+  apply as applyNativeToolExecutor,
+  inject as nativeToolExecutorInject,
+  name as nativeToolExecutorName,
+} from '@deepseek-ai/dsh-tool-executor-native';
 import { defineTool, ToolRuntime } from '@deepseek-ai/dsh-tools';
 import { describe, expect, it } from 'vitest';
 import type { PluginConfig } from '../src/config.ts';
@@ -110,6 +115,12 @@ async function stackPromptHost(
     await app.plugin(TokenMeter);
     await app.plugin(SystemPrompt);
     await app.plugin(ToolRuntime);
+    // 工具执行由独立执行器插件提供：未选定执行器时 Agent 回合与工具调用都失败
+    await app.plugin({
+      name: nativeToolExecutorName,
+      inject: nativeToolExecutorInject,
+      apply: applyNativeToolExecutor,
+    });
     await app.plugin(AgentRegistry);
     await app.plugin(AgentLoop);
     await app.plugin(Loader);
@@ -368,7 +379,8 @@ describe('system-reminder 的真实宿主集成', () => {
       try {
         const fiber = entry.fiber;
         if (!fiber) throw new Error('缺少 OM 插件 fiber');
-        const config = fiber.config as ReturnType<typeof Config>;
+        // fiber.config 保留原始输入，插件实际收到的解析结果在 effectiveConfig
+        const config = fiber.effectiveConfig as ReturnType<typeof Config>;
         let everEnabled = false;
         for (const [index, enabled] of [initial, !initial, initial, !initial].entries()) {
           if (index > 0) {
