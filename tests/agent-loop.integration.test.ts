@@ -34,6 +34,11 @@ import SqliteSessionQueryEngine from '@deepseek-ai/dsh-session-query-sqlite';
 import { SubagentRuntime } from '@deepseek-ai/dsh-subagent';
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter';
+import {
+  apply as applyNativeToolExecutor,
+  inject as nativeToolExecutorInject,
+  name as nativeToolExecutorName,
+} from '@deepseek-ai/dsh-tool-executor-native';
 import { ToolRuntime } from '@deepseek-ai/dsh-tools';
 import { WorkingDirectoryService } from '@deepseek-ai/dsh-working-directory';
 import { unzipSync } from 'fflate';
@@ -167,6 +172,8 @@ async function stackAgentLoop(mode: 'success' | 'failure', storageRoot?: string)
       app.provide('connection', {
         fetch: {
           register(route: ExportRoute) {
+            // 宿主同时注册 markdown 与 zip 两条导出路由，只保留会话日志 zip 导出
+            if (route.path !== SESSION_LOG_EXPORT_PATH) return () => {};
             exportRoute = route;
             return () => {
               exportRoute = undefined;
@@ -186,6 +193,12 @@ async function stackAgentLoop(mode: 'success' | 'failure', storageRoot?: string)
     await app.plugin(TokenMeter);
     await app.plugin(SystemPrompt);
     await app.plugin(ToolRuntime);
+    // 工具执行由独立执行器插件提供：未选定执行器时 Agent 回合与工具调用都失败
+    await app.plugin({
+      name: nativeToolExecutorName,
+      inject: nativeToolExecutorInject,
+      apply: applyNativeToolExecutor,
+    });
     await app.plugin(AgentRegistry);
     await app.plugin(AgentLoop);
     const adapter = new ScriptedAi(mode);
@@ -249,6 +262,8 @@ async function stackColdExport(storageRoot: string) {
     app.provide('connection', {
       fetch: {
         register(route: ExportRoute) {
+          // 宿主同时注册 markdown 与 zip 两条导出路由，只保留会话日志 zip 导出
+          if (route.path !== SESSION_LOG_EXPORT_PATH) return () => {};
           exportRoute = route;
           return () => {
             exportRoute = undefined;

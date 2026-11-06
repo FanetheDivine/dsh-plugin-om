@@ -4,7 +4,8 @@
  * MessageNode/MessageIndex/CompleteMessage（完整消息索引）与 compaction 载荷扩展。
  * 各 dsh-* 包通过 declare module 增强 Context/Events，使 ctx.tools 等获得宿主一致类型；
  * 本文件同时向宿主 MessageSourceMap 声明插件自产消息的 producer-owned source
- * （'plugin:dsh-plugin-om'，见 constants.ts），使写入的 source 形态原生可类型化。
+ * （'plugin:dsh-plugin-om'，见 constants.ts），使写入的 source 形态原生可类型化，
+ * 并向 LlmRequestPurposeMap 声明压缩请求的 purpose。
  */
 
 import type { Context, EventOptions, Events } from '@deepseek-ai/cordis';
@@ -42,6 +43,13 @@ declare module '@deepseek-ai/dsh-llm' {
     'plugin:dsh-plugin-om:progress': ProgressReminderSource;
     /** 手动加载 skill 的 source：反思提交时按此形态重新注入被归档的 skill。 */
     'skill-invocation': SkillInvocationSource;
+  }
+}
+
+declare module '@deepseek-ai/dsh-llm/types' {
+  interface LlmRequestPurposeMap {
+    /** 压缩会话请求：辅助调用，适配器作为模型不可见的传输元数据携带。 */
+    compaction: true;
   }
 }
 

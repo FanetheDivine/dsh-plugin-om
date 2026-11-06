@@ -33,7 +33,12 @@ import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-j
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection';
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter';
-import { ToolRuntime } from '@deepseek-ai/dsh-tools';
+import {
+  apply as applyNativeToolExecutor,
+  inject as nativeToolExecutorInject,
+  name as nativeToolExecutorName,
+} from '@deepseek-ai/dsh-tool-executor-native';
+import { type ToolExecutionResult, ToolRuntime } from '@deepseek-ai/dsh-tools';
 import { describe, expect, it, vi } from 'vitest';
 
 // 隔离 apply 的模型下载编排：ensureModelReady 打桩为"就绪"，避免集成测试触发真实下载
@@ -111,6 +116,12 @@ async function stackHarness(options: {
   if (options.withSystemPrompt) {
     await app.plugin(SystemPrompt);
     await app.plugin(ToolRuntime);
+    // 工具执行由独立执行器插件提供，工具调用与 Agent 回合都要求先选定执行器
+    await app.plugin({
+      name: nativeToolExecutorName,
+      inject: nativeToolExecutorInject,
+      apply: applyNativeToolExecutor,
+    });
   } else {
     // ToolRuntime 依赖 systemPrompt；未挂载 systemPrompt 的旧宿主以最小桩提供 tools
     app.provide('tools', { register: () => {} });
@@ -215,9 +226,33 @@ async function runPreStep(
       turn: 1,
       step: 1,
       signal: new AbortController().signal,
+      modelSelection: { provider: 'mock', model: 'mock-model' },
     },
     async () => ({ kind: 'enter', messages: input }),
   );
+}
+
+/** 经真实 execute 管线（批量契约）执行一次工具调用，返回该调用的规范化结果。 */
+async function callTool(
+  app: Context,
+  session: Session,
+  call: { id: string; name: string; arguments: unknown },
+): Promise<ToolExecutionResult> {
+  const batch = await app.tools.execute({
+    calls: [
+      {
+        type: 'tool-call',
+        id: call.id as ToolCallId,
+        name: call.name,
+        arguments: JSON.stringify(call.arguments),
+      },
+    ],
+    agent: { session } as unknown as Agent,
+    signal: new AbortController().signal,
+  });
+  const result = batch.results[0]?.result;
+  if (result === undefined) throw new Error(`工具 ${call.name} 没有返回结果`);
+  return result;
 }
 
 describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链路', () => {
@@ -481,12 +516,10 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(session.surface.nodes).toHaveLength(1);
 
     // 经真实 execute 管线（pre-execute → body → 输出校验 → render）调用 recall
-    const result = await app.tools.execute({
-      callId: 'it-recall-1' as ToolCallId,
+    const result = await callTool(app, session, {
+      id: 'it-recall-1',
       name: 'recall',
       arguments: { start: 0, end: 5 },
-      agent: { session } as unknown as Agent,
-      signal: new AbortController().signal,
     });
     expect(result.isError).toBe(false);
     const value = (result as { value?: { text?: string; images?: unknown[] } }).value;
@@ -496,21 +529,21 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(value?.text).toContain('任务5');
     expect(value?.images).toEqual([]);
     // output.render 投影：text 块在前、内容与 value.text 一致
-    const content = (result as { content?: Array<{ type?: string; text?: string }> }).content;
-    expect(content?.[0]?.type).toBe('text');
-    expect(content?.[0]?.text).toContain('<user_message index="0">');
+    expect(result.content[0]).toEqual(
+      expect.objectContaining({
+        type: 'text',
+        text: expect.stringContaining('<user_message index="0">'),
+      }),
+    );
 
     // 参数校验失败（缺 end/offset）：经真实管线物化为 isError 结果
-    const bad = await app.tools.execute({
-      callId: 'it-recall-2' as ToolCallId,
+    const bad = await callTool(app, session, {
+      id: 'it-recall-2',
       name: 'recall',
       arguments: { start: 0 },
-      agent: { session } as unknown as Agent,
-      signal: new AbortController().signal,
     });
-    expect(bad.isError).toBe(true);
-    const error = (bad as { error?: { message?: string } }).error;
-    expect(error?.message).toContain('end 与 offset 至少提供一个');
+    if (!bad.isError) throw new Error('参数校验失败应返回 isError 结果');
+    expect(bad.error.message).toContain('end 与 offset 至少提供一个');
   }, 30000);
 
   it('宿主 format v4 准入：压缩产出事件与 om 私有事件为宿主已知类型，通过行准入与写编码（会话可重载/导出）', async () => {

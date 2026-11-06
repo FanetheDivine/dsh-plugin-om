@@ -11,11 +11,16 @@ import { type SessionId, SessionStore } from '@deepseek-ai/dsh-session';
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection';
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt';
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter';
+import {
+  apply as applyNativeToolExecutor,
+  inject as nativeToolExecutorInject,
+  name as nativeToolExecutorName,
+} from '@deepseek-ai/dsh-tool-executor-native';
 import { ToolRuntime } from '@deepseek-ai/dsh-tools';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const RELEASE = '0.2.1-rc.5';
+const RELEASE = '0.2.2-rc.1';
 
 /** 发布的 compaction-eval skill 目录（dist 内）。 */
 const SKILL_DIST = path.join(ROOT, 'dist', 'skill', 'compaction-eval');
@@ -113,6 +118,12 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
       await app.plugin(TokenMeter);
       await app.plugin(SystemPrompt);
       await app.plugin(ToolRuntime);
+      // 工具执行由独立执行器插件提供，真实工具调用要求先选定执行器
+      await app.plugin({
+        name: nativeToolExecutorName,
+        inject: nativeToolExecutorInject,
+        apply: applyNativeToolExecutor,
+      });
       await app.plugin(
         { name, inject, apply },
         {
@@ -132,13 +143,20 @@ describe('发布构建与 DSH 0.2 宿主集成', () => {
         },
         { surfaceOp: 'append' },
       );
-      const result = await app.tools.execute({
-        callId: 'release-recall' as ToolCallId,
-        name: 'recall',
-        arguments: { start: 0, end: 0 },
+      const batch = await app.tools.execute({
+        calls: [
+          {
+            type: 'tool-call',
+            id: 'release-recall' as ToolCallId,
+            name: 'recall',
+            arguments: JSON.stringify({ start: 0, end: 0 }),
+          },
+        ],
         agent: { session } as NonNullable<Parameters<typeof app.tools.execute>[0]['agent']>,
         signal: new AbortController().signal,
       });
+      const result = batch.results[0]?.result;
+      if (result === undefined) throw new Error('recall 工具没有返回结果');
       expect(result.isError).toBe(false);
       expect(result.content).toContainEqual(
         expect.objectContaining({
