@@ -58,15 +58,15 @@ pnpm 11 安装失败时，在 profile 的 `pnpm-workspace.yaml` 中设置 `allow
 ```yaml
 - id: dsh-plugin-om
   config:
-    observeThresholdTokens: 35000
+    observeThresholdTokens: 55000
 ```
 
 包根行 `dsh-plugin-om` 配置：
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `observeThresholdTokens` | `35000` | 观察压缩阈值 |
-| `reflectThresholdTokens` | `80000` | 归档阈值，尾部保留合计不超过其三分之一的 history 块 |
+| `observeThresholdTokens` | `55000` | 观察压缩阈值 |
+| `reflectThresholdTokens` | `120000` | 归档阈值，尾部保留合计不超过其三分之一的 history 块 |
 | `tailMessageCount` | `20` | 触发后保留的完整消息数 |
 | `semanticRecallEnabled` | `true` | `recall` 的 `query` 是否按含义检索，关闭时按字符串匹配 |
 | `modelDir` | DSH 共享目录 | 嵌入模型目录 |

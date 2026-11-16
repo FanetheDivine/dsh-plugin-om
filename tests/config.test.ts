@@ -136,8 +136,8 @@ describe('配置校验 resolveConfig', () => {
     const empty = [undefined, null, '', '   '];
     for (const raw of empty) {
       const d = resolveConfig(raw);
-      expect(d.observeThresholdTokens).toBe(35000);
-      expect(d.reflectThresholdTokens).toBe(80000);
+      expect(d.observeThresholdTokens).toBe(55000);
+      expect(d.reflectThresholdTokens).toBe(120000);
       expect(d.compressMaxTokens).toBeUndefined();
       expect(d.tailMessageCount).toBe(20);
       expect(d.compressSkipReasoning).toBe(true);
@@ -146,13 +146,13 @@ describe('配置校验 resolveConfig', () => {
   });
 
   it('单项留空（null/空串/undefined）该键用默认值，其余覆盖项仍生效', () => {
-    expect(resolveConfig({ observeThresholdTokens: null }).observeThresholdTokens).toBe(35000);
-    expect(resolveConfig({ observeThresholdTokens: '' }).observeThresholdTokens).toBe(35000);
+    expect(resolveConfig({ observeThresholdTokens: null }).observeThresholdTokens).toBe(55000);
+    expect(resolveConfig({ observeThresholdTokens: '' }).observeThresholdTokens).toBe(55000);
     const mixed = resolveConfig({
       observeThresholdTokens: undefined,
       reflectThresholdTokens: 3000,
     });
-    expect(mixed.observeThresholdTokens).toBe(35000);
+    expect(mixed.observeThresholdTokens).toBe(55000);
     expect(mixed.reflectThresholdTokens).toBe(3000);
     const mixed2 = resolveConfig({ compressMaxTokens: null, tailMessageCount: 3 });
     expect(mixed2.compressMaxTokens).toBeUndefined();
@@ -170,9 +170,9 @@ describe('配置校验 resolveConfig', () => {
     expect(resolveConfig({ reflectThresholdTokens: 0 }).reflectThresholdTokens).toBe(0);
     expect(resolveConfig({ reflectThresholdTokens: 2 }).reflectThresholdTokens).toBe(2);
     expect(resolveConfig({ compressMaxTokens: 0 }).compressMaxTokens).toBe(0);
-    expect(resolveConfig({ observeThresholdTokens: '0.5' }).observeThresholdTokens).toBe(35000); // 非数值回退默认
-    expect(resolveConfig({ observeThresholdTokens: 2.5 }).observeThresholdTokens).toBe(35000); // 非整数回退默认
-    expect(resolveConfig({ reflectThresholdTokens: 2.5 }).reflectThresholdTokens).toBe(80000); // 非整数回退默认
+    expect(resolveConfig({ observeThresholdTokens: '0.5' }).observeThresholdTokens).toBe(55000); // 非数值回退默认
+    expect(resolveConfig({ observeThresholdTokens: 2.5 }).observeThresholdTokens).toBe(55000); // 非整数回退默认
+    expect(resolveConfig({ reflectThresholdTokens: 2.5 }).reflectThresholdTokens).toBe(120000); // 非整数回退默认
     expect(resolveConfig({ compressMaxTokens: 2.5 }).compressMaxTokens).toBeUndefined(); // 非整数视为未设置
     // 全部未知键被忽略 → 结果等于默认配置
     expect(
