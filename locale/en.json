@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "OM-style context management",
-    "description": "Observational Memory style context compaction and verbatim recall."
+    "description": "Keeps long sessions within the context window: older turns are compacted into summaries in the background while your messages stay verbatim, and the model can recall the original text. Compaction makes extra model requests. Turn this row off to stop compaction."
   }
 }
