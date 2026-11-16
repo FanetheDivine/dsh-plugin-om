@@ -645,13 +645,19 @@ describe('真实 agent loop + mock AI', () => {
             data: expect.objectContaining({ childId }),
           }),
         );
-        expect(await app.subagents.listChildren(parentId)).toContainEqual(
-          expect.objectContaining({
-            id: childId,
-            mode: 'one-shot',
-            label: expect.stringContaining(mode === 'success' ? '-观察' : '-失败'),
-          }),
-        );
+        // 目录投影按宿主 subagentCatalog 读取；子代理服务不再提供 listChildren
+        const catalog = await app.sessionQuery.observeSession(parentId);
+        try {
+          expect(catalog.projections?.values.subagentCatalog).toContainEqual(
+            expect.objectContaining({
+              id: childId,
+              mode: 'one-shot',
+              label: expect.stringContaining(mode === 'success' ? '-观察' : '-失败'),
+            }),
+          );
+        } finally {
+          catalog[Symbol.dispose]();
+        }
         const lineage = await app.sessionQuery.traceSession(parentId);
         expect(lineage.descendants.map((node) => node.session.header.id)).toContain(childId);
         expect(

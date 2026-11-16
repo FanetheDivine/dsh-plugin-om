@@ -348,9 +348,9 @@ describe('system-reminder 的真实宿主集成', () => {
     const { app, adapter, handle } = await stackPromptHost(true);
     let child: AgentHandle | undefined;
     try {
+      // 直接创建的子 Agent 不进入子代理树，会话 header 决定插件按子会话处理
       child = await handle.agent.ctx.agents.create({
         sessionId: 'it-progress-child' as SessionId,
-        parentAgent: handle.agent,
         meta: {
           parentSession: handle.agent.session.id,
           origin: 'subagent',
