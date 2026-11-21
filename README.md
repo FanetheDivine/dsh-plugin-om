@@ -40,6 +40,7 @@ dsh plugin --profile <profile> add dsh-plugin-om
 | `observeThresholdTokens` | `55000` | 未压缩内容达到该 token 数时开始压缩 |
 | `reflectThresholdTokens` | `120000` | 压缩摘要累计达到该 token 数时，把较早的摘要进一步归档 |
 | `tailMessageCount` | `20` | 压缩时保留最近多少条消息不动 |
+| `observeWaitMaxMs` | `60000` | 等待后台压缩的上限毫秒数，超时本轮继续、压缩留在后台；`0` 不设上限 |
 | `semanticRecallEnabled` | `true` | `recall` 是否按含义检索，关闭后按关键词匹配 |
 | `modelDir` | DSH 共享目录 | 语义检索模型的存放目录 |
 | `compressProvider` | 当前会话 | 压缩用的 provider，需与 `compressModel` 一起配置 |

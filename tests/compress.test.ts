@@ -1105,3 +1105,70 @@ describe('压缩目标与思考等级配置（compressProvider / compressModel /
     });
   });
 });
+
+describe('到期等待后台任务的上限 observeWaitMaxMs', () => {
+  /** 首轮挂起直到 signal 中止的摘要流（模拟传输挂起）。 */
+  function hangingFactory() {
+    return (_round: number, rawOptions: unknown) => {
+      const options = rawOptions as { signal?: AbortSignal };
+      return (async function* () {
+        await new Promise<void>((resolve) => {
+          const signal = options.signal;
+          if (signal === undefined || signal.aborted) return resolve();
+          signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        yield { type: 'finish', reason: { kind: 'aborted' } };
+      })();
+    };
+  }
+
+  /** 已达阈值的会话（完整工具调用流 + turn/end）。 */
+  function fixtureSession(): Session {
+    return makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
+    });
+  }
+
+  /** 运行 pre-step 监听器，返回 next 是否被调用（即本轮是否放行继续）。 */
+  async function runPreStepWithNext(
+    ctx: ReturnType<typeof makeCtx>,
+    session: Session,
+  ): Promise<boolean> {
+    const listeners = ctx._onCallbacks.get('agent/pre-step');
+    let nextCalled = false;
+    await listeners?.[0]?.({ agent: { session }, signal: new AbortController().signal }, () => {
+      nextCalled = true;
+    });
+    return nextCalled;
+  }
+
+  it('后台任务不结算：上限内 pre-step 返回并放行，本轮不注入压缩', async () => {
+    const session = fixtureSession();
+    const ctx = makeCtx({ meterTotalTokens: 500000, llmStreamFactory: hangingFactory() });
+    apply(ctx, {
+      observeThresholdTokens: 100000,
+      tailMessageCount: 0,
+      observeWaitMaxMs: 20,
+    });
+    const startedAt = Date.now();
+    const nextCalled = await runPreStepWithNext(ctx, session);
+    const elapsed = Date.now() - startedAt;
+    // 修复前：传输挂起时 pre-step 永不返回（用例超时）。上限内返回即通过
+    expect(elapsed).toBeLessThan(2000);
+    // 中止不等于失败：本轮放行继续，turn 不被拒绝
+    expect(nextCalled).toBe(true);
+    // 未注入压缩：无 compaction 生命周期事件
+    expect(
+      session.snapshotEvents().filter((event) => event.type.startsWith('compaction/')),
+    ).toHaveLength(0);
+    // 后台任务到上限被中止（超时日志来自任务侧）
+    const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
+    expect(warns.some((s) => s.includes('预压缩超时'))).toBe(true);
+  });
+});

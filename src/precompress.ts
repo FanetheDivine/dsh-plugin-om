@@ -9,6 +9,8 @@
  *   注入（compaction 生命周期 + <history> 替换）由到期 pre-step 在同一开放 turn 内完成
  * - 重启恢复：日志中匹配 pendingSeq 的 om/observe-summary 经 adoptPersistedSummary
  *   合成压缩成功结果直接采纳，不重压缩；无结果信封时按对账逻辑重新启动任务
+ * - 总体上限 observeWaitMaxMs：传输失败或流挂起时到点中止任务自有控制器，
+ *   压缩循环按 aborted 失败结算 job.promise，等待方不再无限阻塞
  * - 注册表按 session.id 键控；会话对象或待定标记不一致视为过期（中止并移除）；
  *   session/disposed 与插件卸载经 disposePrecompression / disposeAllPrecompressions 清理
  */
@@ -151,10 +153,37 @@ export function startPrecompression(options: PrecompressStartOptions): Precompre
   };
   jobs.set(session.id, job);
   void runJobBody(ctx, job, options, logger).then(settle, settle);
+  const guard = startJobTimeout(job, config.observeWaitMaxMs, logger);
+  void promise.then(clearJobTimeout(guard), clearJobTimeout(guard));
   logger.step(
     `预压缩：任务启动（pendingSeq ${pendingSeq}，区间 [${prepare.prepared.range.start}..${prepare.prepared.range.end}]，遮蔽 ${prepare.prepared.replaceSeqs.length} 个表层节点）`,
   );
   return { ok: true, job };
+}
+
+/**
+ * 任务总体上限：传输挂起（流永不结束）时到点中止任务自有控制器，
+ * 压缩循环据此以 aborted 失败结算 job.promise，底层流随 signal 释放。
+ * 配置为 0 返回 undefined（不设上限）。
+ */
+function startJobTimeout(
+  job: PrecompressJob,
+  maxMs: number,
+  logger: PluginLogger,
+): ReturnType<typeof setTimeout> | undefined {
+  if (maxMs <= 0) return undefined;
+  return setTimeout(() => {
+    if (job.state !== 'running') return;
+    logger.warn(`预压缩超时（pendingSeq ${job.pendingSeq}，超过 ${maxMs}ms），中止任务`);
+    job.controller.abort();
+  }, maxMs);
+}
+
+/** 任务结算后清理上限计时器（已触发或未启动时无操作）。 */
+function clearJobTimeout(timer: ReturnType<typeof setTimeout> | undefined): () => void {
+  return () => {
+    if (timer !== undefined) clearTimeout(timer);
+  };
 }
 
 /** 任务主体：压缩循环 → 成功持久化结果信封 + flush → 状态登记；异常按失败处理。 */
