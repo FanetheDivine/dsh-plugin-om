@@ -52,7 +52,7 @@ dsh plugin --profile <profile> add dsh-plugin-om
 | `compressReasoningEffort` | 模型默认 | 压缩模型的思考等级 |
 | `compressMaxTokens` | 模型默认 | 压缩模型单轮最大输出 |
 | `compressSkipReasoning` | `true` | 压缩时忽略模型的思考内容 |
-| `rateLimitWaitMs` | `60000` | 遇到限流或服务端错误时的重试等待毫秒数，`0` 不等待 |
+| `rateLimitWaitMs` | `60000` | 遇到限流或服务端错误时的重试等待毫秒数，`0` 不等待；超过 1 小时按 1 小时计 |
 | `progressReminderEnabled` | `true` | 是否启用进度提醒 |
 | `progressReminderIdleEnabled` | `false` | 模型长时间没有记录进度时是否再次提醒 |
 | `progressReminderIdleSteps` | `4` | 再次提醒前至少经过的模型步数 |

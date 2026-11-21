@@ -12,6 +12,9 @@ let lastRateLimitAt: number | null = null;
 /** 默认限流冷却时长（ms）：调用方未传 rateLimitWaitMs 时的兜底值。 */
 export const RATE_LIMIT_WAIT_MS_DEFAULT = 60000;
 
+/** 冷却时长上限（ms）：配置值过大时按此钳制，避免一次误配让压缩长时间停摆。 */
+export const RATE_LIMIT_WAIT_MS_MAX = 3_600_000;
+
 /** 判定错误信息是否为 429 限流（匹配 429 或 rate limit，大小写不敏感）。 */
 export function isRateLimitError(message: string): boolean {
   return /\b429\b|rate[\s_-]?limit/i.test(message);
@@ -51,8 +54,10 @@ function delay(ms: number, signal?: AbortSignal): Promise<boolean> {
  */
 export async function gateRateLimit(waitMs: number, signal?: AbortSignal): Promise<boolean> {
   if (waitMs <= 0) return true;
+  // 钳制：超长冷却按上限截断，配置错误不至于让压缩无限期停摆
+  const capped = Math.min(waitMs, RATE_LIMIT_WAIT_MS_MAX);
   while (lastRateLimitAt !== null) {
-    const remaining = lastRateLimitAt + waitMs - Date.now();
+    const remaining = lastRateLimitAt + capped - Date.now();
     if (remaining <= 0) return true;
     const completed = await delay(remaining, signal);
     if (!completed) return false;
