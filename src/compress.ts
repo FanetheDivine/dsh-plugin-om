@@ -71,8 +71,11 @@ import { appendOmEvent } from './om-event-append.ts';
 import {
   type AdoptedSummary,
   adoptPersistedSummary,
+  clearPrecompressionFailure,
   disposePrecompression,
+  disposePrecompressionWithFailureState,
   findPrecompressionJob,
+  precompressionFailureState,
   startPrecompression,
 } from './precompress.ts';
 import {
@@ -322,21 +325,21 @@ export function historySection(session: Session): {
 }
 
 /**
- * 查找当前活跃的观察压缩待定标记：按日志顺序取最后一条 om/observe-pending 信封事件，
+ * 查找当前活跃的观察压缩待定标记（含标记写入时间，供存活老化判定）：按日志顺序取最后一条 om/observe-pending 信封事件，
  * 其后须无引用它的 om/observe-invalidate（已失效），且其后的压缩边界 seq 不大于标记
  * seq（边界后移说明标记期间已发生过压缩，标记过期——兜底「执行成功但失效标记未写出」
  * 的崩溃窗口）。无活跃标记返回 undefined。
  */
 export function findObservePending(
   session: Session,
-): { seq: number; triggerMessageIndex: number } | undefined {
-  let pending: { seq: number; triggerMessageIndex: number } | undefined;
+): { seq: number; triggerMessageIndex: number; time: number } | undefined {
+  let pending: { seq: number; triggerMessageIndex: number; time: number } | undefined;
   for (let seq = 0; seq < session.snapshotEvents().length; seq += 1) {
     const event = session.snapshotEvents()[seq];
     if (!event) continue;
     const om = readOmEvent(event);
     if (om?.kind === 'om/observe-pending') {
-      pending = { seq, triggerMessageIndex: om.data.triggerMessageIndex };
+      pending = { seq, triggerMessageIndex: om.data.triggerMessageIndex, time: event.time };
     } else if (
       om?.kind === 'om/observe-invalidate' &&
       pending !== undefined &&
@@ -1086,8 +1089,8 @@ export async function observePass(
   let triggerMessageIndex: number;
   let pendingSeq: number;
   if (pending === undefined) {
-    // 无活跃标记（含边界后移使标记过期、已失效）：清理注册表中可能残留的孤儿任务
-    disposePrecompression(session.id);
+    // 无活跃标记（含边界后移使标记过期、已失效）：清理注册表中可能残留的孤儿任务与失败记录
+    disposePrecompressionWithFailureState(session.id);
     const threshold = config.observeThresholdTokens;
     const measurement = measurePressure(ctx, session, logger);
     if (measurement === undefined) return { failed: false };
@@ -1129,6 +1132,30 @@ export async function observePass(
   } else {
     triggerMessageIndex = pending.triggerMessageIndex;
     pendingSeq = pending.seq;
+    // 存活老化：标记长期未完成（压缩永远做不完或反复失败）时失效它，
+    // 让后续 pre-step 回到无标记状态重新评估，避免一个坏标记长期拖慢每一步。
+    // 已有持久化结果或后台任务仍在正常运行时不老化：那种情况本轮就能正常收尾
+    const expireMs = config.observePendingExpireMs;
+    const running = findPrecompressionJob(session, pending.seq)?.state === 'running';
+    const persistedSummary = findPersistedSummary(session, pending.seq);
+    if (
+      expireMs > 0 &&
+      !running &&
+      persistedSummary === undefined &&
+      Date.now() - pending.time > expireMs
+    ) {
+      logger.warn(
+        `观察：待定标记已存活 ${Math.round((Date.now() - pending.time) / 1000)}s（上限 ${expireMs}ms），失效并本轮跳过`,
+      );
+      try {
+        appendObserveInvalidate(session, pending.seq);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn(`观察：待定失效标记追加失败: ${message}`);
+      }
+      disposePrecompressionWithFailureState(session.id);
+      return { failed: false };
+    }
   }
 
   /** 注入成功后失效待定标记并清理注册表（done 任务的 abort 无副作用）。 */
@@ -1139,7 +1166,8 @@ export async function observePass(
       const message = error instanceof Error ? error.message : String(error);
       logger.warn(`观察：待定失效标记追加失败: ${message}`);
     }
-    disposePrecompression(session.id);
+    disposePrecompressionWithFailureState(session.id);
+    clearPrecompressionFailure(session.id);
   };
 
   // 阶段二：对账——活跃标记须对应持久化结果或后台任务，皆无（或任务失败）则启动
@@ -1154,8 +1182,34 @@ export async function observePass(
     logger.step(`观察：采纳持久化压缩结果（om/observe-summary seq ${persisted.seq}）`);
   } else if (job === undefined || job.state === 'failed') {
     if (job !== undefined) {
-      logger.step(`观察：后台任务失败（${job.failure?.error ?? '未知错误'}），丢弃并重启`);
+      // 失败次数只由任务结算推进，这里只读状态
+      const failureState = precompressionFailureState(session.id, pendingSeq);
+      const failuresSoFar = failureState.count;
+      const maxFailures = config.observeMaxFailures;
+      if (maxFailures > 0 && failuresSoFar >= maxFailures) {
+        // 老化：同一标记连续失败到上限，失效它让后续步骤重新评估，避免反复重启同一个坏任务
+        logger.warn(
+          `观察：待定标记连续失败 ${failuresSoFar} 次（上限 ${maxFailures}），失效并本轮跳过：${job.failure?.error ?? '未知错误'}`,
+        );
+        try {
+          appendObserveInvalidate(session, pendingSeq);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.warn(`观察：待定失效标记追加失败: ${message}`);
+        }
+        disposePrecompressionWithFailureState(session.id);
+        return { failed: false };
+      }
       disposePrecompression(session.id);
+      const waitMs = failureState.waitMs;
+      if (waitMs > 0) {
+        // 退避：失败后按 60s→300s→900s 封顶等待再重启，退避期内本轮直接放行不等待
+        logger.step(
+          `观察：后台任务失败（${job.failure?.error ?? '未知错误'}），第 ${failuresSoFar} 次，退避 ${Math.round(waitMs / 1000)}s 后再重启`,
+        );
+        return { failed: false };
+      }
+      logger.step(`观察：后台任务失败（${job.failure?.error ?? '未知错误'}），丢弃并重启`);
     }
     const started = startPrecompression({
       ctx,
@@ -1210,16 +1264,13 @@ export async function observePass(
       await waitJobSettled(job.promise, signal, config.observeWaitMaxMs);
     }
     if (job.state === 'failed') {
-      // 压缩失败不清除待定标记：下个 pre-step 对账时丢弃并重启任务重试
+      // 压缩失败不算本轮失败：待定标记保留，靠退避与老化在后续 pre-step 重试或失效；
+      // 拒绝本 step 只会把一次压缩故障升级成用户可见的会话中断
       const failure = job.failure;
-      return {
-        failed: true,
-        error: failure?.error ?? '后台预压缩失败',
-        aborted: failure?.aborted ?? false,
-        ...(failure?.diagnosticSessionId === undefined
-          ? {}
-          : { diagnosticSessionId: failure.diagnosticSessionId }),
-      };
+      logger.warn(
+        `观察：后台预压缩失败（${failure?.error ?? '未知错误'}），放行不注入，退避后重试`,
+      );
+      return { failed: false };
     }
     if (job.state === 'running') {
       // 等待由 signal 中止或上限到期结束：放行不注入，任务留在后台，下个 pre-step 再对账

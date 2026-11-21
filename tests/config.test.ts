@@ -13,6 +13,10 @@ describe('宿主 Config 校验与 volatile 值', () => {
       rateLimitWaitMs: 0,
       tailMessageCount: 2,
       observeWaitMaxMs: 30000,
+      observeJobMaxMs: 900000,
+      observeRetryBackoffMs: 60000,
+      observeMaxFailures: 3,
+      observePendingExpireMs: 3600000,
       compressSkipReasoning: false,
       progressReminderEnabled: false,
       progressReminderIdleEnabled: false,
@@ -27,7 +31,7 @@ describe('宿主 Config 校验与 volatile 值', () => {
     };
     const parsed = Config(yaml);
     const values = Object.fromEntries(Object.entries(parsed).map(([key, ref]) => [key, ref.get()]));
-    expect(Object.keys(values)).toHaveLength(17);
+    expect(Object.keys(values)).toHaveLength(21);
     expect(resolveConfig(values)).toEqual(resolveConfig(yaml));
     expect(Config({}).observeThresholdTokens.get()).toBe(resolveConfig({}).observeThresholdTokens);
     expect(Config({}).compressMaxTokens.get()).toBeUndefined();
@@ -46,6 +50,10 @@ describe('宿主 Config 校验与 volatile 值', () => {
       'rateLimitWaitMs',
       'tailMessageCount',
       'observeWaitMaxMs',
+      'observeJobMaxMs',
+      'observeRetryBackoffMs',
+      'observeMaxFailures',
+      'observePendingExpireMs',
     ]) {
       expect(() => Config({ [key]: 1.5 })).toThrow(/expected/);
       expect(resolveConfig({ [key]: 1.5 })).toEqual(resolveConfig({}));

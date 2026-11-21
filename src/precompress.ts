@@ -9,8 +9,9 @@
  *   注入（compaction 生命周期 + <history> 替换）由到期 pre-step 在同一开放 turn 内完成
  * - 重启恢复：日志中匹配 pendingSeq 的 om/observe-summary 经 adoptPersistedSummary
  *   合成压缩成功结果直接采纳，不重压缩；无结果信封时按对账逻辑重新启动任务
- * - 总体上限 observeWaitMaxMs：传输失败或流挂起时到点中止任务自有控制器，
- *   压缩循环按 aborted 失败结算 job.promise，等待方不再无限阻塞
+ * - 总体上限 observeJobMaxMs：传输失败或流挂起时到点中止任务自有控制器，
+ *   压缩循环按 aborted 失败结算 job.promise，等待方不再无限阻塞；pre-step 的等待
+ *   上限 observeWaitMaxMs 与本上限无关，到点只是本轮放行，任务照常继续
  * - 注册表按 session.id 键控；会话对象或待定标记不一致视为过期（中止并移除）；
  *   session/disposed 与插件卸载经 disposePrecompression / disposeAllPrecompressions 清理
  */
@@ -92,6 +93,63 @@ export type AdoptedSummary = {
 /** 进程内注册表：session.id → 任务（重启即清空，由对账阶段恢复）。 */
 const jobs = new Map<string, PrecompressJob>();
 
+/** 连续失败退避倍率：第 n 次连续失败后等待 base × 倍率才允许重启，超出取末位封顶。 */
+const FAILURE_BACKOFF_FACTOR = [1, 5, 15] as const;
+
+/** 一个待定标记的连续失败状态。 */
+type FailureState = {
+  /** 所属 om/observe-pending 事件 seq。 */
+  pendingSeq: number;
+  /** 连续失败次数。 */
+  count: number;
+  /** 下次允许重启任务的时间戳（毫秒）。 */
+  retryAt: number;
+};
+
+/** 进程内失败状态：session.id → 连续失败记录（成功、失效或换标记即清除）。 */
+const failures = new Map<string, FailureState>();
+
+/** 清除会话的失败记录；pendingSeq 给定时仅当记录属于该标记才清除。 */
+export function clearPrecompressionFailure(sessionId: string, pendingSeq?: number): void {
+  const state = failures.get(sessionId);
+  if (state === undefined) return;
+  if (pendingSeq !== undefined && state.pendingSeq !== pendingSeq) return;
+  failures.delete(sessionId);
+}
+
+/**
+ * 记录一次任务失败并推进退避：返回该标记的连续失败次数。
+ * 退避期内对账阶段直接放行，不再立刻重启任务。
+ */
+export function notePrecompressionFailure(
+  sessionId: string,
+  pendingSeq: number,
+  backoffMs: number,
+  now = Date.now(),
+): number {
+  const previous = failures.get(sessionId);
+  const count =
+    previous !== undefined && previous.pendingSeq === pendingSeq ? previous.count + 1 : 1;
+  const factor = FAILURE_BACKOFF_FACTOR[Math.min(count, FAILURE_BACKOFF_FACTOR.length) - 1] ?? 0;
+  const wait = backoffMs > 0 ? backoffMs * factor : 0;
+  failures.set(sessionId, { pendingSeq, count, retryAt: now + wait });
+  return count;
+}
+
+/**
+ * 读取待定标记的失败状态（只读）：连续失败次数与距允许重启的剩余毫秒数。
+ * 计数只由任务结算（notePrecompressionFailure）推进，对账阶段不得重复累加。
+ */
+export function precompressionFailureState(
+  sessionId: string,
+  pendingSeq: number,
+  now = Date.now(),
+): { count: number; waitMs: number } {
+  const state = failures.get(sessionId);
+  if (state === undefined || state.pendingSeq !== pendingSeq) return { count: 0, waitMs: 0 };
+  return { count: state.count, waitMs: Math.max(0, state.retryAt - now) };
+}
+
 /** 查询会话当前任务（不校验身份；对账用 findPrecompressionJob）。 */
 export function peekPrecompressionJob(sessionId: string): PrecompressJob | undefined {
   return jobs.get(sessionId);
@@ -124,7 +182,8 @@ export function startPrecompression(options: PrecompressStartOptions): Precompre
     if (existing.session === session && existing.pendingSeq === pendingSeq) {
       return { ok: true, job: existing };
     }
-    disposePrecompression(session.id);
+    // 标记已更换：旧标记的失败记录不再适用
+    disposePrecompressionWithFailureState(session.id);
   }
   const prepare = prepareObserveCompression(session, triggerMessageIndex, config);
   if (!prepare.ok) {
@@ -153,8 +212,14 @@ export function startPrecompression(options: PrecompressStartOptions): Precompre
   };
   jobs.set(session.id, job);
   void runJobBody(ctx, job, options, logger).then(settle, settle);
-  const guard = startJobTimeout(job, config.observeWaitMaxMs, logger);
-  void promise.then(clearJobTimeout(guard), clearJobTimeout(guard));
+  const guard = startJobTimeout(job, config.observeJobMaxMs, logger);
+  const done = (): void => {
+    clearJobTimeout(guard)();
+    if (job.state === 'failed')
+      notePrecompressionFailure(session.id, pendingSeq, options.config.observeRetryBackoffMs);
+    else if (job.state === 'done') clearPrecompressionFailure(session.id, pendingSeq);
+  };
+  void promise.then(done, done);
   logger.step(
     `预压缩：任务启动（pendingSeq ${pendingSeq}，区间 [${prepare.prepared.range.start}..${prepare.prepared.range.end}]，遮蔽 ${prepare.prepared.replaceSeqs.length} 个表层节点）`,
   );
@@ -164,7 +229,7 @@ export function startPrecompression(options: PrecompressStartOptions): Precompre
 /**
  * 任务总体上限：传输挂起（流永不结束）时到点中止任务自有控制器，
  * 压缩循环据此以 aborted 失败结算 job.promise，底层流随 signal 释放。
- * 配置为 0 返回 undefined（不设上限）。
+ * 上限须大于一次正常压缩的耗时（大上下文压缩可能持续数分钟）；配置为 0 返回 undefined（不设上限）。
  */
 function startJobTimeout(
   job: PrecompressJob,
@@ -304,7 +369,14 @@ export function disposePrecompression(sessionId: string): void {
   job.controller.abort();
 }
 
+/** 中止并移除会话的后台任务，同时清除其失败记录（待定标记被失效时调用）。 */
+export function disposePrecompressionWithFailureState(sessionId: string): void {
+  disposePrecompression(sessionId);
+  failures.delete(sessionId);
+}
+
 /** 中止并移除全部后台任务（插件卸载）。 */
 export function disposeAllPrecompressions(): void {
   for (const sessionId of [...jobs.keys()]) disposePrecompression(sessionId);
+  failures.clear();
 }

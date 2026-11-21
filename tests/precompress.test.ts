@@ -229,13 +229,13 @@ describe('成功与持久化', () => {
   });
 });
 
-describe('任务总体上限 observeWaitMaxMs', () => {
+describe('任务总体上限 observeJobMaxMs', () => {
   it('传输挂起超过上限：任务被中止并按 aborted 失败结算', async () => {
     const { session, pendingSeq, triggerMessageIndex } = fixtureSession();
     const ctx = makeCtx({ llmStreamFactory: hangingFactory() });
     const started = startPrecompression(
       startOptions(ctx, session, pendingSeq, triggerMessageIndex, {
-        config: resolveConfig({ observeWaitMaxMs: 20 }),
+        config: resolveConfig({ observeJobMaxMs: 20 }),
       }),
     );
     expect(started.ok).toBe(true);
@@ -259,7 +259,7 @@ describe('任务总体上限 observeWaitMaxMs', () => {
     const ctx = makeCtx({ llmStreamFactory: hangingFactory() });
     const started = startPrecompression(
       startOptions(ctx, session, pendingSeq, triggerMessageIndex, {
-        config: resolveConfig({ observeWaitMaxMs: 0 }),
+        config: resolveConfig({ observeJobMaxMs: 0 }),
       }),
     );
     expect(started.ok).toBe(true);
@@ -275,7 +275,7 @@ describe('任务总体上限 observeWaitMaxMs', () => {
     const ctx = makeCtx({ llmStreamFactory: successFactory() });
     const started = startPrecompression(
       startOptions(ctx, session, pendingSeq, triggerMessageIndex, {
-        config: resolveConfig({ observeWaitMaxMs: 5000 }),
+        config: resolveConfig({ observeJobMaxMs: 5000 }),
       }),
     );
     expect(started.ok).toBe(true);

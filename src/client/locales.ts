@@ -59,6 +59,15 @@ export const zh = {
   'config.observeWaitMaxMs': '等待上限毫秒数',
   'config.observeWaitMaxMs.hint':
     '等待后台压缩的上限，超时本轮不压缩、任务留在后台；0 表示不设上限。',
+  'config.observeJobMaxMs': '任务上限毫秒数',
+  'config.observeJobMaxMs.hint':
+    '后台压缩的总时长上限，超时才中止任务；须大于一次正常压缩耗时，0 不设上限。',
+  'config.observeRetryBackoffMs': '失败退避毫秒数',
+  'config.observeRetryBackoffMs.hint': '失败后按此值 1×/5×/15× 封顶退避才重试，0 表示不退避。',
+  'config.observeMaxFailures': '连续失败上限',
+  'config.observeMaxFailures.hint': '同一待定标记连续失败多少次后失效，0 表示不按次数失效。',
+  'config.observePendingExpireMs': '待定存活上限毫秒数',
+  'config.observePendingExpireMs.hint': '待定标记存活多久后失效，0 表示不按时间失效。',
   'config.compressMaxTokens': '单次生成上限',
   'config.compressMaxTokens.hint': '压缩请求的最大生成 token 数；留空使用模型默认值。',
   'config.compressProvider': '压缩 Provider',
@@ -141,6 +150,18 @@ export const en: Record<keyof typeof zh, string> = {
   'config.observeWaitMaxMs': 'Wait limit (ms)',
   'config.observeWaitMaxMs.hint':
     'Cap on waiting for background compaction; on timeout this step continues without it and the job stays in the background. 0 removes the cap.',
+  'config.observeJobMaxMs': 'Job limit (ms)',
+  'config.observeJobMaxMs.hint':
+    'Total run time allowed for a background compaction before it is aborted; must exceed one normal compaction. 0 removes the cap.',
+  'config.observeRetryBackoffMs': 'Retry backoff (ms)',
+  'config.observeRetryBackoffMs.hint':
+    'Base wait before retrying a failed compaction, scaled 1x/5x/15x up to a cap. 0 disables backoff.',
+  'config.observeMaxFailures': 'Failure limit',
+  'config.observeMaxFailures.hint':
+    'Consecutive failures of one pending marker before it is invalidated. 0 disables the count.',
+  'config.observePendingExpireMs': 'Pending lifetime (ms)',
+  'config.observePendingExpireMs.hint':
+    'Age at which a pending marker is invalidated. 0 disables the age check.',
   'config.compressMaxTokens': 'Generation limit',
   'config.compressMaxTokens.hint':
     'Maximum generated tokens per compression request; blank uses the model default.',

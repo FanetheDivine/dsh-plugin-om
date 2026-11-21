@@ -19,8 +19,16 @@ export type PluginConfig = {
   rateLimitWaitMs: number;
   /** 观察触发后延迟执行的等待完整消息条数（新增完整消息数达到该值才执行压缩；0 表示触发当轮立即执行）。 */
   tailMessageCount: number;
-  /** 等待后台预压缩任务的上限毫秒数：到期仍未完成则本轮放行不注入、后台任务继续（任务自身另有同一上限兜底；0 表示不设上限）。 */
+  /** 等待后台预压缩任务的上限毫秒数：到期仍未完成则本轮放行不注入、后台任务继续（任务不受此上限影响；0 表示不设上限）。 */
   observeWaitMaxMs: number;
+  /** 后台预压缩任务的总体验上限毫秒数：到期中止任务（挂起的流随之释放），0 表示不设上限。必须大于一次正常压缩的耗时。 */
+  observeJobMaxMs: number;
+  /** 失败退避基数（毫秒）：连续失败后按 1×/5×/15× 封顶等待才重启任务（0 表示不退避）。 */
+  observeRetryBackoffMs: number;
+  /** 同一待定标记连续失败多少次后自动失效（0 表示不按次数失效）。 */
+  observeMaxFailures: number;
+  /** 待定标记存活多久（毫秒）后自动失效，0 表示不按时间失效。 */
+  observePendingExpireMs: number;
   /** 工具循环 getHistory 输出是否携带 reasoning 参考条目（true 时不携带，压缩指令也省略其说明行）。 */
   compressSkipReasoning: boolean;
   /** 是否注入进度提醒。 */
@@ -53,6 +61,10 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   rateLimitWaitMs: 60000,
   tailMessageCount: 20,
   observeWaitMaxMs: 60000,
+  observeJobMaxMs: 900000,
+  observeRetryBackoffMs: 60000,
+  observeMaxFailures: 3,
+  observePendingExpireMs: 3600000,
   compressSkipReasoning: true,
   progressReminderEnabled: true,
   progressReminderIdleEnabled: false,
@@ -87,6 +99,16 @@ export const Config = Schema.object({
   rateLimitWaitMs: Schema.number().step(1).default(DEFAULT_CONFIG.rateLimitWaitMs).volatile(),
   tailMessageCount: Schema.number().step(1).default(DEFAULT_CONFIG.tailMessageCount).volatile(),
   observeWaitMaxMs: Schema.number().step(1).default(DEFAULT_CONFIG.observeWaitMaxMs).volatile(),
+  observeJobMaxMs: Schema.number().step(1).default(DEFAULT_CONFIG.observeJobMaxMs).volatile(),
+  observeRetryBackoffMs: Schema.number()
+    .step(1)
+    .default(DEFAULT_CONFIG.observeRetryBackoffMs)
+    .volatile(),
+  observeMaxFailures: Schema.number().step(1).default(DEFAULT_CONFIG.observeMaxFailures).volatile(),
+  observePendingExpireMs: Schema.number()
+    .step(1)
+    .default(DEFAULT_CONFIG.observePendingExpireMs)
+    .volatile(),
   compressSkipReasoning: Schema.boolean().default(DEFAULT_CONFIG.compressSkipReasoning).volatile(),
   progressReminderEnabled: Schema.boolean()
     .default(DEFAULT_CONFIG.progressReminderEnabled)
@@ -138,6 +160,10 @@ type NumberKey =
   | 'rateLimitWaitMs'
   | 'tailMessageCount'
   | 'observeWaitMaxMs'
+  | 'observeJobMaxMs'
+  | 'observeRetryBackoffMs'
+  | 'observeMaxFailures'
+  | 'observePendingExpireMs'
   | 'progressReminderIdleSteps'
   | 'progressReminderIdleToolCalls';
 
@@ -149,6 +175,10 @@ const NUMBER_KEYS: Array<[NumberKey, boolean, number?]> = [
   ['rateLimitWaitMs', true],
   ['tailMessageCount', true],
   ['observeWaitMaxMs', true, 0],
+  ['observeJobMaxMs', true, 0],
+  ['observeRetryBackoffMs', true, 0],
+  ['observeMaxFailures', true, 0],
+  ['observePendingExpireMs', true, 0],
   ['progressReminderIdleSteps', true, 1],
   ['progressReminderIdleToolCalls', true, 0],
 ];

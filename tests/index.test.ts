@@ -597,7 +597,8 @@ describe('apply 接线（OM 观察压缩）', () => {
     const ctx = makeCtx({
       llmStreamFactory: () => roundChunks({ text: '我认为不需要压缩' }),
     });
-    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
+    // 退避 0：验证到期后重启路径，退避时长语义另有用例
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1, observeRetryBackoffMs: 0 });
     await runPreStepWithDelay(ctx, session);
     // 触发即后台压缩：两次任务各 3 轮（纯文本 → 提醒 → 仍纯文本 → 判失败）
     expect(ctx._llmCalls).toHaveLength(6);
@@ -631,7 +632,8 @@ describe('apply 接线（OM 观察压缩）', () => {
       llmStreamFactory: () =>
         roundChunks({ finish: { kind: 'error', failure: { message: '额度不足' } } }),
     });
-    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
+    // 退避 0：仅验证"到期后重启一次"的路径，退避时长语义另有用例
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1, observeRetryBackoffMs: 0 });
     await runPreStepWithDelay(ctx, session);
     // 请求级错误不重试：两次任务各 1 次请求即失败
     expect(ctx._llmCalls).toHaveLength(2);
@@ -644,7 +646,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     expect(latestHistoryText(session)).toBe('');
   });
 
-  it('压缩循环失败：pre-step 返回 reject 中断当前 turn（不调用 next），失败任务到期重启重试', async () => {
+  it('压缩循环失败：不拒绝本 step（不再中断 turn），失败任务到期重启重试', async () => {
     const session = makeSession({
       events: buildToolCallFlow({
         code: 'a()',
@@ -658,7 +660,7 @@ describe('apply 接线（OM 观察压缩）', () => {
       llmStreamFactory: () =>
         roundChunks({ finish: { kind: 'error', failure: { message: '额度不足' } } }),
     });
-    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1, observeRetryBackoffMs: 0 });
     const listeners = ctx._onCallbacks.get('agent/pre-step');
     let nextCalled = false;
     const run = () =>
@@ -677,9 +679,9 @@ describe('apply 接线（OM 观察压缩）', () => {
       }) as unknown as UserMessage,
       { surfaceOp: 'append' },
     );
-    const decision = await run(); // 第二步：到期对账丢弃失败任务重启，仍失败 → 拒绝本 step
-    expect(decision).toEqual({ kind: 'reject' }); // 拒绝本 step，当前 turn 以 blocked 结束
-    expect(nextCalled).toBe(false); // 不放行、不再继续 AI 会话
+    await run(); // 第二步：到期对账发现失败任务 → 重启（退避 0）后再失败 → 放行
+    expect(nextCalled).toBe(true); // 压缩故障不再升级为会话中断
+    await new Promise((resolve) => setTimeout(resolve, 0)); // 冲刷重启任务的失败结算
     expect(ctx._llmCalls).toHaveLength(2); // 两次后台任务各 1 次请求
     // 失败不写 compaction 生命周期；待定标记保留（无失效标记）供下轮重试
     expect(session.snapshotEvents().some((e) => e.type === 'compaction/start')).toBe(false);
@@ -689,9 +691,7 @@ describe('apply 接线（OM 观察压缩）', () => {
     // 每次失败任务各落盘一份诊断子会话（失败日志）
     expect(ctx._createdSessions).toHaveLength(2);
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
-    expect(
-      warns.some((w) => w.includes('上下文压缩失败，拒绝本 step 中断当前 turn：额度不足')),
-    ).toBe(true);
+    expect(warns.some((w) => w.includes('后台预压缩失败') && w.includes('额度不足'))).toBe(true);
   });
 
   it('压缩失败后下个 pre-step 重试成功：保留待定直接重试执行', async () => {
@@ -724,7 +724,8 @@ describe('apply 接线（OM 观察压缩）', () => {
         return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
       },
     });
-    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
+    // 退避 0：失败后立即可重试（默认 60s 退避的语义另有用例覆盖）
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1, observeRetryBackoffMs: 0 });
     const listeners = ctx._onCallbacks.get('agent/pre-step');
     const run = () =>
       listeners?.[0]?.({ agent: { session }, signal: new AbortController().signal }, () => {});
@@ -734,7 +735,7 @@ describe('apply 接线（OM 观察压缩）', () => {
       makeMessage({ content: [textBlock('等待期消息1')], id: 'w1' }) as unknown as UserMessage,
       { surfaceOp: 'append' },
     );
-    await run(); // 执行：失败（getHistory 后请求 error）
+    await run(); // 执行：失败（getHistory 后请求 error），放行不中断本 turn
     failed = false;
     await run(); // 待定保留：直接重试执行 → 成功
     expect(session.snapshotEvents().some((e) => e.type === 'compaction/summary')).toBe(true);
@@ -1605,12 +1606,13 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
         return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
       },
     });
-    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
+    // 退避 0：失败后立即可重试（默认退避语义另有用例覆盖）
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1, observeRetryBackoffMs: 0 });
     await runPreStep(ctx, session); // 触发并开始后台压缩
     await flushBackground();
     expect(ctx._llmCalls).toHaveLength(3); // 后台任务 3 轮纯文本判失败
     appendWaitingMessage(session, 'wait-fail');
-    await runPreStep(ctx, session); // 到期：对账发现失败任务 → 丢弃重启 → 仍失败 → 拒绝本 step
+    await runPreStep(ctx, session); // 到期：对账发现失败任务 → 丢弃重启 → 仍失败（放行不中断）
     expect(ctx._llmCalls).toHaveLength(6);
     expect(session.snapshotEvents().some((e) => isOmKind(e, 'om/observe-invalidate'))).toBe(false);
     expect(latestHistoryText(session)).toBe('');

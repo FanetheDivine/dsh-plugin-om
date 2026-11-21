@@ -1148,18 +1148,19 @@ describe('到期等待后台任务的上限 observeWaitMaxMs', () => {
     return nextCalled;
   }
 
-  it('后台任务不结算：上限内 pre-step 返回并放行，本轮不注入压缩', async () => {
+  it('等待上限只让本轮放行，后台任务继续跑不被中止（任务上限更大）', async () => {
     const session = fixtureSession();
     const ctx = makeCtx({ meterTotalTokens: 500000, llmStreamFactory: hangingFactory() });
     apply(ctx, {
       observeThresholdTokens: 100000,
       tailMessageCount: 0,
       observeWaitMaxMs: 20,
+      observeJobMaxMs: 60000,
     });
     const startedAt = Date.now();
     const nextCalled = await runPreStepWithNext(ctx, session);
     const elapsed = Date.now() - startedAt;
-    // 修复前：传输挂起时 pre-step 永不返回（用例超时）。上限内返回即通过
+    // 修复前：传输挂起时 pre-step 永不返回（用例超时）。等待上限内返回即通过
     expect(elapsed).toBeLessThan(2000);
     // 中止不等于失败：本轮放行继续，turn 不被拒绝
     expect(nextCalled).toBe(true);
@@ -1167,8 +1168,33 @@ describe('到期等待后台任务的上限 observeWaitMaxMs', () => {
     expect(
       session.snapshotEvents().filter((event) => event.type.startsWith('compaction/')),
     ).toHaveLength(0);
-    // 后台任务到上限被中止（超时日志来自任务侧）
+    // 关键回归：等待上限到期不得中止后台任务（否则大上下文压缩永远做不完）
+    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
+    expect(steps.some((s) => s.includes('等待后台任务超过'))).toBe(true);
+    const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
+    expect(warns.some((s) => s.includes('预压缩超时'))).toBe(false);
+  });
+
+  it('任务自身超过 observeJobMaxMs 才被中止并记账退避', async () => {
+    const session = fixtureSession();
+    const ctx = makeCtx({ meterTotalTokens: 500000, llmStreamFactory: hangingFactory() });
+    apply(ctx, {
+      observeThresholdTokens: 100000,
+      tailMessageCount: 0,
+      observeWaitMaxMs: 10,
+      observeJobMaxMs: 30,
+    });
+    await runPreStepWithNext(ctx, session);
+    // 任务上限到点：任务被中止，日志出现"预压缩超时"
+    await new Promise((resolve) => setTimeout(resolve, 120));
     const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
     expect(warns.some((s) => s.includes('预压缩超时'))).toBe(true);
+    // 下一个 pre-step 处于退避期：直接放行且不再开新的压缩请求
+    const callsBefore = ctx._llmCalls.length;
+    const nextCalled = await runPreStepWithNext(ctx, session);
+    expect(nextCalled).toBe(true);
+    expect(ctx._llmCalls.length).toBe(callsBefore);
+    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
+    expect(steps.some((s) => s.includes('退避') || s.includes('连续失败'))).toBe(true);
   });
 });

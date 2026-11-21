@@ -334,7 +334,7 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(callsBefore);
   }, 30000);
 
-  it('压缩循环失败：pre-step 拒绝本 step + 诊断子会话落盘（不写 compaction 生命周期）', async () => {
+  it('压缩循环失败：放行本 step（不中断 turn）+ 诊断子会话落盘（不写 compaction 生命周期）', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-om-failure-'));
     const { app, session, adapter } = await stackHarness({
       storageRoot: root,
@@ -348,9 +348,9 @@ describe('集成：真实 cordis + dsh 服务堆叠（mock llm）整条压缩链
     try {
       seedUserMessages(session, 6);
 
-      // K=0：触发当轮即到期，等待后台任务 → 失败 → 拒绝本 step
-      const decision = await runPreStep(app, session);
-      expect(decision).toEqual({ kind: 'reject' });
+      // K=0：触发当轮即到期，等待后台任务 → 失败 → 放行（压缩故障不再中断 turn）
+      const decision = (await runPreStep(app, session)) as { kind: string };
+      expect(decision.kind).not.toBe('reject');
       expect(adapter.calls.filter((c) => c.purpose === 'compaction')).toHaveLength(1);
       const types = session.snapshotEvents().map((e) => e.type);
       // 失败不写 compaction 括号（生命周期只在注入成功时出现）
