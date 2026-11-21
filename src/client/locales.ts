@@ -56,6 +56,9 @@ export const zh = {
     'history 块累计达到此真实 token 数时在后台归档较早的块，按主模型用量换算。',
   'config.tailMessageCount': '保留消息数',
   'config.tailMessageCount.hint': '触发观察后保留的完整消息条数。',
+  'config.observeWaitMaxMs': '等待上限毫秒数',
+  'config.observeWaitMaxMs.hint':
+    '等待后台压缩的上限，超时本轮不压缩、任务留在后台；0 表示不设上限。',
   'config.compressMaxTokens': '单次生成上限',
   'config.compressMaxTokens.hint': '压缩请求的最大生成 token 数；留空使用模型默认值。',
   'config.compressProvider': '压缩 Provider',
@@ -135,6 +138,9 @@ export const en: Record<keyof typeof zh, string> = {
     'History blocks total in real main-model tokens that archives older blocks in the background.',
   'config.tailMessageCount': 'Retained message count',
   'config.tailMessageCount.hint': 'Full messages retained after observation is triggered.',
+  'config.observeWaitMaxMs': 'Wait limit (ms)',
+  'config.observeWaitMaxMs.hint':
+    'Cap on waiting for background compaction; on timeout this step continues without it and the job stays in the background. 0 removes the cap.',
   'config.compressMaxTokens': 'Generation limit',
   'config.compressMaxTokens.hint':
     'Maximum generated tokens per compression request; blank uses the model default.',

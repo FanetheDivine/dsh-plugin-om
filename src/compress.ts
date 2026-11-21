@@ -20,8 +20,8 @@
  *   或持久化结果（重启恢复直接采纳信封、不重压缩；失败任务丢弃重启）；新增完整消息数 ≥
  *   tailMessageCount 时到期，把压缩边界至触发点的全部消息作为压缩视图注入为新 <history>
  *   块（旧块保留），等待期间的新消息成为下一轮未压缩尾部（延迟窗口内压力允许短暂超
- *   阈值）；到期未完成时阻塞等待后台任务（turn 取消则放行不注入，任务继续后台）；
- *   tailMessageCount=0 时触发当轮即到期，阻塞等待注入
+ *   阈值）；到期未完成时最多等待 observeWaitMaxMs（turn 取消或超限则放行不注入，任务
+ *   继续后台）；tailMessageCount=0 时触发当轮即到期，等待注入
  * - 两个阈值都按主模型真实 token 计；换算系数 = 上次请求真实用量基线 ÷ 锚点估算
  *   （工具定义估算 + 锚点表层），无真实用量基线或计量失败按 1 计
  * - 待定标记与压缩结果以 ignorable 的 plugin record（kind 为
@@ -1029,6 +1029,29 @@ function signalAbortedRace(signal: AbortSignal | undefined): Promise<void> {
 }
 
 /**
+ * 等待后台任务：任务完成、signal 中止或到达上限毫秒数（≤ 0 表示不设上限）任一发生即返回
+ * （调用方随后按 job.state 判定）。上限保证传输挂起时 pre-step 不会无限阻塞。
+ */
+function waitJobSettled(
+  job: Promise<void>,
+  signal: AbortSignal | undefined,
+  maxMs: number,
+): Promise<void> {
+  const racers: Promise<void>[] = [job, signalAbortedRace(signal)];
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (maxMs > 0) {
+    racers.push(
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, maxMs);
+      }),
+    );
+  }
+  return Promise.race(racers).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
+/**
  * 观察（打标记 → 对账 → 到期注入）：每个 pre-step 串行执行三阶段。
  * 打标记：无活跃待定标记时测净压力 tokens（换算系数 × 未压缩表层估算，未压缩 =
  * 表层 − 已压缩 <history> 块估算合计 − 系统提示词估算），首次 ≥ observeThresholdTokens
@@ -1039,7 +1062,8 @@ function signalAbortedRace(signal: AbortSignal | undefined): Promise<void> {
  * 任务被中止）。
  * 到期：新增完整消息数 ≥ tailMessageCount 时注入——已完成结果在同一 pre-step / 同一开放
  * turn 内一次提交（compaction/start → summary → 替换 → end → 失效标记，满足宿主括号
- * 不变量）；运行中任务等待其完成（turn 被取消则放行不注入，任务继续后台）；失败返回
+ * 不变量）；运行中任务最多等待 observeWaitMaxMs（turn 被取消或等待超限则放行不注入，
+ * 任务继续后台，下个 pre-step 再对账）；失败返回
  * 失败结果（error = 最后一次错误，标记保留，下个 pre-step 重启任务重试）。
  */
 export async function observePass(
@@ -1182,8 +1206,8 @@ export async function observePass(
         logger.step('观察：pre-step 已中止，放行不注入（后台任务继续）');
         return { failed: false };
       }
-      logger.step('观察：到期未完成预压缩，阻塞等待后台任务');
-      await Promise.race([job.promise, signalAbortedRace(signal)]);
+      logger.step(`观察：到期未完成预压缩，阻塞等待后台任务（上限 ${config.observeWaitMaxMs}ms）`);
+      await waitJobSettled(job.promise, signal, config.observeWaitMaxMs);
     }
     if (job.state === 'failed') {
       // 压缩失败不清除待定标记：下个 pre-step 对账时丢弃并重启任务重试
@@ -1198,8 +1222,12 @@ export async function observePass(
       };
     }
     if (job.state === 'running') {
-      // race 由 signal 中止解决：放行不注入，任务继续后台，下个 pre-step 再对账
-      logger.step('观察：等待期间 turn 被取消，放行不注入（后台任务继续）');
+      // 等待由 signal 中止或上限到期结束：放行不注入，任务留在后台，下个 pre-step 再对账
+      logger.step(
+        signal?.aborted
+          ? '观察：等待期间 turn 被取消，放行不注入（后台任务继续）'
+          : `观察：等待后台任务超过 ${config.observeWaitMaxMs}ms 仍未完成，放行不注入（后台任务继续）`,
+      );
       return { failed: false };
     }
     summaryResult = job.result;

@@ -19,6 +19,8 @@ export type PluginConfig = {
   rateLimitWaitMs: number;
   /** 观察触发后延迟执行的等待完整消息条数（新增完整消息数达到该值才执行压缩；0 表示触发当轮立即执行）。 */
   tailMessageCount: number;
+  /** 等待后台预压缩任务的上限毫秒数：到期仍未完成则本轮放行不注入、后台任务继续（任务自身另有同一上限兜底；0 表示不设上限）。 */
+  observeWaitMaxMs: number;
   /** 工具循环 getHistory 输出是否携带 reasoning 参考条目（true 时不携带，压缩指令也省略其说明行）。 */
   compressSkipReasoning: boolean;
   /** 是否注入进度提醒。 */
@@ -50,6 +52,7 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   compressMaxTokens: undefined,
   rateLimitWaitMs: 60000,
   tailMessageCount: 20,
+  observeWaitMaxMs: 60000,
   compressSkipReasoning: true,
   progressReminderEnabled: true,
   progressReminderIdleEnabled: false,
@@ -83,6 +86,7 @@ export const Config = Schema.object({
   compressMaxTokens: Schema.number().step(1).volatile(),
   rateLimitWaitMs: Schema.number().step(1).default(DEFAULT_CONFIG.rateLimitWaitMs).volatile(),
   tailMessageCount: Schema.number().step(1).default(DEFAULT_CONFIG.tailMessageCount).volatile(),
+  observeWaitMaxMs: Schema.number().step(1).default(DEFAULT_CONFIG.observeWaitMaxMs).volatile(),
   compressSkipReasoning: Schema.boolean().default(DEFAULT_CONFIG.compressSkipReasoning).volatile(),
   progressReminderEnabled: Schema.boolean()
     .default(DEFAULT_CONFIG.progressReminderEnabled)
@@ -133,6 +137,7 @@ type NumberKey =
   | 'compressMaxTokens'
   | 'rateLimitWaitMs'
   | 'tailMessageCount'
+  | 'observeWaitMaxMs'
   | 'progressReminderIdleSteps'
   | 'progressReminderIdleToolCalls';
 
@@ -143,6 +148,7 @@ const NUMBER_KEYS: Array<[NumberKey, boolean, number?]> = [
   ['compressMaxTokens', true],
   ['rateLimitWaitMs', true],
   ['tailMessageCount', true],
+  ['observeWaitMaxMs', true, 0],
   ['progressReminderIdleSteps', true, 1],
   ['progressReminderIdleToolCalls', true, 0],
 ];

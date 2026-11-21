@@ -229,6 +229,64 @@ describe('成功与持久化', () => {
   });
 });
 
+describe('任务总体上限 observeWaitMaxMs', () => {
+  it('传输挂起超过上限：任务被中止并按 aborted 失败结算', async () => {
+    const { session, pendingSeq, triggerMessageIndex } = fixtureSession();
+    const ctx = makeCtx({ llmStreamFactory: hangingFactory() });
+    const started = startPrecompression(
+      startOptions(ctx, session, pendingSeq, triggerMessageIndex, {
+        config: resolveConfig({ observeWaitMaxMs: 20 }),
+      }),
+    );
+    expect(started.ok).toBe(true);
+    if (!started.ok) throw new Error('unreachable');
+    // 未到上限前任务仍在运行：等待不会提前结束
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(started.job.state).toBe('running');
+    await started.job.promise;
+    expect(started.job.state).toBe('failed');
+    expect(started.job.failure?.aborted).toBe(true);
+    expect(started.job.controller.signal.aborted).toBe(true);
+    expect(
+      ctx._loggerCalls.some(
+        (call) => call.level === 'warn' && String(call.args[0]).includes('预压缩超时'),
+      ),
+    ).toBe(true);
+  });
+
+  it('上限为 0 时不设上限：任务保持运行', async () => {
+    const { session, pendingSeq, triggerMessageIndex } = fixtureSession();
+    const ctx = makeCtx({ llmStreamFactory: hangingFactory() });
+    const started = startPrecompression(
+      startOptions(ctx, session, pendingSeq, triggerMessageIndex, {
+        config: resolveConfig({ observeWaitMaxMs: 0 }),
+      }),
+    );
+    expect(started.ok).toBe(true);
+    if (!started.ok) throw new Error('unreachable');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(started.job.state).toBe('running');
+    disposePrecompression(session.id);
+    await started.job.promise;
+  });
+
+  it('上限内完成的任务不受影响：done 并写结果信封', async () => {
+    const { session, pendingSeq, triggerMessageIndex } = fixtureSession();
+    const ctx = makeCtx({ llmStreamFactory: successFactory() });
+    const started = startPrecompression(
+      startOptions(ctx, session, pendingSeq, triggerMessageIndex, {
+        config: resolveConfig({ observeWaitMaxMs: 5000 }),
+      }),
+    );
+    expect(started.ok).toBe(true);
+    if (!started.ok) throw new Error('unreachable');
+    await started.job.promise;
+    expect(started.job.state).toBe('done');
+    expect(findOmEvents(session, 'om/observe-summary')).toHaveLength(1);
+    expect(started.job.controller.signal.aborted).toBe(false);
+  });
+});
+
 describe('findPrecompressionJob 身份校验', () => {
   it('pendingSeq 不匹配：返回 undefined 并中止过期任务', () => {
     const { session, pendingSeq, triggerMessageIndex } = fixtureSession();
