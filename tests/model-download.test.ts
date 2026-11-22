@@ -85,6 +85,86 @@ describe('modelSourceUrl', () => {
   });
 });
 
+describe('downloadModel（可中止）', () => {
+  it('signal 预先已中止时在发起请求前抛错，不留临时文件', async () => {
+    const dir = tempRoot();
+    const target = modelTargetPath(dir);
+    const controller = new AbortController();
+    controller.abort();
+    const { impl, calls } = fakeFetch();
+    await expect(
+      downloadModel(dir, { fetchImpl: impl, log: () => {}, signal: controller.signal }),
+    ).rejects.toThrow(/下载已中止/);
+    expect(calls).toHaveLength(0);
+    expect(existsSync(`${target}.tmp`)).toBe(false);
+  });
+
+  it('下载期间中止：fetch 收到 signal，已写入的临时文件被清理且不落盘', async () => {
+    const dir = tempRoot();
+    const target = modelTargetPath(dir);
+    const controller = new AbortController();
+    /** 中止瞬间的 fetch 入参（断言 signal 已透传）。 */
+    let seenSignal: AbortSignal | undefined;
+    const impl: ModelFetch = async (_url, init) => {
+      seenSignal = init?.signal;
+      controller.abort(); // 调用方在下载期间取消
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        arrayBuffer: async () => new TextEncoder().encode('half-bytes').buffer,
+      };
+    };
+    await expect(
+      downloadModel(dir, { fetchImpl: impl, log: () => {}, signal: controller.signal }),
+    ).rejects.toThrow(/下载已中止/);
+    expect(seenSignal).toBe(controller.signal);
+    expect(existsSync(`${target}.tmp`)).toBe(false);
+    expect(existsSync(target)).toBe(false); // 半截文件不会被当成完整模型
+  });
+
+  it('未传 signal 时行为不变（正常运行下载落盘）', async () => {
+    const dir = tempRoot();
+    const target = modelTargetPath(dir);
+    const { impl } = fakeFetch();
+    const result = await downloadModel(dir, { fetchImpl: impl, log: () => {} });
+    expect(result.downloaded).toBe(true);
+    expect(existsSync(target)).toBe(true);
+  });
+});
+
+describe('ensureModelReady（中止转发）', () => {
+  it('调用方信号接到在途下载，中止后在途下载随即停止', async () => {
+    const dir = tempRoot();
+    resetModelDownloads();
+    /** 下载侧看到的信号（断言来自在途控制器而非调用方原对象）。 */
+    let downloadSignal: AbortSignal | undefined;
+    const impl: ModelFetch = async (_url, init) => {
+      downloadSignal = init?.signal;
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        arrayBuffer: async () => new TextEncoder().encode('bytes').buffer,
+      };
+    };
+    const controller = new AbortController();
+    const status = await ensureModelReady(
+      dir,
+      () => {},
+      impl,
+      () => {},
+      controller.signal,
+    );
+    expect(status).toBe('downloading');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(downloadSignal).toBeDefined();
+    controller.abort();
+    expect(downloadSignal?.aborted).toBe(true);
+    resetModelDownloads();
+  });
+});
+
 describe('sharedModelDir（跨版本共享默认目录）', () => {
   it('DSH_HOME 未设置：以 ~/.dsh 为根', () => {
     const prev = process.env.DSH_HOME;

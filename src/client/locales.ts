@@ -58,7 +58,7 @@ export const zh = {
   'config.tailMessageCount.hint': '触发观察后保留的完整消息条数。',
   'config.observeWaitMaxMs': '等待上限毫秒数',
   'config.observeWaitMaxMs.hint':
-    '等待后台压缩的上限，超时本轮不压缩、任务留在后台；0 表示不设上限。',
+    '等待后台压缩的上限，超时本轮不压缩、任务留在后台；0 表示不设上限。须不大于 keeper 的 preStepStallMs，否则会形成等待、判卡死取消、续跑的循环。',
   'config.observeJobMaxMs': '任务上限毫秒数',
   'config.observeJobMaxMs.hint':
     '后台压缩的总时长上限，超时才中止任务；须大于一次正常压缩耗时，0 不设上限。',
@@ -68,6 +68,9 @@ export const zh = {
   'config.observeMaxFailures.hint': '同一待定标记连续失败多少次后失效，0 表示不按次数失效。',
   'config.observePendingExpireMs': '待定存活上限毫秒数',
   'config.observePendingExpireMs.hint': '待定标记存活多久后失效，0 表示不按时间失效。',
+  'config.observeInvalidateCooldownMs': '失效冷却毫秒数',
+  'config.observeInvalidateCooldownMs.hint':
+    '待定标记失效后多久内不再重新打标，0 表示不冷却。避免失效与重打标反复抖动。',
   'config.compressMaxTokens': '单次生成上限',
   'config.compressMaxTokens.hint': '压缩请求的最大生成 token 数；留空使用模型默认值。',
   'config.compressProvider': '压缩 Provider',
@@ -79,7 +82,8 @@ export const zh = {
   'config.compressSkipReasoning': '忽略思考内容',
   'config.compressSkipReasoning.hint': '压缩时不将历史 reasoning 纳入参考。',
   'config.rateLimitWaitMs': '限流等待毫秒数',
-  'config.rateLimitWaitMs.hint': '429 限流后的冷却时间；0 表示不等待。',
+  'config.rateLimitWaitMs.hint':
+    '429 限流后的冷却时间，自动限制在任务上限之内；0 表示不等待，持续限流时可能形成近零冷却风暴，仅在明确知道服务端可恢复时使用。',
   'config.modelDir': '嵌入模型目录',
   'config.modelDir.hint': '本地语义增强使用的嵌入模型目录。',
   'config.progressReminderEnabled': '进度提醒',
@@ -149,7 +153,7 @@ export const en: Record<keyof typeof zh, string> = {
   'config.tailMessageCount.hint': 'Full messages retained after observation is triggered.',
   'config.observeWaitMaxMs': 'Wait limit (ms)',
   'config.observeWaitMaxMs.hint':
-    'Cap on waiting for background compaction; on timeout this step continues without it and the job stays in the background. 0 removes the cap.',
+    'Cap on waiting for background compaction; on timeout this step continues without it and the job stays in the background. 0 removes the cap. Keep it at or below the keeper preStepStallMs, or waiting turns into stall-cancel-resume loops.',
   'config.observeJobMaxMs': 'Job limit (ms)',
   'config.observeJobMaxMs.hint':
     'Total run time allowed for a background compaction before it is aborted; must exceed one normal compaction. 0 removes the cap.',
@@ -162,6 +166,9 @@ export const en: Record<keyof typeof zh, string> = {
   'config.observePendingExpireMs': 'Pending lifetime (ms)',
   'config.observePendingExpireMs.hint':
     'Age at which a pending marker is invalidated. 0 disables the age check.',
+  'config.observeInvalidateCooldownMs': 'Invalidation cooldown (ms)',
+  'config.observeInvalidateCooldownMs.hint':
+    'How long an invalidated session is left untagged; 0 disables the cooldown. Keeps invalidation from flapping into immediate re-tagging.',
   'config.compressMaxTokens': 'Generation limit',
   'config.compressMaxTokens.hint':
     'Maximum generated tokens per compression request; blank uses the model default.',
@@ -175,7 +182,8 @@ export const en: Record<keyof typeof zh, string> = {
   'config.compressSkipReasoning': 'Skip reasoning',
   'config.compressSkipReasoning.hint': 'Exclude historical reasoning from compression references.',
   'config.rateLimitWaitMs': 'Rate-limit wait in milliseconds',
-  'config.rateLimitWaitMs.hint': 'Cooldown after a 429 response; zero skips the wait.',
+  'config.rateLimitWaitMs.hint':
+    'Cooldown after a 429 response, clamped to stay inside the job limit; zero skips the wait and can spin on a persistent 429, so use it only when the server is known to recover.',
   'config.modelDir': 'Embedding model directory',
   'config.modelDir.hint': 'Directory containing the local semantic-enhancement embedding model.',
   'config.progressReminderEnabled': 'Progress reminder',

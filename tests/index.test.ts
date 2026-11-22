@@ -1669,7 +1669,8 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
         return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
       },
     });
-    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1 });
+    // 关闭失效冷却：本用例关注过期标记不阻塞再触发，冷却语义另有用例覆盖
+    apply(ctx, { tailMessageCount: 1, observeThresholdTokens: 1, observeInvalidateCooldownMs: 0 });
     await runPreStep(ctx, session); // 过期 → 重新触发：边界后无内容，新标记因无可行区间被立即失效
     expect(ctx._llmCalls).toHaveLength(0);
     expect(findOmEvents(session, 'om/observe-pending')).toHaveLength(2);
@@ -1683,5 +1684,44 @@ describe('apply 接线（延迟观察压缩：触发 → 待定 → 延迟执行
     expect(ctx._llmCalls).toHaveLength(2); // getHistory → completeCompression
     expect(findOmEvents(session, 'om/observe-summary')).toHaveLength(1); // 结果持久化，未到期不注入
     expect(latestHistoryText(session)).toContain('压缩后的块'); // 旧块保留：已压缩内容不被重复替换
+  });
+
+  it('放弃式失效记冷却：冷却期内不再按压力重新打标', async () => {
+    const session = makeSession({
+      events: [
+        ...buildToolCallFlow({
+          code: 'a()',
+          description: '任务A',
+          callId: 'c1',
+          resultText: 'r1',
+          withTurnEnd: true,
+        }),
+        pendingEvent(2), // seq 5
+        historyMessage('压缩后的块', 'history-after'), // seq 6：边界后移 → 旧 pending 过期
+      ],
+      surfaceNodes: [6],
+    });
+    const ctx = makeCtx({
+      meterTotalTokens: 100000,
+      meterSurfaceTokens: 1000,
+      llmStreamFactory: (index) => {
+        if (index === 0) return roundChunks({ calls: [{ id: 'g1', name: 'getHistory' }] });
+        return roundChunks({ calls: [{ id: 'c9', name: 'completeCompression' }] });
+      },
+    });
+    apply(ctx, {
+      tailMessageCount: 1,
+      observeThresholdTokens: 1,
+      observeInvalidateCooldownMs: 600000,
+    });
+    // 过期 → 新标记因无可行区间被立即失效：记冷却
+    await runPreStep(ctx, session);
+    expect(findOmEvents(session, 'om/observe-pending')).toHaveLength(2);
+    expect(findOmEvents(session, 'om/observe-invalidate')).toHaveLength(1);
+    appendWaitingMessage(session, 'wait-cooldown'); // 边界后出现新内容，压力仍在阈值上
+    // 冷却期内不再打标：不新增标记，也不发起压缩（避免失效与重打标反复抖动）
+    await runPreStep(ctx, session);
+    expect(findOmEvents(session, 'om/observe-pending')).toHaveLength(2);
+    expect(ctx._llmCalls).toHaveLength(0);
   });
 });

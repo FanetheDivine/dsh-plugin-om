@@ -29,6 +29,8 @@ export type PluginConfig = {
   observeMaxFailures: number;
   /** 待定标记存活多久（毫秒）后自动失效，0 表示不按时间失效。 */
   observePendingExpireMs: number;
+  /** 待定标记失效后，同一会话在该毫秒数内不再重新打标；0 表示不冷却。 */
+  observeInvalidateCooldownMs: number;
   /** 工具循环 getHistory 输出是否携带 reasoning 参考条目（true 时不携带，压缩指令也省略其说明行）。 */
   compressSkipReasoning: boolean;
   /** 是否注入进度提醒。 */
@@ -65,6 +67,7 @@ export const DEFAULT_CONFIG: Readonly<PluginConfig> = Object.freeze({
   observeRetryBackoffMs: 60000,
   observeMaxFailures: 3,
   observePendingExpireMs: 3600000,
+  observeInvalidateCooldownMs: 600000,
   compressSkipReasoning: true,
   progressReminderEnabled: true,
   progressReminderIdleEnabled: false,
@@ -98,16 +101,35 @@ export const Config = Schema.object({
   compressMaxTokens: Schema.number().step(1).volatile(),
   rateLimitWaitMs: Schema.number().step(1).default(DEFAULT_CONFIG.rateLimitWaitMs).volatile(),
   tailMessageCount: Schema.number().step(1).default(DEFAULT_CONFIG.tailMessageCount).volatile(),
-  observeWaitMaxMs: Schema.number().step(1).default(DEFAULT_CONFIG.observeWaitMaxMs).volatile(),
-  observeJobMaxMs: Schema.number().step(1).default(DEFAULT_CONFIG.observeJobMaxMs).volatile(),
+  observeWaitMaxMs: Schema.number()
+    .step(1)
+    .min(0)
+    .default(DEFAULT_CONFIG.observeWaitMaxMs)
+    .volatile(),
+  observeJobMaxMs: Schema.number()
+    .step(1)
+    .min(0)
+    .default(DEFAULT_CONFIG.observeJobMaxMs)
+    .volatile(),
   observeRetryBackoffMs: Schema.number()
     .step(1)
+    .min(0)
     .default(DEFAULT_CONFIG.observeRetryBackoffMs)
     .volatile(),
-  observeMaxFailures: Schema.number().step(1).default(DEFAULT_CONFIG.observeMaxFailures).volatile(),
+  observeMaxFailures: Schema.number()
+    .step(1)
+    .min(0)
+    .default(DEFAULT_CONFIG.observeMaxFailures)
+    .volatile(),
   observePendingExpireMs: Schema.number()
     .step(1)
+    .min(0)
     .default(DEFAULT_CONFIG.observePendingExpireMs)
+    .volatile(),
+  observeInvalidateCooldownMs: Schema.number()
+    .step(1)
+    .min(0)
+    .default(DEFAULT_CONFIG.observeInvalidateCooldownMs)
     .volatile(),
   compressSkipReasoning: Schema.boolean().default(DEFAULT_CONFIG.compressSkipReasoning).volatile(),
   progressReminderEnabled: Schema.boolean()
@@ -164,6 +186,7 @@ type NumberKey =
   | 'observeRetryBackoffMs'
   | 'observeMaxFailures'
   | 'observePendingExpireMs'
+  | 'observeInvalidateCooldownMs'
   | 'progressReminderIdleSteps'
   | 'progressReminderIdleToolCalls';
 
@@ -179,9 +202,25 @@ const NUMBER_KEYS: Array<[NumberKey, boolean, number?]> = [
   ['observeRetryBackoffMs', true, 0],
   ['observeMaxFailures', true, 0],
   ['observePendingExpireMs', true, 0],
+  ['observeInvalidateCooldownMs', true, 0],
   ['progressReminderIdleSteps', true, 1],
   ['progressReminderIdleToolCalls', true, 0],
 ];
+
+/** 已告警过的非法配置键（同一键只告警一次，避免每个 pre-step 重复刷屏）。 */
+const warnedFallbacks = new Set<string>();
+
+/** 报告一次非法配置值回退（每键只告警一次）。 */
+function warnFallback(key: string): void {
+  if (warnedFallbacks.has(key)) return;
+  warnedFallbacks.add(key);
+  console.warn(`dsh-plugin-om: 配置项 ${key} 的值不合法（须为不小于下限的整数），已回退默认值`);
+}
+
+/** 重置回退告警记录（测试用：用例间隔离）。 */
+export function resetConfigFallbackWarnings(): void {
+  warnedFallbacks.clear();
+}
 
 /** 校验数值：有限数，integer 时须为整数，且不小于 min；不合法返回 undefined。 */
 function resolveNumber(raw: unknown, integer: boolean, min?: number): number | undefined {
@@ -223,8 +262,10 @@ export function resolveConfig(raw?: unknown): Readonly<PluginConfig> {
   const input = normalizeConfigInput(raw);
   const config: PluginConfig = { ...DEFAULT_CONFIG };
   for (const [key, integer, min] of NUMBER_KEYS) {
-    const value = resolveNumber(input[key], integer, min);
+    const raw = input[key];
+    const value = resolveNumber(raw, integer, min);
     if (value !== undefined) config[key] = value;
+    else if (raw !== undefined && raw !== null && raw !== '') warnFallback(key);
   }
   config.compressSkipReasoning = resolveBoolean(input.compressSkipReasoning, true);
   config.progressReminderEnabled = resolveBoolean(input.progressReminderEnabled, true);

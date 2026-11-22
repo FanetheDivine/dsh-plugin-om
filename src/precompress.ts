@@ -13,7 +13,11 @@
  *   压缩循环按 aborted 失败结算 job.promise，等待方不再无限阻塞；pre-step 的等待
  *   上限 observeWaitMaxMs 与本上限无关，到点只是本轮放行，任务照常继续
  * - 注册表按 session.id 键控；会话对象或待定标记不一致视为过期（中止并移除）；
- *   session/disposed 与插件卸载经 disposePrecompression / disposeAllPrecompressions 清理
+ *   session/disposed 与插件卸载经 disposeSessionPrecompressionState /
+ *   disposeAllPrecompressions 清理，失败记录与失效冷却一并清除；已销毁的会话对象记入
+ *   WeakSet，任务结算时据此跳过失败记录写入（无归属的失败记录只会成为孤儿）
+ * - 失效冷却：待定标记失效后按会话记录冷却截止时间（observeInvalidateCooldownMs），
+ *   冷却期内不再为该会话重新打标；冷却状态按会话隔离，会话销毁或插件卸载时清理
  */
 import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm';
 import { type ObservePrepared, prepareObserveCompression } from './compress.ts';
@@ -109,6 +113,40 @@ type FailureState = {
 /** 进程内失败状态：session.id → 连续失败记录（成功、失效或换标记即清除）。 */
 const failures = new Map<string, FailureState>();
 
+/** 失效冷却：session.id → 冷却截止时间戳（毫秒；无记录表示不在冷却期）。 */
+const invalidateCooldowns = new Map<string, number>();
+
+/** 已销毁的会话对象（WeakSet：对象被回收即消失，不积累内存）。 */
+const disposedSessions = new WeakSet<Session>();
+
+/** 记录一次待定标记失效：该会话在 cooldownMs 内不再重新打标（0 表示不冷却）。 */
+export function noteObserveInvalidate(
+  sessionId: string,
+  cooldownMs: number,
+  now = Date.now(),
+): void {
+  if (cooldownMs <= 0) {
+    invalidateCooldowns.delete(sessionId);
+    return;
+  }
+  invalidateCooldowns.set(sessionId, now + cooldownMs);
+}
+
+/** 剩余失效冷却毫秒数（不在冷却期返回 0，到期记录随之清除）。 */
+export function observeInvalidateCooldown(sessionId: string, now = Date.now()): number {
+  const until = invalidateCooldowns.get(sessionId);
+  if (until === undefined) return 0;
+  const remaining = until - now;
+  if (remaining > 0) return remaining;
+  invalidateCooldowns.delete(sessionId);
+  return 0;
+}
+
+/** 会话对象是否仍存活（被 session/disposed 标记过的对象视为已销毁）。 */
+export function isSessionLive(session: Session): boolean {
+  return !disposedSessions.has(session);
+}
+
 /** 清除会话的失败记录；pendingSeq 给定时仅当记录属于该标记才清除。 */
 export function clearPrecompressionFailure(sessionId: string, pendingSeq?: number): void {
   const state = failures.get(sessionId);
@@ -190,6 +228,7 @@ export function startPrecompression(options: PrecompressStartOptions): Precompre
     logger.step(`预压缩：${prepare.reason}，失效待定标记视为完成`);
     try {
       appendOmEvent(session, 'om/observe-invalidate', { pendingSeq });
+      noteObserveInvalidate(session.id, config.observeInvalidateCooldownMs);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn(`预压缩：待定失效标记追加失败: ${message}`);
@@ -215,9 +254,16 @@ export function startPrecompression(options: PrecompressStartOptions): Precompre
   const guard = startJobTimeout(job, config.observeJobMaxMs, logger);
   const done = (): void => {
     clearJobTimeout(guard)();
-    if (job.state === 'failed')
-      notePrecompressionFailure(session.id, pendingSeq, options.config.observeRetryBackoffMs);
-    else if (job.state === 'done') clearPrecompressionFailure(session.id, pendingSeq);
+    if (job.state === 'done') {
+      clearPrecompressionFailure(session.id, pendingSeq);
+      return;
+    }
+    if (job.state !== 'failed') return;
+    if (!isSessionLive(session)) {
+      logger.step(`预压缩：会话 ${session.id} 已销毁，跳过失败记录（pendingSeq ${pendingSeq}）`);
+      return;
+    }
+    notePrecompressionFailure(session.id, pendingSeq, options.config.observeRetryBackoffMs);
   };
   void promise.then(done, done);
   logger.step(
@@ -269,6 +315,7 @@ async function runJobBody(
       target,
       maxTokens: config.compressMaxTokens,
       rateLimitWaitMs: config.rateLimitWaitMs,
+      jobMaxMs: config.observeJobMaxMs,
       skipReasoning: config.compressSkipReasoning,
       debug: config.debug,
       ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
@@ -375,8 +422,19 @@ export function disposePrecompressionWithFailureState(sessionId: string): void {
   failures.delete(sessionId);
 }
 
-/** 中止并移除全部后台任务（插件卸载）。 */
+/**
+ * 会话销毁清理：标记会话对象已销毁，中止任务并清除失败记录与失效冷却（session/disposed 调用）。
+ * 待定标记与持久化结果仍在日志中，重启后由对账恢复。
+ */
+export function disposeSessionPrecompressionState(session: Session): void {
+  disposedSessions.add(session);
+  disposePrecompressionWithFailureState(session.id);
+  invalidateCooldowns.delete(session.id);
+}
+
+/** 中止并移除全部后台任务（插件卸载），失败记录与失效冷却一并清空。 */
 export function disposeAllPrecompressions(): void {
   for (const sessionId of [...jobs.keys()]) disposePrecompression(sessionId);
   failures.clear();
+  invalidateCooldowns.clear();
 }

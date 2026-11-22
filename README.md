@@ -40,11 +40,12 @@ dsh plugin --profile <profile> add dsh-plugin-om
 | `observeThresholdTokens` | `55000` | 未压缩内容达到该 token 数时开始压缩 |
 | `reflectThresholdTokens` | `120000` | 压缩摘要累计达到该 token 数时，把较早的摘要进一步归档 |
 | `tailMessageCount` | `20` | 压缩时保留最近多少条消息不动 |
-| `observeWaitMaxMs` | `60000` | 等待后台压缩的上限毫秒数，超时本轮继续、压缩留在后台；`0` 不设上限 |
+| `observeWaitMaxMs` | `60000` | 等待后台压缩的上限毫秒数，超时本轮继续、压缩留在后台；须不大于 keeper 的 `preStepStallMs`；`0` 不设上限 |
 | `observeJobMaxMs` | `900000` | 后台压缩的总时长上限，超时才中止任务；`0` 不设上限 |
 | `observeRetryBackoffMs` | `60000` | 压缩失败后的退避基数，按 1×/5×/15× 封顶等这么久才重试；`0` 不退避 |
 | `observeMaxFailures` | `3` | 同一待定标记连续失败多少次后失效；`0` 不按次数失效 |
 | `observePendingExpireMs` | `3600000` | 待定标记存活多久后失效；`0` 不按时间失效 |
+| `observeInvalidateCooldownMs` | `600000` | 待定标记失效后多久内不再重新打标；`0` 不冷却 |
 | `semanticRecallEnabled` | `true` | `recall` 是否按含义检索，关闭后按关键词匹配 |
 | `modelDir` | DSH 共享目录 | 语义检索模型的存放目录 |
 | `compressProvider` | 当前会话 | 压缩用的 provider，需与 `compressModel` 一起配置 |
@@ -52,7 +53,7 @@ dsh plugin --profile <profile> add dsh-plugin-om
 | `compressReasoningEffort` | 模型默认 | 压缩模型的思考等级 |
 | `compressMaxTokens` | 模型默认 | 压缩模型单轮最大输出 |
 | `compressSkipReasoning` | `true` | 压缩时忽略模型的思考内容 |
-| `rateLimitWaitMs` | `60000` | 遇到限流或服务端错误时的重试等待毫秒数，`0` 不等待；超过 1 小时按 1 小时计 |
+| `rateLimitWaitMs` | `60000` | 遇到限流或服务端错误时的重试等待毫秒数；自动限制在 1 小时与后台任务上限之内，`0` 不等待 |
 | `progressReminderEnabled` | `true` | 是否启用进度提醒 |
 | `progressReminderIdleEnabled` | `false` | 模型长时间没有记录进度时是否再次提醒 |
 | `progressReminderIdleSteps` | `4` | 再次提醒前至少经过的模型步数 |
@@ -66,6 +67,7 @@ dsh plugin --profile <profile> add dsh-plugin-om
 - 想降低成本，可通过 `compressProvider` 和 `compressModel` 指定更便宜的模型。
 - 只有模型思考内容里有关键决策时，才把 `compressSkipReasoning` 设为 `false`。
 - 用[成本计算器](https://fanethedivine.github.io/dsh-plugin-om/)估算不同配置的 token 成本。
+- 观察类配置的毫秒数与次数项不接受负数，非法值回退默认值并告警一次。
 
 ## 命令
 
@@ -84,3 +86,4 @@ dsh plugin --profile <profile> add dsh-plugin-om
 - 使用 Claude 时，压缩后插件会移除旧的 thinking 签名，宿主的请求查看显示的是移除前的内容。
 - 归档后重新注入的 skill 可能被模型当作新指令再次执行。
 - 压缩状态写入会话日志，压缩过程记录随会话日志一起下载。
+- `observeWaitMaxMs` 须不大于 keeper 的 `preStepStallMs`，否则会形成等待、判卡死取消、续跑的循环。

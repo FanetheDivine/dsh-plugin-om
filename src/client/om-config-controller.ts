@@ -30,6 +30,7 @@ export const OM_CONFIG_FIELDS = [
   { name: 'observeRetryBackoffMs', kind: 'integer' },
   { name: 'observeMaxFailures', kind: 'integer' },
   { name: 'observePendingExpireMs', kind: 'integer' },
+  { name: 'observeInvalidateCooldownMs', kind: 'integer' },
   { name: 'semanticRecallEnabled', kind: 'boolean' },
   { name: 'modelDir', kind: 'text' },
   { name: 'compressProvider', kind: 'text' },

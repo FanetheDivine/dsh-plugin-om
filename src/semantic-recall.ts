@@ -22,8 +22,8 @@ import type { CompleteMessage, Session } from './types.ts';
 /** 语义增强的可注入依赖（测试传替身；缺省用本地模型）。 */
 export type SemanticOptions = {
   embedder?: EmbedFn;
-  /** 模型就绪检查（缺省视为已就绪；未就绪时返回告知文案而非报错）。 */
-  modelStatus?: () => ModelStatus | Promise<ModelStatus>;
+  /** 模型就绪检查（缺省视为已就绪；未就绪时返回告知文案而非报错）；signal 用于中止按需下载。 */
+  modelStatus?: (signal?: AbortSignal) => ModelStatus | Promise<ModelStatus>;
 };
 
 /** 检索区间参数（完整消息 index）。 */
@@ -98,6 +98,8 @@ export type SemanticSearchInput = RangeArgs & {
   /** 本次调用自身的 callId，其 toolcall 不进候选池。 */
   selfCallId: string;
   getPruner: () => unknown;
+  /** 工具调用取消信号：中止后按需模型下载随之停止。 */
+  signal?: AbortSignal | undefined;
   options?: SemanticOptions | undefined;
 };
 
@@ -134,7 +136,7 @@ function collectCandidates(
 export async function semanticSearch(input: SemanticSearchInput): Promise<RecallOutputValue> {
   const { query, topK, options } = input;
   const embed: EmbedFn = options?.embedder ?? ((texts) => getEmbedder().then((fn) => fn(texts)));
-  const status = (await options?.modelStatus?.()) ?? 'ready';
+  const status = (await options?.modelStatus?.(input.signal)) ?? 'ready';
   if (status !== 'ready') return textOnly(SEMANTIC_MODEL_NOT_READY_MESSAGE);
   const collected = collectCandidates(input);
   if (typeof collected === 'string') return textOnly(collected);
