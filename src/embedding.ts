@@ -125,40 +125,64 @@ export type ModelStatus = 'ready' | 'downloading';
 /** 每个 modelDir 的在途下载任务（单飞：并发查询只发起一次下载）。 */
 const inflightDownloads = new Map<string, Promise<void>>();
 
+/** 每个 modelDir 在途下载的取消控制器（调用方中止即在途下载并行停止）。 */
+const inflightControllers = new Map<string, AbortController>();
+
+/** 把调用方信号接到在途下载控制器（一次性监听；已中止时立即中止下载）。 */
+function forwardAbort(signal: AbortSignal | undefined, controller: AbortController): void {
+  if (signal === undefined) return;
+  if (signal.aborted) {
+    controller.abort();
+    return;
+  }
+  signal.addEventListener('abort', () => controller.abort(), { once: true });
+}
+
 /**
  * 确保模型就绪（运行时按需下载编排）。
  * 本地 onnx 已存在 → 'ready'；缺失 → 启动后台下载（不阻塞、单飞，失败经 warn 记录，
- * 下次调用自动重试）并返回 'downloading'。warn/log/fetchImpl 可注入（测试传替身）。
+ * 下次调用自动重试）并返回 'downloading'。
+ * signal 为本次调用的取消信号：中止后该 modelDir 的在途下载并行停止并清理临时文件。
+ * warn/log/fetchImpl 可注入（测试传替身）。
  */
 export function ensureModelReady(
   modelDir: string = BUNDLED_MODEL_DIR,
   warn: (message: string) => void = () => {},
   fetchImpl?: ModelFetch,
   log: (message: string) => void = () => {},
+  signal?: AbortSignal,
 ): Promise<ModelStatus> {
   ensureModelSmallFiles(modelDir);
   const target = modelTargetPath(modelDir);
   if (!needsDownload(target)) return Promise.resolve('ready');
-  if (!inflightDownloads.has(modelDir)) {
-    const task: Promise<void> = downloadModel(
-      modelDir,
-      fetchImpl === undefined ? { log } : { fetchImpl, log },
-    )
+  let controller = inflightControllers.get(modelDir);
+  if (controller === undefined) {
+    const created = new AbortController();
+    inflightControllers.set(modelDir, created);
+    controller = created;
+    const task: Promise<void> = downloadModel(modelDir, {
+      ...(fetchImpl === undefined ? {} : { fetchImpl }),
+      log,
+      signal: created.signal,
+    })
       .then(() => {})
       .catch((err: unknown) => {
         warn(`[download-model] 下载失败：${err instanceof Error ? err.message : String(err)}`);
       })
       .finally(() => {
         inflightDownloads.delete(modelDir);
+        inflightControllers.delete(modelDir);
       });
     inflightDownloads.set(modelDir, task);
   }
+  forwardAbort(signal, controller);
   return Promise.resolve('downloading');
 }
 
-/** 重置下载状态（测试用：清空在途下载任务记录）。 */
+/** 重置下载状态（测试用：清空在途下载任务记录与控制器）。 */
 export function resetModelDownloads(): void {
   inflightDownloads.clear();
+  inflightControllers.clear();
 }
 
 /** 两个向量的余弦相似度（向量已 L2 归一化时点积即余弦；这里兜底再归一化）。零向量返回 0。 */

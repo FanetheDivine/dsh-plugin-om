@@ -1105,3 +1105,96 @@ describe('压缩目标与思考等级配置（compressProvider / compressModel /
     });
   });
 });
+
+describe('到期等待后台任务的上限 observeWaitMaxMs', () => {
+  /** 首轮挂起直到 signal 中止的摘要流（模拟传输挂起）。 */
+  function hangingFactory() {
+    return (_round: number, rawOptions: unknown) => {
+      const options = rawOptions as { signal?: AbortSignal };
+      return (async function* () {
+        await new Promise<void>((resolve) => {
+          const signal = options.signal;
+          if (signal === undefined || signal.aborted) return resolve();
+          signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        yield { type: 'finish', reason: { kind: 'aborted' } };
+      })();
+    };
+  }
+
+  /** 已达阈值的会话（完整工具调用流 + turn/end）。 */
+  function fixtureSession(): Session {
+    return makeSession({
+      events: buildToolCallFlow({
+        code: 'a()',
+        description: '任务A',
+        callId: 'c1',
+        resultText: 'r1',
+        withTurnEnd: true,
+      }),
+    });
+  }
+
+  /** 运行 pre-step 监听器，返回 next 是否被调用（即本轮是否放行继续）。 */
+  async function runPreStepWithNext(
+    ctx: ReturnType<typeof makeCtx>,
+    session: Session,
+  ): Promise<boolean> {
+    const listeners = ctx._onCallbacks.get('agent/pre-step');
+    let nextCalled = false;
+    await listeners?.[0]?.({ agent: { session }, signal: new AbortController().signal }, () => {
+      nextCalled = true;
+    });
+    return nextCalled;
+  }
+
+  it('等待上限只让本轮放行，后台任务继续跑不被中止（任务上限更大）', async () => {
+    const session = fixtureSession();
+    const ctx = makeCtx({ meterTotalTokens: 500000, llmStreamFactory: hangingFactory() });
+    apply(ctx, {
+      observeThresholdTokens: 100000,
+      tailMessageCount: 0,
+      observeWaitMaxMs: 20,
+      observeJobMaxMs: 60000,
+    });
+    const startedAt = Date.now();
+    const nextCalled = await runPreStepWithNext(ctx, session);
+    const elapsed = Date.now() - startedAt;
+    // 修复前：传输挂起时 pre-step 永不返回（用例超时）。等待上限内返回即通过
+    expect(elapsed).toBeLessThan(2000);
+    // 中止不等于失败：本轮放行继续，turn 不被拒绝
+    expect(nextCalled).toBe(true);
+    // 未注入压缩：无 compaction 生命周期事件
+    expect(
+      session.snapshotEvents().filter((event) => event.type.startsWith('compaction/')),
+    ).toHaveLength(0);
+    // 关键回归：等待上限到期不得中止后台任务（否则大上下文压缩永远做不完）
+    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
+    expect(steps.some((s) => s.includes('等待后台任务超过'))).toBe(true);
+    const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
+    expect(warns.some((s) => s.includes('预压缩超时'))).toBe(false);
+  });
+
+  it('任务自身超过 observeJobMaxMs 才被中止并记账退避', async () => {
+    const session = fixtureSession();
+    const ctx = makeCtx({ meterTotalTokens: 500000, llmStreamFactory: hangingFactory() });
+    apply(ctx, {
+      observeThresholdTokens: 100000,
+      tailMessageCount: 0,
+      observeWaitMaxMs: 10,
+      observeJobMaxMs: 30,
+    });
+    await runPreStepWithNext(ctx, session);
+    // 任务上限到点：任务被中止，日志出现"预压缩超时"
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const warns = ctx._loggerCalls.filter((c) => c.level === 'warn').map((c) => String(c.args[0]));
+    expect(warns.some((s) => s.includes('预压缩超时'))).toBe(true);
+    // 下一个 pre-step 处于退避期：直接放行且不再开新的压缩请求
+    const callsBefore = ctx._llmCalls.length;
+    const nextCalled = await runPreStepWithNext(ctx, session);
+    expect(nextCalled).toBe(true);
+    expect(ctx._llmCalls.length).toBe(callsBefore);
+    const steps = ctx._loggerCalls.filter((c) => c.level === 'debug').map((c) => String(c.args[0]));
+    expect(steps.some((s) => s.includes('退避') || s.includes('连续失败'))).toBe(true);
+  });
+});

@@ -11,9 +11,14 @@ import {
   adoptPersistedSummary,
   disposeAllPrecompressions,
   disposePrecompression,
+  disposeSessionPrecompressionState,
   findPrecompressionJob,
+  isSessionLive,
+  noteObserveInvalidate,
+  observeInvalidateCooldown,
   type PrecompressStartOptions,
   peekPrecompressionJob,
+  precompressionFailureState,
   startPrecompression,
 } from '../src/precompress.ts';
 import type { Context, Session } from '../src/types.ts';
@@ -229,6 +234,64 @@ describe('成功与持久化', () => {
   });
 });
 
+describe('任务总体上限 observeJobMaxMs', () => {
+  it('传输挂起超过上限：任务被中止并按 aborted 失败结算', async () => {
+    const { session, pendingSeq, triggerMessageIndex } = fixtureSession();
+    const ctx = makeCtx({ llmStreamFactory: hangingFactory() });
+    const started = startPrecompression(
+      startOptions(ctx, session, pendingSeq, triggerMessageIndex, {
+        config: resolveConfig({ observeJobMaxMs: 20 }),
+      }),
+    );
+    expect(started.ok).toBe(true);
+    if (!started.ok) throw new Error('unreachable');
+    // 未到上限前任务仍在运行：等待不会提前结束
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(started.job.state).toBe('running');
+    await started.job.promise;
+    expect(started.job.state).toBe('failed');
+    expect(started.job.failure?.aborted).toBe(true);
+    expect(started.job.controller.signal.aborted).toBe(true);
+    expect(
+      ctx._loggerCalls.some(
+        (call) => call.level === 'warn' && String(call.args[0]).includes('预压缩超时'),
+      ),
+    ).toBe(true);
+  });
+
+  it('上限为 0 时不设上限：任务保持运行', async () => {
+    const { session, pendingSeq, triggerMessageIndex } = fixtureSession();
+    const ctx = makeCtx({ llmStreamFactory: hangingFactory() });
+    const started = startPrecompression(
+      startOptions(ctx, session, pendingSeq, triggerMessageIndex, {
+        config: resolveConfig({ observeJobMaxMs: 0 }),
+      }),
+    );
+    expect(started.ok).toBe(true);
+    if (!started.ok) throw new Error('unreachable');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(started.job.state).toBe('running');
+    disposePrecompression(session.id);
+    await started.job.promise;
+  });
+
+  it('上限内完成的任务不受影响：done 并写结果信封', async () => {
+    const { session, pendingSeq, triggerMessageIndex } = fixtureSession();
+    const ctx = makeCtx({ llmStreamFactory: successFactory() });
+    const started = startPrecompression(
+      startOptions(ctx, session, pendingSeq, triggerMessageIndex, {
+        config: resolveConfig({ observeJobMaxMs: 5000 }),
+      }),
+    );
+    expect(started.ok).toBe(true);
+    if (!started.ok) throw new Error('unreachable');
+    await started.job.promise;
+    expect(started.job.state).toBe('done');
+    expect(findOmEvents(session, 'om/observe-summary')).toHaveLength(1);
+    expect(started.job.controller.signal.aborted).toBe(false);
+  });
+});
+
 describe('findPrecompressionJob 身份校验', () => {
   it('pendingSeq 不匹配：返回 undefined 并中止过期任务', () => {
     const { session, pendingSeq, triggerMessageIndex } = fixtureSession();
@@ -325,5 +388,81 @@ describe('disposeAllPrecompressions', () => {
     expect(jobB.job.controller.signal.aborted).toBe(true);
     expect(peekPrecompressionJob(a.session.id)).toBeUndefined();
     expect(peekPrecompressionJob('other-session')).toBeUndefined();
+  });
+});
+
+describe('失效冷却', () => {
+  it('无可行区间失效时按配置记录冷却，到期后查询归零', () => {
+    const session = makeSession();
+    const ctx = makeCtx({ llmStreamFactory: successFactory() });
+    const pendingSeq = appendOmEvent(session, 'om/observe-pending', { triggerMessageIndex: 0 });
+    const started = startPrecompression(
+      startOptions(ctx, session, pendingSeq, 0, {
+        config: resolveConfig({ observeInvalidateCooldownMs: 60000 }),
+      }),
+    );
+    expect(started.ok).toBe(false);
+    expect(observeInvalidateCooldown(session.id)).toBeGreaterThan(0);
+    // 到期后查询归零并清除记录
+    expect(observeInvalidateCooldown(session.id, Date.now() + 60000)).toBe(0);
+  });
+
+  it('冷却配置为 0 时不记录冷却', () => {
+    const session = makeSession();
+    const ctx = makeCtx({ llmStreamFactory: successFactory() });
+    const pendingSeq = appendOmEvent(session, 'om/observe-pending', { triggerMessageIndex: 0 });
+    const started = startPrecompression(
+      startOptions(ctx, session, pendingSeq, 0, {
+        config: resolveConfig({ observeInvalidateCooldownMs: 0 }),
+      }),
+    );
+    expect(started.ok).toBe(false);
+    expect(observeInvalidateCooldown(session.id)).toBe(0);
+  });
+
+  it('记录与查询对称，0 清除既有冷却', () => {
+    const session = makeSession();
+    noteObserveInvalidate(session.id, 60000, 1000);
+    expect(observeInvalidateCooldown(session.id, 1000)).toBe(60000);
+    expect(observeInvalidateCooldown(session.id, 60999)).toBe(1);
+    expect(observeInvalidateCooldown(session.id, 61000)).toBe(0);
+    noteObserveInvalidate(session.id, 60000, 1000);
+    noteObserveInvalidate(session.id, 0, 1000);
+    expect(observeInvalidateCooldown(session.id, 1000)).toBe(0);
+  });
+});
+
+describe('会话销毁清理', () => {
+  it('销毁会话：标记已销毁，中止任务，清除冷却与失败记录', async () => {
+    const ctx = makeCtx({ llmStreamFactory: hangingFactory() });
+    const { session, pendingSeq, triggerMessageIndex } = fixtureSession();
+    const started = startPrecompression(
+      startOptions(ctx, session, pendingSeq, triggerMessageIndex),
+    );
+    if (!started.ok) throw new Error('unreachable');
+    noteObserveInvalidate(session.id, 60000);
+    expect(observeInvalidateCooldown(session.id)).toBeGreaterThan(0);
+    disposeSessionPrecompressionState(session);
+    expect(isSessionLive(session)).toBe(false);
+    expect(started.job.controller.signal.aborted).toBe(true);
+    expect(peekPrecompressionJob(session.id)).toBeUndefined();
+    expect(observeInvalidateCooldown(session.id)).toBe(0);
+    await started.job.promise;
+    // 已销毁会话不写失败记录（无归属的失败记录只会成为孤儿）
+    expect(started.job.state).toBe('failed');
+    expect(precompressionFailureState(session.id, pendingSeq).count).toBe(0);
+  });
+
+  it('未销毁的会话对象视为存活', () => {
+    const session = makeSession();
+    expect(isSessionLive(session)).toBe(true);
+  });
+
+  it('插件卸载清空冷却记录', () => {
+    const session = makeSession();
+    noteObserveInvalidate(session.id, 60000);
+    expect(observeInvalidateCooldown(session.id)).toBeGreaterThan(0);
+    disposeAllPrecompressions();
+    expect(observeInvalidateCooldown(session.id)).toBe(0);
   });
 });

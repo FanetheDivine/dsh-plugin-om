@@ -164,6 +164,7 @@ export function startReflection(options: ReflectStartOptions): ReflectJob {
         target: current.target,
         maxTokens: cfg.compressMaxTokens,
         rateLimitWaitMs: cfg.rateLimitWaitMs,
+        jobMaxMs: cfg.observeJobMaxMs,
         skipReasoning: cfg.compressSkipReasoning,
         debug: cfg.debug,
         ...(current.reasoningEffort === undefined

@@ -3,9 +3,11 @@
 // 门是模块级共享状态，用例间经 resetRateLimitGate 隔离；时间用 vitest fake timers 控制。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  effectiveRateLimitWaitMs,
   gateRateLimit,
   isRateLimitError,
   noteRateLimit,
+  RATE_LIMIT_WAIT_MS_MAX,
   resetRateLimitGate,
 } from '../src/rate-limit.ts';
 
@@ -27,6 +29,29 @@ describe('isRateLimitError（429 识别）', () => {
     expect(isRateLimitError('request aborted')).toBe(false);
     expect(isRateLimitError('error id 14295')).toBe(false); // 429 不是独立数字
     expect(isRateLimitError('')).toBe(false);
+  });
+});
+
+describe('effectiveRateLimitWaitMs（双侧钳制）', () => {
+  it('waitMs ≤ 0 表示关闭限流等待，与任务上限无关', () => {
+    expect(effectiveRateLimitWaitMs(0)).toBe(0);
+    expect(effectiveRateLimitWaitMs(-1, 900000)).toBe(0);
+  });
+
+  it('配置过大按 1 小时上界钳制', () => {
+    expect(effectiveRateLimitWaitMs(RATE_LIMIT_WAIT_MS_MAX)).toBe(RATE_LIMIT_WAIT_MS_MAX);
+    expect(effectiveRateLimitWaitMs(RATE_LIMIT_WAIT_MS_MAX * 3)).toBe(RATE_LIMIT_WAIT_MS_MAX);
+  });
+
+  it('给出任务上限时生效值严格小于它，避免一次等待吃掉整个任务预算', () => {
+    expect(effectiveRateLimitWaitMs(600000, 60000)).toBe(59999);
+    expect(effectiveRateLimitWaitMs(600000, 1)).toBe(0);
+    // 未触发任一侧：保持原值
+    expect(effectiveRateLimitWaitMs(30000, 900000)).toBe(30000);
+    // jobMaxMs ≤ 0 或未给出：不设该上界
+    expect(effectiveRateLimitWaitMs(30000, 0)).toBe(30000);
+    expect(effectiveRateLimitWaitMs(30000, -5)).toBe(30000);
+    expect(effectiveRateLimitWaitMs(30000)).toBe(30000);
   });
 });
 
@@ -94,6 +119,25 @@ describe('gateRateLimit（限流等待门）', () => {
     const controller = new AbortController();
     controller.abort();
     expect(await gateRateLimit(60000, controller.signal)).toBe(false);
+  });
+
+  it('等待门按双侧钳制后的生效值等待（任务上限更短时提前放行）', async () => {
+    noteRateLimit();
+    /** 放行标记（钳制后的期限前不应放行）。 */
+    let released = false;
+    const gate = gateRateLimit(600000, undefined, 5000).then((v) => {
+      released = true;
+      return v;
+    });
+    await vi.advanceTimersByTimeAsync(4998);
+    expect(released).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await gate).toBe(true);
+  });
+
+  it('生效值钳到 0 时不等待直接放行', async () => {
+    noteRateLimit();
+    expect(await gateRateLimit(600000, undefined, 1)).toBe(true);
   });
 
   it('等待期间发生新的 429 会顺延冷却期（以最近一次为准）', async () => {

@@ -199,7 +199,7 @@ const type = (input: HTMLInputElement, text: string) => {
 };
 
 describe('dsh-plugin-om 的配置槽和编辑', () => {
-  it('把行配置注册到服务中的 namespace，并显示 16 个可以编辑的值控件', () => {
+  it('把行配置注册到服务中的 namespace，并显示 22 个可以编辑的值控件', () => {
     const { entry, registrations, container } = mount();
     expect(registrations).toEqual(['dsh-plugin-om']);
     expect(entry.name).toBe('plugins.row.config');
@@ -208,6 +208,12 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       'observeThresholdTokens',
       'reflectThresholdTokens',
       'tailMessageCount',
+      'observeWaitMaxMs',
+      'observeJobMaxMs',
+      'observeRetryBackoffMs',
+      'observeMaxFailures',
+      'observePendingExpireMs',
+      'observeInvalidateCooldownMs',
       'semanticRecallEnabled',
       'modelDir',
       'compressProvider',
@@ -223,7 +229,7 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       'debug',
     ];
     for (const key of keys) expect(control(container, key).disabled, key).toBe(false);
-    expect(container.querySelectorAll('input').length).toBe(16);
+    expect(container.querySelectorAll('input').length).toBe(22);
   });
 
   it('按功能逻辑排列字段，父开关在依赖项之前', () => {
@@ -236,6 +242,12 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
       'observeThresholdTokens',
       'reflectThresholdTokens',
       'tailMessageCount',
+      'observeWaitMaxMs',
+      'observeJobMaxMs',
+      'observeRetryBackoffMs',
+      'observeMaxFailures',
+      'observePendingExpireMs',
+      'observeInvalidateCooldownMs',
       'semanticRecallEnabled',
       'modelDir',
       'compressProvider',
@@ -263,12 +275,18 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     expect(host.state.user).toEqual({});
   });
 
-  it('一次保存原子提交全部 16 项和读取时 revision，成功后同步宿主接受值', async () => {
+  it('一次保存原子提交全部 22 项和读取时 revision，成功后同步宿主接受值', async () => {
     const { host, container, face } = mount();
     const numberFields = [
       'observeThresholdTokens',
       'reflectThresholdTokens',
       'tailMessageCount',
+      'observeWaitMaxMs',
+      'observeJobMaxMs',
+      'observeRetryBackoffMs',
+      'observeMaxFailures',
+      'observePendingExpireMs',
+      'observeInvalidateCooldownMs',
       'semanticRecallEnabled',
       'modelDir',
       'compressMaxTokens',
@@ -300,7 +318,7 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     });
     expect(host.calls).toHaveLength(1);
     expect(host.calls[0]?.revision).toBe(4);
-    expect(host.calls[0]?.ops).toHaveLength(16);
+    expect(host.calls[0]?.ops).toHaveLength(22);
     // 被隐藏的字段草稿仍随保存提交
     expect(host.calls[0]?.ops).toContainEqual({
       op: 'set',
@@ -525,11 +543,17 @@ describe('dsh-plugin-om 的配置槽和编辑', () => {
     expect(control(container, 'observeThresholdTokens').value).toBe('77');
   });
 
-  it('真实中英字典在 DOM 中显示全部 16 项标题、说明和保存失败反馈', async () => {
+  it('真实中英字典在 DOM 中显示全部 22 项标题、说明和保存失败反馈', async () => {
     const keys = [
       'observeThresholdTokens',
       'reflectThresholdTokens',
       'tailMessageCount',
+      'observeWaitMaxMs',
+      'observeJobMaxMs',
+      'observeRetryBackoffMs',
+      'observeMaxFailures',
+      'observePendingExpireMs',
+      'observeInvalidateCooldownMs',
       'semanticRecallEnabled',
       'modelDir',
       'compressMaxTokens',

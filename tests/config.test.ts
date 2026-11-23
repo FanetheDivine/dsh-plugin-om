@@ -1,8 +1,8 @@
 // config.ts 单元测试：宿主 Config 严格校验与 resolveConfig 宽松解析的
 // 类型/范围校验、默认值与非法值回退。
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { Config, resolveConfig } from '../src/config.ts';
+import { Config, resetConfigFallbackWarnings, resolveConfig } from '../src/config.ts';
 
 describe('宿主 Config 校验与 volatile 值', () => {
   it('合法 YAML 值经过宿主解析后与宽松解析的行为一致，包括零和负整数', () => {
@@ -12,6 +12,12 @@ describe('宿主 Config 校验与 volatile 值', () => {
       compressMaxTokens: 4096,
       rateLimitWaitMs: 0,
       tailMessageCount: 2,
+      observeWaitMaxMs: 30000,
+      observeJobMaxMs: 900000,
+      observeRetryBackoffMs: 60000,
+      observeMaxFailures: 3,
+      observePendingExpireMs: 3600000,
+      observeInvalidateCooldownMs: 600000,
       compressSkipReasoning: false,
       progressReminderEnabled: false,
       progressReminderIdleEnabled: false,
@@ -26,7 +32,7 @@ describe('宿主 Config 校验与 volatile 值', () => {
     };
     const parsed = Config(yaml);
     const values = Object.fromEntries(Object.entries(parsed).map(([key, ref]) => [key, ref.get()]));
-    expect(Object.keys(values)).toHaveLength(16);
+    expect(Object.keys(values)).toHaveLength(22);
     expect(resolveConfig(values)).toEqual(resolveConfig(yaml));
     expect(Config({}).observeThresholdTokens.get()).toBe(resolveConfig({}).observeThresholdTokens);
     expect(Config({}).compressMaxTokens.get()).toBeUndefined();
@@ -37,13 +43,19 @@ describe('宿主 Config 校验与 volatile 值', () => {
     ).toBeUndefined();
   });
 
-  it('宿主保存时拒绝五项非整数、错误类型和模型目录错误类型，旧 YAML 宽松解析仍回退', () => {
+  it('宿主保存时拒绝六项非整数、错误类型和模型目录错误类型，旧 YAML 宽松解析仍回退', () => {
     for (const key of [
       'observeThresholdTokens',
       'reflectThresholdTokens',
       'compressMaxTokens',
       'rateLimitWaitMs',
       'tailMessageCount',
+      'observeWaitMaxMs',
+      'observeJobMaxMs',
+      'observeRetryBackoffMs',
+      'observeMaxFailures',
+      'observePendingExpireMs',
+      'observeInvalidateCooldownMs',
     ]) {
       expect(() => Config({ [key]: 1.5 })).toThrow(/expected/);
       expect(resolveConfig({ [key]: 1.5 })).toEqual(resolveConfig({}));
@@ -289,5 +301,57 @@ describe('compressProvider / compressModel / compressReasoningEffort 配置键',
     expect(config.compressProvider).toBeUndefined();
     expect(config.compressModel).toBeUndefined();
     expect(config.compressReasoningEffort).toBeUndefined();
+  });
+});
+
+describe('观察类数值下限与回退告警', () => {
+  const OBSERVE_NUMBER_KEYS = [
+    'observeWaitMaxMs',
+    'observeJobMaxMs',
+    'observeRetryBackoffMs',
+    'observeMaxFailures',
+    'observePendingExpireMs',
+    'observeInvalidateCooldownMs',
+  ] as const;
+
+  afterEach(() => {
+    resetConfigFallbackWarnings();
+    vi.restoreAllMocks();
+  });
+
+  it('宿主 schema 拒绝负数，宽松解析回退默认值', () => {
+    for (const key of OBSERVE_NUMBER_KEYS) {
+      expect(() => Config({ [key]: -1 } as never)).toThrow();
+      const config = resolveConfig({ [key]: -1 });
+      expect(config[key], key).toBe(resolveConfig({})[key]);
+    }
+  });
+
+  it('失效冷却默认 600000，0 表示不冷却', () => {
+    expect(resolveConfig({}).observeInvalidateCooldownMs).toBe(600000);
+    expect(resolveConfig({ observeInvalidateCooldownMs: 0 }).observeInvalidateCooldownMs).toBe(0);
+  });
+
+  it('非法值回退默认值时按配置键告警一次，重置后可再次告警', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    resetConfigFallbackWarnings();
+    resolveConfig({ observeWaitMaxMs: -5 });
+    resolveConfig({ observeWaitMaxMs: -5 });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('observeWaitMaxMs');
+    resolveConfig({ observePendingExpireMs: 1.5, observeMaxFailures: 'x' });
+    expect(warn).toHaveBeenCalledTimes(3);
+    resetConfigFallbackWarnings();
+    resolveConfig({ observeWaitMaxMs: -5 });
+    expect(warn).toHaveBeenCalledTimes(4);
+  });
+
+  it('未给出的键与留空值不告警', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    resetConfigFallbackWarnings();
+    resolveConfig({});
+    resolveConfig({ observeWaitMaxMs: '' });
+    resolveConfig({ observeJobMaxMs: null });
+    expect(warn).not.toHaveBeenCalled();
   });
 });

@@ -14,11 +14,11 @@
  * OM 结果评估命令由组件行提供，见 compaction-eval/index.ts。
  */
 import type {} from '@deepseek-ai/cordis-plugin-loader';
-import { type CompressPassResult, commitReflection, maybeCompress } from './compress.ts';
+import { commitReflection, maybeCompress } from './compress.ts';
 import { Config, currentConfig } from './config.ts';
 import { ensureModelReady, getEmbedder } from './embedding.ts';
 import { makeLogger } from './logger.ts';
-import { disposeAllPrecompressions, disposePrecompression } from './precompress.ts';
+import { disposeAllPrecompressions, disposeSessionPrecompressionState } from './precompress.ts';
 import { buildRecallTool } from './recall.ts';
 import { disposeAllReflections, disposeReflection } from './reflect.ts';
 import {
@@ -89,7 +89,8 @@ export function apply(ctx: Context, config?: unknown): void {
             ...(semantic
               ? {
                   semantic: {
-                    modelStatus: () => ensureModelReady(directory, warnModel, undefined, logModel),
+                    modelStatus: (signal?: AbortSignal) =>
+                      ensureModelReady(directory, warnModel, undefined, logModel, signal),
                     embedder: (texts: readonly string[]) =>
                       getEmbedder(directory).then((embed) => embed(texts)),
                   },
@@ -116,7 +117,7 @@ export function apply(ctx: Context, config?: unknown): void {
   ctx.inject(['sessions'], (inner) => registerThinkingBinding(inner, logger));
 
   // 会话销毁与插件卸载时中止后台预压缩任务（待定标记与持久化结果仍在日志中，重启后由对账恢复）。
-  ctx.on('session/disposed', (session) => disposePrecompression(session.id));
+  ctx.on('session/disposed', (session) => disposeSessionPrecompressionState(session));
   ctx.effect(() => () => disposeAllPrecompressions(), 'dsh-plugin-om: precompression registry');
   ctx.on('session/disposed', (session) => disposeReflection(session.id));
   ctx.effect(() => () => disposeAllReflections(), 'dsh-plugin-om: reflection registry');
@@ -127,7 +128,6 @@ export function apply(ctx: Context, config?: unknown): void {
   // 压缩循环最终失败（非 signal 中止）时拒绝本 step：当前 turn 以 blocked 结束，
   // 不再继续 AI 会话（实际报错已写入日志与 compaction/end error，UI 渲染失败行）。
   ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
-    let outcome: CompressPassResult = { failed: false };
     try {
       if (signal.aborted) {
         logger.step('pre-step 已中止（signal aborted），跳过压缩');
@@ -135,18 +135,10 @@ export function apply(ctx: Context, config?: unknown): void {
         logger.step('subagent 会话，跳过压缩（仅主会话生效）');
       } else {
         logger.step(`pre-step 触发压缩（会话 ${agent.session.id}）`);
-        outcome = await maybeCompress(ctx, agent, currentConfig(config), signal);
+        await maybeCompress(ctx, agent, currentConfig(config), signal);
       }
     } catch (error) {
       logger.warn(`pre-step 处理失败: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    if (outcome.failed && !outcome.aborted) {
-      const diagnostic =
-        outcome.diagnosticSessionId === undefined
-          ? ''
-          : `（诊断子会话 ${outcome.diagnosticSessionId}）`;
-      logger.warn(`上下文压缩失败，拒绝本 step 中断当前 turn：${outcome.error}${diagnostic}`);
-      return { kind: 'reject' };
     }
     let decision = await next();
     if (

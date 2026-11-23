@@ -5,7 +5,8 @@
  * ModelFetch 类型。
  * 模型为量化 ONNX（~113MB，不进 git，仅小文件随仓库/包分发）；下载目标
  * <modelDir>/onnx/model_quantized.onnx；直连受限时设置 HF_ENDPOINT 走镜像；
- * 原子落盘（先写 .tmp 再改名）。运行时编排见 embedding.ts 的 ensureModelReady。
+ * 原子落盘（先写 .tmp 再改名）；支持 AbortSignal：中止后 fetch 并行停止并清理临时文件。
+ * 运行时编排见 embedding.ts 的 ensureModelReady。
  */
 import { mkdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -58,18 +59,28 @@ export function needsDownload(
   }
 }
 
-/** fetch 最小可用接口（全局 fetch 满足；测试注入替身）。 */
-export type ModelFetch = (url: string) => Promise<{
+/** fetch 最小可用接口（全局 fetch 满足；测试注入替身）。init.signal 用于中止下载。 */
+export type ModelFetch = (
+  url: string,
+  init?: { signal?: AbortSignal },
+) => Promise<{
   ok: boolean;
   status: number;
   statusText: string;
   arrayBuffer(): Promise<ArrayBuffer>;
 }>;
 
+/** 判定错误是否来自 fetch 中止（DOMException AbortError 或含 abort 的消息）。 */
+function isAbortError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.name === 'AbortError' || /abort/i.test(error.message);
+}
+
 /**
  * 下载模型到 <modelDir>/onnx/model_quantized.onnx。
  * 开始/结束（含跳过）经 log 回调输出；失败时清理临时文件并在错误消息中附带镜像建议。
- * 可注入 fetchImpl / log（供测试）。
+ * signal 中止时 fetch 随之中断，已写入的临时文件一并清理（不留半截文件）。
+ * 可注入 fetchImpl / log / signal（供测试）。
  */
 export async function downloadModel(
   modelDir: string,
@@ -77,10 +88,12 @@ export async function downloadModel(
     force = false,
     fetchImpl = fetch,
     log = console.log,
+    signal,
   }: {
     force?: boolean;
     fetchImpl?: ModelFetch;
     log?: (message: string) => void;
+    signal?: AbortSignal | undefined;
   } = {},
 ): Promise<DownloadResult> {
   const target = modelTargetPath(modelDir);
@@ -91,13 +104,15 @@ export async function downloadModel(
   const url = modelSourceUrl();
   mkdirSync(path.dirname(target), { recursive: true });
   const tmp = `${target}.tmp`;
+  if (signal?.aborted) throw abortedError();
   log(`[download-model] 开始下载：${url}`);
   try {
-    const resp = await fetchImpl(url);
+    const resp = await fetchImpl(url, signal === undefined ? undefined : { signal });
     if (!resp.ok) {
       throw new Error(`下载失败：HTTP ${resp.status} ${resp.statusText}（${url}）`);
     }
     const buf = Buffer.from(await resp.arrayBuffer());
+    if (signal?.aborted) throw abortedError();
     // 先写临时文件再原子改名，避免半截文件被当成完整模型加载
     writeFileSync(tmp, buf);
     renameSync(tmp, target);
@@ -106,8 +121,17 @@ export async function downloadModel(
   } catch (err) {
     rmSync(tmp, { force: true });
     const detail = err instanceof Error ? err.message : String(err);
+    if (signal?.aborted === true || isAbortError(err)) {
+      log('[download-model] 下载已中止，临时文件已清理');
+      throw new Error(`下载已中止（调用方已取消），已清理临时文件：${detail}`);
+    }
     throw new Error(
       `${detail}；如直连 HuggingFace 受限，请设置环境变量 HF_ENDPOINT=https://hf-mirror.com 后重试`,
     );
   }
+}
+
+/** 下载被中止时的错误（与网络失败区分）。 */
+function abortedError(): Error {
+  return new Error('下载已中止（调用方已取消）');
 }

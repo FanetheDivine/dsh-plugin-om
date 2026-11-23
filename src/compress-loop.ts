@@ -56,7 +56,12 @@ import {
   omSource,
 } from './constants.ts';
 import { makeLogger } from './logger.ts';
-import { gateRateLimit, isRateLimitError, noteRateLimit } from './rate-limit.ts';
+import {
+  effectiveRateLimitWaitMs,
+  gateRateLimit,
+  isRateLimitError,
+  noteRateLimit,
+} from './rate-limit.ts';
 import type { Context, Session } from './types.ts';
 import type { RoutedTarget } from './utils.ts';
 
@@ -204,8 +209,10 @@ export type CompressionLoopOptions = {
   target: RoutedTarget;
   /** 单轮生成上限（LLM maxTokens）；undefined 不设置。 */
   maxTokens: number | undefined;
-  /** 429 限流冷却毫秒数。 */
+  /** 429 限流冷却毫秒数（生效值另行钳制到小于 jobMaxMs）。 */
   rateLimitWaitMs: number;
+  /** 任务总上限毫秒数：给出时生效冷却须严格小于它（0 或未给出不设该上界）。 */
+  jobMaxMs?: number;
   /** 是否在 getHistory 输出中省略 <reasoning> 参考条目（压缩指令同步省略其说明行）。 */
   skipReasoning: boolean;
   /** 步骤级日志开关。 */
@@ -423,6 +430,7 @@ export async function runCompressionLoop(
       ...(id === undefined ? {} : { recordSessionId: id }),
     };
   };
+  const rateLimitWaitMs = effectiveRateLimitWaitMs(options.rateLimitWaitMs, options.jobMaxMs);
   logger.step(
     `压缩循环开始（${options.phase === 'reflect' ? '反思' : '观察'}，provider ${options.target.provider}，model ${options.target.model}，maxTokens ${
       options.maxTokens === undefined ? '未设置' : String(options.maxTokens)
@@ -436,7 +444,7 @@ export async function runCompressionLoop(
     transientRetries += 1;
     noteRateLimit();
     logger.warn(
-      `压缩循环请求瞬时失败（${message}），等待 ${options.rateLimitWaitMs}ms 后重试（${transientRetries}/${MAX_TRANSIENT_RETRIES}）`,
+      `压缩循环请求瞬时失败（${message}），等待 ${rateLimitWaitMs}ms 后重试（${transientRetries}/${MAX_TRANSIENT_RETRIES}）`,
     );
     return true;
   };
@@ -445,7 +453,7 @@ export async function runCompressionLoop(
       logger.warn('压缩循环中止（signal 已中止），放弃本次压缩');
       return await failWith(COMPACTION_ABORTED_ERROR, true);
     }
-    const gated = await gateRateLimit(options.rateLimitWaitMs, options.signal);
+    const gated = await gateRateLimit(rateLimitWaitMs, options.signal);
     if (!gated) {
       logger.warn('压缩循环中止（限流等待被 signal 中止），放弃本次压缩');
       return await failWith(COMPACTION_ABORTED_ERROR, true);
@@ -474,7 +482,7 @@ export async function runCompressionLoop(
       const message = error instanceof Error ? error.message : String(error);
       if (isRateLimitFailure(message)) {
         noteRateLimit();
-        logger.warn(`压缩循环触发限流（429），等待 ${options.rateLimitWaitMs}ms 后重试`);
+        logger.warn(`压缩循环触发限流（429），等待 ${rateLimitWaitMs}ms 后重试`);
         continue;
       }
       if (retryTransient(message)) continue;
@@ -498,7 +506,7 @@ export async function runCompressionLoop(
         typeof finish.failure?.status === 'number' ? finish.failure.status : undefined;
       if (isRateLimitFailure(failureMessage, failureStatus)) {
         noteRateLimit();
-        logger.warn(`压缩循环触发限流（429），等待 ${options.rateLimitWaitMs}ms 后重试`);
+        logger.warn(`压缩循环触发限流（429），等待 ${rateLimitWaitMs}ms 后重试`);
         continue;
       }
       if (retryTransient(failureMessage, failureStatus)) continue;

@@ -130,6 +130,7 @@ export function buildRecallTool(options?: RecallToolOptions): ToolDefinition {
           offset,
           selfCallId: String(exec.callId ?? ''),
           getPruner: () => getPruner?.(),
+          signal: exec.signal,
           options: semantic,
         };
         return semantic ? semanticSearch(input) : keywordSearch(input);

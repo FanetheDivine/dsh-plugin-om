@@ -2,8 +2,10 @@
  * 全局限流门（插件进程级共享状态）：任一摘要请求遇 429 后进入冷却期，
  * 此后所有摘要请求发出前先等待到「最近一次 429 + rateLimitWaitMs」之后。
  * 等待期间 signal 中止则立即放弃；等待期间的新 429 顺延冷却期。
- * 导出 isRateLimitError / noteRateLimit / gateRateLimit / RATE_LIMIT_WAIT_MS_DEFAULT /
- * resetRateLimitGate。
+ * 导出 isRateLimitError / noteRateLimit / effectiveRateLimitWaitMs / gateRateLimit /
+ * RATE_LIMIT_WAIT_MS_DEFAULT / RATE_LIMIT_WAIT_MS_MAX / resetRateLimitGate。
+ * 生效冷却同时受上界（RATE_LIMIT_WAIT_MS_MAX）与任务总上限约束：一次等待不得吃掉整个
+ * 任务预算，否则任务到点被中止而压缩永远做不完。
  */
 
 /** 最近一次 429 限流的时间戳（ms；null = 未遇过限流，门直接放行）。 */
@@ -11,6 +13,9 @@ let lastRateLimitAt: number | null = null;
 
 /** 默认限流冷却时长（ms）：调用方未传 rateLimitWaitMs 时的兜底值。 */
 export const RATE_LIMIT_WAIT_MS_DEFAULT = 60000;
+
+/** 冷却时长上限（ms）：配置值过大时按此钳制，避免一次误配让压缩长时间停摆。 */
+export const RATE_LIMIT_WAIT_MS_MAX = 3_600_000;
 
 /** 判定错误信息是否为 429 限流（匹配 429 或 rate limit，大小写不敏感）。 */
 export function isRateLimitError(message: string): boolean {
@@ -46,13 +51,33 @@ function delay(ms: number, signal?: AbortSignal): Promise<boolean> {
 }
 
 /**
- * 限流等待门：处于 429 冷却期时等待到期限再放行（返回 true）；
- * 等待期间 signal 中止返回 false。未遇过限流或冷却期已过立即放行。waitMs ≤ 0 视为不限流。
+ * 生效冷却时长：配置值按双侧钳制。
+ * - 上界 RATE_LIMIT_WAIT_MS_MAX：配置过大不至于让压缩无限期停摆
+ * - 任务总上限 jobMaxMs（> 0 时）：生效值须严格小于它，否则等满即到点被中止，
+ *   压缩永远做不完（一次等待不得吃掉整个任务预算）
+ * waitMs ≤ 0 表示关闭限流等待（立即放行，可能是近零冷却）；jobMaxMs ≤ 0 或未给出不设该上界。
  */
-export async function gateRateLimit(waitMs: number, signal?: AbortSignal): Promise<boolean> {
-  if (waitMs <= 0) return true;
+export function effectiveRateLimitWaitMs(waitMs: number, jobMaxMs?: number): number {
+  if (waitMs <= 0) return 0;
+  const capped = Math.min(waitMs, RATE_LIMIT_WAIT_MS_MAX);
+  if (jobMaxMs === undefined || jobMaxMs <= 0) return capped;
+  return Math.min(capped, Math.max(0, jobMaxMs - 1));
+}
+
+/**
+ * 限流等待门：处于 429 冷却期时等待到期限再放行（返回 true）；
+ * 等待期间 signal 中止返回 false。未遇过限流或冷却期已过立即放行。
+ * waitMs ≤ 0 视为不限流；jobMaxMs 给出时生效等待钳到严格小于该值。
+ */
+export async function gateRateLimit(
+  waitMs: number,
+  signal?: AbortSignal,
+  jobMaxMs?: number,
+): Promise<boolean> {
+  const capped = effectiveRateLimitWaitMs(waitMs, jobMaxMs);
+  if (capped <= 0) return true;
   while (lastRateLimitAt !== null) {
-    const remaining = lastRateLimitAt + waitMs - Date.now();
+    const remaining = lastRateLimitAt + capped - Date.now();
     if (remaining <= 0) return true;
     const completed = await delay(remaining, signal);
     if (!completed) return false;

@@ -16,6 +16,10 @@
 ## 观察压缩
 
 - 主会话未压缩内容达到 `observeThresholdTokens` 时立即开始后台预压缩。
+- `observeWaitMaxMs` 只限制 pre-step 等多久：超时本轮放行，后台压缩照常继续，不会被中止。
+- 后台压缩自身受 `observeJobMaxMs` 约束，到点才中止任务，保证挂起的传输最终结算。
+- 同一待定标记失败后按 `observeRetryBackoffMs` 的 1×/5×/15× 封顶退避才重启，退避期内 pre-step 直接放行。
+- 待定标记连续失败达 `observeMaxFailures` 或存活超过 `observePendingExpireMs` 时自动失效，避免长期拖慢每一步。
 - 结果持久化到会话日志，新增完整消息达到 `tailMessageCount` 后注入，重启后直接采纳已有结果。
 - 通过工具循环生成摘要，保留用户消息和未压缩内容。
 - 压缩会话首条消息附带区间全部条目，模型首轮即可提交全部摘要并完成。
